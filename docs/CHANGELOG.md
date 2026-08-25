@@ -35,6 +35,26 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.22 — runtime myp化 #19：浮点层（strtod 解析 + %g/%e/%f 格式化）
+
+**非破坏性**。新增 `runtime_myp/float.myp` shadow C runtime 的浮点解析与格式化
+（去 libc `strtod`/`snprintf %g` 依赖，纯 MYP + `__myp_math_pow/floor/log` 内建）：
+
+- **解析**：`myp_atof` / `myp_str_to_double` / `myp_str_to_float`（strtod 语义：
+  跳过空白/可选符号/小数点/指数 `e/E`、`0x` 十六进制浮点（`p` 二进制指数）、
+  `inf/infinity/nan`；无有效数字回 0；溢出→±inf、下溢→0）。
+- **格式化**：`myp_to_string_double`/`myp_to_string_float`（`%g` 默认精度 6）、
+  `myp_fmt_double_f/e/g`（`%.*f/e/g`）、`myp_print_float`（Console.writeFloat
+  路径）。算法：十进制指数 `X=floor(log10|v|)`（log 粗估 + pow10 比较校正）；
+  `%g` 在 X<-4 或 X>=prec 走 %e 风格否则 %f 风格；有效数字 `|v|/10^(X-P+1)`
+  缩放到 `[10^(P-1),10^P)` 后 **round-half-even** 取整（P<=15 精确），%g 去尾零。
+  `%.*f` 整数部分反复 /10 + 小数部分反复 *10 并按第 prec+1 位 half-even 进位。
+- **验证**：`rt_float_test.myp` 111 断言（解析 20 + %g 17 + %f 12 + %e 8 + %g 11 +
+  myp_print_float 3），期望值 = glibc strtod/snprintf 输出——C runtime 与 MYP
+  shadow 双跑全过（字节对拍一致）。shadow 全套 7/7、bootstrap 16/16、全量 323/323。
+- 已知边界：%g/%e 有效数字 P 截到 15（超出近似，实际极少用）；`%.*f` 对
+  |v|>=2^53 的整数部分取位为近似；幂缩放用 libm `pow`（正确舍入 <1ulp）。
+
 ### v3.15.21 — 字符串头 len 字段：myp_strlen O(1)（根治 __strlen_evex 热点）
 
 **非破坏性**。字符串 ABI 布局升级：计数字符串头从 8B `{rc, type_id}` 扩为

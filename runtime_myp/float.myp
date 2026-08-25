@@ -1,0 +1,557 @@
+// runtime_myp/float.myp — runtime.c 浮点层 myp化（strtod 解析 + %g/%e/%f 格式化）。
+// 符号名与 C runtime 一致；shadow 机制同 str.myp/num.myp（--shared 外部链接，
+// 链接时置于 libmyp_rt.a 之前 + --allow-multiple-definition → MYP 定义优先）。
+// 验证见 runtime_myp/build.sh + rt_float_test.myp（与 C 版输出字节对拍）。
+//
+// 覆盖（C runtime 对应）：
+//   myp_atof / myp_str_to_double / myp_str_to_float —— strtod 语义解析
+//     （跳过空白/可选符号/小数点/指数 e/E、0x 十六进制浮点（p 二进制指数）、
+//     inf/infinity/nan；无有效数字回 0；溢出→±inf、下溢→0）
+//   myp_to_string_double / myp_to_string_float —— %g（默认精度 6）
+//   myp_fmt_double_f / myp_fmt_double_e / myp_fmt_double_g —— %.*f / %.*e / %.*g
+//   myp_print_float —— %g 打印（Console.writeFloat 路径，不带换行）
+//
+// 算法：
+//   十进制指数 X=floor(log10|v|)：log 粗估 + pow10 比较校正（±1）。
+//   %g：X<-4 或 X>=prec 走 %e 风格（P 位有效数字 d.ddde±XX），否则 %f 风格
+//     （prec-1-X 位小数）并去尾零/尾点。有效数字：|v|/10^(X-P+1) 缩放到
+//     [10^(P-1),10^P) 后 round-half-even 取整（P<=15 时 q<10^15 精确整数）。
+//   %e：归一化 m=a/10^X∈[1,10)，m*10^(P-1) 舍入取 P 位有效数字；指数至少 2 位。
+//   %f：整数部分反复 /10 取数字（<2^53 精确）+ 小数部分反复 *10 取 prec+1 位
+//     按第 prec+1 位进位（round-half-up，与 C 差异极小）。
+//   解析：尾数 double 累加 + Math.pow(10, 指数) 缩放。
+//
+// 注意：函数体内不用字符串 == / < / Str.len（避免经 str.myp 的间接依赖与潜在
+// 递归）；字符访问用 __myp_charcode，字符串构建用 myp_alloc + __myp_mem*。
+// 精度上限：%g/%e 有效数字 P 截到 15（超过则近似；实际极少用）。
+
+ffi string myp_alloc(long size);
+ffi int myp_strlen(string s);
+
+// ---- 辅助 ----
+// 10^k（double）
+double myp_pow10(int k) {
+    return __myp_math_pow(10.0, double(k));
+}
+// 2^k（double）
+double myp_pow2(int k) {
+    return __myp_math_pow(2.0, double(k));
+}
+
+// round-half-even（glibc %g 舍入）：x>=0
+double myp_round_half_even(double x) {
+    double f = __myp_math_floor(x);
+    double frac = x - f;
+    if (frac < 0.5) return f;
+    if (frac > 0.5) return f + 1.0;
+    long fi = long(f);
+    if (fi % 2 == 0) return f;
+    return f + 1.0;
+}
+
+// 非负 long → 十进制串
+string itoaU(long v) {
+    if (v == 0) {
+        string z = myp_alloc(2);
+        __myp_mem_store_i8(__myp_str_ptr(z), 48);
+        __myp_mem_store_i8(__myp_str_ptr(z) + 1, 0);
+        return z;
+    }
+    string tmp = myp_alloc(24);
+    long tp = __myp_str_ptr(tmp);
+    int pos = 22;
+    while (v > 0) {
+        pos = pos - 1;
+        __myp_mem_store_i8(tp + long(pos), 48 + int(v % 10));
+        v = v / 10;
+    }
+    int n = 22 - pos;
+    string r = myp_alloc(n + 1);
+    __myp_memcpy(__myp_str_ptr(r), tp + long(pos), n);
+    __myp_mem_store_i8(__myp_str_ptr(r) + n, 0);
+    return r;
+}
+
+// q（非负 long，<10^P）→ P 位数字串（前导补零）
+string digitsOf(long q, int P) {
+    string tmp = myp_alloc(P + 1);
+    long tp = __myp_str_ptr(tmp);
+    for (int k = P - 1; k >= 0; k = k - 1) {
+        __myp_mem_store_i8(tp + long(k), 48 + int(q % 10));
+        q = q / 10;
+    }
+    __myp_mem_store_i8(tp + long(P), 0);
+    return tmp;
+}
+
+// 十进制指数 X=floor(log10(a))，a>0
+int expBase10(double a) {
+    double l = __myp_math_log(a);
+    int X = int(__myp_math_floor(l / 2.302585092994046));
+    if (a >= myp_pow10(X + 1)) X = X + 1;
+    else if (a < myp_pow10(X)) X = X - 1;
+    return X;
+}
+
+// 特殊值（nan/inf/±0）判定，返回 0=普通值
+int specialKind(double v) {
+    long bits = bitcast<long>(v);
+    long em = 9218868437227405312;      // 0x7FF0000000000000
+    long mm = 4503599627370495;         // 0x000FFFFFFFFFFFFF
+    if ((bits & em) == em) {
+        if ((bits & mm) != 0) return 2; // nan
+        return 1;                       // inf
+    }
+    return 0;
+}
+
+// ---- 解析（strtod 语义）----
+// C: double myp_atof(const char* s) —— strtod(s, NULL)
+double myp_atof(string s) {
+    int len = myp_strlen(s);
+    int i = 0;
+    while (i < len) {
+        int c = __myp_charcode(s, i);
+        if (c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12) i = i + 1;
+        else break;
+    }
+    int neg = 0;
+    if (i < len) {
+        int c = __myp_charcode(s, i);
+        if (c == 45) { neg = 1; i = i + 1; }      // '-'
+        else if (c == 43) i = i + 1;              // '+'
+    }
+    // inf / infinity / nan（大小写不敏感）
+    if (i < len && (__myp_charcode(s, i) == 105 || __myp_charcode(s, i) == 73)) {
+        if (i + 2 < len && __myp_charcode(s, i + 1) == 110 && __myp_charcode(s, i + 2) == 102) {
+            return neg != 0 ? -1.0 / 0.0 : 1.0 / 0.0;   // inf
+        }
+    }
+    if (i < len && (__myp_charcode(s, i) == 110 || __myp_charcode(s, i) == 78)) {
+        if (i + 2 < len && __myp_charcode(s, i + 1) == 97 && __myp_charcode(s, i + 2) == 110) {
+            return 0.0 / 0.0;                            // nan
+        }
+    }
+    // 0x 十六进制浮点（C99）：0x[hex].[hex]p[±]exp（2 的幂指数）
+    if (i + 1 < len && __myp_charcode(s, i) == 48
+        && (__myp_charcode(s, i + 1) == 120 || __myp_charcode(s, i + 1) == 88)) {
+        int j = i + 2;
+        long hm = 0;
+        int hfrac = 0;
+        int anyh = 0;
+        while (j < len) {
+            int c = __myp_charcode(s, j);
+            int d = -1;
+            if (c >= 48 && c <= 57) d = c - 48;
+            else if (c >= 97 && c <= 102) d = c - 87;
+            else if (c >= 65 && c <= 70) d = c - 55;
+            if (d < 0) break;
+            hm = hm * 16 + d;
+            anyh = 1;
+            j = j + 1;
+        }
+        if (j < len && __myp_charcode(s, j) == 46) {   // '.'
+            j = j + 1;
+            while (j < len) {
+                int c = __myp_charcode(s, j);
+                int d = -1;
+                if (c >= 48 && c <= 57) d = c - 48;
+                else if (c >= 97 && c <= 102) d = c - 87;
+                else if (c >= 65 && c <= 70) d = c - 55;
+                if (d < 0) break;
+                hm = hm * 16 + d;
+                hfrac = hfrac + 1;
+                anyh = 1;
+                j = j + 1;
+            }
+        }
+        if (anyh == 0) return 0.0;
+        int pexp = 0;
+        int pneg = 0;
+        if (j < len && (__myp_charcode(s, j) == 112 || __myp_charcode(s, j) == 80)) {   // p/P
+            j = j + 1;
+            if (j < len) {
+                int c = __myp_charcode(s, j);
+                if (c == 45) { pneg = 1; j = j + 1; }
+                else if (c == 43) j = j + 1;
+            }
+            while (j < len) {
+                int c = __myp_charcode(s, j);
+                if (c < 48 || c > 57) break;
+                pexp = pexp * 10 + (c - 48);
+                j = j + 1;
+            }
+        }
+        double v = double(hm);
+        int shift = pexp - 4 * hfrac;
+        if (pneg != 0) shift = -shift;
+        if (shift > 0) v = v * myp_pow2(shift);
+        else if (shift < 0) v = v / myp_pow2(-shift);
+        if (neg != 0) v = -v;
+        return v;
+    }
+    // 十进制
+    double mant = 0.0;
+    int any = 0;
+    int frac = 0;
+    while (i < len) {
+        int c = __myp_charcode(s, i);
+        if (c < 48 || c > 57) break;
+        mant = mant * 10.0 + double(c - 48);
+        any = 1;
+        i = i + 1;
+    }
+    if (i < len && __myp_charcode(s, i) == 46) {   // '.'
+        i = i + 1;
+        while (i < len) {
+            int c = __myp_charcode(s, i);
+            if (c < 48 || c > 57) break;
+            mant = mant * 10.0 + double(c - 48);
+            frac = frac + 1;
+            any = 1;
+            i = i + 1;
+        }
+    }
+    if (any == 0) return 0.0;    // 无有效数字
+    int exp = 0;
+    if (i < len) {
+        int c = __myp_charcode(s, i);
+        if (c == 101 || c == 69) {    // e/E
+            i = i + 1;
+            int eneg = 0;
+            int anye = 0;
+            if (i < len) {
+                c = __myp_charcode(s, i);
+                if (c == 45) { eneg = 1; i = i + 1; }
+                else if (c == 43) i = i + 1;
+            }
+            while (i < len) {
+                c = __myp_charcode(s, i);
+                if (c < 48 || c > 57) break;
+                exp = exp * 10 + (c - 48);
+                anye = 1;
+                i = i + 1;
+            }
+            if (eneg != 0 && anye != 0) exp = -exp;
+        }
+    }
+    double v = mant;
+    int es = exp - frac;
+    if (es > 0) v = v * myp_pow10(es);
+    else if (es < 0) v = v / myp_pow10(-es);
+    if (neg != 0) v = -v;
+    return v;
+}
+// C: double myp_str_to_double(const char* s)
+double myp_str_to_double(string s) {
+    return myp_atof(s);
+}
+// C: float myp_str_to_float(const char* s)
+float myp_str_to_float(string s) {
+    return float(myp_atof(s));
+}
+
+// ---- 格式化（%g / %e / %f）----
+// %e 风格：a>0 归一化到 [1,10)，取 P 位有效数字（round-half-even），组装 d.ddde±XX。
+// strip!=0（%g 的 %e 分支）：去尾零（glibc 1e100 → "1e+100" 而非 "1.00000e+100"）；
+// strip==0（%.*e）：保留全部 P 位。指数绝对值至少 2 位（可达 3 位如 1e+308）。
+string fmtSciBody(double a, int X, int P, int neg, int strip) {
+    if (P > 15) P = 15;
+    if (P < 1) P = 1;
+    double m = a / myp_pow10(X);
+    if (m >= 10.0) { m = m / 10.0; X = X + 1; }
+    else if (m < 1.0) { m = m * 10.0; X = X - 1; }
+    double scaled = m * myp_pow10(P - 1);
+    long q = long(myp_round_half_even(scaled));
+    if (q >= long(myp_pow10(P))) { q = q / 10; X = X + 1; }   // 舍入进位
+    string digs = digitsOf(q, P);
+    int Peff = P;
+    if (strip != 0) {
+        // 去尾零：从最后一位起找第一个非 '0'
+        int z = P - 1;
+        while (z > 0) {
+            if (__myp_charcode(digs, z) != 48) break;
+            z = z - 1;
+        }
+        Peff = z + 1;   // z==0 时 Peff=1（全部为 0 → 仅首位，不可能因 m>=1）
+    }
+    string out = myp_alloc(48);
+    long op = __myp_str_ptr(out);
+    int oi = 0;
+    if (neg != 0) { __myp_mem_store_i8(op, 45); oi = 1; }
+    __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, 0)); oi = oi + 1;
+    if (Peff > 1) {
+        __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;
+        for (int k = 1; k < Peff; k = k + 1) {
+            __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
+        }
+    }
+    __myp_mem_store_i8(op + long(oi), 101); oi = oi + 1;      // 'e'
+    int xa = X;
+    if (xa < 0) { __myp_mem_store_i8(op + long(oi), 45); xa = -xa; oi = oi + 1; }
+    else { __myp_mem_store_i8(op + long(oi), 43); oi = oi + 1; }
+    if (xa < 10) {   // 指数至少 2 位：十位补 '0'
+        __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1;
+        __myp_mem_store_i8(op + long(oi), 48 + xa); oi = oi + 1;
+    } else if (xa < 100) {
+        __myp_mem_store_i8(op + long(oi), 48 + xa / 10); oi = oi + 1;
+        __myp_mem_store_i8(op + long(oi), 48 + xa % 10); oi = oi + 1;
+    } else {
+        __myp_mem_store_i8(op + long(oi), 48 + xa / 100); oi = oi + 1;
+        __myp_mem_store_i8(op + long(oi), 48 + (xa / 10) % 10); oi = oi + 1;
+        __myp_mem_store_i8(op + long(oi), 48 + xa % 10); oi = oi + 1;
+    }
+    __myp_mem_store_i8(op + long(oi), 0);
+    string r = myp_alloc(oi + 1);
+    __myp_memcpy(__myp_str_ptr(r), op, oi);
+    __myp_mem_store_i8(__myp_str_ptr(r) + oi, 0);
+    return r;
+}
+
+// %f 风格（%g 用）：P 位有效数字，按 X 摆小数点，去尾零/尾点。
+string fmtFixedG(double a, int X, int P, int neg) {
+    if (P > 15) P = 15;
+    if (P < 1) P = 1;
+    double scaled = a / myp_pow10(X - P + 1);
+    long q = long(myp_round_half_even(scaled));
+    if (q >= long(myp_pow10(P))) { q = q / 10; X = X + 1; }
+    string digs = digitsOf(q, P);
+    string out = myp_alloc(48);
+    long op = __myp_str_ptr(out);
+    int oi = 0;
+    if (neg != 0) { __myp_mem_store_i8(op, 45); oi = 1; }
+    int hasDot = 0;
+    if (X >= 0) {
+        int ip = X + 1;
+        if (ip > P) ip = P;
+        int k = 0;
+        while (k < ip) {
+            __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
+            k = k + 1;
+        }
+        if (ip < P) {
+            __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;
+            hasDot = 1;
+            while (k < P) {
+                __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
+                k = k + 1;
+            }
+        }
+    } else {
+        __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1;   // '0'
+        __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;   // '.'
+        hasDot = 1;
+        int nz = -X - 1;
+        int k = 0;
+        while (k < nz) { __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1; k = k + 1; }
+        k = 0;
+        while (k < P) {
+            __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
+            k = k + 1;
+        }
+    }
+    if (hasDot != 0) {   // %g 去尾零；有小数点才去（整数部分尾 0 保留）
+        while (oi > 0) {
+            int c = __myp_mem_load_i8(op + long(oi - 1));
+            if (c == 48) oi = oi - 1;
+            else break;
+        }
+        if (oi > 0 && __myp_mem_load_i8(op + long(oi - 1)) == 46) oi = oi - 1;
+    }
+    __myp_mem_store_i8(op + long(oi), 0);
+    string r = myp_alloc(oi + 1);
+    __myp_memcpy(__myp_str_ptr(r), op, oi);
+    __myp_mem_store_i8(__myp_str_ptr(r) + oi, 0);
+    return r;
+}
+
+// C: char* myp_to_string_double(double val) —— %g（默认精度 6）
+string myp_to_string_double(double v) {
+    int k = specialKind(v);
+    long bits = bitcast<long>(v);
+    int neg = 0;
+    if (bits < 0) neg = 1;
+    if (k == 2) return "nan";
+    if (k == 1) return neg != 0 ? "-inf" : "inf";
+    double a = v;
+    if (a < 0) a = -a;
+    if (a == 0) return neg != 0 ? "-0" : "0";
+    int X = expBase10(a);
+    if (X < -4 || X >= 6) return fmtSciBody(a, X, 6, neg, 1);
+    return fmtFixedG(a, X, 6, neg);
+}
+// C: char* myp_to_string_float(float val) —— %g（拓宽 double）
+string myp_to_string_float(float f) {
+    return myp_to_string_double(double(f));
+}
+
+// C: char* myp_fmt_double_g(double v, int32_t prec) —— %.*g
+string myp_fmt_double_g(double v, int prec) {
+    if (prec < 0) prec = 0;
+    if (prec > 60) prec = 60;
+    if (prec == 0) prec = 1;
+    int k = specialKind(v);
+    long bits = bitcast<long>(v);
+    int neg = 0;
+    if (bits < 0) neg = 1;
+    if (k == 2) return "nan";
+    if (k == 1) return neg != 0 ? "-inf" : "inf";
+    double a = v;
+    if (a < 0) a = -a;
+    if (a == 0) return neg != 0 ? "-0" : "0";
+    int X = expBase10(a);
+    if (X < -4 || X >= prec) return fmtSciBody(a, X, prec, neg, 1);
+    return fmtFixedG(a, X, prec, neg);
+}
+
+// C: char* myp_fmt_double_e(double v, int32_t prec) —— %.*e（小数点后 prec 位）
+string myp_fmt_double_e(double v, int prec) {
+    if (prec < 0) prec = 0;
+    if (prec > 60) prec = 60;
+    int k = specialKind(v);
+    long bits = bitcast<long>(v);
+    int neg = 0;
+    if (bits < 0) neg = 1;
+    if (k == 2) return "nan";
+    if (k == 1) return neg != 0 ? "-inf" : "inf";
+    double a = v;
+    if (a < 0) a = -a;
+    if (a == 0) {
+        // 0.00...e+00（prec 位小数）
+        string out = myp_alloc(prec + 8);
+        long op = __myp_str_ptr(out);
+        int oi = 0;
+        if (neg != 0) { __myp_mem_store_i8(op, 45); oi = 1; }
+        __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1;   // '0'
+        __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;   // '.'
+        int j = 0;
+        while (j < prec) { __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1; j = j + 1; }
+        __myp_mem_store_i8(op + long(oi), 101); oi = oi + 1;  // 'e'
+        __myp_mem_store_i8(op + long(oi), 43); oi = oi + 1;   // '+'
+        __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1;   // '0'
+        __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1;   // '0'
+        __myp_mem_store_i8(op + long(oi), 0);
+        string r = myp_alloc(oi + 1);
+        __myp_memcpy(__myp_str_ptr(r), op, oi);
+        __myp_mem_store_i8(__myp_str_ptr(r) + oi, 0);
+        return r;
+    }
+    int X = expBase10(a);
+    return fmtSciBody(a, X, prec + 1, neg, 0);
+}
+
+// C: char* myp_fmt_double_f(double v, int32_t prec) —— %.*f（固定小数位）
+string myp_fmt_double_f(double v, int prec) {
+    if (prec < 0) prec = 0;
+    if (prec > 60) prec = 60;
+    int k = specialKind(v);
+    long bits = bitcast<long>(v);
+    int neg = 0;
+    if (bits < 0) neg = 1;
+    if (k == 2) return "nan";
+    if (k == 1) return neg != 0 ? "-inf" : "inf";
+    double a = v;
+    if (a < 0) a = -a;
+    // 整数部分（double，反复 /10 取数字，<2^53 精确）
+    double ip = __myp_math_floor(a);
+    double fp = a - ip;
+    string ibuf = myp_alloc(320);
+    long ipb = __myp_str_ptr(ibuf);
+    int ii = 0;
+    if (ip == 0) {
+        __myp_mem_store_i8(ipb, 48);
+        ii = 1;
+    } else {
+        while (ip >= 1.0) {
+            double d = ip - __myp_math_floor(ip / 10.0) * 10.0;
+            __myp_mem_store_i8(ipb + long(ii), 48 + int(d));
+            ii = ii + 1;
+            ip = __myp_math_floor(ip / 10.0);
+        }
+    }
+    // 小数部分：prec+1 位（多取 1 位用于舍入）
+    string fbuf = myp_alloc(prec + 2);
+    long fpb = __myp_str_ptr(fbuf);
+    int fi = 0;
+    while (fi < prec + 1) {
+        fp = fp * 10.0;
+        double d = __myp_math_floor(fp);
+        __myp_mem_store_i8(fpb + long(fi), 48 + int(d));
+        fi = fi + 1;
+        fp = fp - d;
+    }
+    // 舍入（round-half-even，对齐 glibc）：看第 prec+1 位及其后残差
+    int roundUp = 0;
+    int rd = __myp_mem_load_i8(fpb + long(prec));
+    if (rd > 53) roundUp = 1;                       // > '5' → 上舍入
+    else if (rd == 53) {                            // == '5'：看残差是否精确 tie
+        if (fp > 0.0) roundUp = 1;                  // 后续还有非零位 → 上舍入
+        else {                                      // 精确 tie → round-half-even
+            int lastDigit;
+            if (prec > 0) lastDigit = __myp_mem_load_i8(fpb + long(prec - 1));
+            else lastDigit = __myp_mem_load_i8(ipb);   // prec==0 → 整数部分个位
+            if ((lastDigit - 48) % 2 == 1) roundUp = 1;   // 奇数 → 进（变偶）
+        }
+    }
+    int carry = 0;
+    if (roundUp != 0) {
+        carry = 1;
+        int j2 = prec - 1;
+        while (j2 >= 0 && carry != 0) {
+            int c = __myp_mem_load_i8(fpb + long(j2));
+            if (c == 57) { __myp_mem_store_i8(fpb + long(j2), 48); j2 = j2 - 1; }
+            else { __myp_mem_store_i8(fpb + long(j2), c + 1); carry = 0; }
+        }
+    }
+    // 组装：[-]整数[.小数（prec 位）]（%.*f 的 prec==0 无小数点，glibc 一致）
+    string out = myp_alloc(ii + prec + 5);   // +符号+进位(长度+1)+点+null 余量
+    long op = __myp_str_ptr(out);
+    int oi = 0;
+    if (neg != 0) { __myp_mem_store_i8(op, 45); oi = 1; }
+    // 整数部分（ii 个数字，反向在 ibuf[0..ii) → 正序写出）
+    int t = ii - 1;
+    while (t >= 0) {
+        __myp_mem_store_i8(op + long(oi), __myp_mem_load_i8(ipb + long(t))); oi = oi + 1;
+        t = t - 1;
+    }
+    if (carry != 0) {
+        int start = 0;
+        if (neg != 0) start = 1;
+        int ci = oi - 1;
+        int done = 0;
+        while (ci >= start && done == 0) {
+            int c = __myp_mem_load_i8(op + long(ci));
+            if (c == 57) { __myp_mem_store_i8(op + long(ci), 48); ci = ci - 1; }
+            else { __myp_mem_store_i8(op + long(ci), c + 1); done = 1; }
+        }
+        if (done == 0) {
+            // 整数部分全 9 → 进位为 1 后全 0：整体右移一位（含最后一格）在 start
+            // 处插 '1'，长度 +1（999+1 → "1000"）
+            int idx = oi - 1;
+            while (idx >= start) {
+                __myp_mem_store_i8(op + long(idx + 1), __myp_mem_load_i8(op + long(idx)));
+                idx = idx - 1;
+            }
+            __myp_mem_store_i8(op + long(start), 49);   // '1'
+            oi = oi + 1;
+        }
+    }
+    if (prec > 0) {
+        __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;   // '.'
+        int f2 = 0;
+        while (f2 < prec) {
+            __myp_mem_store_i8(op + long(oi), __myp_mem_load_i8(fpb + long(f2))); oi = oi + 1;
+            f2 = f2 + 1;
+        }
+    }
+    __myp_mem_store_i8(op + long(oi), 0);
+    string r = myp_alloc(oi + 1);
+    __myp_memcpy(__myp_str_ptr(r), op, oi);
+    __myp_mem_store_i8(__myp_str_ptr(r) + oi, 0);
+    return r;
+}
+
+// C: void myp_print_float(double val) —— %g 打印（Console.writeFloat 路径，不带换行）
+void myp_print_float(double v) {
+    __myp_print(myp_to_string_double(v));
+}

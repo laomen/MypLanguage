@@ -1,0 +1,89 @@
+// rt_float_test.myp — MYP 运行时浮点层验证（runtime_myp/float.myp shadow C runtime）。
+// 覆盖：strtod 语义解析（myp_atof/myp_str_to_float）+ %g/%e/%f 格式化
+// （myp_to_string_double/myp_fmt_double_f/e/g）。纯断言（main 内 FFI 调用放 if
+// 条件中，不打印）；期望值 = glibc strtod + snprintf 输出，C runtime 下亦须全过。
+import text;
+
+ffi double myp_atof(string s);
+ffi float myp_str_to_float(string s);
+ffi string myp_to_string_double(double v);
+ffi string myp_fmt_double_f(double v, int prec);
+ffi string myp_fmt_double_e(double v, int prec);
+ffi string myp_fmt_double_g(double v, int prec);
+
+int main() {
+    // ---- 解析（strtod 语义）→ %g 输出 ----
+    if (myp_to_string_double(myp_atof("3.75")) != "3.75") return 11;
+    if (myp_to_string_double(myp_atof("0x1p3")) != "8") return 12;
+    if (myp_to_string_double(myp_atof("-2.5e-3")) != "-0.0025") return 13;
+    if (myp_to_string_double(myp_atof("abc")) != "0") return 14;
+    if (myp_to_string_double(myp_atof("1e100")) != "1e+100") return 15;
+    if (myp_to_string_double(myp_atof("0.1")) != "0.1") return 16;
+    if (myp_to_string_double(myp_atof("inf")) != "inf") return 17;
+    if (myp_to_string_double(myp_atof("-inf")) != "-inf") return 18;
+    if (myp_to_string_double(myp_atof("nan")) != "nan") return 19;
+    if (myp_to_string_double(myp_atof("  42.5")) != "42.5") return 20;
+    if (myp_to_string_double(myp_atof("1e-3")) != "0.001") return 21;
+    if (myp_to_string_double(myp_atof("0")) != "0") return 22;
+    if (myp_to_string_double(myp_atof("6.022e23")) != "6.022e+23") return 23;
+    if (myp_to_string_double(myp_atof("123.456e-2")) != "1.23456") return 24;
+    if (myp_to_string_double(myp_atof("0x1.8p1")) != "3") return 25;
+    if (myp_to_string_double(myp_atof("1e308")) != "1e+308") return 26;
+    if (myp_to_string_double(myp_atof("1e-308")) != "1e-308") return 27;
+    if (myp_to_string_double(myp_atof("0.000001")) != "1e-06") return 28;
+    if (myp_to_string_double(myp_atof("-123.456")) != "-123.456") return 29;
+    if (myp_to_string_double(double(myp_str_to_float("2.5"))) != "2.5") return 30;
+    // ---- %g（默认精度 6）----
+    if (myp_to_string_double(3.141592653589793) != "3.14159") return 41;
+    if (myp_to_string_double(100.0) != "100") return 42;
+    if (myp_to_string_double(0.0001) != "0.0001") return 43;
+    if (myp_to_string_double(0.00001) != "1e-05") return 44;
+    if (myp_to_string_double(1234567.0) != "1.23457e+06") return 45;
+    if (myp_to_string_double(-0.0) != "-0") return 46;
+    if (myp_to_string_double(0.0) != "0") return 47;
+    if (myp_to_string_double(2.5) != "2.5") return 48;
+    if (myp_to_string_double(1.0 / 3.0) != "0.333333") return 49;
+    if (myp_to_string_double(123.456) != "123.456") return 50;
+    if (myp_to_string_double(100000.0) != "100000") return 51;
+    if (myp_to_string_double(123456.0) != "123456") return 52;
+    if (myp_to_string_double(-2.5) != "-2.5") return 53;
+    if (myp_to_string_double(0.5) != "0.5") return 54;
+    if (myp_to_string_double(999999.0) != "999999") return 55;
+    if (myp_to_string_double(123456789.0) != "1.23457e+08") return 56;
+    if (myp_to_string_double(-0.00001) != "-1e-05") return 57;
+    // ---- %.*f ----
+    if (myp_fmt_double_f(3.14159, 2) != "3.14") return 61;
+    if (myp_fmt_double_f(2.5, 0) != "2") return 62;
+    if (myp_fmt_double_f(999.5, 0) != "1000") return 63;
+    if (myp_fmt_double_f(-999.5, 0) != "-1000") return 64;
+    if (myp_fmt_double_f(0.0, 2) != "0.00") return 65;
+    if (myp_fmt_double_f(12345.678, 2) != "12345.68") return 66;
+    if (myp_fmt_double_f(0.0001, 6) != "0.000100") return 67;
+    if (myp_fmt_double_f(1.5, 0) != "2") return 68;
+    if (myp_fmt_double_f(-0.0, 2) != "-0.00") return 69;
+    if (myp_fmt_double_f(1234.5678, 1) != "1234.6") return 70;
+    if (myp_fmt_double_f(999.9, 0) != "1000") return 71;
+    if (myp_fmt_double_f(-999.9, 0) != "-1000") return 72;
+    // ---- %.*e ----
+    if (myp_fmt_double_e(12345.678, 2) != "1.23e+04") return 81;
+    if (myp_fmt_double_e(0.00001, 3) != "1.000e-05") return 82;
+    if (myp_fmt_double_e(1.0, 0) != "1e+00") return 83;
+    if (myp_fmt_double_e(-123.456, 1) != "-1.2e+02") return 84;
+    if (myp_fmt_double_e(1e100, 2) != "1.00e+100") return 85;
+    if (myp_fmt_double_e(0.0, 2) != "0.00e+00") return 86;
+    if (myp_fmt_double_e(2.5, 3) != "2.500e+00") return 87;
+    if (myp_fmt_double_e(0.0001, 2) != "1.00e-04") return 88;
+    // ---- %.*g ----
+    if (myp_fmt_double_g(0.000012345, 3) != "1.23e-05") return 101;
+    if (myp_fmt_double_g(12345.6, 6) != "12345.6") return 102;
+    if (myp_fmt_double_g(0.1, 6) != "0.1") return 103;
+    if (myp_fmt_double_g(123456789, 3) != "1.23e+08") return 104;
+    if (myp_fmt_double_g(2.5, 3) != "2.5") return 105;
+    if (myp_fmt_double_g(1234.5, 2) != "1.2e+03") return 106;
+    if (myp_fmt_double_g(0.0, 2) != "0") return 107;
+    if (myp_fmt_double_g(-0.0, 2) != "-0") return 108;
+    if (myp_fmt_double_g(100.0, 2) != "1e+02") return 109;
+    if (myp_fmt_double_g(123456.0, 6) != "123456") return 110;
+    if (myp_fmt_double_g(0.00001, 4) != "1e-05") return 111;
+    return 0;
+}
