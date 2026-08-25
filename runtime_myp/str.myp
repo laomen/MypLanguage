@@ -232,6 +232,227 @@ string myp_str_trim(string s) {
     return r;
 }
 
+// C: char* myp_str_split_get(const char* s, const char* delim, int32_t index)
+//     —— 第 index 段；index<0 或超出返回空串。单次调用语义（非逐行循环）。
+string myp_str_split_get(string s, string delim, int index) {
+    int sl = myp_strlen(s);
+    int dl = myp_strlen(delim);
+    if (dl == 0 || index < 0) {
+        string r = myp_alloc(1);
+        __myp_mem_store_i8(__myp_str_ptr(r), 0);
+        return r;
+    }
+    int start = 0;
+    int cur = 0;
+    int i = 0;
+    while (i < sl) {
+        int found = -1;
+        for (int k = i; k + dl <= sl; k = k + 1) {
+            int m = 1;
+            for (int j = 0; j < dl; j = j + 1) {
+                if (__myp_charcode(s, k + j) != __myp_charcode(delim, j)) { m = 0; break; }
+            }
+            if (m != 0) { found = k; break; }
+        }
+        if (found >= 0) {
+            if (cur == index) {
+                int len = found - start;
+                string r = myp_alloc(len + 1);
+                __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(s) + long(start), len);
+                __myp_mem_store_i8(__myp_str_ptr(r) + len, 0);
+                return r;
+            }
+            cur = cur + 1;
+            start = found + dl;
+            i = start;
+        } else {
+            if (cur == index) {
+                int len = sl - start;
+                string r = myp_alloc(len + 1);
+                __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(s) + long(start), len);
+                __myp_mem_store_i8(__myp_str_ptr(r) + len, 0);
+                return r;
+            }
+            break;
+        }
+    }
+    string r = myp_alloc(1);
+    __myp_mem_store_i8(__myp_str_ptr(r), 0);
+    return r;
+}
+
+// C: char* myp_str_replace(const char* s, const char* old_str, const char* new_str)
+//     —— 仅替换首个匹配；未命中返回 s 的拷贝。
+string myp_str_replace(string s, string old_str, string new_str) {
+    int sl = myp_strlen(s);
+    int pos = myp_str_index_of(s, old_str);
+    if (pos < 0) {
+        string r = myp_alloc(sl + 1);
+        __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(s), sl);
+        __myp_mem_store_i8(__myp_str_ptr(r) + sl, 0);
+        return r;
+    }
+    int oldl = myp_strlen(old_str);
+    int newl = myp_strlen(new_str);
+    int total = sl - oldl + newl;
+    string r = myp_alloc(total + 1);
+    long dp = __myp_str_ptr(r);
+    __myp_memcpy(dp, __myp_str_ptr(s), pos);
+    __myp_memcpy(dp + long(pos), __myp_str_ptr(new_str), newl);
+    __myp_memcpy(dp + long(pos) + newl, __myp_str_ptr(s) + long(pos + oldl), sl - pos - oldl);
+    __myp_mem_store_i8(dp + total, 0);
+    return r;
+}
+
+// C: char* myp_str_replace_all(const char* s, const char* old_str, const char* new_str)
+//     —— 全部替换；old 为空或未命中返回 s 的拷贝。两趟（数次数 → 拼接）。
+string myp_str_replace_all(string s, string old_str, string new_str) {
+    int sl = myp_strlen(s);
+    int oldl = myp_strlen(old_str);
+    int newl = myp_strlen(new_str);
+    int count = 0;
+    int i = 0;
+    while (i + oldl <= sl) {
+        int found = -1;
+        for (int k = i; k + oldl <= sl; k = k + 1) {
+            int m = 1;
+            for (int j = 0; j < oldl; j = j + 1) {
+                if (__myp_charcode(s, k + j) != __myp_charcode(old_str, j)) { m = 0; break; }
+            }
+            if (m != 0) { found = k; break; }
+        }
+        if (found >= 0) { count = count + 1; i = found + oldl; }
+        else break;
+    }
+    if (oldl == 0 || count == 0) {
+        string r = myp_alloc(sl + 1);
+        __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(s), sl);
+        __myp_mem_store_i8(__myp_str_ptr(r) + sl, 0);
+        return r;
+    }
+    int total = sl + count * (newl - oldl);
+    string r = myp_alloc(total + 1);
+    long dp = __myp_str_ptr(r);
+    long w = 0;
+    i = 0;
+    while (i + oldl <= sl) {
+        int found = -1;
+        for (int k = i; k + oldl <= sl; k = k + 1) {
+            int m = 1;
+            for (int j = 0; j < oldl; j = j + 1) {
+                if (__myp_charcode(s, k + j) != __myp_charcode(old_str, j)) { m = 0; break; }
+            }
+            if (m != 0) { found = k; break; }
+        }
+        if (found >= 0) {
+            int clen = found - i;
+            __myp_memcpy(dp + w, __myp_str_ptr(s) + long(i), clen);
+            w = w + clen;
+            __myp_memcpy(dp + w, __myp_str_ptr(new_str), newl);
+            w = w + newl;
+            i = found + oldl;
+        } else {
+            int rem = sl - i;
+            __myp_memcpy(dp + w, __myp_str_ptr(s) + long(i), rem);
+            w = w + rem;
+            break;
+        }
+    }
+    __myp_mem_store_i8(dp + total, 0);
+    return r;
+}
+
+// C: char* myp_str_repeat(const char* s, int32_t count) —— count<=0 返回空串
+string myp_str_repeat(string s, int count) {
+    int sl = myp_strlen(s);
+    if (count <= 0) {
+        string r = myp_alloc(1);
+        __myp_mem_store_i8(__myp_str_ptr(r), 0);
+        return r;
+    }
+    int total = sl * count;
+    string r = myp_alloc(total + 1);
+    long dp = __myp_str_ptr(r);
+    for (int i = 0; i < count; i = i + 1) {
+        __myp_memcpy(dp + long(i) * sl, __myp_str_ptr(s), sl);
+    }
+    __myp_mem_store_i8(dp + total, 0);
+    return r;
+}
+
+// C: char* myp_str_pad_left(const char* s, int32_t total_len, int32_t pad_char)
+string myp_str_pad_left(string s, int total_len, int pad_char) {
+    int sl = myp_strlen(s);
+    if (sl >= total_len) {
+        string r = myp_alloc(sl + 1);
+        __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(s), sl);
+        __myp_mem_store_i8(__myp_str_ptr(r) + sl, 0);
+        return r;
+    }
+    int pad = total_len - sl;
+    string r = myp_alloc(total_len + 1);
+    long dp = __myp_str_ptr(r);
+    for (int i = 0; i < pad; i = i + 1) __myp_mem_store_i8(dp + i, pad_char);
+    __myp_memcpy(dp + long(pad), __myp_str_ptr(s), sl);
+    __myp_mem_store_i8(dp + total_len, 0);
+    return r;
+}
+
+// C: char* myp_str_pad_right(const char* s, int32_t total_len, int32_t pad_char)
+string myp_str_pad_right(string s, int total_len, int pad_char) {
+    int sl = myp_strlen(s);
+    if (sl >= total_len) {
+        string r = myp_alloc(sl + 1);
+        __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(s), sl);
+        __myp_mem_store_i8(__myp_str_ptr(r) + sl, 0);
+        return r;
+    }
+    string r = myp_alloc(total_len + 1);
+    long dp = __myp_str_ptr(r);
+    __myp_memcpy(dp, __myp_str_ptr(s), sl);
+    for (int i = 0; i < total_len - sl; i = i + 1) __myp_mem_store_i8(dp + sl + i, pad_char);
+    __myp_mem_store_i8(dp + total_len, 0);
+    return r;
+}
+
+// C: char* myp_str_reverse(const char* s)
+string myp_str_reverse(string s) {
+    int len = myp_strlen(s);
+    string r = myp_alloc(len + 1);
+    long dp = __myp_str_ptr(r);
+    for (int i = 0; i < len; i = i + 1) {
+        __myp_mem_store_i8(dp + i, __myp_charcode(s, len - 1 - i));
+    }
+    __myp_mem_store_i8(dp + len, 0);
+    return r;
+}
+
+// C: char* myp_str_join(char** arr, int32_t n) —— 一次分配 + 两趟（先求总长再拷贝）。
+// 数组参数 string[] data（自举 codegen varElemType 支持动态数组参数）。
+string myp_str_join(string[] data, int n) {
+    if (n <= 0) {
+        string r = myp_alloc(1);
+        __myp_mem_store_i8(__myp_str_ptr(r), 0);
+        return r;
+    }
+    int total = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        string e = data[i];
+        total = total + myp_strlen(e);
+    }
+    string r = myp_alloc(total + 1);
+    long dp = __myp_str_ptr(r);
+    long w = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        string e = data[i];
+        int l = myp_strlen(e);
+        __myp_memcpy(dp + w, __myp_str_ptr(e), l);
+        w = w + l;
+    }
+    __myp_mem_store_i8(dp + total, 0);
+    return r;
+}
+
 // C: int32_t myp_str_hash(const char* s) —— djb2（uint32 回绕，掩 0x7FFFFFFF）
 //（0xFFFFFFFF 超 int32 字面量 MYP 不解析 → 用 % 4294967296 做 32 位回绕）
 int myp_str_hash(string s) {

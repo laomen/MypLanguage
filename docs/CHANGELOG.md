@@ -35,6 +35,25 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.6 — runtime myp化 #3：字符串层全部 MYP 化（22 个函数）+ 自举 O(N²) 修复
+
+**非破坏性**。自举编译器（`tools/selfhost/src/*.myp`，mypc 冻结）推进运行时 MYP 化——
+`runtime_myp/str.myp` 补齐字符串层全部函数（shadow C runtime 验证：
+`runtime_myp/build.sh` + `bench/freestanding/rt_str_test.myp`，63 断言）：
+
+- **新增 8 个**：`myp_str_split_get` / `myp_str_replace` / `myp_str_replace_all` /
+  `myp_str_repeat` / `myp_str_pad_left` / `myp_str_pad_right` / `myp_str_reverse` /
+  `myp_str_join`。至此 stdlib `text.myp` 的 18 个 `myp_str_*` FFI **全部 MYP 化**
+  （22 个，含内部 len/eq/cmp/hash）。
+- `myp_str_join` 用 `string[]` 数组参数——自举 codegen `varElemType` 已支持动态数组
+  参数（为 `vecAdd` 等数组 @op 所加），无需改编译器。
+
+**性能修复（自举编译自身 2m46→16s，10x）**：
+- preamble declare 剔除从 `splitGet` 逐行（O(N²)：`myp_str_split_get` 每次从串头
+  strstr 数到 index）改单遍 charcode 扫描 + 组合串判定（commit 3e74d3a）。
+- `link.myp` `nmSymbols`/`nmDynSymbols` 同款 O(N²) → 新增 `Link.splitLines` 单遍切行
+  （commit 6ef50ad）。`runtime_myp/str.myp` 预留 split_get 带偏移/split_all 的 TODO。
+
 ### v3.15.5 — 自举编译器同步 P1 缩放：sema/codegen 热路径 O(N) 扫描 O(1) 索引化
 
 **非破坏性（性能，行为不变）**，自举（selfhost，`tools/selfhost/src/*.myp`）端

@@ -3,6 +3,22 @@
 //（--allow-multiple-definition）。期望与 C 版本一致。
 import text;
 
+// StringBuilder 实例方法不能在 main() 里直接调（direct call 限制）→ 包进 @static 方法。
+class RtJoinProbe {
+    static:
+        int testJoin() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("a");
+            sb.append("b");
+            sb.append("c");
+            if (sb.toString() != "abc") return 1;
+            if (sb.count() != 3) return 2;
+            StringBuilder sb2 = new StringBuilder();
+            if (sb2.toString() != "") return 3;
+            return 0;
+        }
+}
+
 int main() {
     // == / != → myp_str_eq
     if (!("abc" == "abc")) return 1;
@@ -58,5 +74,47 @@ int main() {
     if (Str.splitCount("abc", ",") != 1) return 102;
     if (Str.splitCount("", ",") != 0) return 103;
     if (Str.splitCount("a,,b", ",") != 3) return 104;
+    // splitGet → myp_str_split_get
+    if (Str.splitGet("a,b,c", ",", 0) != "a") return 111;
+    if (Str.splitGet("a,b,c", ",", 1) != "b") return 112;
+    if (Str.splitGet("a,b,c", ",", 2) != "c") return 113;
+    if (Str.splitGet("a,b,c", ",", 3) != "") return 114;
+    if (Str.splitGet("a,b,c", ",", -1) != "") return 115;
+    if (Str.splitGet("abc", ",", 0) != "abc") return 116;
+    if (Str.splitGet(",b", ",", 0) != "") return 117;
+    if (Str.splitGet(",b", ",", 1) != "b") return 118;
+    // split（数组 = split_count + split_get）
+    string[] parts = Str.split("a-b-c", "-");
+    if (parts[0] != "a") return 121;
+    if (parts[1] != "b") return 122;
+    if (parts[2] != "c") return 123;
+    // replace → myp_str_replace（首个匹配）
+    if (Str.replace("hello world", "world", "MYP") != "hello MYP") return 131;
+    if (Str.replace("hello", "x", "Y") != "hello") return 132;
+    if (Str.replace("aaa", "a", "b") != "baa") return 133;
+    if (Str.replace("hello", "ll", "") != "heo") return 134;
+    // replaceAll → myp_str_replace_all
+    if (Str.replaceAll("aaa", "a", "b") != "bbb") return 141;
+    if (Str.replaceAll("hello", "l", "L") != "heLLo") return 142;
+    if (Str.replaceAll("hello", "x", "Y") != "hello") return 143;
+    if (Str.replaceAll("abcabc", "bc", "X") != "aXaX") return 144;
+    if (Str.replaceAll("abab", "ab", "") != "") return 145;
+    if (Str.replaceAll("hello", "", "X") != "hello") return 146;
+    // repeat → myp_str_repeat
+    if (Str.repeat("ab", 3) != "ababab") return 151;
+    if (Str.repeat("ab", 0) != "") return 152;
+    if (Str.repeat("x", 1) != "x") return 153;
+    // padLeft / padRight（空格填充）
+    if (Str.padLeft("ab", 5) != "   ab") return 161;
+    if (Str.padRight("ab", 5) != "ab   ") return 162;
+    if (Str.padLeft("abcdef", 5) != "abcdef") return 163;
+    if (Str.padRight("abcdef", 5) != "abcdef") return 164;
+    // reverse → myp_str_reverse
+    if (Str.reverse("hello") != "olleh") return 171;
+    if (Str.reverse("") != "") return 172;
+    if (Str.reverse("a") != "a") return 173;
+    // join → myp_str_join（经 StringBuilder.toString，静态方法包装）
+    int jr = RtJoinProbe.testJoin();
+    if (jr != 0) return 180 + jr;
     return 0;
 }
