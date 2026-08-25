@@ -10,6 +10,8 @@ ffi string myp_to_string_i64(long v);
 ffi string myp_to_string_u32(int v);
 ffi string myp_to_string_u64(long v);
 ffi string myp_to_string_bool(int v);
+ffi string myp_f64_bits_hex(double v);
+ffi string myp_f32_bits_hex(float v);
 
 int main() {
     // parseLong（strtoll base-0：十进制/hex/八进制/负/空白/非法/空）
@@ -60,5 +62,13 @@ int main() {
     if (Fmt.u(42) != "42") return 110;
     if (Fmt.o(8) != "10") return 111;
     if (Fmt.b(5) != "101") return 112;
+    // 浮点位型 → myp_f64_bits_hex / myp_f32_bits_hex（bitcast 取位）
+    if (myp_f64_bits_hex(1.0) != "0x3FF0000000000000") return 121;
+    if (myp_f64_bits_hex(-0.0) != "0x8000000000000000") return 122;
+    if (myp_f64_bits_hex(0.0) != "0x0000000000000000") return 123;
+    if (myp_f64_bits_hex(3.141592653589793) != "0x400921FB54442D18") return 124;
+    if (myp_f64_bits_hex(-1.5) != "0xBFF8000000000000") return 125;
+    if (myp_f32_bits_hex(1.0f) != "0x3FF0000000000000") return 126;   // float 先拓宽 double
+    if (myp_f32_bits_hex(-0.0f) != "0x8000000000000000") return 127;
     return 0;
 }

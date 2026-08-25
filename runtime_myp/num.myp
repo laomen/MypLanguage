@@ -181,3 +181,29 @@ string myp_fmt_u64_base(int v, int base, int upper) {
     __myp_mem_store_i8(__myp_str_ptr(r) + n, 0);
     return r;
 }
+
+// C: char* myp_f64_bits_hex(double v) —— 0x + 16 大写 hex（LLVM 文本 IR 浮点常量
+// 格式，与 LLVM ConstantFP 打印一致）。自举 codegen 发射 double 常量时调用。
+// 用 bitcast<T,U> 内建（LLVM bitcast 指令）取 64 位位型。
+string myp_f64_bits_hex(double v) {
+    long bits = bitcast<long>(v);
+    ulong u = ulong(bits);
+    string r = myp_alloc(19);            // "0x" + 16 hex + NUL
+    long dp = __myp_str_ptr(r);
+    __myp_mem_store_i8(dp, 48);          // '0'
+    __myp_mem_store_i8(dp + 1, 120);     // 'x'
+    for (int i = 0; i < 16; i = i + 1) {
+        int shift = 60 - 4 * i;
+        int d = int((u >> ulong(shift)) & 15);
+        if (d < 10) __myp_mem_store_i8(dp + 2 + i, 48 + d);
+        else __myp_mem_store_i8(dp + 2 + i, 55 + d);   // 'A'-'F'
+    }
+    __myp_mem_store_i8(dp + 18, 0);
+    return r;
+}
+
+// C: char* myp_f32_bits_hex(float v) —— float 先精确拓宽为 double 再取 64 位位型
+string myp_f32_bits_hex(float v) {
+    double d = double(v);
+    return myp_f64_bits_hex(d);
+}

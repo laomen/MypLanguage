@@ -35,6 +35,19 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.9 — runtime myp化 #6：浮点位型 myp_f64_bits_hex / myp_f32_bits_hex
+
+**非破坏性**。`runtime_myp/num.myp` 补浮点位型十六进制——自举 codegen 发射 double
+常量时调用 `myp_f64_bits_hex`（LLVM 文本 IR 浮点常量 `0x + 16 大写 hex`）：
+
+- **`myp_f64_bits_hex(double)`**：用 `bitcast<T,U>(x)` 内建（LLVM bitcast 指令）
+  取 64 位位型 → 逐 nibble 大写 hex。
+- **`myp_f32_bits_hex(float)`**：float 先精确拓宽为 double 再取 64 位（对齐 C 版）。
+- `bitcast` 内建验证：`bitcast<long>(1.0)` 正确发射 `bitcast double to i64`。
+
+验证：runtime_myp shadow PASS（rt_num_test 加 7 条位型断言，如
+`myp_f64_bits_hex(-0.0)`→"0x8000000000000000"、`pi`→"0x400921FB54442D18"）。
+
 ### v3.15.8 — runtime myp化 #5：通用拼接 myp_strcat + 进制格式化 myp_fmt_u64_base
 
 **非破坏性**。补两个自包含转换（shadow C runtime 验证，str+num 测试扩断言）：
