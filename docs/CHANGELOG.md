@@ -64,6 +64,27 @@
   `wait_any`/`wait_any_of`（事件层）、`frame_set/clear`（ARC 帧表镜像 stub）、通道/
   未来、exec worker、栈池。
 
+### v3.15.40 — 编译器修复：裸 const 标识符折叠 + selfhost `__myp_*` 去前缀豁免（BUG-050）
+
+**非破坏性**。两个编译期解析缺口（runtime myp化 #36 暴露）双编译器修复：
+
+- **裸 const 标识符折叠**：顶层 `const int CAP = 1024;` 解析为零参 const-decl 函数
+  ——此前只有 `CAP()` 显式调用能折叠；裸引用 `CAP`（如 `CAP * 8`）报
+  `expected numeric type, got 'function'`（selfhost）/'() -> int'（mypc）。修复：sema
+  把 const-decl 零参函数的**裸引用**改判为其返回类型，codegen 发射隐式零参调用
+  `call i32 @CAP()`（双编译器一致）。
+  - **关键守卫**：`CAP()` 的 callee **不折叠**——`visitCall` 解析 callee 时置
+    `in_call_callee_`，否则 `const string A; ... A()` 被误折叠成值类型 →
+    `'A' is not callable`。
+- **selfhost `__myp_*` 去前缀豁免**：codegen 通用 callee 路径的一刀切
+  `__myp_`→去掉前缀 误伤真 `__myp_coro_*`/`__myp_destroy_*` 符号（未定义符号 +
+  字面量实参不提升 i64）。修复：去前缀排除 `__myp_coro_`/`__myp_destroy_` 前缀
+  （对齐 C++ oracle 显式 `intrinsic_map_` 的别名语义）。
+- **验证**：裸 const `/tmp/const_bare5.myp` 双编译 exit=0（IR `call i32 @CAP()` 两处）；
+  shadow 25/25（rt_coro_test 直调 `__myp_coro_resume` IR 全名 + i64 字面量）；
+  bootstrap 16/16（新 fixpoint `091d2204`，编译器改）；全量 323/323（含
+  const_string/eval 回归）。BUGLIST 记 BUG-050。
+
 ### v3.15.38 — runtime myp化 #35：包 B 诊断/统计（diag.myp：type_live + fail_alloc）
 
 **非破坏性**。诊断/统计层 MYP 化——`Memory.liveObjectCountByType` 的 per-type

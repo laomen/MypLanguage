@@ -2287,6 +2287,28 @@ class Sema {
         int isFuncName(string name) {
             return funcIdx_.contains(name) != 0 ? 1 : 0;   // O(1)
         }
+        // ★ BUG-050：查找零参 const-decl 函数（`const int X = N;` 解析成 constDecl
+        // 函数，body=return N）。裸标识符引用应折叠为常量（等价零参调用 X()）。
+        AstFunction findConstDeclFunc(string name) {
+            if (tu_ == null) return null;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.constDecl() != 0 && f.name() == name && f.params().size() == 0) {
+                    return f;
+                }
+            }
+            return null;
+        }
+        // const-decl 函数返回类型的 valueClass（class/interface 返回时）
+        string constRetValueClass(AstFunction f) {
+            if (f == null || f.ret() == null) return "";
+            AstType t = f.ret();
+            if (Str.len(t.className()) != 0 && t.className() != "slice") {
+                if (t.typeArgs().size() > 0) return instClassName(t);
+                return t.className();
+            }
+            return "";
+        }
         // AstType → TypeKind 字符串（typeKindToString），供符号表/返回类型用。
         int isNumKind(string k) {
             if (k == "byte" || k == "short" || k == "int" || k == "long"
@@ -3934,6 +3956,23 @@ class Sema {
                                 }
                             }
                         }
+                    }
+                }
+                // ★ BUG-050 修复（裸 const 标识符）：`const int CAP = 1024;`
+                // 是零参 const-decl 函数；裸引用 `CAP` 应折叠为常量（等价 `CAP()`），
+                // 而非解析成 'function' 类型。top-level 裸 const 标识符在此改判为
+                // 其返回类型（codegen 对 const-decl 标识符发射隐式零参调用）。
+                if (t == "function") {
+                    AstFunction cf = findConstDeclFunc(e.name());
+                    if (cf != null) {
+                        AstType sret2 = cf.ret();
+                        string crk = sret2 != null ? typeToKind(sret2) : "void";
+                        if (crk == "class" || crk == "struct" || crk == "interface") {
+                            string vc2 = constRetValueClass(cf);
+                            if (Str.len(vc2) != 0) e.setValueClass(vc2);
+                        }
+                        e.setResolvedKind(crk);
+                        return crk;
                     }
                 }
                 e.setResolvedKind(t);

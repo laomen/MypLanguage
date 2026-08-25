@@ -451,6 +451,19 @@ class CodeGen {
         // ---- ARC（计数引用）----
         // string/类实例/接口/动态数组 → LLVM ptr，均走 myp_retain/myp_release。
         // 定长数组是栈数组（非计数）；struct/slice/函数值/enum 是结构体值类型。
+        // ★ BUG-050: find zero-arg const-decl function (const int X = N;).
+        // Bare identifier reference folds to the constant (implicit call).
+        AstFunction findConstDeclFuncCodegen(string name) {
+            if (tu_ == null) return null;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.constDecl() != 0 && f.name() == name && f.params().size() == 0) {
+                    return f;
+                }
+            }
+            return null;
+        }
+
         int isArcType(AstType t) {
             AstType rt = resolveType(t);
             if (rt == null) return 0;
@@ -8395,6 +8408,18 @@ class CodeGen {
                         return p1s;
                     }
                 }
+                // ★ BUG-050：裸 const 标识符（`const int CAP = 1024;` 是零参
+                // const-decl 函数）→ 隐式零参调用 @CAP()（折叠为常量值）。sema
+                // 已把裸引用解析为返回类型；此处发射调用（同 C++ 对 const-decl
+                // 的常量折叠）。不能走变量 load（CAP 不是变量）。
+                AstFunction cdf2 = findConstDeclFuncCodegen(nm);
+                if (cdf2 != null) {
+                    string crt = IrEmit.llvmType(cdf2.ret());
+                    string ct2 = newTmp();
+                    sb_.append("  " + ct2 + " = call " + crt + " @" + nm + "()\n");
+                    if (crt == "ptr") addFreshTemp(ct2);
+                    return ct2;
+                }
                 if (hasVar(nm) != 0) {
                     string lt = varType(nm);
                     int al = IrEmit.alignOf(lt);
@@ -9934,12 +9959,21 @@ class CodeGen {
                 if (callee != null && callee.kind() == "Identifier") {
                     fn = callee.name();
                     // CUDA device info intrinsic → 厂商中立 runtime 名
-                    //（同 C++ intrinsic_map_，myp_gpu_* 前缀；否则 __myp_ 去
-                    // 前缀会错成不存在的 myp_cuda_*）。
+                    //（同 C++ intrinsic_map_，myp_gpu_* 前缀）。
                     string cudaFn = mapGpuIntrinsic(fn);
                     if (Str.len(cudaFn) != 0) {
                         fn = cudaFn;
-                    } else if (Str.startsWith(fn, "__myp_") != 0) {
+                    } else if (Str.startsWith(fn, "__myp_") != 0
+                               && Str.startsWith(fn, "__myp_coro_") == 0
+                               && Str.startsWith(fn, "__myp_destroy_") == 0) {
+                        // ★ 修复（BUG-050）：`__myp_X` → `myp_X` 运行时 helper
+                        // 别名（charcode/print/io/math 等，同 C++ intrinsic_map_
+                        // 的映射）。但 **排除真 `__myp_*` 符号家族**——`__myp_coro_*`
+                        //（协程运行时契约，preamble declare 带 `__`）与
+                        // `__myp_destroy_*`（生成的析构 stub）必须按**全名**调用，
+                        // 否则 `__myp_coro_resume` 被错改成 `myp_coro_resume`
+                        //（未定义符号），且去前缀后函数类型解析不到 → 字面量实参
+                        // 不提升（`0` 变 i32 而非 i64）。
                         fn = Str.substring(fn, 2, Str.len(fn));
                     } else if (isTopLevelFunc(fn) == 0 && hasMethodInClass(curClass_, fn) != 0) {
                         // 类内裸方法调用 → this.method()（Class_method(ptr this, ...)）

@@ -212,9 +212,11 @@ long __myp_coro_yield(long val) {
     return CoroT.resumeVal[saved];
 }
 
-// 内部恢复助手（非 __myp_ 前缀——编译器对模块内直接调用 __myp_* 会丢前缀 +
-// 字面量 i32 错型，见 IR `call @myp_coro_resume(i32 0)` bug）。校验在调用方。
-long coroResumeIdx(int idx, long val) {
+// C: int64_t __myp_coro_resume(int64_t handle, int64_t val) —— 恢复协程
+long __myp_coro_resume(long handle, long val) {
+    if (coroHandleValid(handle) == 0) return -1;
+    int idx = coroSlotOf(handle);
+    if (CoroT.active[idx] == 0) return -1;
     CoroT.resumeVal[idx] = val;
     int saved = CoroT.current;
     CoroT.current = idx;
@@ -222,14 +224,6 @@ long coroResumeIdx(int idx, long val) {
                    coroCtxBase() + long(idx) * 8);
     CoroT.current = saved;
     return CoroT.yieldVal[idx];
-}
-
-// C: int64_t __myp_coro_resume(int64_t handle, int64_t val) —— 恢复协程
-long __myp_coro_resume(long handle, long val) {
-    if (coroHandleValid(handle) == 0) return -1;
-    int idx = coroSlotOf(handle);
-    if (CoroT.active[idx] == 0) return -1;
-    return coroResumeIdx(idx, val);
 }
 
 // C: void __myp_coro_set_result(int64_t val) —— @coro 方法 return 存结果
@@ -336,7 +330,8 @@ void __myp_coro_scheduler() {
     // 不访问）。resume 内上下文切到协程，yield/完成切回本函数继续循环。
     for (int i = 0; i < CoroT.count; i = i + 1) {
         if (CoroT.active[i] != 0 && CoroT.ready[i] != 0) {
-            coroResumeIdx(i, 0L);
+            long h = coroMakeHandle(i);
+            __myp_coro_resume(h, 0L);
         }
     }
 }

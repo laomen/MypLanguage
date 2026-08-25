@@ -48,6 +48,7 @@
 | BUG-047 | 🟩 | selfhost ARC 调用返回值**双重 retain 泄漏**——BUG-036 误删 Call/genIfaceCall 的 `addFreshTemp` → 方法调用返回每次泄漏 +1（parity arc/arc_m2/weak_cycle 根因） | 回归 parity arc/arc_m2/weak_cycle |
 | BUG-048 | 🟩 | selfhost 闭源分发/链接缺口——无预编译库(.so/.a)发现 / 无 `--shared` 库模式 / 链接成功不打印 "Link OK"（parity closed-lib 根因） | 回归 `tests/test_closed_lib.sh`（closed-lib 12/12） |
 | BUG-049 | 🟩 | selfhost codegen `&&`/`||` 结果槽栈泄漏——短路降级内联 `alloca i1` 循环体内每轮执行 RSP 不恢复 → 无限循环跌破栈底崩溃（rt_thread_test 自旋暴露） | 回归 `bench/freestanding/rt_thread_test.myp`（自旋 `||` 直写，8/8 稳定） |
+| BUG-050 | 🟩 | 两个编译期解析缺口：(1) **裸 const 标识符不折叠**——顶层 `const int CAP=1024` 被两个编译器都解析成零参 const-decl **函数**类型，裸引用 `CAP`（非 `CAP()`）报 `expected numeric type, got 'function'/'() -> int'`；(2) **selfhost 对 `__myp_*` 盲目去前缀**——通用 Identifier callee 路径把真 `__myp_coro_*`/`__myp_destroy_*` 符号去前缀成 `myp_coro_resume`（未定义符号），且去前缀后函数类型解析失败 → 字面量实参 `0` 不提升成 i64 | 回归 裸 const（`CAP*8` 折叠 + `CAP()` 显式调用双编译）+ shadow `rt_coro_test`（IR `call i64 @__myp_coro_resume(i64, i64 0)`）+ 全量 323 |
 
 ---
 
@@ -1316,3 +1317,43 @@
 - **教训**：自举 codegen 任何「每次求值分配的临时槽」都必须进 entryAllocas_（entry
   块 alloca），否则在循环体内泄漏 RSP；oracle 与 selfhost 的短路降级实现（PHI vs
   alloca）需保持行为等价。
+
+## BUG-050（已修复 🟩）：裸 const 标识符不折叠 + selfhost `__myp_*` 盲目去前缀误伤
+
+- **状态**：🟩 已修复（2026-08-26，runtime myp 化 #36 coro core 暴露）
+- **复现/回归**：
+  - 裸 const：`const int CAP = 1024; int x = CAP * 8;`（`CAP` 裸引用折叠为 `call i32
+    @CAP()`）+ `const string A = "hi x"; ... A()`（显式调用仍按可调用函数）
+  - `__myp_*` 去前缀：shadow `rt_coro_test`（`__myp_coro_resume` 直调，IR 须为
+    `call i64 @__myp_coro_resume(i64, i64 0)` 全名 + i64 字面量）
+- **现象**：
+  1. 顶层 `const int CAP = 1024;` 被**两个编译器**解析为零参 const-decl **函数**
+     （body `return N;`）——只有 `CAP()` 显式调用能折叠；裸引用 `CAP` 报
+     selfhost `expected numeric type, got 'function'` / mypc `'() -> int'`。
+  2. selfhost codegen.myp 通用 Identifier callee 路径有**一刀切**
+     `Str.startsWith(fn,"__myp_")→substring(fn,2)` 去前缀——把**真** `__myp_coro_*`/
+     `__myp_destroy_*` 符号去成 `myp_coro_resume`（undefined symbol），且去前缀后函数
+     类型解析失败 → 字面量实参 `0` 不提升为 i64（`call @myp_coro_resume(i32 0)`）。
+- **根因**：
+  1. C++ oracle：`visitFuncDecl` 把所有顶层函数（含 const-decl）以 Function 类型注册进
+     `symbol_table_`，`visitIdentifier` 查表返回函数类型 → 裸引用得不到值类型。selfhost
+     同理（`isFuncName` → "function"）。
+  2. selfhost 用**盲目去前缀**模拟 C++ oracle 的显式 `intrinsic_map_`（`__myp_charcode`
+     → `myp_charcode`、print_*/math_*/io_*/strlen 等别名）——正确做法是**除真
+     `__myp_*` 符号族外**才去前缀。
+- **修复**：
+  1. **裸 const 折叠（双编译器）**：sema 的 Identifier 分支——查到 const-decl 零参函数
+     时把类型改判为其返回类型（`findConstDeclFunc` + `constRetValueClass`）；codegen 对
+     const-decl 标识符发射**隐式零参调用** `call <retty> @CAP()`。C++ 侧 `visitIdentifier`
+     + `generateIdentifier` 镜像（用 `is_const_decl` + 空参判断；codegen 遍历
+     `current_tu_->functions` 找 const-decl）。**关键守卫**：`CAP()` 的 callee 不折叠——
+     `visitCall` 解析 callee 时置 `in_call_callee_`，否则 `const string A; A()` 被误折叠成
+     值类型 → `'A' is not callable`（const_string/eval 两测试曾编译失败）。
+  2. **去前缀豁免**：codegen.myp de-prefix 排除 `__myp_coro_`/`__myp_destroy_` 前缀
+     （`mapGpuIntrinsic` 已全覆盖 GPU 内建故不受影响）。
+- **验证**：裸 const `/tmp/const_bare5.myp` 双编译 exit=0（IR `call i32 @CAP()` 两处）；
+  shadow 25/25（rt_coro_test 直调 `__myp_coro_resume` exit=0）；bootstrap 16/16（新
+  fixpoint `091d2204`，编译器改）；全量 323/323（含 const_string/eval 回归）。
+- **教训**：C++ 用显式 `intrinsic_map_` 做 `__myp_*`→`myp_*` 别名、selfhost 用一刀切去
+  前缀——中间路线是**按真符号族豁免**（coro/destroy），且编译器内建调用的字面量实参
+  提升依赖「函数名能解析」这一前提，被去前缀破坏。

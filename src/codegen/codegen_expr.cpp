@@ -305,6 +305,17 @@ llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
                 }
             }
         }
+        // BUG-050: 裸 const 标识符（顶层 `const int CAP = 1024;`）→ 隐式零参调用
+        // （等价 `CAP()`，sema 已把裸引用折叠为其返回类型）。
+        if (current_tu_) {
+            for (auto& cf : current_tu_->functions) {
+                if (cf.name == e.name && cf.is_const_decl && cf.params.empty()) {
+                    auto* fn = module_->getFunction(e.name);
+                    if (fn) return builder_.CreateCall(fn, {});
+                    break;
+                }
+            }
+        }
         diag_.error(e.range, "undefined variable '" + e.name + "'");
         return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
     }
