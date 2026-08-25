@@ -1,0 +1,15 @@
+// bench/probe_strcat.myp — 最小探针：仅测 `s = s + i` 累积（内存爆点假设）
+import env;
+import text;
+class P {
+    action:
+        @constructor P() { run(); }
+        void run() {
+            int N = 60000;   // 小 N，防 OOM；O(N²) 在此应已显著
+            string s = "";
+            int i = 0;
+            while (i < N) { s = s + i; i = i + 1; }
+            Console.writeString("len=" + Str.len(s) + "\n");
+        }
+}
+int main() { P p = new P(); return 0; }

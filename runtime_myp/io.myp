@@ -15,6 +15,7 @@
 
 // 跨模块调用
 ffi long myp_arena_alloc(long size);
+ffi void myp_arena_reclaim_raw(long addr);
 ffi string myp_alloc(long size);
 ffi int myp_strlen(string s);
 
@@ -251,6 +252,7 @@ string ioReadLineHandle(int handle) {
     long dp = __myp_str_ptr(s);
     __myp_memcpy(dp, buf, n);
     __myp_mem_store_i8(dp + n, 0);
+    myp_arena_reclaim_raw(buf);
     return s;
 }
 // 指定句柄读全文件（从当前位置到 EOF，字节级；lseek 取大小后分块读）
@@ -281,6 +283,7 @@ string ioReadAllHandle(int handle) {
         string s = myp_alloc(n + 1);
         __myp_memcpy(__myp_str_ptr(s), buf, n);
         __myp_mem_store_i8(__myp_str_ptr(s) + n, 0);
+        myp_arena_reclaim_raw(buf);
         return s;
     }
     __myp_syscall(8, fd, cur, 0, 0, 0, 0);             // 回当前位置
@@ -303,6 +306,7 @@ string ioReadAllHandle(int handle) {
     string s = myp_alloc(n + 1);
     __myp_memcpy(__myp_str_ptr(s), buf, n);
     __myp_mem_store_i8(__myp_str_ptr(s) + n, 0);
+    myp_arena_reclaim_raw(buf);
     return s;
 }
 
@@ -344,6 +348,7 @@ long execIoReadLineRaw(int handle) {
     if (dp == 0) return 0;
     __myp_memcpy(dp, buf, n);
     __myp_mem_store_i8(dp + n, 0);
+    myp_arena_reclaim_raw(buf);
     return dp;
 }
 long execIoReadAllRaw(int handle) {
@@ -374,6 +379,7 @@ long execIoReadAllRaw(int handle) {
         if (dp == 0) return 0;
         __myp_memcpy(dp, buf, n);
         __myp_mem_store_i8(dp + n, 0);
+        myp_arena_reclaim_raw(buf);
         return dp;
     }
     __myp_syscall(8, fd, cur, 0, 0, 0, 0);             // 回当前位置
@@ -397,6 +403,7 @@ long execIoReadAllRaw(int handle) {
     if (dp == 0) return 0;
     __myp_memcpy(dp, buf, n);
     __myp_mem_store_i8(dp + n, 0);
+    myp_arena_reclaim_raw(buf);
     return dp;
 }
 
@@ -422,6 +429,7 @@ void myp_io_write_line(string text) {
     __myp_memcpy(buf, __myp_str_ptr(text), len);
     __myp_mem_store_i8(buf + len, 10);
     ioWriteN(fd, buf, len + 1);
+    myp_arena_reclaim_raw(buf);
 }
 
 // C: int32_t myp_io_has_next(void) —— feof 语义（C：!feof，不探测；读操作撞 EOF 置 feof）
@@ -451,9 +459,12 @@ int myp_io_read_byte() {
     long r = __myp_syscall(0, fd, scratch, 1, 0, 0, 0);
     if (r <= 0) {
         if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);   // 撞 EOF
+        myp_arena_reclaim_raw(scratch);
         return -1;
     }
-    return int(__myp_mem_load_i8(scratch));
+    int v = int(__myp_mem_load_i8(scratch));
+    myp_arena_reclaim_raw(scratch);
+    return v;
 }
 
 // C: int32_t myp_io_read_i32be(void) —— 大端 4 字节
@@ -472,7 +483,9 @@ int myp_io_write_byte(int c) {
     if (fd == -1) return -1;
     long scratch = myp_arena_alloc(1);
     __myp_mem_store_i8(scratch, c & 0xFF);
-    return ioWriteN(fd, scratch, 1);
+    int r = ioWriteN(fd, scratch, 1);
+    myp_arena_reclaim_raw(scratch);
+    return r;
 }
 
 // C: int32_t myp_io_write_i32be(int32_t val)
@@ -484,7 +497,9 @@ int myp_io_write_i32be(int val) {
     __myp_mem_store_i8(scratch + 1, (val >> 16) & 0xFF);
     __myp_mem_store_i8(scratch + 2, (val >> 8) & 0xFF);
     __myp_mem_store_i8(scratch + 3, val & 0xFF);
-    return ioWriteN(fd, scratch, 4);
+    int r = ioWriteN(fd, scratch, 4);
+    myp_arena_reclaim_raw(scratch);
+    return r;
 }
 
 // C: int32_t myp_io_write_double(double val)
@@ -493,7 +508,9 @@ int myp_io_write_double(double val) {
     if (fd == -1) return -1;
     long scratch = myp_arena_alloc(8);
     __myp_mem_store_double(scratch, val);
-    return ioWriteN(fd, scratch, 8);
+    int r = ioWriteN(fd, scratch, 8);
+    myp_arena_reclaim_raw(scratch);
+    return r;
 }
 
 // C: double myp_io_read_double(void)
@@ -514,8 +531,10 @@ double myp_io_read_double() {
     } else {
         r = __myp_syscall(0, fd, scratch, 8, 0, 0, 0);
     }
-    if (r != 8) return 0.0;
-    return __myp_mem_load_double(scratch);
+    if (r != 8) { myp_arena_reclaim_raw(scratch); return 0.0; }
+    double v = __myp_mem_load_double(scratch);
+    myp_arena_reclaim_raw(scratch);
+    return v;
 }
 
 // C: int32_t myp_io_seek(int32_t offset, int32_t whence)
@@ -552,5 +571,6 @@ string myp_read_line() {
     string s = myp_alloc(n + 1);
     __myp_memcpy(__myp_str_ptr(s), buf, n);
     __myp_mem_store_i8(__myp_str_ptr(s) + n, 0);
+    myp_arena_reclaim_raw(buf);
     return s;
 }

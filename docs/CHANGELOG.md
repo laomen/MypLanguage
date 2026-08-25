@@ -27,6 +27,39 @@
 
 ## 编译器版本历史
 
+### v3.15.68 — MYP 运行时性能回归修复：`s=s+i` O(N²) arena 内存爆炸（块容量原地扩展 + 空闲链表 + 回收修复）
+
+**非破坏性**。性能回归查找（`bench/rt_myp_bench.myp` 8 用例 + `bench/probe_strcat.myp`
+最小探针）定位并修复 MYP 运行时 3 处架构级内存缺陷：
+
+1. **strcat O(N²) 爆炸（主修复）**：`s = s + i` 每次迭代分配临时串，破坏 bump-tail
+   检查 → 每迭代重拷 + arena 永不回收 → N=60000 RSS 8.3GB（C 2.2MB，3700 倍）。
+   - `alloc.myp`：`myp_arena_alloc_ex` 统一 **8B total 前缀**（块容量 @base0）+ **空闲链表**
+     （首适复用，arenaReclaim 替代纯 bump）；`myp_arena_reclaim_raw` 供 raw 块回收。
+   - `str.myp`：`myp_str_append` **块内原地扩展**（rc==1 且块容量够 → 直接在 s 数据区写，
+     O(lb) 均摊几何增长，不再依赖 bump-tail）。
+   - 实测：strcat 探针 8.3GB → **2.5MB**，strcat_dyn 27ms / strcat_const 23ms（**反超 C**）。
+
+2. **io.myp 每调用 raw scratch 泄漏**：`ioReadLineHandle` 每行 `myp_arena_alloc(4096)`
+   永不归还 → file_io 读回 20 万行 ≈ 819MB。全部 per-call 缓冲（readLine/readAll/
+   write_line/read_byte/write_byte/i32be/double/read_double/read_line）用后
+   `myp_arena_reclaim_raw` 回收。实测 file_io arena 920MB → **40MB**，525→399ms。
+
+3. **json.myp `myp_json_free` 空操作泄漏**：改**计数器式释放**（`liveParses`）——最后
+   存活 parse 释放时复位节点表，槽位复用 + 槽内旧串由 ARC 覆盖回收。实测 json
+   311MB → **9.7MB**，114→44ms。
+
+**连带修复（空闲链表暴露的"依赖 mmap 零页"潜伏 bug）**：
+- `term.myp`：`TermRaw.raw` 未清零 → `myp_free_all→myp_restore_term` 在 raw 从未启用时
+  仍 `tcsetattr(fd 0)` → 后台进程组触发 SIGTTOU 停止（async_file 测试套件挂死）。
+- `sync.myp`：`syncInit` 全表未清零 → 票号锁 `serving/next` 为垃圾 → `syncAllocLock`
+  自旋死循环（ch11 t_barrier_future 挂起）。
+
+**验证**：完整基准 RSS **1.16GB → 41.5MB**（28 倍降），各 case 输出与 C 一致；
+`tests/run_tests.sh` **323/323 全绿**；自举 `myp_self2==myp_self3` 不动点 **16/16**；
+shadow 冒烟通过。新增 `bench/rt_myp_bench.myp`（含每 case arena 诊断）+
+`bench/probe_strcat.myp`。
+
 ### v3.15.67 — 自举编译器即 mypc：oracle 降为种子 + 自举 2 级 MD5 门禁命令
 
 **非破坏性**。工具链角色反转：**用户级 `mypc` 现在是自举不动点编译器**

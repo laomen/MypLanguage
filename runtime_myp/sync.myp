@@ -65,6 +65,12 @@ ffi long myp_arena_alloc(long size);
 }
 
 // ---- 一次性初始化（--shared 默认值不生效 → 显式分配表缓冲 + 全局锁）----
+void syncZeroInt(long base, int n) {
+    for (int i = 0; i < n; i = i + 1) __myp_mem_store_i32(base + long(i) * 4, 0);
+}
+void syncZeroLong(long base, int n) {
+    for (int i = 0; i < n; i = i + 1) __myp_mem_store_i64(base + long(i) * 8, 0);
+}
 void syncInit() {
     if (SyncMtx.serving == 0) {
         SyncMtx.serving = myp_arena_alloc(64 * 4);
@@ -90,6 +96,33 @@ void syncInit() {
         SyncBar.used = myp_arena_alloc(64 * 4);
         SyncAlloc.serving = myp_arena_alloc(4);
         SyncAlloc.next = myp_arena_alloc(4);
+        // ⚠️ arena 非零初始化（空闲链表会复用带旧数据的块；bump-only 时代 mmap 零页
+        // 掩盖了此依赖）：票号锁 serving/next 必须从 0 起（否则 syncAllocLock 自旋
+        // 死循环——ch11 t_barrier_future 实测）；used/计数表也必须清零（找空闲槽）。
+        // 旧实现全表依赖 mmap 零页 → 空闲链表复用后全部含垃圾。
+        syncZeroInt(SyncMtx.serving, 64);
+        syncZeroInt(SyncMtx.next, 64);
+        syncZeroInt(SyncMtx.used, 64);
+        syncZeroInt(SyncMtx.recursive, 64);
+        syncZeroLong(SyncMtx.owner, 64);
+        syncZeroInt(SyncMtx.depth, 64);
+        syncZeroInt(SyncRw.state, 64);
+        syncZeroInt(SyncRw.used, 64);
+        syncZeroInt(SyncCv.waiters, 64);
+        syncZeroInt(SyncCv.seq, 64);
+        syncZeroInt(SyncCv.used, 64);
+        syncZeroInt(SyncSem.count, 64);
+        syncZeroInt(SyncSem.used, 64);
+        syncZeroInt(SyncOnc.done, 64);
+        syncZeroInt(SyncOnc.lockServing, 64);
+        syncZeroInt(SyncOnc.lockNext, 64);
+        syncZeroInt(SyncOnc.used, 64);
+        syncZeroInt(SyncBar.total, 64);
+        syncZeroInt(SyncBar.arrived, 64);
+        syncZeroInt(SyncBar.seq, 64);
+        syncZeroInt(SyncBar.used, 64);
+        __myp_mem_store_i32(SyncAlloc.serving, 0);
+        __myp_mem_store_i32(SyncAlloc.next, 0);
     }
 }
 

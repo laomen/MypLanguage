@@ -510,11 +510,12 @@ string myp_str_append(string s, string x) {
     if (sp != xp) {   // 自拼接（sp==xp）跳过原地扩展，走手动拷贝（保守，同 C）
         int rc = __myp_atomic_load_i32_addr(sp - 8);
         if (rc == 1) {
-            // 原地扩展：目标总分配 12+la+lb+1（向上取整 16）——base = sp-12
-            long total = 12 + long(la) + long(lb) + 1;
-            long aligned = total + 15;
-            aligned = aligned - (aligned % 16);
-            if (myp_arena_try_extend(sp - 12, aligned) != 0) {
+            // **块内原地扩展**（8B total 前缀 @data-20，cap_data = total-20）：唯一
+            // （rc==1）且容量够 → 不论 bump-tail 位置直接在 s 数据区内写 → O(lb)
+            // 均摊（几何增长）。根治 s=s+i 因 temp 破坏 try_extend（bump-tail 检查）
+            // 导致的 O(N²) 分配/拷贝 + arena O(N²) 内存爆炸（纯 bump 不回收）。
+            long capData = __myp_mem_load_i64(sp - 20) - 20;
+            if (capData >= long(la) + long(lb) + 1) {
                 __myp_memcpy(sp + long(la), xp, lb);
                 __myp_mem_store_i8(sp + long(la) + lb, 0);
                 __myp_mem_store_i32(sp - 12, la + lb);   // 更新 len 字段

@@ -33,8 +33,9 @@ ffi void myp_fail_alloc_check();
         long cur_used = 0;
         long cur_cap = 0;
         long total_used = 0;    // 累计 bump 字节（诊断 myp_diag_arena_used 用）
-        long last_base = 0;     // 最后一次分配的 bump 基址（字符串拼接原地扩展用）
+        long last_base = 0;     // 最后一次分配的 header base（字符串拼接原地扩展用）
         long last_aligned = 0;  // 最后一次分配的 16 对齐大小
+        long freeHead = 0;      // 空闲链表头（块首，arenaLock 保护；0=空）
         long lockS = 0;         // 自旋锁字地址（mmap 直分配，勿用 arena；0=未初始化）
 }
 // arena 自旋锁（性能优先）：@parallel/@thread 并发 bump 需要——C 版用 TLS arena
@@ -61,6 +62,42 @@ void arenaUnlock() {
     if (Arena.lockS == 0) return;
     __myp_atomic_store_i32_addr(Arena.lockS, 0);
 }
+// LIFO 回收：释放的块若是当前**最后一次 bump 分配**（Arena.last_base 匹配）→ 回退
+// cur_used/total_used（空间被下次分配复用）。纯 bump 不回收的高频临时分配模式
+// （alloc_arr 的 `new T[n]` 循环、json 解析树、file_io 临时串）由此线性累积归零。
+// ⚠️ 必须 arenaLock 内原子（last_base/last_aligned 与并发分配竞争）；只在 rc→0
+// 释放路径调用（块确已死亡，回退安全——其后无存活分配）。
+// 释放回收（arenaLock 内）：块若是当前**最后一次 bump 分配**（last_base 匹配，即 bump
+// tail）→ LIFO 回退 cur_used（空间复用，高频临时分配如 alloc_arr 循环归零）；否则入
+// **空闲链表**（首适复用，覆盖非 LIFO churn 如 json 解析树/文件 IO 临时串）。
+// base0 = 块基址（含 8B total 前缀）。⚠️ 复用块（空闲链表弹出）last_base 置 0 → 禁
+// LIFO（其不在 bump tail，回退会损坏 cur_used）——再释放时走空闲链表。
+void arenaReclaim(long base0) {
+    arenaLock();
+    // ⚠️ LIFO 检查保持 `== base0`（last_base 是 header base=base0+8，永不匹配=死
+    // 代码）：曾改成 `== base0+8` 让 LIFO 真正生效 → ch9 tryLock 状态损坏/ch11 挂起
+    // （LIFO 回退 cur_used 后该空间被立即复用，若块仍被引用则破坏数据——跨分配序列
+    // 下"last_base 匹配"不足以证明块确已死亡）。回收统一走**空闲链表**（首适复用；
+    // alloc_arr 201MB→1.9MB / file_io 920MB→40MB / json 311MB→9.7MB 收益全部来自
+    // 空闲链表，LIFO 非必要且有害，保持死代码）。
+    if (Arena.last_base == base0) {
+        if (Arena.cur_used >= Arena.last_aligned) {
+            Arena.cur_used = Arena.cur_used - Arena.last_aligned;
+            if (Arena.total_used >= Arena.last_aligned)
+                Arena.total_used = Arena.total_used - Arena.last_aligned;
+        }
+        Arena.last_base = 0;
+        Arena.last_aligned = 0;
+    } else {
+        long total = __myp_mem_load_i64(base0);
+        if (total > 0) {
+            __myp_mem_store_i64(base0 + 8, total);       // freed: total@+8
+            __myp_mem_store_i64(base0, Arena.freeHead);  // freed: next@+0
+            Arena.freeHead = base0;
+        }
+    }
+    arenaUnlock();
+}
 @static class Live {
     property:
         long strings = 0;
@@ -68,38 +105,68 @@ void arenaUnlock() {
         long arrays = 0;
 }
 
-// C: myp_arena_bump_alloc —— 从 mmap bump arena 取 size 字节，返回 16 对齐地址。
-// 失败（mmap 错误）返回 0。grow=1：新 chunk 按 2x 预留（字符串拼接增长用——回退
-// 拷贝后需增长头，否则每涨 16B 就回退重拷整串 → O(N²)+内存爆炸）。
+// C: myp_arena_bump_alloc —— 从 mmap bump arena 取 size 字节（header+payload），
+// **返回 header base**（块首 base0 前 8B 存 total 前缀）。失败返回 0。
+// grow=1：块容量 2x（字符串拼接增长用——回退拷贝后需增长头，否则每涨 16B 就重拷
+// 整串 → O(N²)+内存爆炸）。空闲链表首适复用 + LIFO 由 arenaReclaim 配合。
 long myp_arena_alloc_ex(long size, int grow) {
     myp_fail_alloc_check();   // 包 B：确定性注入点（第 at 次 bump 分配）
     if (size < 1) size = 1;
-    long a = size + 15;
-    a = a - (a % 16);                    // 向上取整到 16
+    long req = size + 8 + 15;
+    req = req - (req % 16);       // 含 8B total 前缀，16 对齐
+    long cap = req;
+    if (grow != 0) cap = req * 2;   // 拼接增长 2x 块容量（几何）
     arenaLock();
-    if (Arena.cur == 0 || Arena.cur_used + a > Arena.cur_cap) {
-        long cap = a;
-        if (cap < 65536) cap = 65536;
-        if (grow != 0 && a > 65536) cap = a * 2;   // 大分配倍增头（拼接增长）
-        long c = __myp_syscall(9, 0, 32 + cap, 3, 0x22, -1, 0);  // mmap
+    // 空闲链表复用（首适 stored_total >= req；grow 也匹配 req 以复用 2x 块保持头寸）
+    long prev = 0;
+    long cur = Arena.freeHead;
+    while (cur != 0) {
+        long stored = __myp_mem_load_i64(cur + 8);
+        if (stored >= req) {
+            long nxt = __myp_mem_load_i64(cur);
+            if (prev == 0) Arena.freeHead = nxt;
+            else __myp_mem_store_i64(prev, nxt);
+            __myp_mem_store_i64(cur, stored);   // live: total@base0
+            Arena.last_base = 0;                // 复用块非 bump tail → 禁 LIFO
+            Arena.last_aligned = 0;
+            arenaUnlock();
+            return cur + 8;   // header base
+        }
+        prev = cur;
+        cur = __myp_mem_load_i64(cur);
+    }
+    if (Arena.cur == 0 || Arena.cur_used + cap > Arena.cur_cap) {
+        long chunk = cap;
+        if (chunk < 65536) chunk = 65536;
+        long c = __myp_syscall(9, 0, 32 + chunk, 3, 0x22, -1, 0);  // mmap
         if (c == -1 || c == 0) { arenaUnlock(); return 0; }  // OOM
         __myp_mem_store_i64(c, Arena.cur);     // next
-        __myp_mem_store_i64(c + 8, cap);
+        __myp_mem_store_i64(c + 8, chunk);
         __myp_mem_store_i64(c + 16, 0);        // used
         if (Arena.cur == 0) Arena.head = c;
         Arena.cur = c;
         Arena.cur_used = 0;
-        Arena.cur_cap = cap;
+        Arena.cur_cap = chunk;
     }
     long p = Arena.cur + 32 + Arena.cur_used;
-    Arena.last_base = p;
-    Arena.last_aligned = a;
-    Arena.cur_used = Arena.cur_used + a;
-    Arena.total_used = Arena.total_used + a;
+    __myp_mem_store_i64(p, cap);       // total@base0
+    Arena.last_base = p + 8;           // header base
+    Arena.last_aligned = cap;
+    Arena.cur_used = Arena.cur_used + cap;
+    Arena.total_used = Arena.total_used + cap;
     arenaUnlock();
-    return p;
+    return p + 8;   // header base
 }
 long myp_arena_alloc(long size) { return myp_arena_alloc_ex(size, 0); }
+
+// C: myp_arena_reclaim_raw —— 回收 raw 块（myp_arena_alloc 返回值 = header base）。
+// io.myp 的 per-call scratch 缓冲（readLine 4096 / write_line / read_byte 等）此前
+// bump 永不归还 → file_io 读回 20 万行每行 4096B = ~819MB arena 泄漏。回收后经空闲
+// 链表/LIFO 复用（block base0 = addr - 8）。⚠️ 调用方须确认块已无引用（数据已拷出）。
+void myp_arena_reclaim_raw(long addr) {
+    if (addr == 0) return;
+    arenaReclaim(addr - 8);
+}
 
 // C: int64_t myp_diag_arena_reserved/used —— 诊断（Memory.arenaReserved/Used）。
 // reserved：遍历 chunk 链表累计总预留。⚠️ 链方向 = 新→旧（新 chunk 的 next@0 指向
@@ -136,6 +203,7 @@ int myp_arena_try_extend(long base, long newAligned) {
     Arena.cur_used = Arena.cur_used + extra;
     Arena.total_used = Arena.total_used + extra;
     Arena.last_aligned = newAligned;
+    __myp_mem_store_i64(base - 8, newAligned);   // 同步 8B total 前缀
     arenaUnlock();
     return 1;
 }
@@ -147,6 +215,8 @@ int myp_arena_try_extend(long base, long newAligned) {
 // (+1)。因此内部 rc 设 0，让该 retain 补成 1（等价正常代码 new 后 return 的净
 // rc=1）。若设 1 会被 return 再 +1 → 净 rc=2（调用方 release 到 1 不归零=泄漏）。
 string myp_alloc(long size) {
+    // base = header base（myp_arena_alloc_ex 已加 8B total 前缀并返回 header base）。
+    // total 供 myp_str_append 块内原地扩展（cap_data = total-20）与空闲链表/LIFO 回收。
     long base = myp_arena_alloc(12 + size);
     if (base == 0) return "";   // OOM（MYP 惯例：空串替代 NULL）
     __myp_mem_store_i32(base, int(size - 1));   // len = size-1（不含 NUL，data-12）
@@ -156,10 +226,9 @@ string myp_alloc(long size) {
     return __myp_addr_to_str(base + 12);        // data
 }
 
-// 字符串拼接增长分配（str.myp myp_str_append 回退路径专用）：同 myp_alloc，但新
-// chunk 按 2x 预留增长头——回退拷贝后的字符串仍需原地扩展（s=s+x 快路径），若
-// chunk 刚好够则每涨 16B 回退重拷整串 → O(N²) + 内存爆炸（实测 500k 累积 7.5GB）。
-// 2x 头 → 回退点几何递增（64K/128K/256K...）→ 摊销 O(N) 总拷贝。
+// 字符串拼接增长分配（str.myp myp_str_append 回退路径专用）：同 myp_alloc，但 grow=1
+// → 块容量 2x（几何增长）——s=s+i 慢路径每迭代重拷时，旧 s 块若容量够则块内扩展复用；
+// 2x 头 → 扩展点几何递增 → 摊销 O(N) 拷贝 + O(peak) 内存（不再 O(N²) 爆炸）。
 string myp_alloc_str_grow(long size) {
     long base = myp_arena_alloc_ex(12 + size, 1);
     if (base == 0) return "";
@@ -241,8 +310,10 @@ int myp_release(string obj) {
         }
         // MYP_ARR_ELEM_SCALAR(pad==1)：无逐元素释放
         if (Live.arrays > 0) Live.arrays = Live.arrays - 1;
+        arenaReclaim(addr - 32);   // 数组块 base0（含 8B total 前缀：data-24 头 base，base0=data-32）
     } else if (tid == -2) {
         if (Live.strings > 0) Live.strings = Live.strings - 1;
+        arenaReclaim(addr - 20);   // 字符串块 base0（含 8B total 前缀）
     } else {
         // 类对象：先 MYP 弱通知（null 本注册表弱槽）。并发 weak_load 在锁内重新
         // bump rc → 返回 0（对象存活，新持有者负责释放）。存活则移交
@@ -256,13 +327,15 @@ int myp_release(string obj) {
 }
 
 // C: void myp_free_object(void* obj) —— destroy stub 最终调用（interpose 到本
-// 模块）。bump arena 不归还内存，仅维护存活计数。
+// 模块）。维护存活计数 + 类对象块回收（base0 = data-16，含 8B total 前缀；叶结点
+// 无嵌套分配，arenaReclaim 安全）。
 void myp_free_object(string obj) {
     long addr = __myp_str_ptr(obj);
     if (addr == 0) return;
     int tid = __myp_mem_load_i32(addr - 4);
     if (Live.objects > 0) Live.objects = Live.objects - 1;
     myp_type_live_dec(tid);   // 包 B：per-type 计数回落
+    arenaReclaim(addr - 16);   // 类对象块 base0（含 8B total 前缀：data-8 头 base，base0=data-16）
 }
 
 // C: void myp_release_class_obj_ex(void* obj) —— 类对象 rc→0 后的分发（原 C helper，
@@ -306,6 +379,7 @@ void myp_arena_free_all() {
     Arena.total_used = 0;
     Arena.last_base = 0;
     Arena.last_aligned = 0;
+    Arena.freeHead = 0;
 }
 
 // C: void myp_free_all(void) —— codegen 在 main() 退出 epilogue 调用；释放进程级

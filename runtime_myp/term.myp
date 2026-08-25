@@ -63,6 +63,10 @@ long termRawBuf() {
         TermRaw.raw = myp_arena_alloc(4);
         TermRaw.pfd = myp_arena_alloc(8);
         TermRaw.cbuf = myp_arena_alloc(1);
+        // ⚠️ arena 非零初始化（同 evInit/count 教训）——raw 标志不清零会变成垃圾
+        // 值，导致 myp_free_all→myp_restore_term 在 raw 从未启用时仍 tcsetattr(fd 0)
+        // → 后台进程组对控制终端 tcsetattr 触发 SIGTTOU → 测试套件挂死（async_file）。
+        __myp_mem_store_i32(TermRaw.raw, 0);
     }
     return TermRaw.buf;
 }

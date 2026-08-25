@@ -8,8 +8,9 @@
 //   - 类型：0=null 1=bool 2=int 3=double 4=string 5=array 6=object。
 //   - 字符串返回一律计数拷贝（myp_alloc，同 C myp_strdup 的 M8 约定）。
 //   - 无 stdlib 依赖（runtime_myp 惯例）；仅 ffi + 内建。
-//   - ⚠️ myp_json_free 为空操作：MYP arena 进程级回收（C 是即时释放树；bridge
-//     用法短生命周期，差异可接受，文档化）。
+//   - myp_json_free：计数器式释放（liveParses）——最后存活 parse 释放时复位节点
+//     表，槽位复用 + 旧串由 ARC 在覆盖时回收（arena LIFO/空闲链表复用）。多 parse
+//     并存不清表（对齐 C 每 parse 独立树的生命周期语义）。
 
 ffi string myp_alloc(long size);
 ffi long myp_arena_alloc(long size);
@@ -27,6 +28,7 @@ ffi double strtod(string nptr, long endptr);   // libc（de-gcc ≠ 去 glibc）
         int[] child_list;   // 扁平 slot*64+i
         int cap = 0;
         int count = 0;
+        int liveParses = 0;   // 当前存活 parse 数：最后释放时复位表（回收槽位+串）
 }
 
 @static class JsonCtx {
@@ -454,6 +456,7 @@ long myp_json_parse(string s) {
     JsonCtx.pos = 0;
     int slot = jsonParseValue();
     if (slot < 0) return 0;
+    JsonTab.liveParses = JsonTab.liveParses + 1;
     return long(slot + 1);
 }
 
@@ -495,7 +498,12 @@ int myp_json_array_length(long handle, string path) {
 }
 
 void myp_json_free(long handle) {
-    // 空操作：MYP arena 进程级回收；节点表 slot 不复用（C 即时释放树，差异文档化）。
+    // 计数器式释放：最后一个存活 parse 释放时复位节点表（槽位复用 + 槽内旧串由
+    // ARC 在下次解析覆盖时回收→arena LIFO/空闲链表复用）。多 parse 并存（计数器>0）
+    // 不清表，避免破坏其他存活 parse（对应 tests/json/test.myp doc/doc2/doc3 模式）。
+    if (handle <= 0) return;
+    if (JsonTab.liveParses > 0) JsonTab.liveParses = JsonTab.liveParses - 1;
+    if (JsonTab.liveParses == 0) JsonTab.count = 0;
 }
 
 int myp_json_child_count(long handle, string path) {

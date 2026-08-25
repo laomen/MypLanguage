@@ -1,0 +1,175 @@
+// bench/rt_myp_bench.myp — 运行时替换（C runtime → MYP runtime）性能回归基准。
+// 每个负载打印：bench <name> <ms> <verify>
+// 对比方法（同编译器，仅换运行时）：
+//   MYP runtime: ./build/mypc bench/rt_myp_bench.myp --stdlib ./stdlib -o /tmp/a
+//   C  runtime:  隐藏 build/libmyp_rt_myp.a 后再编译（link.myp 回落 C runtime）
+import env;
+import time;
+import io;
+import collections;
+import json;
+import regex;
+import coro;
+import memory;
+
+class RtBench {
+    action:
+        @constructor RtBench() {
+            benchStrCatDyn(); arenaDiag();
+            benchStrCatConst(); arenaDiag();
+            benchAlloc(); arenaDiag();
+            benchHashMap(); arenaDiag();
+            benchFileIo(); arenaDiag();
+            benchJson(); arenaDiag();
+            benchRegex(); arenaDiag();
+            benchCoroSwitch(); arenaDiag();
+        }
+        void arenaDiag() {
+            Console.writeString("arena r=" + Memory.arenaReservedBytes() + " u=" + Memory.arenaUsedBytes() + "\n");
+        }
+        void out(string name, long ms, long v) {
+            Console.writeString("bench " + name + " " + ms + " " + v + "\n");
+        }
+
+        // 1) 动态字符串拼接（int→string + strcat）——num.myp 数字转字符串热点
+        void benchStrCatDyn() {
+            int N = 300000;
+            long t0 = Time.nowMs();
+            string s = "";
+            long v = 0;
+            int i = 0;
+            while (i < N) {
+                s = s + i;
+                v = v + 1;
+                i = i + 1;
+            }
+            long t1 = Time.nowMs();
+            out("strcat_dyn", t1 - t0, v + Str.len(s));
+        }
+        // 2) 常量字符串拼接（无数字转换，纯 strcat 路径）
+        void benchStrCatConst() {
+            int N = 2000000;
+            long t0 = Time.nowMs();
+            string s = "";
+            long v = 0;
+            int i = 0;
+            while (i < N) {
+                s = s + "abc";
+                v = v + 1;
+                i = i + 1;
+            }
+            long t1 = Time.nowMs();
+            out("strcat_const", t1 - t0, v + Str.len(s));
+        }
+        // 3) 分配churn：对象 + 数组连续分配（arena bump vs C malloc/free）
+        void benchAlloc() {
+            int N = 3000000;
+            long t0 = Time.nowMs();
+            long v = 0;
+            int i = 0;
+            while (i < N) {
+                int[] a = new int[8];
+                a[0] = i;
+                v = v + a[0];
+                i = i + 1;
+            }
+            long t1 = Time.nowMs();
+            out("alloc_arr", t1 - t0, v);
+        }
+        // 4) HashMap<int,int> put/get
+        void benchHashMap() {
+            int n = 1000000;
+            long t0 = Time.nowMs();
+            HashMap<int,int> m = new HashMap<int,int>();
+            int i = 0;
+            while (i < n) { m.put(i, i * 3); i = i + 1; }
+            long sum = 0L;
+            i = 0;
+            while (i < n) { sum = sum + m.get(i, -1) * 1L; i = i + 1; }
+            long t1 = Time.nowMs();
+            out("hashmap", t1 - t0, sum);
+        }
+        // 5) 文件 IO：写 N 行 + 读回
+        void benchFileIo() {
+            int N = 200000;
+            long t0 = Time.nowMs();
+            File w = new File();
+            w.open("/tmp/rt_myp_bench_io.txt", "w");
+            int i = 0;
+            while (i < N) { w.writeLine("line " + i); i = i + 1; }
+            w.close();
+            File r = new File();
+            r.open("/tmp/rt_myp_bench_io.txt", "r");
+            long n = 0;
+            while (r.hasNext()) { string s = r.readLine(); n = n + 1; }
+            r.close();
+            long t1 = Time.nowMs();
+            out("file_io", t1 - t0, n);
+        }
+        // 6) JSON 解析（myp_json_parse）
+        void benchJson() {
+            int N = 20000;
+            string doc = "{\"name\":\"myp\",\"ver\":31567,\"items\":[1,2,3,4,5],\"ok\":true}";
+            long t0 = Time.nowMs();
+            long v = 0;
+            int i = 0;
+            while (i < N) {
+                Json j = new Json(doc);
+                v = v + j.getInt("/ver");
+                j.free();
+                i = i + 1;
+            }
+            long t1 = Time.nowMs();
+            out("json", t1 - t0, v);
+        }
+        // 7) 正则匹配
+        void benchRegex() {
+            int N = 300000;
+            Regex r = new Regex("^[a-z]+[0-9]+");
+            long t0 = Time.nowMs();
+            long v = 0;
+            int i = 0;
+            while (i < N) {
+                if (r.test("abc123") != 0) v = v + 1;
+                i = i + 1;
+            }
+            r.free();
+            long t1 = Time.nowMs();
+            out("regex", t1 - t0, v);
+        }
+        // 8) 协程切换（K×M 次挂起/恢复）
+        void benchCoroSwitch() {
+            int K = 200;
+            int M = 5000;
+            long t0 = Time.nowMs();
+            long[] h = new long[K];
+            int i = 0;
+            while (i < K) {
+                Worker wk = new Worker();
+                h[i] = wk.run(long(M));
+                i = i + 1;
+            }
+            int step = 0;
+            while (step < M) {
+                i = 0;
+                while (i < K) { Coro.resume(h[i], 0L); i = i + 1; }
+                step = step + 1;
+            }
+            long left = Coro.count();
+            long t1 = Time.nowMs();
+            out("coro_switch", t1 - t0, long(K) * long(M) + left);
+        }
+}
+
+class Worker {
+    action:
+        @coro void run(long m) {
+            long j = 0;
+            while (j < m) { await; j = j + 1; }
+        }
+}
+
+int main() {
+    RtBench b = new RtBench();
+    return 0;
+}
