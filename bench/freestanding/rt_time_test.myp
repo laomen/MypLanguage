@@ -1,0 +1,39 @@
+// rt_time_test.myp — 时间层验证（runtime_myp/time.myp shadow C runtime）：
+// myp_now_ms 单调递增 / myp_now_realtime_ms epoch 量级 / myp_sleep_ms 实际睡眠。
+import text;
+
+ffi long myp_now_ms();
+ffi long myp_now_realtime_ms();
+ffi void myp_sleep_ms(long ms);
+
+class TimeProbe {
+    static:
+        int run() {
+            long rt0 = myp_now_realtime_ms();
+            // epoch 毫秒：2023-11 ≈ 1.70e12，当前 2026 ≈ 1.78e12
+            if (rt0 < 1700000000000) return 1;
+            long t0 = myp_now_ms();
+            // 单调采样（ms 分辨率，允许相等）
+            long prev = t0;
+            for (int i = 0; i < 100; i = i + 1) {
+                long c = myp_now_ms();
+                if (c < prev) return 2;   // 单调性破坏
+                prev = c;
+            }
+            // sleep 50ms → 实际经过 >= ~30ms（系统负载只会更长）
+            myp_sleep_ms(50);
+            long t1 = myp_now_ms();
+            if (t1 - t0 < 30) return 3;
+            if (t1 < t0) return 4;
+            // 长 sleep 再验一次（跨秒 + nanosleep rem 路径）
+            myp_sleep_ms(1050);
+            long t2 = myp_now_ms();
+            if (t2 - t1 < 1000) return 5;
+            return 0;
+        }
+}
+
+int main() {
+    int r = TimeProbe.run();
+    return r;
+}

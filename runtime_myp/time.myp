@@ -1,0 +1,67 @@
+// runtime_myp/time.myp — 时间层 MYP 化（raw syscall）：shadow C runtime 的
+// myp_now_ms / myp_now_realtime_ms / myp_sleep_ms（Time.nowMs / Process.sleep
+// 及 C 内部通道/协程/定时器广泛依赖）。符号名与 C 一致，--shared + 前置链接 →
+// MYP 定义优先。
+//
+// 设计：
+//   - clock_gettime = x86-64 syscall 228（CLOCK_MONOTONIC=1 / CLOCK_REALTIME=0），
+//     timespec {tv_sec:i64 @0, tv_nsec:i64 @8} 写入 16B 缓冲。
+//   - nanosleep = syscall 35(req, rem)：req@ts、rem@ts+16；EINTR（返回 <0）时
+//     内核把剩余时间写进 rem → 拷回 req 重试。
+//   - 缓冲用 arena 一次性分配 + @static 缓存地址（bump 16+16B，进程内固定，
+//     同 io.myp/region.myp 模式）。⚠️ 非 TLS：多线程并发共享缓冲有极小竞态
+//     （clock_gettime 写-读窗口纳秒级），当前测试全单线程，文档化限制。
+
+// alloc.myp（shadow 同伴模块）——跨模块 FFI
+ffi long myp_arena_alloc(long size);
+
+@static class TimeBuf {
+    property:
+        long addr = 0;   // timespec 缓冲基址（ts@0 + rem@16，0=未初始化）
+}
+
+long timeBufAddr() {
+    if (TimeBuf.addr == 0) {
+        long p = myp_arena_alloc(32);
+        if (p == 0) return 0;   // OOM
+        TimeBuf.addr = p;
+    }
+    return TimeBuf.addr;
+}
+
+// C: int64_t myp_now_ms(void) —— CLOCK_MONOTONIC 毫秒（单调，不随墙钟调整）
+long myp_now_ms() {
+    long ts = timeBufAddr();
+    if (ts == 0) return 0;
+    __myp_syscall(228, 1, ts, 0, 0, 0, 0);   // clock_gettime(CLOCK_MONOTONIC, ts)
+    long sec = __myp_mem_load_i64(ts);
+    long nsec = __myp_mem_load_i64(ts + 8);
+    return sec * 1000 + nsec / 1000000;
+}
+
+// C: int64_t myp_now_realtime_ms(void) —— CLOCK_REALTIME 毫秒（墙钟，可被
+// settimeofday/NTP 调整；epoch 基数，2026 ≈ 1.78e12）
+long myp_now_realtime_ms() {
+    long ts = timeBufAddr();
+    if (ts == 0) return 0;
+    __myp_syscall(228, 0, ts, 0, 0, 0, 0);   // clock_gettime(CLOCK_REALTIME, ts)
+    long sec = __myp_mem_load_i64(ts);
+    long nsec = __myp_mem_load_i64(ts + 8);
+    return sec * 1000 + nsec / 1000000;
+}
+
+// C: void myp_sleep_ms(int64_t ms) —— nanosleep；被信号打断（EINTR）时按内核
+// 写入 rem 的剩余时间重试（保持近似 ms 语义，同 C 版）。
+void myp_sleep_ms(long ms) {
+    long ts = timeBufAddr();
+    if (ts == 0) return;
+    __myp_mem_store_i64(ts, ms / 1000);
+    __myp_mem_store_i64(ts + 8, (ms % 1000) * 1000000);
+    while (1) {
+        long r = __myp_syscall(35, ts, ts + 16, 0, 0, 0, 0);   // nanosleep(req, rem)
+        if (r >= 0) break;
+        // EINTR：rem@ts+16 已被内核改写为剩余时间 → 拷回 req 重试
+        __myp_mem_store_i64(ts, __myp_mem_load_i64(ts + 16));
+        __myp_mem_store_i64(ts + 8, __myp_mem_load_i64(ts + 24));
+    }
+}

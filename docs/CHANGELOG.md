@@ -35,6 +35,23 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.26 — runtime myp化 #23：时间层 myp_now_ms / myp_now_realtime_ms / myp_sleep_ms
+
+**非破坏性**。新增 `runtime_myp/time.myp` shadow C runtime 时间函数（Time.nowMs /
+Process.sleep 及 C 内部通道/协程/定时器广泛依赖），纯 raw syscall：
+
+- `myp_now_ms`/`myp_now_realtime_ms`：`clock_gettime`（syscall 228，CLOCK_MONOTONIC=1
+  / CLOCK_REALTIME=0）写 16B timespec 缓冲 → `sec*1000 + nsec/1000000`。
+- `myp_sleep_ms`：`nanosleep`（syscall 35，req/rem 双缓冲）；EINTR（返回<0）时内核
+  把剩余时间写进 rem → 拷回 req 重试（保持近似 ms 语义，同 C 版）。
+- 缓冲 arena 一次性分配 + `@static` 缓存地址（io.myp/region.myp 同模式；⚠️ 非 TLS，
+  多线程并发共享缓冲有纳秒级竞态，当前测试全单线程，文档化限制）。
+- 验证：新增 `bench/freestanding/rt_time_test.myp`（realtime epoch 量级 / 单调 100
+  采样 / sleep 50ms+1050ms 实际睡眠，跨秒验 nanosleep rem 路径）；shadow **9/9**、
+  bootstrap 16/16（fixpoint 不变）、全量 323/323。反汇编确认 MYP 版（含
+  `timeBufAddr` 符号 + inline syscall）。
+- 附带清理：删除 str.myp 过时 TODO（`myp_str_split_get` 早已 MYP 化，上版误判）。
+
 ### v3.15.25 — runtime myp化 #22：字符串拼接层 myp_str_append（arena 原地扩展）
 
 **非破坏性**。`runtime_myp/str.myp` 新增 `myp_str_append`（`s = s + x` 快路径），
