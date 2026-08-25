@@ -35,6 +35,29 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.25 — runtime myp化 #22：字符串拼接层 myp_str_append（arena 原地扩展）
+
+**非破坏性**。`runtime_myp/str.myp` 新增 `myp_str_append`（`s = s + x` 快路径），
+`runtime_myp/alloc.myp` 增加 `last_base`/`last_aligned` 追踪 + `myp_arena_alloc_ex`
+（grow 变体）+ `myp_alloc_str_grow`：
+
+- **MYP 版**：`s = s + x`（owned 局部双字符串）经 codegen 发射 `@myp_str_append` +
+  普通 store（消耗 s）。s 唯一（rc==1）且是 arena 最后一次分配 → **bump 原地扩展**
+  （O(1) 均摊，写 x + 更新 len 字段 + rc 归零由 return-retain 补 1）；否则回退手动
+  拷贝（`myp_alloc_str_grow` 2x 增长头）+ release(s)。
+- **消除 C 版 latent bug**：C `myp_str_append` 对 rc==1 字符串读假头
+  `node=data-sizeof(node)` 再 `realloc` —— shadow 下内存是 arena → realloc 假头/
+  崩溃（此前 shadow 用例未触发因快路径需 owned 局部）。
+- **ARC 约定（实测确认）**：`return <owned 局部>` = retain + releaseArcSlots →
+  净 rc 不变；`return <参数>` = 仅 retain → 返回前须置 rc=0 让 retain 补成 1。
+- **修复 shadow 内存爆炸**：回退若用普通 `myp_alloc`（chunk 恰好够），字符串每涨
+  16B 就回退重拷整串 → 500k 累积实测 **7.5GB RSS**。`myp_alloc_str_grow` 给新
+  chunk 2x 头 → 回退点几何递增（64K/128K/256K/512K）→ **O(n) 摊销**：500k 累积
+  wall=0.00s、RSS=3MB、原地命中 499996/500000。
+- 验证：`bench/freestanding/rt_str_test.myp` 新增 `RtAppendProbe`（2000 小累积 +
+  自拼接 + 40000 跨 chunk 大串 + 空串起始）；shadow 8/8、bootstrap 16/16
+  （fixpoint md5 不变）、全量 323/323。
+
 ### v3.15.24 — 浮点精确路径：%.f 大数 / %g·%e 高精度（uint32 大整数精确十进制展开）
 
 **非破坏性**。`runtime_myp/float.myp` 新增**精确十进制展开**（uint32 小端词大整数，

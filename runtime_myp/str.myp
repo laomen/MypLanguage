@@ -9,6 +9,11 @@
 // C: void* myp_alloc(size_t) —— 计数字符串分配器（数据指针，8 字节头部在 data-8）
 ffi string myp_alloc(long size);
 
+// alloc.myp（shadow 同伴模块）——跨模块 FFI
+ffi int myp_release(string obj);
+ffi int myp_arena_try_extend(long base, long newAligned);
+ffi string myp_alloc_str_grow(long size);   // 拼接回退用（2x 增长头，见 alloc.myp）
+
 // C: int32_t myp_strlen(const char* s) —— 字符串头 len 字段（data-12，O(1)）
 int myp_strlen(string s) {
     long a = __myp_str_ptr(s);
@@ -475,6 +480,62 @@ string myp_strdup(string s) {
     int len = myp_strlen(s);
     string r = myp_alloc(len + 1);
     __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(s), len + 1);
+    return r;
+}
+
+// C: char* myp_str_append(const char* s, const char* x) —— `s = s + x` 快路径。
+// codegen 对 `s = s + x`（owned 局部 + 双字符串）发射 call @myp_str_append + 普通
+// store（不 retain/release）——本函数消耗 s（调用方不再 release 旧值），返回新串。
+// C 版用 realloc 原地扩展（rc==1 唯一时读假头 node = data-sizeof(node) 再 realloc）
+// ——shadow 下内存是 arena → realloc 假头/崩溃（潜在 bug，shadow 用例未触发因
+// `s=s+x` 快路径需 owned 局部）。MYP 版：若 s 唯一（rc==1）且是 arena 最后一次分配
+// → bump 原地扩展（O(1) 均摊，避免 N² 累积）；否则回落手动拷贝（myp_alloc_str_grow
+// 2x 增长头分配，不用 myp_strcat——其内部 releaseArcSlots 会扣一次 Live，我再 return
+// 别名又扣一次 → 重复扣减；手动 alloc 的 rc 循环恰好 +1/-1 相抵）。
+// ARC 约定（自举编译器）：`return <owned 局部 r>` = retain(r) + releaseArcSlots(r)
+// → 净 rc=0（Live +1/-1 相抵）；`return <参数 s>` = 仅 retain（参数不被 releaseArcSlots
+// 释放）→ 须先置 rc=0 让 retain 补成 1（原地路径返回的 s 仍归调用方槽持有）。
+string myp_str_append(string s, string x) {
+    long sp = __myp_str_ptr(s);
+    long xp = __myp_str_ptr(x);
+    if (sp == 0) {   // s null → dup x（fresh，rc=0 按约定，无 retain）
+        if (xp == 0) {
+            string r = myp_alloc(1);
+            __myp_mem_store_i8(__myp_str_ptr(r), 0);
+            return r;
+        }
+        return myp_strdup(x);
+    }
+    if (xp == 0) {
+        __myp_atomic_store_i32_addr(sp - 8, 0);   // rc 1→0（return 参数仅 retain → 1）
+        return s;
+    }
+    int la = myp_strlen(s);
+    int lb = myp_strlen(x);
+    if (sp != xp) {   // 自拼接（sp==xp）跳过原地扩展，走手动拷贝（保守，同 C）
+        int rc = __myp_atomic_load_i32_addr(sp - 8);
+        if (rc == 1) {
+            // 原地扩展：目标总分配 12+la+lb+1（向上取整 16）——base = sp-12
+            long total = 12 + long(la) + long(lb) + 1;
+            long aligned = total + 15;
+            aligned = aligned - (aligned % 16);
+            if (myp_arena_try_extend(sp - 12, aligned) != 0) {
+                __myp_memcpy(sp + long(la), xp, lb);
+                __myp_mem_store_i8(sp + long(la) + lb, 0);
+                __myp_mem_store_i32(sp - 12, la + lb);   // 更新 len 字段
+                __myp_atomic_store_i32_addr(sp - 8, 0);  // rc 1→0（return 参数仅 retain → 1）
+                return s;
+            }
+        }
+    }
+    // 手动拷贝慢路径（也覆盖自拼接）——r 由 myp_alloc_str_grow 建（2x 增长头），
+    // return r 净 rc=0（同 myp_alloc 约定）
+    string r = myp_alloc_str_grow(long(la) + long(lb) + 1);
+    long dp = __myp_str_ptr(r);
+    __myp_memcpy(dp, sp, la);
+    __myp_memcpy(dp + long(la), xp, lb);
+    __myp_mem_store_i8(dp + long(la) + lb, 0);
+    myp_release(s);
     return r;
 }
 

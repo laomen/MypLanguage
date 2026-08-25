@@ -27,6 +27,8 @@ ffi int myp_weak_notify_death(string obj);
         long head = 0;     // 首个 chunk（未来 bulk munmap）
         long cur_used = 0;
         long cur_cap = 0;
+        long last_base = 0;     // 最后一次分配的 bump 基址（字符串拼接原地扩展用）
+        long last_aligned = 0;  // 最后一次分配的 16 对齐大小
 }
 @static class Live {
     property:
@@ -36,14 +38,16 @@ ffi int myp_weak_notify_death(string obj);
 }
 
 // C: myp_arena_bump_alloc —— 从 mmap bump arena 取 size 字节，返回 16 对齐地址。
-// 失败（mmap 错误）返回 0。
-long myp_arena_alloc(long size) {
+// 失败（mmap 错误）返回 0。grow=1：新 chunk 按 2x 预留（字符串拼接增长用——回退
+// 拷贝后需增长头，否则每涨 16B 就回退重拷整串 → O(N²)+内存爆炸）。
+long myp_arena_alloc_ex(long size, int grow) {
     if (size < 1) size = 1;
     long a = size + 15;
     a = a - (a % 16);                    // 向上取整到 16
     if (Arena.cur == 0 || Arena.cur_used + a > Arena.cur_cap) {
         long cap = a;
         if (cap < 65536) cap = 65536;
+        if (grow != 0 && a > 65536) cap = a * 2;   // 大分配倍增头（拼接增长）
         long c = __myp_syscall(9, 0, 32 + cap, 3, 0x22, -1, 0);  // mmap
         if (c == -1 || c == 0) return 0;  // OOM
         __myp_mem_store_i64(c, Arena.cur);     // next
@@ -55,8 +59,25 @@ long myp_arena_alloc(long size) {
         Arena.cur_cap = cap;
     }
     long p = Arena.cur + 32 + Arena.cur_used;
+    Arena.last_base = p;
+    Arena.last_aligned = a;
     Arena.cur_used = Arena.cur_used + a;
     return p;
+}
+long myp_arena_alloc(long size) { return myp_arena_alloc_ex(size, 0); }
+
+// MYP 拼接层辅助（str.myp myp_str_append 原地扩展）：若 base 是 arena 最后一次
+// 分配且当前 chunk 能扩展到 new_aligned 字节，则 bump 前移并返回 1，否则 0。
+// base 是原始 bump 地址（字符串 = data-12）；new_aligned 为 16 对齐后的目标总大小。
+int myp_arena_try_extend(long base, long newAligned) {
+    if (Arena.cur == 0) return 0;
+    if (Arena.last_base != base) return 0;
+    long extra = newAligned - Arena.last_aligned;
+    if (extra < 0) return 0;
+    if (Arena.cur_used + extra > Arena.cur_cap) return 0;
+    Arena.cur_used = Arena.cur_used + extra;
+    Arena.last_aligned = newAligned;
+    return 1;
 }
 
 // ---- 分配器集群 ----
@@ -73,6 +94,20 @@ string myp_alloc(long size) {
     __myp_mem_store_i32(base + 8, -2);          // type_id = 0xFFFFFFFE
     Live.strings = Live.strings + 1;
     return __myp_addr_to_str(base + 12);        // data
+}
+
+// 字符串拼接增长分配（str.myp myp_str_append 回退路径专用）：同 myp_alloc，但新
+// chunk 按 2x 预留增长头——回退拷贝后的字符串仍需原地扩展（s=s+x 快路径），若
+// chunk 刚好够则每涨 16B 回退重拷整串 → O(N²) + 内存爆炸（实测 500k 累积 7.5GB）。
+// 2x 头 → 回退点几何递增（64K/128K/256K...）→ 摊销 O(N) 总拷贝。
+string myp_alloc_str_grow(long size) {
+    long base = myp_arena_alloc_ex(12 + size, 1);
+    if (base == 0) return "";
+    __myp_mem_store_i32(base, int(size - 1));
+    __myp_mem_store_i32(base + 4, 0);
+    __myp_mem_store_i32(base + 8, -2);
+    Live.strings = Live.strings + 1;
+    return __myp_addr_to_str(base + 12);
 }
 
 // C: void* myp_alloc_object(size_t size, uint32_t type_id)

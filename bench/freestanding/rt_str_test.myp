@@ -40,6 +40,44 @@ class RtJoinProbe {
         }
 }
 
+// `s = s + x` 快路径（myp_str_append）验证：owned 局部 + 累积循环 → arena 原地扩展。
+// 注意：main() 里不能直接做这种调用（direct call 限制）→ 包成 @static 方法。
+class RtAppendProbe {
+    static:
+        int testAppend() {
+            // 小累积（首轮字面量 → 慢路径，第 2 轮起 rc==1 且为最后分配 → 原地扩展）
+            string acc = "";
+            for (int i = 0; i < 2000; i = i + 1) acc = acc + "x";
+            if (acc != Str.repeat("x", 2000)) return 1;
+            if (Str.len(acc) != 2000) return 2;
+            if (myp_charcode(acc, 0) != 120) return 3;      // 'x'
+            if (myp_charcode(acc, 1999) != 120) return 4;
+            // 自拼接 s = s + s（fallback 手动拷贝路径）
+            string a = "ab";
+            a = a + a;
+            if (a != "abab") return 5;
+            if (Str.len(a) != 4) return 6;
+            // 多段拼接（字面量起始 → 首轮慢路径，后续快路径）
+            string b = "hello";
+            b = b + " ";
+            b = b + "world";
+            if (b != "hello world") return 7;
+            if (Str.len(b) != 11) return 8;
+            // 大累积（跨 arena chunk 边界的扩展，须经手动拷贝换 chunk 仍正确）
+            string big = "";
+            for (int j = 0; j < 40000; j = j + 1) big = big + "ab";
+            if (Str.len(big) != 80000) return 9;
+            if (myp_charcode(big, 0) != 97) return 10;      // 'a'
+            if (myp_charcode(big, 79998) != 97) return 11;  // 末段首字符 'a'
+            if (myp_charcode(big, 79999) != 98) return 12;  // 末字符 'b'
+            // 空串 + 字面量（x 为静态常量，xp != sp，仍走拼接）
+            string c = "";
+            c = c + "hello";
+            if (c != "hello") return 13;
+            return 0;
+        }
+}
+
 int main() {
     // == / != → myp_str_eq
     if (!("abc" == "abc")) return 1;
@@ -181,5 +219,8 @@ int main() {
     // 核心层 ARC 探针（raw-address 原子内建 + myp_retain/myp_obj_type_id）
     int arc = ArcProbe.run();
     if (arc != 0) return 270 + arc;
+    // `s = s + x` 快路径（myp_str_append）：累积循环 + 自拼接 + 跨 chunk 大串
+    int apr = RtAppendProbe.testAppend();
+    if (apr != 0) return 280 + apr;
     return 0;
 }
