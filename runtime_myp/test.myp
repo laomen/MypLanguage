@@ -1,0 +1,160 @@
+// runtime_myp/test.myp — @test 断言/报告层 MYP 化：shadow C runtime 的 myp_assert_* /
+// myp_test_*（Test.assertXxx 内建 + @test 运行器 myp_test_summary 等）。
+// 符号名与 C 一致，--shared + 前置链接 → MYP 定义优先。
+//
+// 设计（镜像 C 语义，@test 按退出码验证、断言失败走 stderr 不经 stdout 捕获）：
+//   - 计数：@static TestState（pass/fail）；失败写 fd=2（stderr）。
+//   - 待消费用户消息（__myp_test_set_msg → 下一条断言失败用）：TestState.curMsg
+//     存 arena 拷贝（0=无；C 存指针，MYP 存稳定地址防字符串释放）。
+//     仅失败消费并清空（镜像 C：通过时不消费，下一条失败可能用陈旧消息——同 C）。
+//   - 走 myp_test_fail（curMsg 感知）的断言：assert/assert_eq/assert_neq/
+//     assert_long_eq/assert_str_eq/assert_str_neq；其余（assert_msg/long_neq/
+//     float_neq/null/not_null）直接 fprintf 语义（failDirect，不消费 curMsg）。
+//   - myp_test_report/summary 写 stdout（不经捕获，同 C printf）；summary 返回
+//     fail>0 ? 1 : 0（@test main 的退出码）。
+//   - myp_assert_null/not_null 参数是 long（指针地址，ABI 与 ptr 兼容）。
+//   - myp_assert_abort：stderr + exit(1)（syscall 60）。
+
+ffi long myp_arena_alloc(long size);
+ffi int myp_strlen(string s);
+ffi string myp_to_string_i32(int val);
+ffi string myp_to_string_i64(long val);
+ffi string myp_to_string_double(double v);
+ffi int myp_str_eq(string a, string b);
+
+@static class TestState {
+    property:
+        int pass = 0;
+        int fail = 0;
+        long curMsg = 0;   // 待消费用户消息（arena 缓冲地址，0=无）
+}
+
+// 写 NUL 结尾 C 串（地址）到 fd 2
+void writeErrCStr(long s) {
+    long n = 0;
+    while (__myp_mem_load_i8(s + n) != 0) n = n + 1;
+    __myp_syscall(1, 2, s, n, 0, 0, 0);
+}
+void writeErr(string s) {
+    __myp_syscall(1, 2, __myp_str_ptr(s), myp_strlen(s), 0, 0, 0);
+}
+// 写 stdout（不经捕获，同 C printf 直接输出）
+void outDirect(string s) {
+    __myp_syscall(1, 1, __myp_str_ptr(s), myp_strlen(s), 0, 0, 0);
+}
+// 直接失败（不消费 curMsg，同 C fprintf 直接打印）
+void failDirect(string detail) {
+    writeErr("  ASSERTION FAILED: ");
+    writeErr(detail);
+    writeErr("\n");
+    TestState.fail = TestState.fail + 1;
+}
+// 经 myp_test_fail（curMsg 感知）：有待消费消息则打印它并清空，否则打印 detail
+void failWithDetail(string detail) {
+    if (TestState.curMsg != 0) {
+        writeErr("  ASSERTION FAILED: ");
+        writeErrCStr(TestState.curMsg);
+        writeErr("\n");
+        TestState.curMsg = 0;
+        TestState.fail = TestState.fail + 1;
+    } else {
+        failDirect(detail);
+    }
+}
+
+// ---- 消息 ----
+void myp_test_set_msg(string m) {
+    int len = myp_strlen(m);
+    long buf = myp_arena_alloc(len + 1);
+    if (buf == 0) { TestState.curMsg = 0; return; }
+    __myp_memcpy(buf, __myp_str_ptr(m), len);
+    __myp_mem_store_i8(buf + len, 0);
+    TestState.curMsg = buf;
+}
+
+// ---- 断言（走 curMsg 感知的 myp_test_fail）----
+void myp_assert(int cond) {
+    if (cond != 0) TestState.pass = TestState.pass + 1;
+    else failWithDetail("");
+}
+void myp_assert_eq(int a, int b) {
+    if (a != b) failWithDetail(myp_to_string_i32(a) + " != " + myp_to_string_i32(b));
+    else TestState.pass = TestState.pass + 1;
+}
+void myp_assert_neq(int a, int b) {
+    if (a == b) failWithDetail(myp_to_string_i32(a) + " == " + myp_to_string_i32(b) + " (expected not equal)");
+    else TestState.pass = TestState.pass + 1;
+}
+void myp_assert_long_eq(long a, long b) {
+    if (a != b) failWithDetail(myp_to_string_i64(a) + " != " + myp_to_string_i64(b));
+    else TestState.pass = TestState.pass + 1;
+}
+void myp_assert_str_eq(string a, string b) {
+    if (myp_str_eq(a, b) == 0) failWithDetail("\"" + a + "\" != \"" + b + "\"");
+    else TestState.pass = TestState.pass + 1;
+}
+void myp_assert_str_neq(string a, string b) {
+    if (myp_str_eq(a, b) != 0) failWithDetail("\"" + a + "\" == \"" + b + "\" (expected not equal)");
+    else TestState.pass = TestState.pass + 1;
+}
+
+// ---- 断言（直接 fprintf 语义，不消费 curMsg）----
+void myp_assert_msg(int cond, string msg) {
+    if (cond != 0) TestState.pass = TestState.pass + 1;
+    else {
+        writeErr("  ASSERTION FAILED: ");
+        writeErr(msg);
+        writeErr("\n");
+        TestState.fail = TestState.fail + 1;
+    }
+}
+void myp_assert_long_neq(long a, long b) {
+    if (a == b) failDirect(myp_to_string_i64(a) + " == " + myp_to_string_i64(b) + " (expected not equal)");
+    else TestState.pass = TestState.pass + 1;
+}
+void myp_assert_float_neq(double a, double b, double eps) {
+    double diff = a - b;
+    if (diff < 0.0) diff = -diff;
+    if (diff <= eps) failDirect(myp_to_string_double(a) + " == " + myp_to_string_double(b) + " (expected not equal)");
+    else TestState.pass = TestState.pass + 1;
+}
+void myp_assert_null(long p) {
+    if (p != 0) failDirect("expected null");
+    else TestState.pass = TestState.pass + 1;
+}
+void myp_assert_not_null(long p) {
+    if (p == 0) failDirect("expected non-null");
+    else TestState.pass = TestState.pass + 1;
+}
+void myp_assert_abort(string msg) {
+    writeErr("[myp] kernel.assert FAILED: ");
+    writeErr(msg);
+    writeErr("\n");
+    __myp_syscall(60, 1, 0, 0, 0, 0, 0);   // exit(1)
+}
+
+// ---- 测试报告 ----
+void myp_test_report(string name, int passed) {
+    if (passed != 0) {
+        outDirect("  PASS: ");
+        outDirect(name);
+        outDirect("\n");
+    } else {
+        outDirect("  FAIL: ");
+        outDirect(name);
+        outDirect("\n");
+    }
+}
+void myp_test_fail_msg(string msg) {
+    writeErr("  FAILED: ");
+    writeErr(msg);
+    writeErr("\n");
+    TestState.fail = TestState.fail + 1;
+}
+// @test main 退出码：0 = 全过，1 = 有失败
+int myp_test_summary(int testCount) {
+    outDirect("  tests: " + myp_to_string_i32(testCount)
+              + ", assertions: " + myp_to_string_i32(TestState.pass)
+              + " passed, " + myp_to_string_i32(TestState.fail) + " failed\n");
+    return TestState.fail > 0 ? 1 : 0;
+}

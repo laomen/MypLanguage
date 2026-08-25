@@ -34,7 +34,8 @@ for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
          bench/freestanding/rt_asm_test.myp bench/freestanding/rt_term_test.myp \
          bench/freestanding/rt_fs_test.myp bench/freestanding/rt_args_test.myp \
          bench/freestanding/rt_env_test.myp bench/freestanding/rt_math_test.myp \
-         bench/freestanding/rt_indirect_test.myp bench/freestanding/rt_pkgA_test.myp; do
+         bench/freestanding/rt_indirect_test.myp bench/freestanding/rt_pkgA_test.myp \
+         bench/freestanding/rt_pkgA2_test.myp bench/freestanding/rt_pkgA_fail_test.myp; do
     tb="$(basename "$t" .myp)"
     "$SELF" "$t" --emit-llvm -o "/tmp/rt_${tb}" >/dev/null 2>&1
     "$LLC" "/tmp/rt_${tb}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_${tb}.o"
@@ -47,14 +48,16 @@ for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
     echo "== 运行（MYP 运行时 shadow C 版本）: ${tb} =="
     # 二进制可能返回非 0（断言失败）——set -e 下须先关闭再取退出码（否则脚本
     # 在运行处静默退出，看不到 exit=N 与 FAIL 定位）。
+    expected=0
     set +e
     case "$tb" in
-        rt_args_test) "/tmp/rt_${tb}_bin" alpha beta gamma ;;
-        *)            "/tmp/rt_${tb}_bin" ;;
+        rt_args_test)         "/tmp/rt_${tb}_bin" alpha beta gamma ;;
+        rt_pkgA_fail_test)    expected=1; "/tmp/rt_${tb}_bin" ;;   # 故意失败 → 期望 exit 1
+        *)                    "/tmp/rt_${tb}_bin" ;;
     esac
     code=$?
     set -e
-    echo "exit=$code"
-    [ "$code" = 0 ] || { echo "FAIL: ${tb} 期望 0"; exit 1; }
+    echo "exit=$code (期望 $expected)"
+    [ "$code" = "$expected" ] || { echo "FAIL: ${tb} 期望 $expected"; exit 1; }
 done
 echo "PASS: MYP 运行时 shadow 验证通过（str + num + fs + env + args + term + math）"

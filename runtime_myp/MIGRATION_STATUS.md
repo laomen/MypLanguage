@@ -40,15 +40,15 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 ## 二、剩余工作包（按依赖与建议顺序）
 
 ### 包 A：残留薄层（~30 个，快赢，无前置）
-- ✅ **已做（#31）**：`myp_str_parse_int_opt`（num.myp，**long 参数 ABI 兼容**
-  shadow 编译器 `(ptr,ptr)` 调用，无需改编译器）；`myp_diag_arena_reserved/used`
-  （alloc.myp，新增 `Arena.total_used` 计数器）。
-- **`print`(4+println+printf)**：`myp_print`/`myp_print_bool`/`myp_print_int`/
-  `myp_print_long`/`myp_print_float`/`myp_println`/`myp_printf`（`__myp_print*`
-  内建 → Console 输出）。**⚠️ 与 @test 捕获耦合**：C 内部 `myp_out_write` →
-  `myp_capture_write`（static，不可影），且被 `myp_printf`/`myp_assert_*` 调用；
-  只影 print 会导致 MYP print 与 C 捕获缓冲不一致。**须连 `myp_test_capture_*`+
-  assert+test 一起影**（归入"console+test 框架"包），文档化推迟。
+- ✅ **已做（#31/#32）**：`myp_str_parse_int_opt`（num.myp，**long 参数 ABI 兼容**
+  shadow 编译器 `(ptr,ptr)` 调用）；`myp_diag_arena_reserved/used`（alloc.myp，
+  `Arena.total_used`）；**console+test 框架包（#32 output.myp + test.myp）**——
+  print 族 + @test 捕获（`myp_test_capture_*`）+ 断言（`myp_assert*`）+ 报告
+  （`myp_test_report/summary/fail_msg/set_msg`）。**关键语义**：@test 按退出码验证、
+  断言失败走 stderr（不经 stdout 捕获）、`myp_test_summary` 返回 fail>0、curMsg
+  仅失败消费。
+- **`print` 族**：✅ 全影（output.myp；`myp_print_float` 已在 float.myp 走
+  `__myp_print` 自动接捕获）。`myp_printf`（varargs）保留 C（MYP 程序不调用）。
 - **`str` 残留**：`myp_str_to_bytes` 已影（bytes.myp）；`myp_str_cat/cpy/fmt/len`
   **无 MYP 调用方**（C 内部/死代码，不影）。
 - **`io` 残留(6)**：`myp_io_cur_get/set`（**保留 C TLS**，io_thread 每线程句柄）、

@@ -1,0 +1,89 @@
+// runtime_myp/output.myp — 控制台输出 + @test 捕获层 MYP 化：shadow C runtime 的
+// myp_print* / myp_flush / myp_test_capture_*（Console 输出路径 + @test 输出捕获）。
+// 符号名与 C 一致，--shared + 前置链接 → MYP 定义优先。
+//
+// 设计：
+//   - 统一出口 outWrite(string)：捕获态（Cap.on=1）追加到 MYP 捕获缓冲，否则
+//     write(fd=1) 直接写 stdout（镜像 C myp_out_write → myp_capture_write /
+//     fputs(stdout)）。⚠️ C 的 myp_out_write/myp_capture_write 是 static（不可影），
+//     本模块用内部 helper 实现同语义；@test 捕获与 print 走同一 MYP 缓冲 → 一致。
+//   - 捕获缓冲：@static Cap（arena 增长，realloc 语义换 arena 新块；bump 不归还，
+//     @test 捕获量小可接受）。stdout 无缓冲（直接 syscall 写）→ myp_flush 空操作。
+//   - 格式化复用 num.myp（myp_to_string_i32/i64），不自己实现数字转字符串。
+//   - myp_print_float 已在 float.myp（__myp_print → 本模块 myp_print，自动走捕获）。
+
+ffi long myp_arena_alloc(long size);
+ffi string myp_alloc(long size);
+ffi int myp_strlen(string s);
+ffi string myp_to_string_i32(int val);
+ffi string myp_to_string_i64(long val);
+ffi int myp_str_eq(string a, string b);
+ffi int myp_str_contains(string s, string sub);
+
+@static class Cap {
+    property:
+        long buf = 0;   // 捕获缓冲（arena，0=未初始化）
+        long len = 0;
+        long cap = 0;
+        int on = 0;     // 捕获态
+}
+
+// 写 n 字节到 fd 1（不经捕获）
+void outWriteFd(long s, long n) {
+    __myp_syscall(1, 1, s, n, 0, 0, 0);   // write(1, s, n)
+}
+// 捕获态追加（on 时），否则写 stdout（同 C myp_out_write）
+void outWrite(string s) {
+    long n = myp_strlen(s);
+    if (Cap.on != 0) {
+        if (Cap.buf == 0 || Cap.len + n + 1 > Cap.cap) {
+            long nc = Cap.cap == 0 ? 256 : Cap.cap * 2;
+            while (nc < Cap.len + n + 1) nc = nc * 2;
+            long nb = myp_arena_alloc(nc);
+            if (nb == 0) return;
+            if (Cap.buf != 0) __myp_memcpy(nb, Cap.buf, Cap.len);
+            Cap.buf = nb;
+            Cap.cap = nc;
+        }
+        __myp_memcpy(Cap.buf + Cap.len, __myp_str_ptr(s), n);
+        Cap.len = Cap.len + n;
+        __myp_mem_store_i8(Cap.buf + Cap.len, 0);
+        return;
+    }
+    outWriteFd(__myp_str_ptr(s), n);
+}
+
+// ---- print 族（C 语义：print 无换行 / println·int·long 带换行 / bool 无换行）----
+void myp_print(string str) { outWrite(str); }
+void myp_println(string str) { outWrite(str); outWrite("\n"); }
+void myp_print_int(int val) { outWrite(myp_to_string_i32(val)); outWrite("\n"); }
+void myp_print_long(long val) { outWrite(myp_to_string_i64(val)); outWrite("\n"); }
+void myp_print_bool(int val) {
+    if (val != 0) outWrite("true");
+    else outWrite("false");
+}
+// 直接 syscall 写 → 无缓冲，flush 空操作（C fflush(stdout) 等价）
+void myp_flush() { }
+
+// ---- @test 输出捕获 ----
+void myp_test_capture_start() { Cap.len = 0; Cap.on = 1; }
+void myp_test_capture_stop() { Cap.on = 0; }
+string myp_test_capture_get() {
+    if (Cap.len == 0) {
+        string e = myp_alloc(1);
+        __myp_mem_store_i8(__myp_str_ptr(e), 0);
+        return e;
+    }
+    string s = myp_alloc(Cap.len + 1);
+    __myp_memcpy(__myp_str_ptr(s), Cap.buf, Cap.len);
+    __myp_mem_store_i8(__myp_str_ptr(s) + Cap.len, 0);
+    return s;
+}
+int myp_test_capture_contains(string sub) {
+    string got = myp_test_capture_get();
+    return myp_str_contains(got, sub);
+}
+int myp_test_capture_eq(string expected) {
+    string got = myp_test_capture_get();
+    return myp_str_eq(got, expected);
+}

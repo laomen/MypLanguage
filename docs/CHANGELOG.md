@@ -27,6 +27,33 @@
 
 ## 编译器版本历史
 
+### v3.15.35 — runtime myp化 #32：console+test 框架包（print + @test 捕获/断言/报告）
+
+**非破坏性**。包 A 收官：把 print 输出路径与 @test 框架（捕获/断言/报告）一起 MYP
+化（之前因 C 内部 `myp_out_write`→`myp_capture_write` static 不可影、只影 print 会
+与 C 捕获缓冲不一致而推迟）。新增 2 个模块：
+
+- **`output.myp`**（print + 捕获）：`myp_print/println/print_int/print_long/
+  print_bool/flush` + `myp_test_capture_start/stop/get/contains/eq`。统一出口
+  `outWrite`：捕获态（`@static Cap.on`）追加 MYP 捕获缓冲（arena 增长），否则
+  `write(fd=1)` 直接写 stdout（镜像 C myp_out_write → capture / fputs）。
+  stdout 无缓冲（直接 syscall）→ `myp_flush` 空操作。格式化复用 num.myp
+  （`myp_to_string_i32/i64`）。**`myp_print_float` 已在 float.myp**（经 `__myp_print`
+  → 本模块 `myp_print`，自动接捕获，无需改）。
+- **`test.myp`**（断言 + 报告）：`myp_assert/assert_msg/assert_eq/assert_neq/
+  assert_long_eq/assert_long_neq/assert_str_eq/assert_str_neq/assert_float_neq/
+  assert_null/assert_not_null/assert_abort` + `myp_test_set_msg/fail_msg/report/
+  summary`。语义镜像 C：**@test 按退出码验证**（run_tests.sh 查 exit）、断言失败走
+  **stderr**（fd=2，不经 stdout 捕获）、待消费消息（`myp_test_set_msg`）**仅失败
+  消费并清空**（通过时遗留，同 C 行为）、`myp_test_report/summary` 直接 stdout
+  （不经捕获，同 C printf）、`myp_test_summary` 返回 fail>0 ? 1 : 0（@test main
+  退出码）。`myp_assert_null/not_null` 用 long 参数（指针地址，ABI 兼容）。
+- **验证**：`rt_pkgA2_test`（pass 路径：print+捕获拼接/eq/contains/断言通过/
+  summary=0）+ `rt_pkgA_fail_test`（fail 路径：故意失败断言 → stderr `1 != 2`/
+  `custom msg`/空 detail + summary=1）。build.sh 加**按测试期望退出码**逻辑
+  （rt_pkgA_fail_test 期望 exit 1）。shadow **21 项**（20 exit0 + fail 探针 exit1）、
+  bootstrap 16/16（fixpoint `c998455d` 不变，编译器未改）、全量 323/323。
+
 ### v3.15.34 — runtime myp化 #31：包 A 残留薄层（str_parse_int_opt + diag_arena）
 
 **非破坏性**。包 A 第一批（无前置快赢），新增 3 个 MYP shadow + 审计修正：

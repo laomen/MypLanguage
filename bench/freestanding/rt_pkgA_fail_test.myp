@@ -1,0 +1,25 @@
+// rt_pkgA_fail_test.myp — console+test 包 fail 路径验证：故意失败断言（stderr
+// 输出 + curMsg 消费逻辑）→ myp_test_summary 返回 1 → main 退出 1。
+// build.sh 特例期望本程序 exit=1（验证断言确实能检测失败）。
+ffi void myp_assert(int c);
+ffi void myp_assert_eq(int a, int b);
+ffi void myp_assert_str_eq(string a, string b);
+ffi void myp_test_set_msg(string m);
+ffi int myp_test_summary(int n);
+
+class PkgAFailProbe {
+    static:
+        int run() {
+            myp_assert(1 == 1);            // pass
+            myp_assert_eq(1, 2);           // FAIL → stderr "1 != 2"
+            myp_test_set_msg("custom msg");// 待消费消息
+            myp_assert_str_eq("x", "y");   // FAIL → 用 custom msg（并清空）
+            myp_assert(0);                 // FAIL → 无消息（已消费）→ 空 detail
+            int r = myp_test_summary(4);   // 1 pass / 3 fail → 返回 1
+            return r;
+        }
+}
+
+int main() {
+    return PkgAFailProbe.run();
+}

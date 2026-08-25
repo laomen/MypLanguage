@@ -1,0 +1,55 @@
+// rt_pkgA2_test.myp — console+test 包验证（pass 路径）：print 输出 + @test 捕获 +
+// 断言通过 + summary 返回 0（main 退出 0）。
+ffi void myp_print(string s);
+ffi void myp_println(string s);
+ffi void myp_print_int(int v);
+ffi void myp_print_bool(int v);
+ffi void myp_test_capture_start();
+ffi void myp_test_capture_stop();
+ffi string myp_test_capture_get();
+ffi int myp_test_capture_eq(string e);
+ffi int myp_test_capture_contains(string sub);
+ffi void myp_assert(int c);
+ffi void myp_assert_eq(int a, int b);
+ffi void myp_assert_neq(int a, int b);
+ffi void myp_assert_long_eq(long a, long b);
+ffi void myp_assert_str_eq(string a, string b);
+ffi void myp_assert_str_neq(string a, string b);
+ffi int myp_test_summary(int n);
+
+class PkgA2Probe {
+    static:
+        int run() {
+            // --- 捕获 + print（顺序拼接验证）---
+            myp_test_capture_start();
+            myp_print("hello");
+            myp_println(" world");
+            myp_print_int(42);
+            myp_print_bool(1);
+            string got = myp_test_capture_get();
+            if (got != "hello world\n42\ntrue") return 1;
+            if (myp_test_capture_eq("hello world\n42\ntrue") != 1) return 2;
+            if (myp_test_capture_contains("world") != 1) return 3;
+            if (myp_test_capture_contains("xyz") != 0) return 4;
+            myp_test_capture_stop();
+            // 停止后再捕获为空
+            myp_test_capture_start();
+            myp_test_capture_stop();
+            if (myp_test_capture_eq("") != 1) return 5;
+            // --- 断言通过路径 ---
+            myp_assert(1 == 1);
+            myp_assert_eq(2 + 2, 4);
+            myp_assert_neq(1, 2);
+            myp_assert_long_eq(1000L, 1000L);
+            myp_assert_str_eq("hi", "hi");
+            myp_assert_str_neq("a", "b");
+            // --- summary 返回 0（全过）---
+            int r = myp_test_summary(6);
+            if (r != 0) return 6;
+            return 0;
+        }
+}
+
+int main() {
+    return PkgA2Probe.run();
+}
