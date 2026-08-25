@@ -11,6 +11,7 @@
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/IR/InlineAsm.h>
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/MC/TargetRegistry.h>
 #include <llvm/Support/FileSystem.h>
@@ -2179,6 +2180,49 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                 if (v->getType()->isFloatingPointTy())
                     return builder_.CreateFPToSI(v, llvm::Type::getInt32Ty(ctx_));
                 return v;
+            }
+            // libmyp/freestanding 探针：__myp_syscall(n, a0..a5) → long。
+            // x86-64 原始 syscall（rax=号，rdi/rsi/rdx/r10/r8/r9=参数，结果回 rax），
+            // 不经 runtime.c / libc——供静态 freestanding（无 CRT、无 libc）使用。
+            else if (id.name == "__myp_syscall") {
+                if (e.args.size() != 7) {
+                    diag_.error(e.range, "__myp_syscall requires 7 arguments (n, a0..a5)");
+                    return llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0);
+                }
+                auto to_i64 = [&](llvm::Value* v) -> llvm::Value* {
+                    if (!v) v = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0);
+                    if (v->getType()->isPointerTy())
+                        return builder_.CreatePtrToInt(v, llvm::Type::getInt64Ty(ctx_));
+                    if (v->getType()->isIntegerTy() &&
+                        v->getType()->getIntegerBitWidth() < 64)
+                        return builder_.CreateSExt(v, llvm::Type::getInt64Ty(ctx_));
+                    return v;
+                };
+                std::vector<llvm::Value*> av;
+                for (auto& a : e.args) av.push_back(to_i64(generateExpr(*a)));
+                while (av.size() < 7)
+                    av.push_back(llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0));
+                auto* i64 = llvm::Type::getInt64Ty(ctx_);
+                auto* asm_ft = llvm::FunctionType::get(i64,
+                    std::vector<llvm::Type*>(7, i64), false);
+                auto* ia = llvm::InlineAsm::get(asm_ft, "syscall",
+                    "={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},"
+                    "~{rcx},~{r11},~{memory}",
+                    true, false, llvm::InlineAsm::AD_ATT);
+                return builder_.CreateCall(asm_ft, ia, av, "syscall");
+            }
+            // libmyp/freestanding 探针：__myp_str_ptr(s) → long。
+            // 返回 MYP 字符串的数据指针地址（String 值本身即数据字节指针，头部
+            // 在 data-8 —— 见 generateStringLiteral 返回的 bytes 指针）。
+            else if (id.name == "__myp_str_ptr") {
+                if (e.args.size() < 1) {
+                    diag_.error(e.range, "__myp_str_ptr requires 1 argument (string)");
+                    return llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0);
+                }
+                llvm::Value* s = generateExpr(*e.args[0]);
+                if (s->getType()->isPointerTy())
+                    return builder_.CreatePtrToInt(s, llvm::Type::getInt64Ty(ctx_));
+                return llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0);
             }
             // P2 §5.3 位操作原语：popcount/clz/ctz/bitreverse/rotl/rotr
             else if (id.name == "popcount" || id.name == "clz" ||

@@ -1312,9 +1312,17 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
                     auto& call = static_cast<CallExpr&>(*es.expression);
                     bool is_event_call = call.callee->kind == ExprKind::Identifier;
                     if (is_event_call) {
-                        error(es.expression->range,
-                            "direct function call not allowed in main() — use mapping() instead");
-                        return {};
+                        auto& cid = static_cast<const IdentifierExpr&>(*call.callee);
+                        // __myp_* 编译器内建（内联汇编/直发 LLVM，不经 runtime 与
+                        // mapping）：允许 main() 内直调——freestanding/libmyp 探针
+                        // （档B）需要 main() 直接 __myp_syscall。
+                        if (cid.name.rfind("__myp_", 0) == 0) {
+                            // 放行：落到下方 visitExpr 正常处理
+                        } else {
+                            error(es.expression->range,
+                                "direct function call not allowed in main() — use mapping() instead");
+                            return {};
+                        }
                     }
                     // For member access calls, allow struct method calls
                     if (call.callee->kind == ExprKind::MemberAccess) {
@@ -2762,6 +2770,12 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_flush", TypeKind::Void, {});
     // string to double
     add_intrinsic("__myp_atof", TypeKind::Double, {TypeKind::String});
+    // libmyp/freestanding 探针：原始 syscall（x86-64）与字符串数据指针。
+    // 不经 runtime.c / libc —— 供静态 freestanding（无 CRT、无 libc）使用。
+    add_intrinsic("__myp_syscall", TypeKind::Long,
+                  {TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long,
+                   TypeKind::Long, TypeKind::Long, TypeKind::Long});
+    add_intrinsic("__myp_str_ptr", TypeKind::Long, {TypeKind::String});
     // non-blocking keyboard
     add_intrinsic("__myp_kbhit", TypeKind::Int, {});
     add_intrinsic("__myp_getch", TypeKind::Int, {});

@@ -1,0 +1,5 @@
+# 档B 构建产物（MYP→obj→静态 ELF 全流程产物，勿提交）
+hello_fs
+hello_fs.myp.ll
+hello_fs.ll
+*.o

@@ -1153,11 +1153,13 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val, const Expr* src) {
             }
         }
         // Process pending events on main thread
-        if (runtime_event_process_all_) {
+        // （--freestanding：无 runtime.c，程序只依赖 __myp_syscall 等内建 → 跳过）
+        if (runtime_event_process_all_ && !freestanding_mode_) {
             builder_.CreateCall(runtime_event_process_all_, {});
         }
         // Free all allocations made by main thread
-        if (runtime_free_all_) {
+        // （--freestanding：同上，无 myp_free_all）
+        if (runtime_free_all_ && !freestanding_mode_) {
             builder_.CreateCall(runtime_free_all_, {});
         }
     }

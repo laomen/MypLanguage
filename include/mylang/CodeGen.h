@@ -997,6 +997,9 @@ private:
     bool library_mode_ = false;
     bool test_mode_ = false;
     bool debug_mode_ = false;
+    // --freestanding（档B 探针）：main 收尾不注入 myp_event_process_all/myp_free_all
+    // （无 CRT、无 runtime.c、无 libc 的静态 ELF；程序只依赖 __myp_syscall 等内建）。
+    bool freestanding_mode_ = false;
     std::string myp_passes_; // --passes=<name>: run custom MYP pass pipeline
 
     // ---- DWARF debug info (DIBuilder) ----
@@ -1022,6 +1025,7 @@ public:
     void setLibraryMode(bool v) { library_mode_ = v; }
     void setTestMode(bool v) { test_mode_ = v; }
     void setDebugMode(bool v) { debug_mode_ = v; }
+    void setFreestanding(bool v) { freestanding_mode_ = v; }
     void setMypPasses(const std::string& v) { myp_passes_ = v; }
     bool saveIR(const std::string& path) const;
 

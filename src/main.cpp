@@ -507,7 +507,8 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
                                             const std::string& passes,
                                             bool macro_expand,
                                             mylang::DiagnosticEngine& diag,
-                                            bool auto_main = false) {
+                                            bool auto_main = false,
+                                            bool freestanding = false) {
     // === Phase 3b: Macro expansion (declarative `macro` + @macro proc-macro) ===
     bool has_any_macro = !ast.macros.empty();
     if (!has_any_macro) {
@@ -566,6 +567,7 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
     codegen.setLibraryMode(library_mode);
     codegen.setTestMode(test_mode);
     codegen.setDebugMode(debug);
+    codegen.setFreestanding(freestanding);
     codegen.setMypPasses(passes);
     std::string obj_path = codegen.generate(ast, output_fn, opt_level);
     phaseMark("codegen");
@@ -602,7 +604,8 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
                                   bool debug = false,
                                   const std::string& passes = "",
                                   bool macro_expand = false,
-                                  bool auto_main = false) {
+                                  bool auto_main = false,
+                                  bool freestanding = false) {
     mylang::SourceManager source_mgr;
     if (!source_mgr.loadFile(filename)) {
         std::cerr << "Error: cannot open file '" << filename << "'\n";
@@ -645,7 +648,7 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
     }
     phaseMark("imports");
 
-    return doCompile(*ast, filename, opt_level, emit_llvm, library_mode, test_mode, debug, passes, macro_expand, diag, auto_main);
+    return doCompile(*ast, filename, opt_level, emit_llvm, library_mode, test_mode, debug, passes, macro_expand, diag, auto_main, freestanding);
 }
 
 [[nodiscard]] static bool linkObjects(const std::vector<std::string>& obj_files,
@@ -1226,6 +1229,7 @@ static int realMain(int argc, char* argv[]) {
     bool test_mode = false;
     bool debug_mode = false;
     bool macro_expand = false;
+    bool freestanding = false;
     std::string passes;
     std::vector<std::string> filenames;
     int i = 1;
@@ -1247,6 +1251,8 @@ static int realMain(int argc, char* argv[]) {
             std::cout << "  --trace         Enable runtime event tracing\n";
             std::cout << "  --shared        Build shared library (.so)\n";
             std::cout << "  --static        Build static library (.a)\n";
+            std::cout << "  --freestanding  Skip runtime cleanup in main() epilogue\n";
+            std::cout << "                  (无 CRT/runtime.c/libc 的静态 ELF，档B)\n";
             std::cout << "  --emit-llvm     Save LLVM IR to .ll file (skip linking)\n";
             std::cout << "  --test          Build and run tests (generate test runner)\n";
             std::cout << "  -g, --debug     Emit DWARF debug info (line/var/type)\n";
@@ -1272,6 +1278,8 @@ static int realMain(int argc, char* argv[]) {
             shared_lib = true;
         } else if (arg == "--static") {
             static_lib = true;
+        } else if (arg == "--freestanding") {
+            freestanding = true;
         } else if (arg == "--test") {
             test_mode = true;
         } else if (arg == "-g" || arg == "--debug") {
@@ -1340,13 +1348,13 @@ static int realMain(int argc, char* argv[]) {
         if (filenames.size() > 1) {
             std::cerr << "Warning: --emit-llvm only supported for single file\n";
         }
-        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, true, library_mode, test_mode, debug_mode, passes, macro_expand);
+        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, true, library_mode, test_mode, debug_mode, passes, macro_expand, false, freestanding);
         return obj.empty() ? 1 : 0;
     }
 
     if (filenames.size() == 1) {
         // Single file: use simple compile + link
-        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, false, library_mode, test_mode, debug_mode, passes, macro_expand);
+        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, false, library_mode, test_mode, debug_mode, passes, macro_expand, false, freestanding);
         if (obj.empty()) return 1;
         if (!linkObjects({obj}, output_name_v, stdlib_path, trace_enabled, shared_lib, static_lib))
             return 1;
@@ -1423,7 +1431,7 @@ static int realMain(int argc, char* argv[]) {
     }
 
     // Single sema + codegen pass on merged AST
-    std::string obj_path = doCompile(*merged, filenames[0], opt_level, false, library_mode, test_mode, debug_mode, passes, macro_expand, diag);
+    std::string obj_path = doCompile(*merged, filenames[0], opt_level, false, library_mode, test_mode, debug_mode, passes, macro_expand, diag, false, freestanding);
     if (obj_path.empty()) return 1;
 
     // Link

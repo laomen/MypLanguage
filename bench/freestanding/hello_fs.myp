@@ -1,0 +1,11 @@
+// freestanding hello —— 不走 runtime.c / libc，仅用 __myp_syscall / __myp_str_ptr。
+// 证明 MYP 能脱离 libc 产出可运行 ELF（档B 探针）。
+// 编译/链接见 build.sh：mypc --emit-llvm → llc → as(_start) → ld -nostdlib -static。
+
+int main() {
+    // write(1, "Hello from MYP freestanding!\n", 29) —— syscall 号 1
+    __myp_syscall(1, 1, __myp_str_ptr("Hello from MYP freestanding!\n"), 29, 0, 0, 0);
+    // exit(0) —— syscall 号 60
+    __myp_syscall(60, 0, 0, 0, 0, 0, 0);
+    return 0;
+}
