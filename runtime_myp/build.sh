@@ -5,6 +5,8 @@
 # 前置：./build/myp_self 已重建（含 raw-memory 内建 + preamble declare 剔除）。
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# 自举链：oracle 种子只编译 selfhost 源码；runtime_myp 模块由不动点 selfhost
+# 编译器（myp_self/myp_self2）编译（全特性）；$1 可覆盖。
 SELF="${1:-./build/myp_self}"
 LLC="${LLC:-llc-21}"
 OUT="${OUT:-/tmp/rt_myp_out}"
@@ -23,6 +25,13 @@ for m in runtime_myp/*.myp; do
     "$LLC" "/tmp/rt_myp_${base}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_myp_${base}.o"
     RT_OBJS="$RT_OBJS /tmp/rt_myp_${base}.o"
 done
+
+# 归档：libmyp_rt_myp.a（随编译器分发，de-gcc 关键）。oracle/selfhost 链接程序时
+# 默认在 <编译器二进制旁>/build/ 找到它 → 跳过 MYP 化 bridge 的 gcc 编译 + 置于
+# libmyp_rt.a 前 + --allow-multiple-definition（MYP 定义优先）。
+rm -f build/libmyp_rt_myp.a
+ar rcs build/libmyp_rt_myp.a $RT_OBJS
+echo "== 归档 build/libmyp_rt_myp.a （$(echo $RT_OBJS | wc -w) 个模块对象）=="
 
 # 每个 shadow 验证程序单独链接+运行（都有各自 main()）
 for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
