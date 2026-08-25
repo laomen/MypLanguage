@@ -460,10 +460,18 @@ const char* myp_read_line(void) {
     return myp_strdup(buf);
 }
 
-// String length
+// Counted strings carry a 12-byte header { len:u32, rc:u32, type_id:u32 } at
+// data-12/data-8/data-4 (len excludes the NUL terminator). rc/type_id stay at
+// the SAME data-8/data-4 offsets as class objects so myp_retain / myp_release
+// dispatch uniformly; only the string allocator / free / in-place-append paths
+// (which need the block base) use this larger header size. myp_strlen is O(1).
+#define MYP_STR_HEADER_SIZE 12
+
+// String length — O(1): read the len field at data-12 (every counted string has
+// it: myp_alloc_str heap strings, compiler-emitted literals, MYP shadow alloc).
 int32_t myp_strlen(const char* s) {
     if (!s) return 0;
-    return (int32_t)strlen(s);
+    return (int32_t)((const uint32_t*)(s - MYP_STR_HEADER_SIZE))[0];
 }
 
 // Convert a character code to a single-character string
@@ -1375,23 +1383,25 @@ void* myp_alloc_object(size_t size, uint32_t type_id) {
 }
 
 static void* myp_alloc_str(size_t size) {
-    // Counted string: {node, {rc=1, type_id=STR}, bytes}. Same 8-byte header
-    // layout as class objects, so myp_retain (reads data-8) and myp_release
-    // (reads data-4 -> MYP_STR_TYPE_ID) work uniformly on strings, objects,
-    // and arrays. Strings are immutable and shared by value; the count is a
-    // handle count, and myp_release frees the block at zero (medium lifetime
-    // is now reclaimed, not held to process exit).
+    // Counted string: {node, {len, rc=1, type_id=STR}, bytes}. 12-byte header;
+    // len at data-12 (excl. NUL) makes myp_strlen O(1); rc/type_id at the same
+    // data-8/data-4 offsets as class objects, so myp_retain and myp_release's
+    // type dispatch work uniformly on strings, objects, and arrays. Strings
+    // are immutable and shared by value; the count is a handle count, and
+    // myp_release frees the block at zero (medium lifetime is now reclaimed,
+    // not held to process exit).
     size_t total;
-    if (myp_add_overflow(sizeof(myp_alloc_node_t) + MYP_OBJ_HEADER_SIZE, size, &total))
+    if (myp_add_overflow(sizeof(myp_alloc_node_t) + MYP_STR_HEADER_SIZE, size, &total))
         myp_oom(size);
     myp_alloc_node_t* node = (myp_alloc_node_t*)myp_xmalloc(total);
     char* base = (char*)node + sizeof(myp_alloc_node_t);
-    myp_obj_header_t* h = (myp_obj_header_t*)base;
+    ((uint32_t*)base)[0] = (uint32_t)(size - 1);       // len (excl. NUL)
+    myp_obj_header_t* h = (myp_obj_header_t*)(base + 4);
     h->rc = 1;
     h->type_id = MYP_STR_TYPE_ID;
     myp_alloc_list_push(node);
     myp_live_strings++;
-    return base + MYP_OBJ_HEADER_SIZE;  // data bytes
+    return base + MYP_STR_HEADER_SIZE;  // data bytes
 }
 
 void myp_retain(void* obj) {
@@ -1608,9 +1618,10 @@ uint32_t myp_release(void* obj) {
             // MYP_ARR_ELEM_SCALAR: no per-element release.
             myp_free_class_array(obj);
         }
-        // Counted string: free the {node, header, bytes} block.
+        // Counted string: free the {node, header, bytes} block. Header is the
+        // 12-byte string header (len at data-12, rc/type_id at data-8/data-4).
         else if (tid == MYP_STR_TYPE_ID) {
-            char* base = (char*)obj - MYP_OBJ_HEADER_SIZE;
+            char* base = (char*)obj - MYP_STR_HEADER_SIZE;
             myp_alloc_node_t* node =
                 (myp_alloc_node_t*)(base - sizeof(myp_alloc_node_t));
             myp_alloc_list_remove(node);
@@ -2057,22 +2068,25 @@ char* myp_str_append(char* s, const char* x) {
     if (h->type_id == MYP_STR_TYPE_ID &&
         atomic_load_explicit(&h->rc, memory_order_relaxed) == 1) {
         // Unique counted string → in-place: unlink the intrusive alloc-list
-        // node (realloc may move the block), realloc, relink, extend.
-        char* base = (char*)s - MYP_OBJ_HEADER_SIZE;
+        // node (realloc may move the block), realloc, relink, extend. Strings
+        // use the 12-byte header; the block base is s-12 (rc/type_id stay at
+        // data-8/-4, so h above is still valid). Update the len field too.
+        char* base = (char*)s - MYP_STR_HEADER_SIZE;
         myp_alloc_node_t* node = (myp_alloc_node_t*)(base - sizeof(myp_alloc_node_t));
         size_t new_len, new_total;
         if (!myp_add_overflow(la, lb, &new_len) &&
             !myp_add_overflow(new_len, 1, &new_len) &&
-            !myp_add_overflow(sizeof(myp_alloc_node_t) + MYP_OBJ_HEADER_SIZE,
+            !myp_add_overflow(sizeof(myp_alloc_node_t) + MYP_STR_HEADER_SIZE,
                               new_len, &new_total)) {
             myp_alloc_list_remove(node);
             void* nb = realloc(node, new_total);
             if (nb) {
                 myp_alloc_node_t* nn = (myp_alloc_node_t*)nb;
                 myp_alloc_list_push(nn);
-                char* nd = (char*)nn + sizeof(myp_alloc_node_t) + MYP_OBJ_HEADER_SIZE;
+                char* nd = (char*)nn + sizeof(myp_alloc_node_t) + MYP_STR_HEADER_SIZE;
                 memcpy(nd + la, x, lb);
                 nd[la + lb] = '\0';
+                ((uint32_t*)nd)[-3] = (uint32_t)(la + lb);   // len at nd-12
                 return nd;
             }
             myp_alloc_list_push(node);   // realloc failed → restore, fall back

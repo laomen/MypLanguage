@@ -67,15 +67,19 @@ int32_t myp_uds_send(int32_t fd, const char* data) {
     return (int32_t)send(fd, data, len, 0);
 }
 
-// 接收最多 max_len 字节（GC 分配，同 myp_net_recv）
+// 接收最多 max_len 字节（GC 分配，同 myp_net_recv；返回串按实际长度构建，
+// 使 len 字段（data-12）= 实收字节数而非 scratch cap）
 char* myp_uds_recv(int32_t fd, int32_t max_len) {
     if (max_len <= 0) max_len = 4096;
     char* buf = (char*)myp_alloc((size_t)max_len + 1);
     if (!buf) return NULL;
     int n = (int)recv(fd, buf, (size_t)max_len, 0);
-    if (n <= 0) { buf[0] = '\0'; return buf; }
-    buf[n] = '\0';
-    return buf;
+    if (n <= 0) { char* e = (char*)myp_alloc(1); if (e) e[0] = '\0'; return e; }
+    char* r = (char*)myp_alloc((size_t)n + 1);
+    if (!r) return buf;
+    memcpy(r, buf, (size_t)n);
+    r[n] = '\0';
+    return r;
 }
 
 // 接收一行（直到 \n，不含 \r\n）

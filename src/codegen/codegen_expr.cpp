@@ -157,26 +157,27 @@ llvm::Value* CodeGen::generateBoolLiteral(const BoolLiteralExpr& e) {
 
 llvm::Value* CodeGen::generateStringLiteral(const StringLiteralExpr& e) {
     // M8 strings: emit an IMMORTAL counted string global —
-    // { rc=0x7FFFFFFF, type_id=MYP_STR_TYPE_ID, [N x i8] bytes }. myp_release
-    // on a literal decrements the huge rc but never reaches zero, so any ARC
-    // slot that aliases a literal releases safely (static, never freed).
-    // Type_id 0xFFFFFFFE == MYP_STR_TYPE_ID in runtime.c.
+    // { len, rc=0x7FFFFFFF, type_id=MYP_STR_TYPE_ID, [N x i8] bytes }. len (at
+    // data-12, excl. NUL) makes myp_strlen O(1). rc/type_id stay at the same
+    // data-8/data-4 offsets as class objects so retain/release dispatch
+    // uniformly. myp_release on a literal decrements the huge rc but never
+    // reaches zero, so any ARC slot that aliases a literal releases safely
+    // (static, never freed).
     // NOTE: the global must be WRITABLE (not `constant`), because myp_retain/
     // myp_release bump the header's rc field; a read-only section would fault.
-    // The rc starts huge so it never reaches zero — the literal is immortal
-    // while still being a uniform counted string for every ARC slot.
     auto* bytes = llvm::ConstantDataArray::getString(ctx_, e.value, true);
     auto* i32 = llvm::Type::getInt32Ty(ctx_);
     auto* st = llvm::StructType::get(ctx_,
-        {i32, i32, bytes->getType()}, false);
+        {i32, i32, i32, bytes->getType()}, false);
     auto* init = llvm::ConstantStruct::get(st, {
+        llvm::ConstantInt::get(i32, (uint64_t)e.value.size()),  // len (excl. NUL)
         llvm::ConstantInt::get(i32, 0x7FFFFFFF),   // rc — immortal
         llvm::ConstantInt::get(i32, 0xFFFFFFFE),   // MYP_STR_TYPE_ID
         bytes});
     auto* gv = new llvm::GlobalVariable(*module_, st, false /*writable*/,
         llvm::GlobalValue::PrivateLinkage, init, "str");
     gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-    return builder_.CreateConstGEP2_32(st, gv, 0, 2);  // bytes pointer
+    return builder_.CreateConstGEP2_32(st, gv, 0, 3);  // bytes pointer
 }
 
 llvm::Value* CodeGen::generateNullLiteral(const NullLiteralExpr&) {

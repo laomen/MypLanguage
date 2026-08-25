@@ -11244,7 +11244,9 @@ class CodeGen {
         }
 
         // 字符串字面量 → 全局常量 + GEP 到 data ptr。
-        // M8：immortal counted string { rc=0x7FFFFFFF, type_id=0xFFFFFFFE, [N x i8] }。
+        // M8：immortal counted string { len, rc=0x7FFFFFFF, type_id=0xFFFFFFFE,
+        // [N x i8] }。len 在 data-12（不含 NUL）→ myp_strlen O(1)；rc/type_id
+        // 仍在 data-8/data-4（与类对象同偏移，retain/release 统一分发）。
         string stringLiteral(string val) {
             int n = Str.len(val);
             string gvName = "@str";
@@ -11252,8 +11254,8 @@ class CodeGen {
             strCounter_ = strCounter_ + 1;
             string sz = "" + (n + 1);
             string body = escapeLlvmString(val);
-            stringGlobals_.append(gvName + " = private unnamed_addr global { i32, i32, [" + sz + " x i8] } { i32 2147483647, i32 -2, [" + sz + " x i8] c\"" + body + "\\00\" }\n");
-            return "getelementptr ({ i32, i32, [" + sz + " x i8] }, ptr " + gvName + ", i32 0, i32 2)";
+            stringGlobals_.append(gvName + " = private unnamed_addr global { i32, i32, i32, [" + sz + " x i8] } { i32 " + n + ", i32 2147483647, i32 -2, [" + sz + " x i8] c\"" + body + "\\00\" }\n");
+            return "getelementptr ({ i32, i32, i32, [" + sz + " x i8] }, ptr " + gvName + ", i32 0, i32 3)";
         }
 
         // LLVM c"..." 转义（\0A 换行 \09 tab \0D CR \22 引号 \5C 反斜杠 \00 NUL）。

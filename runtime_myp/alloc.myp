@@ -66,12 +66,13 @@ long myp_arena_alloc(long size) {
 // (+1)。因此内部 rc 设 0，让该 retain 补成 1（等价正常代码 new 后 return 的净
 // rc=1）。若设 1 会被 return 再 +1 → 净 rc=2（调用方 release 到 1 不归零=泄漏）。
 string myp_alloc(long size) {
-    long base = myp_arena_alloc(8 + size);
+    long base = myp_arena_alloc(12 + size);
     if (base == 0) return "";   // OOM（MYP 惯例：空串替代 NULL）
-    __myp_mem_store_i32(base, 0);        // rc=0（return 时 retain-on-return → 1）
-    __myp_mem_store_i32(base + 4, -2);   // type_id = 0xFFFFFFFE
+    __myp_mem_store_i32(base, int(size - 1));   // len = size-1（不含 NUL，data-12）
+    __myp_mem_store_i32(base + 4, 0);           // rc=0（return 时 retain-on-return → 1）
+    __myp_mem_store_i32(base + 8, -2);          // type_id = 0xFFFFFFFE
     Live.strings = Live.strings + 1;
-    return __myp_addr_to_str(base + 8);  // data
+    return __myp_addr_to_str(base + 12);        // data
 }
 
 // C: void* myp_alloc_object(size_t size, uint32_t type_id)

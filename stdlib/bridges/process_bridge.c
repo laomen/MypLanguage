@@ -55,7 +55,11 @@ char* myp_process_output(const char* cmd) {
     }
     buf[len] = '\0';
     pclose(fp);
-    return buf;
+    // 精确长度计数字符串：len 字段（data-12）= 实际输出长度，而非增长的 cap。
+    char* r = (char*)myp_alloc(len + 1);
+    if (!r) return buf;
+    memcpy(r, buf, len + 1);
+    return r;
 }
 
 int32_t myp_process_get_pid(void) { return (int32_t)_getpid(); }
@@ -131,7 +135,11 @@ char* myp_process_output(const char* cmd) {
     }
     buf[len] = '\0';
     pclose(fp);
-    return buf;
+    // 精确长度计数字符串：len 字段（data-12）= 实际输出长度，而非增长的 cap。
+    char* r = (char*)myp_alloc(len + 1);
+    if (!r) return buf;
+    memcpy(r, buf, len + 1);
+    return r;
 }
 
 // Get current process ID

@@ -190,21 +190,26 @@ int32_t myp_net_send(int32_t fd, const char* data) {
 }
 
 // Receive up to max_len bytes from a socket
-// Returns: string with received data (empty string on error/close)
+// Returns: string with received data (empty string on error/close).
+// NOTE: scratch buf is max_len+1 — the returned counted string is built at the
+// exact received length so its len field (data-12) is n, not the scratch cap.
 char* myp_net_recv(int32_t fd, int32_t max_len) {
     if (max_len <= 0) max_len = 4096;
     char* buf = (char*)myp_alloc((size_t)max_len + 1);
     if (!buf) return NULL;
 #if defined(_WIN32)
     SOCKET s = myp_win_fd_lookup((int)fd);
-    if (s == INVALID_SOCKET) { buf[0] = '\0'; return buf; }
+    if (s == INVALID_SOCKET) { char* e = (char*)myp_alloc(1); if (e) e[0] = '\0'; return e; }
     int n = (int)recv(s, buf, max_len, 0);
 #else
     int n = (int)recv(fd, buf, (size_t)max_len, 0);
 #endif
-    if (n <= 0) { buf[0] = '\0'; return buf; }
-    buf[n] = '\0';
-    return buf;
+    if (n <= 0) { char* e = (char*)myp_alloc(1); if (e) e[0] = '\0'; return e; }
+    char* r = (char*)myp_alloc((size_t)n + 1);
+    if (!r) return buf;
+    memcpy(r, buf, (size_t)n);
+    r[n] = '\0';
+    return r;
 }
 
 // Receive one line (until \n) from a socket

@@ -35,6 +35,30 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.21 — 字符串头 len 字段：myp_strlen O(1)（根治 __strlen_evex 热点）
+
+**非破坏性**。字符串 ABI 布局升级：计数字符串头从 8B `{rc, type_id}` 扩为
+**12B `{len, rc, type_id}`**（`len` 在 data-12，不含 NUL；`rc/type_id` 仍在
+data-8/-4 与类对象同偏移 → `myp_retain`/`myp_release`/`__myp_obj_type_id` 分发
+零改动，仅字符串分配/释放/原地 realloc 路径用 `MYP_STR_HEADER_SIZE=12`）。
+
+- **`myp_strlen` → O(1)**（C runtime + MYP shadow `str.myp` 都改读 len 字段）。
+  旧版 C 走 libc strlen（perf 自举 67% 热点）、MYP 版逐字节扫描，均每次 O(n)。
+  实证：200KB 串 × 200 万次 `Str.len` = **0.012s**（旧 O(n) 需扫 ~200GB）。
+- **写 len 点全覆盖**：C `myp_alloc_str`、MYP shadow `myp_alloc`（12B 头）、两
+  编译器字面量发射（`{i32 len, i32 rc, i32 type_id, [N x i8]}`，GEP 到元素 3）、
+  C `myp_str_append` 原地 realloc 同步更新 len。
+- **顺带修复 len 字段暴露的 3 处 bridge 潜伏 bug**（预分配 cap 缓冲直接返回 →
+  len 字段=cap 而非实际长度；旧 strlen 扫描掩盖）：`myp_net_recv`（超时/EOF 空
+  串 len=0、成功按实收 n 构建）、`myp_uds_recv`（同）、`myp_process_output`（按
+  实际输出长度构建）。`async_socket` 超时路径 `timeout_len=0` 恢复正确（此前实测
+  len=10 的 NUL 串）。
+- **构建顺序（bootstrap 一致性）**：先改自举 codegen 字面量 → 用旧编译器双重建
+  myp_self2（v1 新发射/旧内部、v2 新发射/新内部）→ 再切 C runtime + C++ 编译器
+  → 重建 libmyp_rt.a/mypc → 用 v2 构建 v3（新内部 + 新 runtime）为最终 myp_self2。
+- 验证：bootstrap 16/16（新定点 md5 `1def2c4e…`）、全量 323/323、shadow 6/6
+  （str/num/alloc/region/weak/io）、自举自编译 16.2s 持平。
+
 ### v3.15.20 — runtime myp化 #17：异步文件读接管（myp_coro_file_read_line/all 同步读）
 
 **非破坏性**。`runtime_myp/io.myp` 接管 C 的协程文件读入口

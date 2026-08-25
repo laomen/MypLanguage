@@ -9,15 +9,11 @@
 // C: void* myp_alloc(size_t) —— 计数字符串分配器（数据指针，8 字节头部在 data-8）
 ffi string myp_alloc(long size);
 
-// C: int32_t myp_strlen(const char* s) —— 遇 NUL 终止（与 C strlen 一致）
+// C: int32_t myp_strlen(const char* s) —— 字符串头 len 字段（data-12，O(1)）
 int myp_strlen(string s) {
-    int n = 0;
-    int i = 0;
-    while (__myp_charcode(s, i) != 0) {
-        n = n + 1;
-        i = i + 1;
-    }
-    return n;
+    long a = __myp_str_ptr(s);
+    if (a == 0) return 0;
+    return __myp_mem_load_i32(a - 12);
 }
 
 // C: int32_t myp_str_eq(const char* a, const char* b) —— 内容相等（1/0）
