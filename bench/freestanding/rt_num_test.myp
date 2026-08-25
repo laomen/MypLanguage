@@ -12,6 +12,7 @@ ffi string myp_to_string_u64(long v);
 ffi string myp_to_string_bool(int v);
 ffi string myp_f64_bits_hex(double v);
 ffi string myp_f32_bits_hex(float v);
+ffi int myp_crc32(string s);
 
 int main() {
     // parseLong（strtoll base-0：十进制/hex/八进制/负/空白/非法/空）
@@ -79,5 +80,18 @@ int main() {
     if (int(bo[1]) != 18) return 135;    // 0x12
     if (int(bo[2]) != 0) return 136;
     if (int(bo[3]) != 0) return 137;
+    // crc32 → myp_crc32（zlib 标准向量，Fmt.x 看十六进制位型）
+    if (Fmt.x(myp_crc32(""), 8) != "00000000") return 141;
+    if (Fmt.x(myp_crc32("a"), 8) != "e8b7be43") return 142;
+    if (Fmt.x(myp_crc32("hello"), 8) != "3610a686") return 143;
+    if (Fmt.x(myp_crc32("123456789"), 8) != "cbf43926") return 144;
+    // 加固：边缘用例
+    if (parseLong("0XFF") != 255) return 151;      // 大写 hex
+    if (parseLong("0") != 0) return 152;
+    if (parseLong("-0x10") != -16) return 153;
+    if (parseLong(" 123 ") != 123) return 154;
+    if (myp_to_string_i64(-1) != "-1") return 155;
+    if (myp_to_string_u64(long(1) << 63) != "9223372036854775808") return 156;  // u64 2^63
+    if (myp_to_string_u32(2147483647) != "2147483647") return 157;
     return 0;
 }

@@ -35,6 +35,18 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.13 — runtime myp化 #10：CRC-32 校验和 + shadow 加固边缘测试
+
+**非破坏性**。`runtime_myp/crc.myp` 新增 `myp_crc32`（zlib CRC-32，位运算法无查表，
+多项式 0xEDB88320，返回 32 位位型）。标准向量验证：`""`→00000000、`"a"`→e8b7be43、
+`"hello"`→3610a686、`"123456789"`→cbf43926（经典校验值）。
+
+**shadow 加固**：shadow 机制修复（#9）后 MYP 实现真正执行——rt_str_test 加 11 条、
+rt_num_test 加 7 条边缘用例（空 old 替换、纯空白 trim、尾分隔符 split、空前缀、
+大写 hex、u64 2^63 等）全部通过，未发现新 bug。
+
+验证：runtime_myp shadow PASS（str+num，MYP 版本真实执行）。
+
 ### v3.15.12 — runtime myp化 #9：base64 层 + **shadow 机制修复**（此前测试走 C runtime）+ 2 个真实 bug
 
 **非破坏性**。`runtime_myp/base64.myp` 新增 `myp_base64_encode`/`myp_base64_decode`

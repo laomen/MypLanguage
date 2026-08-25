@@ -150,5 +150,17 @@ int main() {
     if (Base64.decode("YWI=") != "ab") return 233;
     if (Base64.decode("YWJj") != "abc") return 234;
     if (Base64.decode(Base64.encode("The quick brown fox 0123456789")) != "The quick brown fox 0123456789") return 235;
+    // 加固：边缘用例（shadow 真生效后压一遍）
+    if (Str.substring("abc", 3, 3) != "") return 251;
+    if (Str.substring("abc", 2, 1) != "") return 252;
+    if (Str.replace("abc", "", "X") != "Xabc") return 253;   // 空 old → 前缀插入
+    if (Str.trim("   ") != "") return 254;                    // 纯空白 → 空
+    if (Str.toInt("+42") != 42) return 255;
+    if (Str.toInt("  0  ") != 0) return 256;
+    if (Str.splitGet("a,b,", ",", 2) != "") return 257;       // 尾分隔符
+    if (Str.startsWith("abc", "") != 1) return 258;            // 空前缀
+    if (Str.endsWith("abc", "") != 1) return 259;
+    if (Str.contains("abc", "") != 1) return 260;
+    if (Str.cmp("abc", "abd") != -1) return 261;
     return 0;
 }

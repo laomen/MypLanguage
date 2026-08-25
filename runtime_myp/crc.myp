@@ -1,0 +1,20 @@
+// runtime_myp/crc.myp — CRC-32 校验和 myp化（bridge hash_bridge.c 纯函数）。
+// shadow 机制同 str.myp（--shared 外部符号，置于 libmyp_rt.a 之前 + allow-multiple）。
+// 位运算法（无查表）：多项式 0xEDB88320（zlib CRC-32），返回 32 位位型。
+
+ffi string myp_alloc(long size);
+ffi int myp_strlen(string s);
+
+// C: int32_t myp_crc32(const char* msg) —— zlib CRC-32（init 0xFFFFFFFF，final XOR 0xFFFFFFFF）
+int myp_crc32(string s) {
+    ulong crc = ulong(4294967295);   // 0xFFFFFFFF
+    int len = myp_strlen(s);
+    for (int i = 0; i < len; i = i + 1) {
+        crc = crc ^ ulong(__myp_charcode(s, i));
+        for (int j = 0; j < 8; j = j + 1) {
+            if ((crc & 1) != 0) crc = (crc >> 1) ^ ulong(3988292384);   // 0xEDB88320
+            else crc = crc >> 1;
+        }
+    }
+    return int((crc ^ ulong(4294967295)) & ulong(4294967295));
+}
