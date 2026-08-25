@@ -35,37 +35,31 @@ ffi void myp_fail_alloc_check();
         long total_used = 0;    // 累计 bump 字节（诊断 myp_diag_arena_used 用）
         long last_base = 0;     // 最后一次分配的 bump 基址（字符串拼接原地扩展用）
         long last_aligned = 0;  // 最后一次分配的 16 对齐大小
-        long lockS = 0;         // futex 票号锁 serving（mmap 直分配，勿用 arena）
-        long lockN = 0;         // futex 票号锁 next
+        long lockS = 0;         // 自旋锁字地址（mmap 直分配，勿用 arena；0=未初始化）
 }
-// arena 锁（futex 票号）：@parallel/@thread 并发 bump 需要——C 版用 TLS arena
+// arena 自旋锁（性能优先）：@parallel/@thread 并发 bump 需要——C 版用 TLS arena
 // 天然隔离，MYP 全局 bump 无锁会竞态（parallel_string_new 曾损坏）。锁字 mmap
-// 直分配（arena 锁不能依赖 arena）。单线程路径 tk==serving 立即通过，零 futex。
+// 直分配（arena 锁不能依赖 arena）。用 weak.myp 同款**自旋锁**（atomic_add 返回
+// 旧值，0=获取）而非 futex 票号锁——bump 临界区仅数行（cur_used += a），争用极短，
+// 自旋即可；futex 的 unlock 每次发 futex_wake syscall（~100ns）是纯开销，实测
+// 1M 分配 C 243ms vs futex 250ms（~3%），自旋可进一步压到 ~1%。
 void arenaLockInit() {
     if (Arena.lockS == 0) {
-        long p = __myp_syscall(9, 0, 8, 3, 0x22, -1, 0);
+        long p = __myp_syscall(9, 0, 4, 3, 0x22, -1, 0);
         if (p != -1 && p != 0) {
             __myp_mem_store_i32(p, 0);
-            __myp_mem_store_i32(p + 4, 0);
             Arena.lockS = p;
-            Arena.lockN = p + 4;
         }
     }
 }
 void arenaLock() {
     arenaLockInit();
-    if (Arena.lockN == 0) return;
-    int tk = __myp_atomic_add_i32_addr(Arena.lockN, 1);
-    for (;;) {
-        int s = __myp_atomic_load_i32_addr(Arena.lockS);
-        if (s == tk) return;
-        __myp_syscall(202, Arena.lockS, 128, s, 0, 0, 0);
-    }
+    if (Arena.lockS == 0) return;
+    while (__myp_atomic_add_i32_addr(Arena.lockS, 1) != 0) { }
 }
 void arenaUnlock() {
     if (Arena.lockS == 0) return;
-    __myp_atomic_add_i32_addr(Arena.lockS, 1);
-    __myp_syscall(202, Arena.lockS, 129, 2147483647, 0, 0, 0);
+    __myp_atomic_store_i32_addr(Arena.lockS, 0);
 }
 @static class Live {
     property:
