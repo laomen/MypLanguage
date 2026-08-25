@@ -112,3 +112,152 @@ string myp_hash_sha256(string s) {
     __myp_mem_store_i8(dp + 64, 0);
     return r;
 }
+
+// C: char* myp_hash_md5(const char* msg) —— RFC 1321，小端处理，32 位小写 hex。
+// 标准向量：""→d41d8cd98f00b204e9800998ecf8427e、"abc"→900150983cd24fb0d6963f7d
+// 28e17f72。左旋用 (x<<n)|(x>>(32-n))（S 无 0，无移位 UB）。
+string myp_hash_md5(string s) {
+    int len = myp_strlen(s);
+    int newlen = ((len + 8) / 64 + 1) * 64;
+    ubyte[] buf = new ubyte[newlen];
+    for (int i = 0; i < len; i = i + 1) buf[i] = ubyte(__myp_charcode(s, i));
+    buf[len] = ubyte(128);                       // 0x80
+    long bitlen = long(len) * 8;                 // 64 位小端位长
+    for (int i = 0; i < 8; i = i + 1) {
+        buf[newlen - 8 + i] = ubyte(int(bitlen >> (8 * i)) & 255);
+    }
+    // 轮常量 K（前 64 素数小数部分 ×2^32）与移位 S
+    uint[64] K;
+    K[0] = uint(0xd76aa478); K[1] = uint(0xe8c7b756); K[2] = uint(0x242070db); K[3] = uint(0xc1bdceee);
+    K[4] = uint(0xf57c0faf); K[5] = uint(0x4787c62a); K[6] = uint(0xa8304613); K[7] = uint(0xfd469501);
+    K[8] = uint(0x698098d8); K[9] = uint(0x8b44f7af); K[10] = uint(0xffff5bb1); K[11] = uint(0x895cd7be);
+    K[12] = uint(0x6b901122); K[13] = uint(0xfd987193); K[14] = uint(0xa679438e); K[15] = uint(0x49b40821);
+    K[16] = uint(0xf61e2562); K[17] = uint(0xc040b340); K[18] = uint(0x265e5a51); K[19] = uint(0xe9b6c7aa);
+    K[20] = uint(0xd62f105d); K[21] = uint(0x02441453); K[22] = uint(0xd8a1e681); K[23] = uint(0xe7d3fbc8);
+    K[24] = uint(0x21e1cde6); K[25] = uint(0xc33707d6); K[26] = uint(0xf4d50d87); K[27] = uint(0x455a14ed);
+    K[28] = uint(0xa9e3e905); K[29] = uint(0xfcefa3f8); K[30] = uint(0x676f02d9); K[31] = uint(0x8d2a4c8a);
+    K[32] = uint(0xfffa3942); K[33] = uint(0x8771f681); K[34] = uint(0x6d9d6122); K[35] = uint(0xfde5380c);
+    K[36] = uint(0xa4beea44); K[37] = uint(0x4bdecfa9); K[38] = uint(0xf6bb4b60); K[39] = uint(0xbebfbc70);
+    K[40] = uint(0x289b7ec6); K[41] = uint(0xeaa127fa); K[42] = uint(0xd4ef3085); K[43] = uint(0x04881d05);
+    K[44] = uint(0xd9d4d039); K[45] = uint(0xe6db99e5); K[46] = uint(0x1fa27cf8); K[47] = uint(0xc4ac5665);
+    K[48] = uint(0xf4292244); K[49] = uint(0x432aff97); K[50] = uint(0xab9423a7); K[51] = uint(0xfc93a039);
+    K[52] = uint(0x655b59c3); K[53] = uint(0x8f0ccc92); K[54] = uint(0xffeff47d); K[55] = uint(0x85845dd1);
+    K[56] = uint(0x6fa87e4f); K[57] = uint(0xfe2ce6e0); K[58] = uint(0xa3014314); K[59] = uint(0x4e0811a1);
+    K[60] = uint(0xf7537e82); K[61] = uint(0xbd3af235); K[62] = uint(0x2ad7d2bb); K[63] = uint(0xeb86d391);
+    int[64] S;
+    S[0] = 7; S[1] = 12; S[2] = 17; S[3] = 22; S[4] = 7; S[5] = 12; S[6] = 17; S[7] = 22;
+    S[8] = 7; S[9] = 12; S[10] = 17; S[11] = 22; S[12] = 7; S[13] = 12; S[14] = 17; S[15] = 22;
+    S[16] = 5; S[17] = 9; S[18] = 14; S[19] = 20; S[20] = 5; S[21] = 9; S[22] = 14; S[23] = 20;
+    S[24] = 5; S[25] = 9; S[26] = 14; S[27] = 20; S[28] = 5; S[29] = 9; S[30] = 14; S[31] = 20;
+    S[32] = 4; S[33] = 11; S[34] = 16; S[35] = 23; S[36] = 4; S[37] = 11; S[38] = 16; S[39] = 23;
+    S[40] = 4; S[41] = 11; S[42] = 16; S[43] = 23; S[44] = 4; S[45] = 11; S[46] = 16; S[47] = 23;
+    S[48] = 6; S[49] = 10; S[50] = 15; S[51] = 21; S[52] = 6; S[53] = 10; S[54] = 15; S[55] = 21;
+    S[56] = 6; S[57] = 10; S[58] = 15; S[59] = 21; S[60] = 6; S[61] = 10; S[62] = 15; S[63] = 21;
+    uint a0 = uint(0x67452301), b0 = uint(0xefcdab89), c0 = uint(0x98badcfe), d0 = uint(0x10325476);
+    uint[16] M;
+    for (int off = 0; off < newlen; off = off + 64) {
+        for (int i = 0; i < 16; i = i + 1) {
+            uint mb0 = uint(int(buf[off + i * 4]));
+            uint mb1 = uint(int(buf[off + i * 4 + 1]));
+            uint mb2 = uint(int(buf[off + i * 4 + 2]));
+            uint mb3 = uint(int(buf[off + i * 4 + 3]));
+            M[i] = mb0 | (mb1 << 8) | (mb2 << 16) | (mb3 << 24);
+        }
+        uint A = a0, B = b0, C = c0, D = d0;
+        for (int i = 0; i < 64; i = i + 1) {
+            uint F; int g;
+            if (i < 16)      { F = (B & C) | ((uint(0xFFFFFFFF) ^ B) & D); g = i; }
+            else if (i < 32) { F = (D & B) | ((uint(0xFFFFFFFF) ^ D) & C); g = (5 * i + 1) % 16; }
+            else if (i < 48) { F = B ^ C ^ D;                              g = (3 * i + 5) % 16; }
+            else             { F = C ^ (B | (uint(0xFFFFFFFF) ^ D));       g = (7 * i) % 16; }
+            uint oldD = D;
+            D = C;
+            C = B;
+            uint rot = F + A + K[i] + M[g];
+            B = B + ((rot << uint(S[i])) | (rot >> uint(32 - S[i])));
+            A = oldD;
+        }
+        a0 = a0 + A; b0 = b0 + B; c0 = c0 + C; d0 = d0 + D;
+    }
+    // 输出 16 字节小端 → 32 位小写 hex
+    string r = myp_alloc(33);
+    long dp = __myp_str_ptr(r);
+    int o = 0;
+    for (int w = 0; w < 4; w = w + 1) {
+        uint wv = (w == 0) ? a0 : (w == 1) ? b0 : (w == 2) ? c0 : d0;
+        for (int j = 0; j < 4; j = j + 1) {
+            uint bv = (wv >> uint(8 * j)) & uint(255);
+            int hi = int(bv >> uint(4));
+            int lo = int(bv & uint(15));
+            if (hi < 10) __myp_mem_store_i8(dp + o, 48 + hi); else __myp_mem_store_i8(dp + o, 87 + hi);
+            o = o + 1;
+            if (lo < 10) __myp_mem_store_i8(dp + o, 48 + lo); else __myp_mem_store_i8(dp + o, 87 + lo);
+            o = o + 1;
+        }
+    }
+    __myp_mem_store_i8(dp + 32, 0);
+    return r;
+}
+
+// C: char* myp_hash_sha1(const char* msg) —— FIPS 180-1，大端处理，40 位小写 hex。
+// 标准向量：""→da39a3ee5e6b4b0d3255bfef95601890afd80709、
+// "abc"→a9993e364706816aba3e25717850c26c9cd0d89d。
+// 左旋 rol n = rotr(32-n)：rol5=rotr27、rol1=rotr31、rol30=rotr2。
+string myp_hash_sha1(string s) {
+    int len = myp_strlen(s);
+    int newlen = ((len + 8) / 64 + 1) * 64;
+    ubyte[] buf = new ubyte[newlen];
+    for (int i = 0; i < len; i = i + 1) buf[i] = ubyte(__myp_charcode(s, i));
+    buf[len] = ubyte(128);
+    long bitlen = long(len) * 8;
+    for (int i = 0; i < 8; i = i + 1) {
+        buf[newlen - 1 - i] = ubyte(int(bitlen >> (8 * i)) & 255);
+    }
+    uint h0 = uint(0x67452301), h1 = uint(0xEFCDAB89), h2 = uint(0x98BADCFE);
+    uint h3 = uint(0x10325476), h4 = uint(0xC3D2E1F0);
+    uint[80] w;
+    for (int blk = 0; blk < newlen / 64; blk = blk + 1) {
+        int base = blk * 64;
+        for (int i = 0; i < 16; i = i + 1) {
+            uint b0 = uint(int(buf[base + i * 4]));
+            uint b1 = uint(int(buf[base + i * 4 + 1]));
+            uint b2 = uint(int(buf[base + i * 4 + 2]));
+            uint b3 = uint(int(buf[base + i * 4 + 3]));
+            w[i] = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+        }
+        for (int i = 16; i < 80; i = i + 1) {
+            w[i] = rotr(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 31);
+        }
+        uint a = h0, b = h1, c = h2, d = h3, e = h4;
+        for (int i = 0; i < 80; i = i + 1) {
+            uint f; uint k;
+            if (i < 20)      { f = (b & c) | ((uint(0xFFFFFFFF) ^ b) & d); k = uint(0x5A827999); }
+            else if (i < 40) { f = b ^ c ^ d;                             k = uint(0x6ED9EBA1); }
+            else if (i < 60) { f = (b & c) | (b & d) | (c & d);           k = uint(0x8F1BBCDC); }
+            else             { f = b ^ c ^ d;                             k = uint(0xCA62C1D6); }
+            uint t = rotr(a, 27) + f + e + k + w[i];
+            e = d;
+            d = c;
+            c = rotr(b, 2);
+            b = a;
+            a = t;
+        }
+        h0 = h0 + a; h1 = h1 + b; h2 = h2 + c; h3 = h3 + d; h4 = h4 + e;
+    }
+    // 输出 5 字大端 → 40 位小写 hex
+    string r = myp_alloc(41);
+    long dp = __myp_str_ptr(r);
+    int o = 0;
+    for (int wi = 0; wi < 5; wi = wi + 1) {
+        uint wv = (wi == 0) ? h0 : (wi == 1) ? h1 : (wi == 2) ? h2 : (wi == 3) ? h3 : h4;
+        for (int j = 0; j < 8; j = j + 1) {
+            int shift = 28 - 4 * j;
+            int nib = int((wv >> uint(shift)) & uint(15));
+            if (nib < 10) __myp_mem_store_i8(dp + o, 48 + nib);
+            else __myp_mem_store_i8(dp + o, 87 + nib);
+            o = o + 1;
+        }
+    }
+    __myp_mem_store_i8(dp + 40, 0);
+    return r;
+}

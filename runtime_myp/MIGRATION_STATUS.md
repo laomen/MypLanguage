@@ -305,8 +305,19 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 ### 包 H：bridge 层（122）
 - **json**(14) / **net**(14) / **uds**(18) / **process**(12) / **sdl**(40) /
   **ttf**(10) / **regex**(3) / **date**(4) / **hash-md5/sha1**(7)。
-- 部分纯 MYP 可实现（date 格式化、regex 引擎、json 解析器、process 的 fork/exec
-  可经 `__myp_syscall` 的 clone/execve）；sdl/ttf 需 C 库（SDL2），MYP 只能经
+- ✅ **已做（v3.15.55，第一批纯算法 10 个）**：**date.myp**（3：
+  `myp_date_format/format_ms/field`，libc ffi time/localtime_r/strftime；⚠️
+  strftime 只写内容不更新 MYP 字符串头 len（data-12）→ 必须回填否则 `Str.len`
+  读到 myp_alloc 头 255）+ **hash.myp 补 md5/sha1**（crc32/sha256 此前已影）+
+  **regex.myp**（3：`myp_regex_compile/match/free`，libc ffi malloc(512)+
+  regcomp(REG_EXTENDED)/regexec/regfree）。de-gcc ≠ 去 glibc——MYP ffi 直调
+  libc 消除「gcc 现编译 bridge .c」步。**顺带修复编译器 bug**：字符串尾 `$`
+  被 expandDollarInterp 静默丢弃（oracle parser_expr.cpp + selfhost
+  parser.myp 双修）→ 影响所有 `"...$"` 正则模式。shadow 39/39；bootstrap
+  16/16（fixpoint e8033a53）；oracle+selfhost 323/323。bridge 122 → **112**。
+- 剩余：json(14)/net(14)/uds(18)/process(12)/sdl(40)/ttf(10)。部分纯 MYP 可实现
+  （date 格式化、regex 引擎、json 解析器、process 的 fork/exec 可经
+  `__myp_syscall` 的 clone/execve）；sdl/ttf 需 C 库（SDL2），MYP 只能经
   `__myp_indirect` 绑 SDL2 或保留 bridge。
 - **难度**：视库而异（纯算法类中低，SDL 类需绑定策略）。
 

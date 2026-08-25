@@ -1,0 +1,90 @@
+// runtime_myp/date.myp — 日期格式化层 MYP 化：shadow C bridge date_bridge.c 的
+// myp_date_format / myp_date_format_ms / myp_date_field。
+//
+// 设计：de-gcc ≠ 去 glibc——MYP 直接 ffi 调 libc（time/localtime_r/strftime），
+// 消除的是「用 gcc 现编译 date_bridge.c」这一步，运行时仍用 -lc（已链）。
+//   - time(NULL) → epoch 秒；localtime_r(t, buf) 写 struct tm（x86-64 glibc：
+//     tm_sec@0 tm_min@4 tm_hour@8 tm_mday@12 tm_mon@16 tm_year@20 tm_wday@24
+//     tm_yday@28 tm_isdst@32，9×i32 = 36B，缓冲给 64B）。
+//   - strftime 输出写进 myp_alloc 缓冲（NUL 结尾）→ 直接作 MYP string 返回。
+//   - 缓冲用 arena（同 time.myp 模式）；⚠️ 非 TLS（单线程测试，文档化限制）。
+//   - TZ 由进程环境决定（localtime 语义，与 C bridge 一致）。
+
+// libc
+ffi long time(long tloc);
+ffi long localtime_r(long t, long buf);
+ffi long strftime(long s, long max, string fmt, long tm);
+// 同伴模块
+ffi string myp_alloc(long size);
+ffi long myp_arena_alloc(long size);
+
+// struct tm 缓冲（36B 实布局，给 64B；epoch 槽 8B）。@static 惰性分配。
+@static class DateBuf {
+    property:
+        long tb = 0;    // time_t* 槽（8B）
+        long tm = 0;    // struct tm 缓冲（64B）
+}
+
+// C: char* myp_date_format(const char* fmt) —— 当前时间按 fmt（strftime 格式）
+string myp_date_format(string fmt) {
+    long t = time(0);
+    if (t == 0 && fmt == "") return "";
+    return myp_date_format_ms(t * 1000, fmt);
+}
+
+// C: char* myp_date_format_ms(int64_t ms, const char* fmt)
+string myp_date_format_ms(long ms, string fmt) {
+    if (DateBuf.tb == 0) {
+        long tb = myp_arena_alloc(8);
+        long tm = myp_arena_alloc(64);
+        if (tb == 0 || tm == 0) return "";
+        DateBuf.tb = tb;
+        DateBuf.tm = tm;
+    }
+    __myp_mem_store_i64(DateBuf.tb, ms / 1000);   // time_t = epoch 秒
+    long r = localtime_r(DateBuf.tb, DateBuf.tm);
+    if (r == 0) return "";
+    string out = myp_alloc(256);
+    long n = strftime(__myp_str_ptr(out), 256, fmt, DateBuf.tm);
+    // ⚠️ myp_strlen 读字符串头 len 字段（data-12，O(1)，非 strlen）——strftime
+    // 只写内容不更新头 → 必须回填真实长度，否则 Str.len 读到 myp_alloc(256) 的
+    // 头 255。strftime 返回 0 = 缓冲不足/空结果 → len 置 0 + 显式 NUL。
+    if (n > 255) n = 255;
+    __myp_mem_store_i32(__myp_str_ptr(out) - 12, int(n));
+    if (n == 0) {
+        __myp_mem_store_i8(__myp_str_ptr(out), 0);
+    }
+    return out;
+}
+
+// C: int32_t myp_date_field(int64_t ms, int32_t field)
+// field（对齐 C bridge 按成员名映射，非 struct tm 顺序）：
+//   0=year(tm_year+1900) 1=month(tm_mon+1) 2=day 3=hour 4=min 5=sec 6=wday(0=Sun) 7=yday
+int myp_date_field(long ms, int field) {
+    // struct tm 成员偏移（x86-64 glibc）：sec@0 min@4 hour@8 mday@12 mon@16
+    // year@20 wday@24 yday@28。C bridge 的 field 索引按语义映射，须转换。
+    int off = -1;
+    if (field == 0) off = 20;      // tm_year
+    else if (field == 1) off = 16; // tm_mon
+    else if (field == 2) off = 12; // tm_mday
+    else if (field == 3) off = 8;  // tm_hour
+    else if (field == 4) off = 4;  // tm_min
+    else if (field == 5) off = 0;  // tm_sec
+    else if (field == 6) off = 24; // tm_wday
+    else if (field == 7) off = 28; // tm_yday
+    else return 0;
+    if (DateBuf.tb == 0) {
+        long tb = myp_arena_alloc(8);
+        long tm = myp_arena_alloc(64);
+        if (tb == 0 || tm == 0) return 0;
+        DateBuf.tb = tb;
+        DateBuf.tm = tm;
+    }
+    __myp_mem_store_i64(DateBuf.tb, ms / 1000);
+    long r = localtime_r(DateBuf.tb, DateBuf.tm);
+    if (r == 0) return 0;
+    int v = __myp_mem_load_i32(DateBuf.tm + off);
+    if (field == 0) return v + 1900;   // tm_year
+    if (field == 1) return v + 1;      // tm_mon
+    return v;
+}

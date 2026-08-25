@@ -1,0 +1,42 @@
+// rt_date_test.myp — MYP 运行时日期层验证（runtime_myp/date.myp，libc ffi）。
+// 运行环境固定 TZ=UTC（build.sh 特判）→ epoch 已知值可确定性断言。
+//   epoch 0            = 1970-01-01 00:00:00 UTC（星期四 wday=4）
+//   epoch 1700000000   = 2023-11-14 22:13:20 UTC
+// main 不允许直接调函数 → 包进 class static 方法（同 rt_str_test 模式）。
+import text;
+
+ffi string myp_date_format(string fmt);
+ffi string myp_date_format_ms(long ms, string fmt);
+ffi int myp_date_field(long ms, int field);
+ffi long myp_now_realtime_ms();
+
+class DateProbe {
+    static:
+        int run() {
+            // 字段抽取（epoch 0，UTC）
+            if (myp_date_field(0, 0) != 1970) return 11;   // year
+            if (myp_date_field(0, 1) != 1) return 12;      // month
+            if (myp_date_field(0, 2) != 1) return 13;      // day
+            if (myp_date_field(0, 3) != 0) return 14;      // hour
+            if (myp_date_field(0, 4) != 0) return 15;      // min
+            if (myp_date_field(0, 5) != 0) return 16;      // sec
+            if (myp_date_field(0, 6) != 4) return 17;      // weekday Thu
+            if (myp_date_field(0, 7) != 0) return 18;      // yday
+            // 已知 ms 格式化（UTC）
+            if (myp_date_format_ms(0, "%Y-%m-%d") != "1970-01-01") return 21;
+            if (myp_date_format_ms(0, "%Y-%m-%d %H:%M:%S") != "1970-01-01 00:00:00") return 22;
+            if (myp_date_format_ms(1700000000000, "%Y-%m-%d %H:%M:%S") != "2023-11-14 22:13:20") return 23;
+            if (myp_date_format_ms(1700000000000, "%Y") != "2023") return 24;
+            // 当前时间一致性：format 年份 == date_field 年份
+            long now = myp_now_realtime_ms();
+            int y = myp_date_field(now, 0);
+            if (y < 2026) return 31;
+            string ys = myp_date_format("%Y");
+            if (Str.len(ys) != 4) return 32;
+            return 0;
+        }
+}
+
+int main() {
+    return DateProbe.run();
+}

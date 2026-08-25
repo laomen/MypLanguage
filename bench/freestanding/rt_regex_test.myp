@@ -1,0 +1,44 @@
+// rt_regex_test.myp — MYP 运行时正则层验证（runtime_myp/regex.myp，libc ffi）。
+// 覆盖：编译/匹配/释放 + 非法模式返回 0 + free(0) 安全。
+// main 不允许局部声明直接函数调用初始化（direct call 限制）→ 包进 class static。
+ffi long myp_regex_compile(string pattern);
+ffi int myp_regex_match(long handle, string s);
+ffi void myp_regex_free(long handle);
+
+class RegexProbe {
+    static:
+        int run() {
+            // 基本：^ab+c$（ERE：+ 一次以上）
+            long re1 = myp_regex_compile("^ab+c$");
+            if (re1 == 0) return 11;
+            if (myp_regex_match(re1, "abc") != 1) return 12;
+            if (myp_regex_match(re1, "abbbc") != 1) return 13;
+            if (myp_regex_match(re1, "ac") != 0) return 14;
+            if (myp_regex_match(re1, "abb") != 0) return 15;
+            if (myp_regex_match(re1, "") != 0) return 16;
+            myp_regex_free(re1);
+            // 字符类 + 重复
+            long re2 = myp_regex_compile("^[0-9]+$");
+            if (re2 == 0) return 21;
+            if (myp_regex_match(re2, "12345") != 1) return 22;
+            if (myp_regex_match(re2, "12a45") != 0) return 23;
+            if (myp_regex_match(re2, "") != 0) return 24;
+            myp_regex_free(re2);
+            // 交替 + 任意位置匹配
+            long re3 = myp_regex_compile("(abc|def)");
+            if (re3 == 0) return 31;
+            if (myp_regex_match(re3, "xxdefyy") != 1) return 32;
+            if (myp_regex_match(re3, "abcdef") != 1) return 33;
+            if (myp_regex_match(re3, "xxghiyy") != 0) return 34;
+            myp_regex_free(re3);
+            // 非法模式 → 0；free(0) 安全；match(0,...) = 0
+            if (myp_regex_compile("(") != 0) return 41;
+            if (myp_regex_match(0, "abc") != 0) return 42;
+            myp_regex_free(0);
+            return 0;
+        }
+}
+
+int main() {
+    return RegexProbe.run();
+}

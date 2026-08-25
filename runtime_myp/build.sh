@@ -42,7 +42,9 @@ for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
          bench/freestanding/rt_threadpool_test.myp bench/freestanding/rt_evname_test.myp \
          bench/freestanding/rt_thin_test.myp bench/freestanding/rt_io_thread_test.myp \
          bench/freestanding/rt_gpu_test.myp bench/freestanding/rt_rtti_test.myp \
-         bench/freestanding/rt_bounds_fail_test.myp; do
+         bench/freestanding/rt_bounds_fail_test.myp \
+         bench/freestanding/rt_hash_test.myp bench/freestanding/rt_date_test.myp \
+         bench/freestanding/rt_regex_test.myp; do
     tb="$(basename "$t" .myp)"
     "$SELF" "$t" --emit-llvm -o "/tmp/rt_${tb}" >/dev/null 2>&1
     "$LLC" "/tmp/rt_${tb}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_${tb}.o"
@@ -62,6 +64,7 @@ for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
         rt_thin_test)         printf 'hello thin\n' | "/tmp/rt_${tb}_bin" ;;   # stdin 管道喂 readLine
         rt_pkgA_fail_test)    expected=1; "/tmp/rt_${tb}_bin" ;;   # 故意失败 → 期望 exit 1
         rt_bounds_fail_test)  expected=134; "/tmp/rt_${tb}_bin" ;;  # 越界 → abort(134)
+        rt_date_test)         TZ=UTC "/tmp/rt_${tb}_bin" ;;         # 定 TZ → epoch 断言确定
         *)                    "/tmp/rt_${tb}_bin" ;;
     esac
     code=$?

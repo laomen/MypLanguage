@@ -1490,6 +1490,14 @@ std::unique_ptr<Expr> Parser::expandDollarInterpolation(const std::string& val,
                     std::move(result), BinaryOpKind::Add, std::move(var_expr), range);
             else
                 result = std::move(var_expr);
+        } else {
+            // '$' 后无合法标识符名（如字符串结尾的 '$'）：保留为字面 '$'，不丢弃。
+            auto lit = std::make_unique<StringLiteralExpr>("$", range);
+            if (result)
+                result = std::make_unique<BinaryOpExpr>(
+                    std::move(result), BinaryOpKind::Add, std::move(lit), range);
+            else
+                result = std::move(lit);
         }
         pos = end;
     }

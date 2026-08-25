@@ -359,6 +359,36 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
   本机驱动下不可验（595.84 201 怪癖）。
 
+### v3.15.55 — bridge 包 H 第一批：date/hash(md5·sha1)/regex MYP 化 + 字符串尾 `$` 编译器 bug 修复
+
+**非破坏性**。bridge 纯算法层 MYP 化（shadow C bridge，libc ffi），并顺带修复
+编译器字符串插值 bug：
+
+- **`runtime_myp/date.myp`（新）**：`myp_date_format` / `myp_date_format_ms` /
+  `myp_date_field` —— libc ffi（`time`/`localtime_r`/`strftime`；struct tm
+  x86-64 布局 sec@0..yday@28；field 索引按 C bridge 语义映射，非结构体顺序）。
+  **关键**：`myp_strlen` 读字符串头 len 字段（data-12，O(1)）——strftime 只写
+  内容不更新头 → 回填 `data-12` 真实长度，否则 `Str.len` 读到 myp_alloc 头 255。
+- **`runtime_myp/hash.myp` 补**：`myp_hash_md5`（RFC 1321，小端）+ `myp_hash_sha1`
+  （FIPS 180-1，大端；rol n = rotr(32-n)）——沿用 sha256 的 uint 纯算法风格。
+- **`runtime_myp/regex.myp`（新）**：`myp_regex_compile` / `myp_regex_match` /
+  `myp_regex_free` —— libc ffi（`malloc(512)` 安全缓冲装 glibc regex_t +
+  `regcomp`(REG_EXTENDED) / `regexec` / `regfree`）。de-gcc ≠ 去 glibc：消除
+  「用 gcc 现编译 bridge .c」这一步，运行时仍用 -lc。
+- **🐛 编译器 bug 修复（oracle `src/parser/parser_expr.cpp` + selfhost
+  `tools/selfhost/src/parser.myp` 镜像）**：`expandDollarInterp` 对「`$` 后无
+  合法标识符名」的 `$`（如**字符串结尾的 `$`**，典型 `"^[0-9]+$"` 正则）静默
+  丢弃 → `"x$"` 编译成 `"x"`。修复：无合法名时 `$` 保留为字面量。影响所有以
+  `$` 结尾的字符串；现有 `tests/regex`/`manual_ch11` 的正则模式此前被截断
+  （断言恰好仍过），修后测的是正确模式。
+- **验证**：新 `bench/freestanding/rt_hash_test.myp`（md5/sha1 标准向量 +
+  长度）、`rt_date_test.myp`（TZ=UTC 定 epoch 断言，build.sh 特判）、
+  `rt_regex_test.myp`（编译/匹配/释放/非法模式）；**shadow 39/39**；
+  bootstrap 16/16（新 fixpoint `e8033a53`，编译器已改）；oracle + selfhost
+  全量 323/323；`tests/regex` 过。bridge 122 → **112**（date 3 + hash
+  md5/sha1 + regex 3，crc32/sha256 此前已影）。
+- **未做**：json（14，下批）、process/net/uds/sdl/ttf。
+
 ### v3.15.54 — de-gcc 第一步：自举链接路径剥离 libgcc（lld 无 gcc 链接）
 
 **非破坏性**。从自举编译器（`tools/selfhost`）链接路径彻底移除 gcc 的

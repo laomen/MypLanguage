@@ -2285,6 +2285,18 @@ class Parser {
                     } else {
                         result = ident;
                     }
+                } else {
+                    // '$' 后无合法名（如字符串结尾的 '$'）：保留为字面 '$'，不丢弃。
+                    AstExpr lit = new AstExpr();
+                    lit.setKind("String");
+                    lit.setStringValue("$");
+                    if (result != null) {
+                        AstExpr b = new AstExpr();
+                        b.setKind("Binary"); b.setOp("+"); b.setLhs(result); b.setRhs(lit);
+                        result = b;
+                    } else {
+                        result = lit;
+                    }
                 }
                 pos = e2;
             }
