@@ -27,6 +27,28 @@
 
 ## 编译器版本历史
 
+### v3.15.64 — 修复 7 个 MYP 运行时 bug（归档默认化推进，selfhost 320/323）
+
+**非破坏性**。归档（`MYP_MAKE_ARCHIVE=1`）被 selfhost 拾取后暴露的 MYP 运行时
+bug 修复——**10 失败 → 3**：
+
+- **coro.myp 退役栈**：固定 `[256]` 列表满时**直接** `coroStackReturn`——此时
+  trampoline 还在该栈上运行，栈被池复用 → 损坏。改动态扩容（同 C realloc），
+  **绝不在 add 时释放栈**。修 coro_capacity/more/stack（1500 协程驱动崩溃）。
+- **io.myp has_next**：C 语义是 `!feof`（**不探测**，feof 由读操作撞 EOF 置位）；
+  MYP 版探测读 1 字节 → 撞 EOF 返回 0。加 per-handle **feof 标志**（独立并行
+  数组），has_next=!feof。修 io（has3 语义）。
+- **evInit / ioCurInit 清零**：arena **非零初始化**——锁/计数字段分配后未清零，
+  晚初始化（重分配程序）时票号锁字段=垃圾 → futex 死锁（struct_arc 挂起）。
+  显式清零锁/计数/队列头尾。修 struct_arc/io_thread/myp_fmt。
+- **alloc.myp arena 锁**：全局 bump **无锁**，@parallel 并发分配竞态（C 用 TLS
+  arena 隔离）。加 futex 票号锁包住 bump/try_extend。修 @test/parallel_string_new。
+- **剩余 3 个（架构级，另立里程碑）**：coro_thread（MYP coro 表非 TLS，双线程
+  竞态，~80% 崩）/ myp_run（codegen 透传 raw char\*\* 作 argv，MYP strlen 读头
+  不兼容）/ async_file（异步投递时序差异）。详见 MIGRATION_STATUS §五。
+- 验证：归档下 selfhost 全量 320/323；oracle 323/323 不受影响（不用归档）；
+  bootstrap 16/16（仅改 runtime_myp，不动点不变）。
+
 ### v3.15.63 — runtime 迁移收尾审计 + exception_thread flaky 修复 + 归档固化
 
 **非破坏性**。runtime myp化 收尾：**权威审计确认 de-gcc 目标达成**；顺手修复

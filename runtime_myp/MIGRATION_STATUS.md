@@ -414,10 +414,25 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 
 ## 五、收尾后剩余可做项（非 de-gcc 必需）
 
-- **⚠️ MYP 运行时 bug（归档默认化的前置，下一里程碑）**：归档被 myp_self2 自动
-  拾取时，全量 323 套件 10 失败——MYP coro.myp 栈池（`coroStackReturn` 在 1500
-  协程驱动时崩溃）、io（async_file/io MISMATCH）、struct_arc 等实现与 C 语义有
-  差异。rt_* 单测覆盖不到这些模式 → **修复后 `MYP_MAKE_ARCHIVE=1` 才可默认分发**。
+- **✅ v3.15.64 已修 7 个 MYP 运行时 bug（归档下 selfhost 320/323）**：
+  - coro.myp 退役栈动态扩容（满时直接释放正在运行的栈 → 损坏；修 coro_capacity/
+    more/stack）。
+  - io.myp has_next 改 C 语义 `!feof`（加 per-handle feof 标志；修 io）。
+  - event.myp evInit / io.myp ioCurInit 显式清零锁/计数字段（arena 非零初始化，
+    晚初始化票号锁=垃圾 → 死锁；修 struct_arc/io_thread/myp_fmt）。
+  - alloc.myp arena futex 票号锁（全局 bump 无锁，@parallel 并发分配竞态；修
+    @test/parallel_string_new）。
+- **⚠️ 剩余 3 个失败（架构级，需编译器/运行时大改）**：
+  - **coro_thread**（~80% 崩）：MYP coro 表非 TLS（@static 全局），两个 @thread
+    并发 create/schedule 竞态损坏；C 用 `__thread` TLS 天然隔离。修 = per-thread
+    coro 表（gettid 键控，大重构）或协程 API 加锁（yield 跨 ctx_switch，难）。
+  - **myp_run**（args 透传段错误）：main 的 `string[] argv` 被 codegen **透传
+    raw char\*\***（两个编译器都如此），`av[1]` 是裸 C 串无 MYP 头 → MYP
+    myp_strlen 读头（data-12）得垃圾。C 运行时 myp_strlen 用 strlen 兼容。修 =
+    codegen 建真正的 MYP string[] argv（双编译器 + selfhost 重建）。
+  - **async_file**（输出顺序）：异步 exec worker 投递节奏与 C 不同（期望 R/B 交
+    错，实际 R 全在前）。时序敏感测试，需 MYP async 投递匹配 C 节奏或测试改确定
+    性。
 - **`myp_printf`（varargs）**：唯一保留 C 的 codegen 契约。MYP 程序不调用
   （`Console.*`/`__myp_print*` 走独立路径）；若未来需要可加 `__myp_printf_va`
   变长参数包装（低优先）。
