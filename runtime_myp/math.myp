@@ -1,21 +1,19 @@
-// runtime_myp/math.myp — 数学层（可薄影部分）：shadow C runtime 的 myp_math_*。
-// 符号名与 C 一致，--shared + 前置链接 → MYP 定义优先。
+// runtime_myp/math.myp — 数学层全部 MYP 化：shadow C runtime 的 myp_math_*
+// （19/19，含 pow/atan2/sinh/cosh/tanh）。符号名与 C 一致，--shared + 前置链接
+// → MYP 定义优先。
 //
 // 设计：
-//   - 一元实数（sqrt/abs/floor/ceil/trunc/sin/cos/tan/asin/acos/atan/exp/log）
-//     经 `__myp_math_*` 内建 → 自举 codegen genPolyMathIntrinsic 发 **LLVM 标量
-//     intrinsic**（llvm.sqrt.f64 等），LLVM 降级到与 C 相同的 libm → 位级一致，
-//     且**不递归**（不调用 C myp_math_*）。
+//   - 全部经 `__myp_math_*` 内建 → 自举 codegen `genPolyMathIntrinsic` 发
+//     **LLVM 标量 intrinsic**（llvm.sqrt.f64 / llvm.pow.f64 / llvm.atan2.f64 /
+//     llvm.sinh.f64 / llvm.cosh.f64 / llvm.tanh.f64 等；#29 起二元 pow/atan2 也
+//     直发）。LLVM 21 全支持，降级到与 C 相同的 libm → 位级一致，且**不递归**
+//     （不调用 C myp_math_*；原二元 `__myp_math_pow` 落通用路径 `call
+//     @myp_math_pow` 会自递归，已在 #29 改为直发 llvm）。
 //   - myp_math_abs_int 纯算术（v<0 ? -v : v）。
-//   - **未影（保留 C，另立里程碑）**：
-//     - myp_math_pow / myp_math_atan2：二元，无对应一元 llvm 直发路径；MYP 实现
-//       需避递归（自举 `__myp_math_pow` 发射 `call @myp_math_pow` 会自递归）。
-//     - myp_math_sinh / myp_math_cosh / myp_math_tanh：LLVM 无 sinh/cosh/tanh
-//       intrinsic，需 exp 组合 + 大参数（|x|>~19 → ±1）特殊处理 + 精度对拍，
-//       归入数值层里程碑。
 //   - ⚠️ 注意：自举编译的程序对 Math.* 方法调用直接发 llvm.* intrinsic（不经
-//     myp_math_*），故本模块对自举程序是惰性的；其价值是 oracle（mypc）程序与
-//     显式 `myp_math_*` 调用落到 MYP 实现。
+//     myp_math_*），本模块对自举程序是惰性的；其价值是 oracle（mypc）程序与
+//     显式 `myp_math_*` 调用落到 MYP 实现（oracle 对 `__myp_math_*` 发射
+//     `call @myp_math_*` → 本模块定义优先 → 内部走 llvm.*）。
 
 double myp_math_sqrt(double v) { return __myp_math_sqrt(v); }
 double myp_math_abs(double v) { return __myp_math_abs(v); }
@@ -28,6 +26,11 @@ double myp_math_tan(double v) { return __myp_math_tan(v); }
 double myp_math_asin(double v) { return __myp_math_asin(v); }
 double myp_math_acos(double v) { return __myp_math_acos(v); }
 double myp_math_atan(double v) { return __myp_math_atan(v); }
+double myp_math_sinh(double v) { return __myp_math_sinh(v); }
+double myp_math_cosh(double v) { return __myp_math_cosh(v); }
+double myp_math_tanh(double v) { return __myp_math_tanh(v); }
 double myp_math_exp(double v) { return __myp_math_exp(v); }
 double myp_math_log(double v) { return __myp_math_log(v); }
+double myp_math_pow(double b, double e) { return __myp_math_pow(b, e); }
+double myp_math_atan2(double y, double x) { return __myp_math_atan2(y, x); }
 int myp_math_abs_int(int v) { if (v < 0) return -v; return v; }

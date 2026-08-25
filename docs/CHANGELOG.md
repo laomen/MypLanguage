@@ -27,6 +27,30 @@
 
 ## 编译器版本历史
 
+### v3.15.32 — runtime myp化 #29：math 层补齐（pow/atan2/sinh/cosh/tanh）
+
+**非破坏性**。把 #28 遗留的 5 个 math 函数全部 MYP 化，`myp_math_*` 达 **19/19**
+（零数值手写实现——**LLVM 21 原生支持全部 5 个 intrinsic**，实测确认）。
+
+- **关键发现**：`llvm.pow.f64` / `llvm.atan2.f64` / `llvm.sinh.f64` /
+  `llvm.cosh.f64` / `llvm.tanh.f64` 在 LLVM 21 全部存在（降级到与 C 相同的
+  libm → 位级一致），且 LLVM **自动声明** intrinsic（无需 ir_emit declare）。
+  sinh/cosh/tanh 因此也无需 #28 设想的 exp 组合数值实现。
+- **自举 codegen 变更**：`genPolyMathIntrinsic` 扩展处理**二元** `__myp_math_pow`/
+  `__myp_math_atan2`（两实参统一提 double → `llvm.pow.f64`/`llvm.atan2.f64`）；
+  调度点移除 pow/atan2 排除（abs_int 仍走通用 FFI）。**顺带根治潜伏自递归**——
+  原二元 `__myp_math_pow` 落通用路径发射 `call @myp_math_pow`，MYP shadow 版会
+  自递归；现直发 llvm → `myp_math_pow` 内部 `__myp_math_pow` 安全。
+- **`math.myp`** 19/19：新增 `myp_math_pow/atan2/sinh/cosh/tanh` 一行式
+  （`return __myp_math_*(...)` → LLVM intrinsic，不递归）。oracle（mypc）不改：
+  对 `__myp_math_*` 仍发射 `call @myp_math_*` → 链接到 MYP 定义 → 内部走 llvm.*。
+- **验证**：`rt_math_test` 扩展 18 项断言（22-39）——pow 精确值（2^10=1024、
+  2^-1=0.5、0^0=1）+ sqrt(2) 容差；atan2 四象限（0/π/2/π/4/-3π/4）；sinh/cosh
+  已知值 + **溢出边界**（sinh/cosh(1000) > 1e300）；tanh 已知值 + **大参 ±1**
+  （tanh(±20)=±1）。shadow **17/17**、bootstrap 16/16（新 fixpoint `e7075fb8`）、
+  全量 323/323。反汇编：math.o 定义 19 个 `myp_math_*` T 符号；math.myp 内部
+  仅 5 个 llvm intrinsic、**0 次 `call @myp_math_*`（无自递归）**。
+
 ### v3.15.31 — runtime myp化 #28：fs/env/args/term/math 薄层迁移
 
 **非破坏性**。把五组"薄层" C runtime 符号 MYP 化（shadow 机制），新增 5 个

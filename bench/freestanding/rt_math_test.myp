@@ -1,6 +1,6 @@
-// rt_math_test.myp — 数学层（可薄影部分）验证（runtime_myp/math.myp shadow
-// C runtime）：13 个一元 myp_math_* + myp_math_abs_int。MYP 实现经 __myp_math_*
-// 内建 → LLVM 标量 intrinsic（同 libm），与已知值对拍。
+// rt_math_test.myp — 数学层全部验证（runtime_myp/math.myp shadow C runtime）：
+// 19 个 myp_math_*。MYP 实现经 __myp_math_* 内建 → LLVM 标量 intrinsic（同
+// libm），与已知值对拍（含 pow/atan2/sinh/cosh/tanh 与溢出边界）。
 
 ffi double myp_math_sqrt(double v);
 ffi double myp_math_abs(double v);
@@ -13,8 +13,13 @@ ffi double myp_math_tan(double v);
 ffi double myp_math_asin(double v);
 ffi double myp_math_acos(double v);
 ffi double myp_math_atan(double v);
+ffi double myp_math_sinh(double v);
+ffi double myp_math_cosh(double v);
+ffi double myp_math_tanh(double v);
 ffi double myp_math_exp(double v);
 ffi double myp_math_log(double v);
+ffi double myp_math_pow(double b, double e);
+ffi double myp_math_atan2(double y, double x);
 ffi int myp_math_abs_int(int v);
 
 class MathProbe {
@@ -44,6 +49,37 @@ class MathProbe {
             if (lnE < 0.9999 || lnE > 1.0001) return 19;
             if (myp_math_abs_int(-7) != 7) return 20;
             if (myp_math_abs_int(42) != 42) return 21;
+            // --- pow ---
+            if (myp_math_pow(2.0, 10.0) != 1024.0) return 22;
+            double pr = myp_math_pow(2.0, 0.5);          // sqrt(2)
+            if (pr < 1.4142 || pr > 1.4143) return 23;
+            if (myp_math_pow(0.0, 0.0) != 1.0) return 24;
+            if (myp_math_pow(2.0, -1.0) != 0.5) return 25;
+            // --- atan2 ---
+            if (myp_math_atan2(0.0, 1.0) != 0.0) return 26;
+            double a2 = myp_math_atan2(1.0, 0.0);        // π/2
+            if (a2 < 1.57079 || a2 > 1.5708) return 27;
+            double a3 = myp_math_atan2(1.0, 1.0);        // π/4
+            if (a3 < 0.7853 || a3 > 0.7855) return 28;
+            double a4 = myp_math_atan2(-1.0, -1.0);      // -3π/4
+            if (a4 < -2.3563 || a4 > -2.3561) return 29;
+            // --- sinh ---
+            if (myp_math_sinh(0.0) != 0.0) return 30;
+            double sh = myp_math_sinh(1.0);              // ≈1.17520119
+            if (sh < 1.1751 || sh > 1.1753) return 31;
+            // 溢出：sinh(1000) → +inf（>1e300）
+            if (myp_math_sinh(1000.0) < 1e300) return 32;
+            // --- cosh ---
+            if (myp_math_cosh(0.0) != 1.0) return 33;
+            double ch = myp_math_cosh(1.0);              // ≈1.5430806
+            if (ch < 1.5430 || ch > 1.5431) return 34;
+            if (myp_math_cosh(1000.0) < 1e300) return 35;
+            // --- tanh ---
+            if (myp_math_tanh(0.0) != 0.0) return 36;
+            double th = myp_math_tanh(1.0);              // ≈0.76159416
+            if (th < 0.7615 || th > 0.7617) return 37;
+            if (myp_math_tanh(20.0) != 1.0) return 38;   // 大参 → ±1
+            if (myp_math_tanh(-20.0) != -1.0) return 39;
             return 0;
         }
 }

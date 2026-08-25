@@ -3291,7 +3291,43 @@ class CodeGen {
             else if (id == "__myp_math_exp") op = "exp";
             else if (id == "__myp_math_log") op = "log";
             else if (id == "__myp_math_abs") op = "abs";
+            else if (id == "__myp_math_pow") op = "pow";
+            else if (id == "__myp_math_atan2") op = "atan2";
             else return "";
+            // 二元 pow/atan2：LLVM intrinsic（llvm.pow.f64 / llvm.atan2.f64，LLVM 21
+            // 支持）。两实参统一提升到 double（stdlib Math.pow/atan2 本就是 double；
+            // int/float 实参 sitofp/fpext）。与一元走同一 LLVM 直发路径 → 不递归
+            // （原 `__myp_math_pow` 落通用路径 `call @myp_math_pow`，MYP shadow 会
+            // 自递归）。
+            if (op == "pow" || op == "atan2") {
+                string bv = genExpr(e.args().get(1));
+                string bt = exprLlvmType(e.args().get(1));
+                if (at == "float") {
+                    string d = newTmp();
+                    sb_.append("  " + d + " = fpext float " + av + " to double\n");
+                    av = d;
+                    at = "double";
+                } else if (IrEmit.isIntType(at) != 0) {
+                    string d = newTmp();
+                    sb_.append("  " + d + " = sitofp " + at + " " + av + " to double\n");
+                    av = d;
+                    at = "double";
+                }
+                if (bt == "float") {
+                    string d = newTmp();
+                    sb_.append("  " + d + " = fpext float " + bv + " to double\n");
+                    bv = d;
+                    bt = "double";
+                } else if (IrEmit.isIntType(bt) != 0) {
+                    string d = newTmp();
+                    sb_.append("  " + d + " = sitofp " + bt + " " + bv + " to double\n");
+                    bv = d;
+                    bt = "double";
+                }
+                string t = newTmp();
+                sb_.append("  " + t + " = call double @llvm." + op + ".f64(double " + av + ", double " + bv + ")\n");
+                return t;
+            }
             string t = newTmp();
             if (op == "abs") {
                 if (IrEmit.isIntType(at) != 0) {
@@ -9645,12 +9681,13 @@ class CodeGen {
                         return genBitOpBuiltin(e, bn);
                     }
                 }
-                // §9.5 多态数学 intrinsic：__myp_math_* 一元（除 pow/atan2/abs_int）
-                // → LLVM 标量 intrinsic（按实参类型，同 C++ generatePolyMathIntrinsic）。
+                // §9.5 多态数学 intrinsic：__myp_math_*（除 abs_int）→ LLVM 标量
+                // intrinsic（一元 llvm.sqrt.f64 等；二元 pow/atan2 → llvm.pow.f64/
+                // llvm.atan2.f64）。LLVM 21 全支持 → 不递归（abs_int 是 int 返回，
+                // 走通用 FFI 路径 call @myp_math_abs_int）。
                 if (callee != null && callee.kind() == "Identifier") {
                     string mn = callee.name();
                     if (Str.startsWith(mn, "__myp_math_") != 0
-                        && mn != "__myp_math_pow" && mn != "__myp_math_atan2"
                         && mn != "__myp_math_abs_int") {
                         string r = genPolyMathIntrinsic(e, mn);
                         if (Str.len(r) != 0) return r;
