@@ -1,0 +1,43 @@
+// rt_io_test.myp — 文件 I/O 层 MYP 化（#16）验证：
+// 写文本/行/字节/大端 int/double → 读回校验 → EOF 检测。
+// File 类（stdlib io.myp）经 __myp_io_* 内建 → myp_io_*（io.myp shadow C）。
+import io;
+
+class IoProbe {
+    static:
+        int run() {
+            // 写
+            File w = new File();
+            w.open("/tmp/rt_myp_io_test.txt", "w");
+            w.writeLine("hello");
+            w.writeLine("world");
+            w.write("no-newline");
+            w.writeByte(10);              // \n（终止 "no-newline"）
+            w.writeI32BE(0x01020304);
+            w.writeDouble(3.14159);
+            w.writeByte(0xAA);            // marker（测 readByte）
+            w.close();
+
+            // 读回
+            File r = new File();
+            r.open("/tmp/rt_myp_io_test.txt", "r");
+            string l1 = r.readLine();
+            string l2 = r.readLine();
+            string l3 = r.readLine();
+            if (l1 != "hello") return 1;
+            if (l2 != "world") return 2;
+            if (l3 != "no-newline") return 3;
+            int i32 = r.readI32BE();
+            if (i32 != 0x01020304) return 4;
+            double d = r.readDouble();
+            double diff = d - 3.14159;
+            if (diff < 0) diff = -diff;
+            if (diff > 0.0001) return 5;
+            int marker = r.readByte();
+            if (marker != 0xAA) return 6;
+            if (r.hasNext()) return 7;    // 应 EOF
+            r.close();
+            return 0;
+        }
+}
+int main() { return IoProbe.run(); }

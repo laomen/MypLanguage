@@ -35,6 +35,30 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.19 — runtime myp化 #16：文件 I/O 层（myp_io_* raw syscall 实现）
+
+**非破坏性**。`runtime_myp/io.myp` shadow C runtime 的整个文件 I/O 层
+（File 类经 `__myp_io_*` 内建 → `myp_io_*`），**纯 raw syscall、无 libc stdio**：
+
+- **open=2 / read=0 / write=1 / lseek=8 / close=3**；mode 串 → open flags
+  （r/w/a + `+` 加 RDWR，新建权限 0644）；fd 表 64 槽（每槽 16B `[fd][pending]`，
+  fd=-1 空闲）+ **add-原子自旋锁**（复用 `__myp_atomic_add_i32_addr`）。
+- **`myp_io_cur`（当前句柄）留在 C TLS**（io_thread 并发 File 依赖每线程独立
+  当前句柄），经新增 C helper `myp_io_cur_get/set` 读写——MYP 管 fd 表+操作，
+  C 管每线程当前句柄，二者正确分工。
+- 覆盖：fopen/current_handle/select/fclose/read_line/write/write_line/has_next/
+  read_byte/read_i32be/read_double/write_byte/write_i32be/write_double/seek。
+  `has_next` 用预读 1 字节存 pending（feof 语义）；`read_line` 逐字节到 \n/EOF；
+  读写用 arena scratch 缓冲（I/O 量小，bump 不归还可接受）。
+- 已知限制：`myp_io_table`/locks 从 C 的 FILE*+pthread mutex 换成 MYP fd+自旋锁
+  （语义等价）；arena scratch 每次分配（不回收）。
+
+验证：shadow 测试新增 **rt_io_test**（写文本/行/字节/大端 int/double → 读回 →
+EOF 检测）exit=0；真实 io 测试用 MYP shadow 全过——**io_multi**（多文件交替读写
+alt=A1B1A2B2）、**io_thread**（两个 @thread 并发 File 各写 200 行，a=200 b=200
+wrong=0，验证 TLS 当前句柄 + 自旋锁）。bootstrap 16/16、全量 323/323。build.sh
+循环新增 rt_io_test。
+
 ### v3.15.18 — runtime myp化 #15：类 slice 清理链 + @weak 弱引用注册表
 
 **非破坏性**。补齐内存核心的最后两块（此前评估为"C 无法触及/死代码"的部分）：

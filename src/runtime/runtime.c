@@ -206,6 +206,13 @@ int32_t myp_io_fopen(const char* path, const char* mode) {
 // 当前活动句柄（File.open 成功后读取存入 handle_）
 int32_t myp_io_current_handle(void) { return myp_io_cur; }
 
+// Exported for the MYP shadow of the I/O layer (runtime_myp/io.myp): the
+// active-handle TLS must stay per-thread (concurrent File instances on
+// @thread workers, io_thread test). MYP keeps the fd table + ops, and reads/
+// writes the C __thread current-handle through these two tiny helpers.
+int32_t myp_io_cur_get(void) { return myp_io_cur; }
+void myp_io_cur_set(int32_t h) { myp_io_cur = h; }
+
 // 切换当前活动文件（多文件交替读写）
 void myp_io_select(int32_t handle) {
     FILE* fp = myp_io_lock_handle(handle);
