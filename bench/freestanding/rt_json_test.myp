@@ -1,0 +1,87 @@
+// rt_json_test.myp — MYP 运行时 JSON 层验证（runtime_myp/json.myp shadow C bridge）。
+// 覆盖：解析/查询（类型/字符串/数字/布尔/数组/嵌套路径）、编辑（childCount/
+// childKey/scalar/setValue/addChild/remove）、美化序列化、非法输入。
+// main 不允许直接调函数 → 包进 class static。
+import env;
+import json;
+
+ffi long myp_json_parse(string s);
+
+class JsonProbe {
+    static:
+        int run() {
+            // ---- 基本查询 ----
+            string data = "{\"name\":\"MYP\",\"ver\":42,\"pi\":3.14,\"ok\":true,\"nil\":null}";
+            Json doc = new Json(data);
+            if (doc.getString("name") != "MYP") return 11;
+            if (doc.getInt("ver") != 42) return 12;
+            if (doc.getDouble("pi") != 3.14) return 13;
+            if (doc.getBool("ok") != 1) return 14;
+            if (doc.type("name") != 4) return 15;      // string
+            if (doc.type("ver") != 2) return 16;       // int
+            if (doc.type("pi") != 3) return 17;        // double
+            if (doc.type("ok") != 1) return 18;        // bool
+            if (doc.type("nil") != 0) return 19;       // null
+            if (doc.type("missing") != -1) return 20;  // 未找到
+            // ---- 嵌套 + 数组路径 ----
+            string data2 = "{\"user\":{\"name\":\"Alice\",\"tags\":[\"a\",\"b\"]}}";
+            Json doc2 = new Json(data2);
+            if (doc2.getString("user.name") != "Alice") return 21;
+            if (doc2.arrayLen("user.tags") != 2) return 22;
+            if (doc2.getString("user.tags.0") != "a") return 23;
+            if (doc2.getString("user.tags.1") != "b") return 24;
+            if (doc2.getInt("user.tags.2") != 0) return 25;   // 越界 → 0
+            // ---- 数组根 ----
+            string data3 = "[10,20,30]";
+            Json doc3 = new Json(data3);
+            if (doc3.arrayLen("") != 3) return 31;
+            if (doc3.getInt("1") != 20) return 32;
+            if (doc3.getDouble("2") != 30.0) return 33;
+            // ---- 非法输入 → myp_json_parse 返回 0 ----
+            if (myp_json_parse("{bad") != 0) return 41;
+            if (myp_json_parse("[1,2") != 0) return 42;
+            if (myp_json_parse("") != 0) return 43;
+            // ---- 编辑：遍历 ----
+            string data4 = "{\"name\":\"MYP\",\"ver\":42,\"pi\":3.14}";
+            Json doc4 = new Json(data4);
+            if (doc4.childCount("") != 3) return 51;
+            if (doc4.scalar("name") != "MYP") return 52;
+            string k0 = doc4.childKey("", 0);
+            if (k0 != "name") return 53;
+            // ---- 编辑：setValue / addChild / remove ----
+            if (doc4.setValue("ver", "99") != 1) return 61;
+            if (doc4.getInt("ver") != 99) return 62;
+            if (doc4.addChild("", "extra", "42") != 1) return 63;
+            if (doc4.getInt("extra") != 42) return 64;
+            if (doc4.addChild("", "sub", "{\"x\":7}") != 1) return 65;   // 完整 JSON 值
+            if (doc4.getInt("sub.x") != 7) return 66;
+            if (doc4.addChild("", "flag", "true") != 1) return 67;
+            if (doc4.getBool("flag") != 1) return 68;
+            if (doc4.remove("ver") != 1) return 69;
+            if (doc4.type("ver") != -1) return 70;
+            // ---- 序列化 ----
+            string out = doc4.serialize();
+            // 期望（2 空格缩进，键序 = 插入序：name/pi/extra/sub/flag）
+            string exp = "{\n  \"name\": \"MYP\",\n  \"pi\": 3.14,\n  \"extra\": 42,\n  \"sub\": {\n    \"x\": 7\n  },\n  \"flag\": true\n}";
+            if (out != exp) return 81;
+            // 序列化 → 再解析 round-trip
+            Json doc5 = new Json(out);
+            if (doc5.getString("name") != "MYP") return 82;
+            if (doc5.getInt("sub.x") != 7) return 83;
+            if (doc5.getBool("flag") != 1) return 84;
+            // 空容器序列化
+            Json doc6 = new Json("{\"a\":[],\"b\":{}}");
+            if (doc6.serialize() != "{\n  \"a\": [],\n  \"b\": {}\n}") return 85;
+            // 转义：含引号/反斜杠/换行的字符串
+            string data7 = "{\"s\":\"a\\\"b\\\\c\\nd\"}";
+            Json doc7 = new Json(data7);
+            if (doc7.getString("s") != "a\"b\\c\nd") return 91;
+            string out7 = doc7.serialize();
+            if (out7 != "{\n  \"s\": \"a\\\"b\\\\c\\nd\"\n}") return 92;
+            return 0;
+        }
+}
+
+int main() {
+    return JsonProbe.run();
+}

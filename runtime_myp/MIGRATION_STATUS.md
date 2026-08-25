@@ -315,7 +315,15 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   被 expandDollarInterp 静默丢弃（oracle parser_expr.cpp + selfhost
   parser.myp 双修）→ 影响所有 `"...$"` 正则模式。shadow 39/39；bootstrap
   16/16（fixpoint e8033a53）；oracle+selfhost 323/323。bridge 122 → **112**。
-- 剩余：json(14)/net(14)/uds(18)/process(12)/sdl(40)/ttf(10)。部分纯 MYP 可实现
+- ✅ **已做（v3.15.56，json 全 14 个）**：**json.myp**（新）——递归下降解析/
+  路径查询/编辑/美化序列化。节点表 **@static 并行数组**（type/key/str_val/
+  num_val/bool_val/child_count + 扁平 child_list slot*64+i，定容 64/节点），
+  handle=slot+1——避开 struct 链式访问坑（BUG-029 族）。数字用 libc strtod
+  （ffi；set_value 用 endptr 必须消费整串检查）。字符串返回一律计数拷贝
+  （jsonStrDup，同 C myp_strdup M8）。⚠️ myp_json_free 空操作（arena 进程级
+  回收）。shadow 40/40；tests/json shadow 链接输出与 C 逐字一致；bootstrap
+  16/16（fixpoint e8033a53）；oracle+selfhost 323/323。bridge 112 → **98**。
+- 剩余：net(14)/uds(18)/process(12)/sdl(40)/ttf(10)。部分纯 MYP 可实现
   （date 格式化、regex 引擎、json 解析器、process 的 fork/exec 可经
   `__myp_syscall` 的 clone/execve）；sdl/ttf 需 C 库（SDL2），MYP 只能经
   `__myp_indirect` 绑 SDL2 或保留 bridge。

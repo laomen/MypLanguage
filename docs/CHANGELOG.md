@@ -359,6 +359,33 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
   本机驱动下不可验（595.84 201 怪癖）。
 
+### v3.15.56 — bridge 包 H 第二批：json 全 14 个 MYP 化（解析/查询/编辑/序列化）
+
+**非破坏性**。JSON bridge 全量 MYP 化——shadow C `json_bridge.c` 的 14 个
+`myp_json_*`（纯 MYP 递归下降 + libc strtod）：
+
+- **`runtime_myp/json.myp`（新）**：节点表用 **@static 并行数组**（type/key/
+  str_val/num_val/bool_val/child_count + 扁平 child_list，slot*64+children 定容
+  64/节点，C 用 256）——沿用 coro.myp 模式，避开 struct 链式字段访问坑
+  （BUG-029 族）。handle = slot+1（0=无效/未找到）。
+- **解析**：递归下降（对象/数组/字符串含反斜杠转义/数字/true/false/null）；
+  数字用 libc `strtod`（ffi，de-gcc ≠ 去 glibc）+ 词法原文存 str_val；字符串
+  值用 `+` 拼接（myp_str_append 快路径）。
+- **路径**：`jsonResolvePath` 按 '.' 切分（对象按键 / 数组按下标），空段跳过
+  （对齐 C strtok）；`jsonFindChild` 供 set_value/remove。
+- **编辑**：`set_value`（strtod 必须消费整串的 endptr 检查，同 C）/ `add_child`
+  （`{`/`[` 开头走完整 JSON 解析，裸文本走标量）/ `remove`（左移删除）。
+- **序列化**：美化 2 空格缩进 + 字符串转义（`\"` `\\` `\n` `\t` `\r` + 控制符
+  `\u00xx`）。
+- **⚠️ `myp_json_free` 为空操作**：MYP arena 进程级回收（C 即时释放树；bridge
+  短生命周期用法，差异文档化）。
+- **验证**：新 `bench/freestanding/rt_json_test.myp`（查询/嵌套+数组路径/非法
+  输入返回 0/遍历/编辑/序列化精确比对/round-trip/转义，36 断言）——一次通过；
+  `tests/json`（stdlib Json 包装）MYP shadow 链接输出**与 C 逐字一致**；
+  **shadow 40/40**；bootstrap 16/16（fixpoint `e8033a53` 不变，编译器未改）；
+  oracle + selfhost 全量 323/323。bridge 112 → **98**。
+- **未做**：process/net/uds/sdl/ttf；编译器 bridge 跳过机制（link.myp 后续）。
+
 ### v3.15.55 — bridge 包 H 第一批：date/hash(md5·sha1)/regex MYP 化 + 字符串尾 `$` 编译器 bug 修复
 
 **非破坏性**。bridge 纯算法层 MYP 化（shadow C bridge，libc ffi），并顺带修复

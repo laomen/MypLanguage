@@ -1,0 +1,643 @@
+// runtime_myp/json.myp — JSON 解析/查询/编辑/序列化层 MYP 化：shadow C bridge
+// json_bridge.c 的 14 个 myp_json_*。
+//
+// 设计：de-gcc ≠ 去 glibc——数字解析用 libc strtod（ffi），消除「用 gcc 现编译
+// json_bridge.c」这一步；其余纯 MYP。
+//   - 节点表：@static 并行数组（同 coro.myp 模式，避开 struct 链式访问坑）。
+//     handle = slot+1（0=无效/未找到）。children 扁平定容 64/节点（C 用 256）。
+//   - 类型：0=null 1=bool 2=int 3=double 4=string 5=array 6=object。
+//   - 字符串返回一律计数拷贝（myp_alloc，同 C myp_strdup 的 M8 约定）。
+//   - 无 stdlib 依赖（runtime_myp 惯例）；仅 ffi + 内建。
+//   - ⚠️ myp_json_free 为空操作：MYP arena 进程级回收（C 是即时释放树；bridge
+//     用法短生命周期，差异可接受，文档化）。
+
+ffi string myp_alloc(long size);
+ffi long myp_arena_alloc(long size);
+ffi int myp_strlen(string s);
+ffi double strtod(string nptr, long endptr);   // libc（de-gcc ≠ 去 glibc）
+
+@static class JsonTab {
+    property:
+        int[] type;
+        string[] key;
+        string[] str_val;
+        double[] num_val;
+        int[] bool_val;
+        int[] child_count;
+        int[] child_list;   // 扁平 slot*64+i
+        int cap = 0;
+        int count = 0;
+}
+
+@static class JsonCtx {
+    property:
+        string src = "";
+        int len = 0;
+        int pos = 0;
+}
+
+// ---- 节点表 ----
+void jsonEnsure(int need) {
+    if (JsonTab.cap == 0) {
+        int n = (need > 64) ? need : 64;
+        JsonTab.type = new int[n];
+        JsonTab.key = new string[n];
+        JsonTab.str_val = new string[n];
+        JsonTab.num_val = new double[n];
+        JsonTab.bool_val = new int[n];
+        JsonTab.child_count = new int[n];
+        JsonTab.child_list = new int[n * 64];
+        JsonTab.cap = n;
+        return;
+    }
+    if (JsonTab.cap >= need) return;
+    int nc = JsonTab.cap * 2;
+    if (nc < need) nc = need;
+    int[] t = new int[nc];
+    string[] k = new string[nc];
+    string[] sv = new string[nc];
+    double[] nv = new double[nc];
+    int[] bv = new int[nc];
+    int[] cc = new int[nc];
+    int[] cl = new int[nc * 64];
+    for (int i = 0; i < JsonTab.count; i = i + 1) {
+        t[i] = JsonTab.type[i];
+        k[i] = JsonTab.key[i];
+        sv[i] = JsonTab.str_val[i];
+        nv[i] = JsonTab.num_val[i];
+        bv[i] = JsonTab.bool_val[i];
+        cc[i] = JsonTab.child_count[i];
+    }
+    for (int i = 0; i < JsonTab.count * 64; i = i + 1) cl[i] = JsonTab.child_list[i];
+    JsonTab.type = t;
+    JsonTab.key = k;
+    JsonTab.str_val = sv;
+    JsonTab.num_val = nv;
+    JsonTab.bool_val = bv;
+    JsonTab.child_count = cc;
+    JsonTab.child_list = cl;
+    JsonTab.cap = nc;
+}
+
+int jsonNewNode(int type) {
+    jsonEnsure(JsonTab.count + 1);
+    int s = JsonTab.count;
+    JsonTab.type[s] = type;
+    JsonTab.key[s] = "";
+    JsonTab.str_val[s] = "";
+    JsonTab.num_val[s] = 0.0;
+    JsonTab.bool_val[s] = 0;
+    JsonTab.child_count[s] = 0;
+    JsonTab.count = s + 1;
+    return s;
+}
+
+void jsonAddChild(int parent, int child) {
+    int c = JsonTab.child_count[parent];
+    if (c >= 64) return;
+    JsonTab.child_list[parent * 64 + c] = child;
+    JsonTab.child_count[parent] = c + 1;
+}
+
+// 计数字符串拷贝（同 C myp_strdup）
+string jsonStrDup(string s) {
+    int n = myp_strlen(s);
+    string r = myp_alloc(n + 1);
+    if (n > 0) __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(s), n);
+    __myp_mem_store_i8(__myp_str_ptr(r) + n, 0);
+    return r;
+}
+
+string jsonSub(string s, int a, int b) {
+    int n = b - a;
+    string r = myp_alloc(n + 1);
+    for (int i = 0; i < n; i = i + 1)
+        __myp_mem_store_i8(__myp_str_ptr(r) + i, __myp_charcode(s, a + i));
+    __myp_mem_store_i8(__myp_str_ptr(r) + n, 0);
+    return r;
+}
+
+// ---- 解析器上下文 ----
+int jsonPeek() {
+    if (JsonCtx.pos >= JsonCtx.len) return 0;
+    return __myp_charcode(JsonCtx.src, JsonCtx.pos);
+}
+int jsonPeekAt(int i) {
+    if (i >= JsonCtx.len) return 0;
+    return __myp_charcode(JsonCtx.src, i);
+}
+void jsonAdvance() { JsonCtx.pos = JsonCtx.pos + 1; }
+int jsonIsDigit(int c) { return (c >= 48 && c <= 57) ? 1 : 0; }
+int jsonSkipWs() {
+    while (JsonCtx.pos < JsonCtx.len) {
+        int c = __myp_charcode(JsonCtx.src, JsonCtx.pos);
+        if (c == 32 || c == 9 || c == 10 || c == 13) JsonCtx.pos = JsonCtx.pos + 1;
+        else break;
+    }
+    return JsonCtx.pos;
+}
+int jsonMatchKw(string kw) {
+    int kl = myp_strlen(kw);
+    for (int i = 0; i < kl; i = i + 1) {
+        if (JsonCtx.pos + i >= JsonCtx.len) return 0;
+        if (__myp_charcode(JsonCtx.src, JsonCtx.pos + i) != __myp_charcode(kw, i)) return 0;
+    }
+    JsonCtx.pos = JsonCtx.pos + kl;
+    return 1;
+}
+
+// ---- 递归下降解析（返回 slot；失败 -1）----
+int jsonParseString() {
+    jsonAdvance();   // 消费 '"'
+    string val = "";
+    while (JsonCtx.pos < JsonCtx.len) {
+        int c = jsonPeek();
+        if (c == 92) {   // '\'
+            jsonAdvance();
+            int e = jsonPeek();
+            if (e == 110) val = val + "\n";
+            else if (e == 116) val = val + "\t";
+            else if (e == 114) val = val + "\r";
+            else if (e == 34) val = val + "\"";
+            else if (e == 92) val = val + "\\";
+            else if (e == 47) val = val + "/";
+            else val = val + __myp_chr(e);
+            jsonAdvance();
+        } else if (c == 34) {   // 结束 '"'
+            jsonAdvance();
+            int s = jsonNewNode(4);
+            JsonTab.str_val[s] = val;
+            return s;
+        } else {
+            val = val + __myp_chr(c);
+            jsonAdvance();
+        }
+    }
+    return -1;   // 未闭合
+}
+
+int jsonParseNumber() {
+    int s = JsonCtx.pos;
+    int i = JsonCtx.pos;
+    if (i < JsonCtx.len && jsonPeekAt(i) == 45) i = i + 1;   // '-'
+    int digits = 0;
+    while (i < JsonCtx.len && jsonIsDigit(jsonPeekAt(i)) != 0) { i = i + 1; digits = digits + 1; }
+    if (digits == 0) return -1;
+    int isInt = 1;
+    if (i < JsonCtx.len && jsonPeekAt(i) == 46) {   // '.'
+        isInt = 0;
+        i = i + 1;
+        while (i < JsonCtx.len && jsonIsDigit(jsonPeekAt(i)) != 0) i = i + 1;
+    }
+    if (i < JsonCtx.len && (jsonPeekAt(i) == 101 || jsonPeekAt(i) == 69)) {   // e/E
+        isInt = 0;
+        i = i + 1;
+        if (i < JsonCtx.len && (jsonPeekAt(i) == 43 || jsonPeekAt(i) == 45)) i = i + 1;
+        while (i < JsonCtx.len && jsonIsDigit(jsonPeekAt(i)) != 0) i = i + 1;
+    }
+    // 提取 token（计数串）→ strtod
+    int tlen = i - s;
+    string tok = jsonSub(JsonCtx.src, s, i);
+    double d = strtod(tok, 0);
+    int node = jsonNewNode(isInt != 0 ? 2 : 3);
+    JsonTab.num_val[node] = d;
+    JsonTab.str_val[node] = tok;
+    JsonCtx.pos = i;
+    return node;
+}
+
+int jsonParseArray() {
+    jsonAdvance();   // '['
+    int s = jsonNewNode(5);
+    jsonSkipWs();
+    if (jsonPeek() == 93) { jsonAdvance(); return s; }   // ']'
+    while (1) {
+        jsonSkipWs();
+        int ch = jsonParseValue();
+        if (ch < 0) return -1;
+        jsonAddChild(s, ch);
+        jsonSkipWs();
+        if (jsonPeek() == 93) { jsonAdvance(); return s; }
+        if (jsonPeek() == 44) { jsonAdvance(); continue; }   // ','
+        return -1;
+    }
+}
+
+int jsonParseObject() {
+    jsonAdvance();   // '{'
+    int s = jsonNewNode(6);
+    jsonSkipWs();
+    if (jsonPeek() == 125) { jsonAdvance(); return s; }   // '}'
+    while (1) {
+        jsonSkipWs();
+        if (jsonPeek() != 34) return -1;   // '"'
+        int keyNode = jsonParseString();
+        if (keyNode < 0) return -1;
+        string key = JsonTab.str_val[keyNode];
+        jsonSkipWs();
+        if (jsonPeek() != 58) return -1;   // ':'
+        jsonAdvance();
+        jsonSkipWs();
+        int val = jsonParseValue();
+        if (val < 0) return -1;
+        JsonTab.key[val] = key;
+        jsonAddChild(s, val);
+        jsonSkipWs();
+        if (jsonPeek() == 125) { jsonAdvance(); return s; }
+        if (jsonPeek() == 44) { jsonAdvance(); continue; }
+        return -1;
+    }
+}
+
+int jsonParseValue() {
+    jsonSkipWs();
+    if (JsonCtx.pos >= JsonCtx.len) return -1;
+    int c = jsonPeek();
+    if (c == 123) return jsonParseObject();   // '{'
+    if (c == 91) return jsonParseArray();     // '['
+    if (c == 34) return jsonParseString();    // '"'
+    if (c == 116) {   // 't'
+        if (jsonMatchKw("true") != 0) { int s = jsonNewNode(1); JsonTab.bool_val[s] = 1; return s; }
+        return -1;
+    }
+    if (c == 102) {   // 'f'
+        if (jsonMatchKw("false") != 0) { int s = jsonNewNode(1); JsonTab.bool_val[s] = 0; return s; }
+        return -1;
+    }
+    if (c == 110) {   // 'n'
+        if (jsonMatchKw("null") != 0) return jsonNewNode(0);
+        return -1;
+    }
+    return jsonParseNumber();
+}
+
+// ---- 路径解析（'.' 分隔；对象按键 / 数组按下标）----
+int jsonKeyEq(string key, string path, int s, int e) {
+    int kl = myp_strlen(key);
+    if (kl != e - s) return 0;
+    for (int i = 0; i < kl; i = i + 1) {
+        if (__myp_charcode(key, i) != __myp_charcode(path, s + i)) return 0;
+    }
+    return 1;
+}
+
+int jsonResolvePath(int root, string path) {
+    int cur = root;
+    int plen = myp_strlen(path);
+    if (plen == 0) return cur;
+    int ts = 0;
+    int i = 0;
+    while (i <= plen) {
+        if (i == plen || __myp_charcode(path, i) == 46) {   // '.' 或结尾
+            if (i > ts) {
+                int tt = JsonTab.type[cur];
+                if (tt == 6) {   // object: 按 key
+                    int found = -1;
+                    int cc = JsonTab.child_count[cur];
+                    for (int k = 0; k < cc; k = k + 1) {
+                        int ch = JsonTab.child_list[cur * 64 + k];
+                        if (jsonKeyEq(JsonTab.key[ch], path, ts, i) != 0) { found = ch; break; }
+                    }
+                    if (found < 0) return -1;
+                    cur = found;
+                } else if (tt == 5) {   // array: 按下标
+                    int idx = 0;
+                    int valid = 0;
+                    for (int j = ts; j < i; j = j + 1) {
+                        int c = __myp_charcode(path, j);
+                        if (c < 48 || c > 57) return -1;
+                        idx = idx * 10 + (c - 48);
+                        valid = 1;
+                    }
+                    if (valid == 0) return -1;
+                    if (idx >= JsonTab.child_count[cur]) return -1;
+                    cur = JsonTab.child_list[cur * 64 + idx];
+                } else {
+                    return -1;
+                }
+            }
+            ts = i + 1;
+        }
+        i = i + 1;
+    }
+    return cur;
+}
+
+// 在 parent 下按 token 找子（对象按键 / 数组按下标）
+int jsonFindChild(int parent, string token) {
+    if (parent < 0) return -1;
+    int tt = JsonTab.type[parent];
+    int cc = JsonTab.child_count[parent];
+    if (tt == 6) {
+        for (int i = 0; i < cc; i = i + 1) {
+            int ch = JsonTab.child_list[parent * 64 + i];
+            if (JsonTab.key[ch] == token) return ch;
+        }
+        return -1;
+    }
+    if (tt == 5) {
+        int idx = 0;
+        int valid = 0;
+        int tl = myp_strlen(token);
+        for (int i = 0; i < tl; i = i + 1) {
+            int c = __myp_charcode(token, i);
+            if (c < 48 || c > 57) return -1;
+            idx = idx * 10 + (c - 48);
+            valid = 1;
+        }
+        if (valid == 0 || idx >= cc) return -1;
+        return JsonTab.child_list[parent * 64 + idx];
+    }
+    return -1;
+}
+
+// 标量文本 → 标量节点（数字/布尔/null/字符串；容器不用）
+int jsonParseScalarText(string raw) {
+    if (raw == "true") { int s = jsonNewNode(1); JsonTab.bool_val[s] = 1; return s; }
+    if (raw == "false") { int s = jsonNewNode(1); JsonTab.bool_val[s] = 0; return s; }
+    if (raw == "null") return jsonNewNode(0);
+    // 数字：strtod 必须消费整个串（endptr 检查，同 C）
+    long ep = myp_arena_alloc(8);
+    double d = strtod(raw, ep);
+    long endp = __myp_mem_load_i64(ep);
+    int rl = myp_strlen(raw);
+    if (endp != 0 && endp - __myp_str_ptr(raw) == long(rl)) {
+        int isInt = 1;
+        for (int i = 0; i < rl; i = i + 1) {
+            int c = __myp_charcode(raw, i);
+            if (c == 46 || c == 101 || c == 69) { isInt = 0; break; }
+        }
+        int s = jsonNewNode(isInt != 0 ? 2 : 3);
+        JsonTab.num_val[s] = d;
+        JsonTab.str_val[s] = jsonStrDup(raw);
+        return s;
+    }
+    int s = jsonNewNode(4);
+    JsonTab.str_val[s] = jsonStrDup(raw);
+    return s;
+}
+
+// ---- 序列化（美化 2 空格）----
+string jsonIndent(int n) {
+    string r = "";
+    for (int i = 0; i < n; i = i + 1) r = r + "  ";
+    return r;
+}
+string jsonHex4(int v) {
+    string hex = "0123456789abcdef";
+    string r = "";
+    for (int i = 3; i >= 0; i = i - 1) {
+        int nib = (v >> (4 * i)) & 15;
+        r = r + __myp_chr(__myp_charcode(hex, nib));
+    }
+    return r;
+}
+string jsonEscape(string s) {
+    string r = "\"";
+    int n = myp_strlen(s);
+    for (int i = 0; i < n; i = i + 1) {
+        int c = __myp_charcode(s, i);
+        if (c == 34) r = r + "\\\"";
+        else if (c == 92) r = r + "\\\\";
+        else if (c == 10) r = r + "\\n";
+        else if (c == 9) r = r + "\\t";
+        else if (c == 13) r = r + "\\r";
+        else if (c < 32) r = r + "\\u" + jsonHex4(c);
+        else r = r + __myp_chr(c);
+    }
+    return r + "\"";
+}
+
+string jsonSerializeNode(int n, int indent) {
+    if (n < 0) return "null";
+    int tt = JsonTab.type[n];
+    if (tt == 0) return "null";
+    if (tt == 1) return JsonTab.bool_val[n] != 0 ? "true" : "false";
+    if (tt == 2 || tt == 3) return JsonTab.str_val[n];
+    if (tt == 4) return jsonEscape(JsonTab.str_val[n]);
+    if (tt == 5) {   // array
+        int cc = JsonTab.child_count[n];
+        if (cc == 0) return "[]";
+        string r = "[\n";
+        for (int i = 0; i < cc; i = i + 1) {
+            r = r + jsonIndent(indent + 1);
+            r = r + jsonSerializeNode(JsonTab.child_list[n * 64 + i], indent + 1);
+            if (i < cc - 1) r = r + ",";
+            r = r + "\n";
+        }
+        r = r + jsonIndent(indent) + "]";
+        return r;
+    }
+    if (tt == 6) {   // object
+        int cc = JsonTab.child_count[n];
+        if (cc == 0) return "{}";
+        string r = "{\n";
+        for (int i = 0; i < cc; i = i + 1) {
+            int ch = JsonTab.child_list[n * 64 + i];
+            r = r + jsonIndent(indent + 1);
+            r = r + jsonEscape(JsonTab.key[ch]);
+            r = r + ": ";
+            r = r + jsonSerializeNode(ch, indent + 1);
+            if (i < cc - 1) r = r + ",";
+            r = r + "\n";
+        }
+        r = r + jsonIndent(indent) + "}";
+        return r;
+    }
+    return "null";
+}
+
+// ---- 公共 API（对齐 C json_bridge.c 14 个）----
+long myp_json_parse(string s) {
+    JsonCtx.src = s;
+    JsonCtx.len = myp_strlen(s);
+    JsonCtx.pos = 0;
+    int slot = jsonParseValue();
+    if (slot < 0) return 0;
+    return long(slot + 1);
+}
+
+int myp_json_get_type(long handle, string path) {
+    if (handle <= 0) return -1;
+    int cur = jsonResolvePath(int(handle) - 1, path);
+    if (cur < 0) return -1;
+    return JsonTab.type[cur];
+}
+
+string myp_json_get_string(long handle, string path) {
+    if (handle <= 0) return jsonStrDup("");
+    int cur = jsonResolvePath(int(handle) - 1, path);
+    if (cur < 0) return jsonStrDup("");
+    int tt = JsonTab.type[cur];
+    if (tt != 4 && tt != 2 && tt != 3) return jsonStrDup("");
+    return jsonStrDup(JsonTab.str_val[cur]);
+}
+
+double myp_json_get_number(long handle, string path) {
+    if (handle <= 0) return 0.0;
+    int cur = jsonResolvePath(int(handle) - 1, path);
+    if (cur < 0) return 0.0;
+    return JsonTab.num_val[cur];
+}
+
+int myp_json_get_bool(long handle, string path) {
+    if (handle <= 0) return 0;
+    int cur = jsonResolvePath(int(handle) - 1, path);
+    if (cur < 0 || JsonTab.type[cur] != 1) return 0;
+    return JsonTab.bool_val[cur];
+}
+
+int myp_json_array_length(long handle, string path) {
+    if (handle <= 0) return 0;
+    int cur = jsonResolvePath(int(handle) - 1, path);
+    if (cur < 0 || JsonTab.type[cur] != 5) return 0;
+    return JsonTab.child_count[cur];
+}
+
+void myp_json_free(long handle) {
+    // 空操作：MYP arena 进程级回收；节点表 slot 不复用（C 即时释放树，差异文档化）。
+}
+
+int myp_json_child_count(long handle, string path) {
+    if (handle <= 0) return 0;
+    int cur = jsonResolvePath(int(handle) - 1, path);
+    if (cur < 0) return 0;
+    int tt = JsonTab.type[cur];
+    if (tt != 6 && tt != 5) return 0;
+    return JsonTab.child_count[cur];
+}
+
+string myp_json_child_key(long handle, string path, int index) {
+    if (handle <= 0) return jsonStrDup("");
+    int cur = jsonResolvePath(int(handle) - 1, path);
+    if (cur < 0) return jsonStrDup("");
+    int tt = JsonTab.type[cur];
+    if (tt != 6 && tt != 5) return jsonStrDup("");
+    if (index < 0 || index >= JsonTab.child_count[cur]) return jsonStrDup("");
+    int ch = JsonTab.child_list[cur * 64 + index];
+    return jsonStrDup(JsonTab.key[ch]);
+}
+
+string myp_json_scalar(long handle, string path) {
+    if (handle <= 0) return jsonStrDup("");
+    int cur = jsonResolvePath(int(handle) - 1, path);
+    if (cur < 0) return jsonStrDup("");
+    int tt = JsonTab.type[cur];
+    if (tt == 4) return jsonStrDup(JsonTab.str_val[cur]);
+    if (tt == 2 || tt == 3) return jsonStrDup(JsonTab.str_val[cur]);
+    if (tt == 1) return jsonStrDup(JsonTab.bool_val[cur] != 0 ? "true" : "false");
+    if (tt == 0) return jsonStrDup("null");
+    return jsonStrDup("");   // 容器
+}
+
+int myp_json_set_value(long handle, string path, string raw) {
+    if (handle <= 0) return 0;
+    int root = int(handle) - 1;
+    int plen = myp_strlen(path);
+    if (plen == 0) return 0;
+    int lastdot = -1;
+    for (int i = 0; i < plen; i = i + 1)
+        if (__myp_charcode(path, i) == 46) lastdot = i;
+    int parent;
+    int ts;
+    if (lastdot >= 0) {
+        parent = jsonResolvePath(root, jsonSub(path, 0, lastdot));
+        ts = lastdot + 1;
+    } else {
+        parent = root;
+        ts = 0;
+    }
+    if (parent < 0) return 0;
+    int target = jsonFindChild(parent, jsonSub(path, ts, plen));
+    if (target < 0) return 0;
+    int tt = JsonTab.type[target];
+    if (tt == 5 || tt == 6) return 0;   // 容器不可 set_value
+    int val = jsonParseScalarText(raw);
+    if (val < 0) return 0;
+    JsonTab.type[target] = JsonTab.type[val];
+    JsonTab.str_val[target] = JsonTab.str_val[val];
+    JsonTab.num_val[target] = JsonTab.num_val[val];
+    JsonTab.bool_val[target] = JsonTab.bool_val[val];
+    return 1;
+}
+
+int myp_json_add_child(long handle, string path, string key, string raw) {
+    if (handle <= 0) return 0;
+    int root = int(handle) - 1;
+    int parent = jsonResolvePath(root, path);
+    if (parent < 0) return 0;
+    int tt = JsonTab.type[parent];
+    if (tt != 6 && tt != 5) return 0;
+    int val = -1;
+    int rl = myp_strlen(raw);
+    if (rl > 0) {
+        int c0 = __myp_charcode(raw, 0);
+        if (c0 == 123 || c0 == 91) {   // '{' 或 '[' → 完整 JSON 值
+            JsonCtx.src = raw;
+            JsonCtx.len = rl;
+            JsonCtx.pos = 0;
+            val = jsonParseValue();
+            jsonSkipWs();
+            if (val < 0 || JsonCtx.pos < JsonCtx.len) val = -1;
+        }
+    }
+    if (val < 0) val = jsonParseScalarText(raw);
+    if (val < 0) return 0;
+    if (tt == 6) {
+        string k = (myp_strlen(key) == 0) ? "newKey" : key;
+        JsonTab.key[val] = jsonStrDup(k);
+    }
+    jsonAddChild(parent, val);
+    return 1;
+}
+
+int myp_json_remove(long handle, string path) {
+    if (handle <= 0) return 0;
+    int root = int(handle) - 1;
+    int plen = myp_strlen(path);
+    if (plen == 0) return 0;
+    int lastdot = -1;
+    for (int i = 0; i < plen; i = i + 1)
+        if (__myp_charcode(path, i) == 46) lastdot = i;
+    int parent;
+    int ts;
+    if (lastdot >= 0) {
+        parent = jsonResolvePath(root, jsonSub(path, 0, lastdot));
+        ts = lastdot + 1;
+    } else {
+        parent = root;
+        ts = 0;
+    }
+    if (parent < 0) return 0;
+    int tt = JsonTab.type[parent];
+    int cc = JsonTab.child_count[parent];
+    int found = -1;
+    if (tt == 6) {
+        for (int i = 0; i < cc; i = i + 1) {
+            int ch = JsonTab.child_list[parent * 64 + i];
+            if (jsonKeyEq(JsonTab.key[ch], path, ts, plen) != 0) { found = i; break; }
+        }
+    } else if (tt == 5) {
+        int idx = 0;
+        int valid = 0;
+        for (int i = ts; i < plen; i = i + 1) {
+            int c = __myp_charcode(path, i);
+            if (c < 48 || c > 57) return 0;
+            idx = idx * 10 + (c - 48);
+            valid = 1;
+        }
+        if (valid != 0 && idx < cc) found = idx;
+    } else {
+        return 0;
+    }
+    if (found < 0) return 0;
+    for (int i = found; i < cc - 1; i = i + 1)
+        JsonTab.child_list[parent * 64 + i] = JsonTab.child_list[parent * 64 + i + 1];
+    JsonTab.child_count[parent] = cc - 1;
+    return 1;
+}
+
+string myp_json_serialize(long handle) {
+    if (handle <= 0) return jsonStrDup("null");
+    return jsonStrDup(jsonSerializeNode(int(handle) - 1, 0));
+}
