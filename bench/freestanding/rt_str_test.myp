@@ -1,0 +1,25 @@
+// rt_str_test.myp — MYP 运行时字符串层验证（runtime_myp/str.myp shadow C runtime）。
+// 通过原生 == / != / < / Str.len 触发 myp_str_eq / myp_str_cmp / myp_strlen，
+// 链接时 MYP 版本优先（--allow-multiple-definition）。期望与 C 版本一致。
+import text;
+
+int main() {
+    // == / != → myp_str_eq
+    if (!("abc" == "abc")) return 1;
+    if ("abc" == "abd") return 2;
+    if ("abc" != "abc") return 3;
+    if (!("" == "")) return 4;
+    if ("abc" == "ab") return 5;
+    // < <= > >= → myp_str_cmp（strcmp 语义）
+    if ("abc" >= "abd") return 11;
+    if ("abc" > "abc") return 12;
+    if ("abd" < "abc") return 13;
+    if ("abc" < "abc") return 14;
+    if ("ab" > "abc") return 15;
+    if ("abc" != "abc") return 16;
+    // Str.len → myp_strlen
+    if (Str.len("hello") != 5) return 21;
+    if (Str.len("") != 0) return 22;
+    if (Str.len("MYP") != 3) return 23;
+    return 0;
+}

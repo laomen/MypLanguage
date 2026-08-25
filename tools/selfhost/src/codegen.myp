@@ -1364,8 +1364,51 @@ class CodeGen {
             // test 模式：生成测试运行器 main（逐个调用 @test 函数/action，异常隔离）
             if (testMode_ != 0) genTestRunner();
             // 顺序：preamble → 类类型 + FFI + 字符串全局 → 函数 → attributes
+            // MYP 运行时 myp化：若本模块 define 了 runtime 符号（如 myp_strlen），
+            // 剔除 preamble 中同名 declare，避免 llc "invalid redefinition"。
+            ArrayList<string> defNames = new ArrayList<string>();
+            string bodyTxt = sb_.toString();
+            int dl = Str.splitCount(bodyTxt, "\n");
+            for (int di = 0; di < dl; di = di + 1) {
+                string line = Str.trim(Str.splitGet(bodyTxt, "\n", di));
+                if (Str.startsWith(line, "define ") != 0) {
+                    int at = -1;
+                    for (int ci = 0; ci < Str.len(line); ci = ci + 1) {
+                        if (__myp_charcode(line, ci) == 64) { at = ci; break; }  // '@'
+                    }
+                    if (at >= 0) {
+                        int lp = -1;
+                        for (int ci = at + 1; ci < Str.len(line); ci = ci + 1) {
+                            if (__myp_charcode(line, ci) == 40) { lp = ci; break; }  // '('
+                        }
+                        if (lp > at) {
+                            string nm = Str.substring(line, at + 1, lp);
+                            if (Str.len(nm) > 0) {
+                                int dup = 0;
+                                for (int ni = 0; ni < defNames.size(); ni = ni + 1) {
+                                    if (defNames.get(ni) == nm) { dup = 1; break; }
+                                }
+                                if (dup == 0) defNames.add(nm);
+                            }
+                        }
+                    }
+                }
+            }
+            StringBuilder pre2 = new StringBuilder();
+            int pl = Str.splitCount(pre, "\n");
+            for (int pi = 0; pi < pl; pi = pi + 1) {
+                string pline = Str.splitGet(pre, "\n", pi);
+                int skip = 0;
+                for (int ni = 0; ni < defNames.size(); ni = ni + 1) {
+                    if (Str.contains(pline, "@" + defNames.get(ni) + "(") != 0) {
+                        skip = 1;
+                        break;
+                    }
+                }
+                if (skip == 0) pre2.append(pline + "\n");
+            }
             StringBuilder out = new StringBuilder();
-            out.append(pre);
+            out.append(pre2.toString());
             out.append(stringGlobals_.toString());
             out.append(sb_.toString());
             // --freestanding：发射 _start 入口（call main → exit syscall），
@@ -9290,6 +9333,117 @@ class CodeGen {
                         return st;
                     }
                     return "0";
+                }
+                // ---- raw memory 内建（自举编译器新增；runtime myp化 使能层）----
+                // 地址一律 long（i64），load/store 经 inttoptr。自举独有，mypc 无——
+                // MYP 运行时模块（rt_mem.myp 等）用它实现分配器/字节操作。
+                // __myp_mem_load_i32(long addr) → int
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_mem_load_i32") {
+                    string av = genExpr(e.args().get(0));
+                    string p = newTmp();
+                    sb_.append("  " + p + " = inttoptr i64 " + av + " to ptr\n");
+                    string t = newTmp();
+                    sb_.append("  " + t + " = load i32, ptr " + p + ", align 4\n");
+                    return t;
+                }
+                // __myp_mem_load_i64(long addr) → long
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_mem_load_i64") {
+                    string av = genExpr(e.args().get(0));
+                    string p = newTmp();
+                    sb_.append("  " + p + " = inttoptr i64 " + av + " to ptr\n");
+                    string t = newTmp();
+                    sb_.append("  " + t + " = load i64, ptr " + p + ", align 8\n");
+                    return t;
+                }
+                // __myp_mem_load_double(long addr) → double
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_mem_load_double") {
+                    string av = genExpr(e.args().get(0));
+                    string p = newTmp();
+                    sb_.append("  " + p + " = inttoptr i64 " + av + " to ptr\n");
+                    string t = newTmp();
+                    sb_.append("  " + t + " = load double, ptr " + p + ", align 8\n");
+                    return t;
+                }
+                // __myp_mem_load_ptr(long addr) → long（读指针字段并转回整数地址）
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_mem_load_ptr") {
+                    string av = genExpr(e.args().get(0));
+                    string p = newTmp();
+                    sb_.append("  " + p + " = inttoptr i64 " + av + " to ptr\n");
+                    string v = newTmp();
+                    sb_.append("  " + v + " = load ptr, ptr " + p + ", align 8\n");
+                    string t = newTmp();
+                    sb_.append("  " + t + " = ptrtoint ptr " + v + " to i64\n");
+                    return t;
+                }
+                // __myp_mem_store_i32(long addr, int v)
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_mem_store_i32") {
+                    string av = genExpr(e.args().get(0));
+                    string vv = genExpr(e.args().get(1));
+                    string vt = exprLlvmType(e.args().get(1));
+                    vv = convertValue(vv, vt, "i32");
+                    string p = newTmp();
+                    sb_.append("  " + p + " = inttoptr i64 " + av + " to ptr\n");
+                    sb_.append("  store i32 " + vv + ", ptr " + p + ", align 4\n");
+                    return "0";
+                }
+                // __myp_mem_store_i64(long addr, long v)
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_mem_store_i64") {
+                    string av = genExpr(e.args().get(0));
+                    string vv = genExpr(e.args().get(1));
+                    string vt = exprLlvmType(e.args().get(1));
+                    vv = convertValue(vv, vt, "i64");
+                    string p = newTmp();
+                    sb_.append("  " + p + " = inttoptr i64 " + av + " to ptr\n");
+                    sb_.append("  store i64 " + vv + ", ptr " + p + ", align 8\n");
+                    return "0";
+                }
+                // __myp_mem_store_double(long addr, double v)
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_mem_store_double") {
+                    string av = genExpr(e.args().get(0));
+                    string vv = genExpr(e.args().get(1));
+                    string vt = exprLlvmType(e.args().get(1));
+                    vv = convertValue(vv, vt, "double");
+                    string p = newTmp();
+                    sb_.append("  " + p + " = inttoptr i64 " + av + " to ptr\n");
+                    sb_.append("  store double " + vv + ", ptr " + p + ", align 8\n");
+                    return "0";
+                }
+                // __myp_memcpy(long dst, long src, long n)
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_memcpy") {
+                    string dv = genExpr(e.args().get(0));
+                    string sv = genExpr(e.args().get(1));
+                    string nv = genExpr(e.args().get(2));
+                    string nt = exprLlvmType(e.args().get(2));
+                    nv = convertValue(nv, nt, "i64");
+                    string dp = newTmp();
+                    sb_.append("  " + dp + " = inttoptr i64 " + dv + " to ptr\n");
+                    string sp = newTmp();
+                    sb_.append("  " + sp + " = inttoptr i64 " + sv + " to ptr\n");
+                    // void call 不能命名
+                    sb_.append("  call void @llvm.memcpy.p0.p0.i64(ptr " + dp + ", ptr " + sp + ", i64 " + nv + ", i1 false)\n");
+                    return "0";
+                }
+                // __myp_memset(long dst, int byte, long n)
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_memset") {
+                    string dv = genExpr(e.args().get(0));
+                    string bv = genExpr(e.args().get(1));
+                    string bt = exprLlvmType(e.args().get(1));
+                    bv = convertValue(bv, bt, "i8");
+                    string nv = genExpr(e.args().get(2));
+                    string nt = exprLlvmType(e.args().get(2));
+                    nv = convertValue(nv, nt, "i64");
+                    string dp = newTmp();
+                    sb_.append("  " + dp + " = inttoptr i64 " + dv + " to ptr\n");
+                    // void call 不能命名
+                    sb_.append("  call void @llvm.memset.p0.i64(ptr " + dp + ", i8 " + bv + ", i64 " + nv + ", i1 false)\n");
+                    return "0";
+                }
+                // __myp_addr_to_str(long addr) → string（inttoptr；构造原始指针返回）
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_addr_to_str") {
+                    string av = genExpr(e.args().get(0));
+                    string t = newTmp();
+                    sb_.append("  " + t + " = inttoptr i64 " + av + " to ptr\n");
+                    return t;
                 }
                 // __myp_timer_create("eventName", delay[, interval]) → 解析事件名
                 // 为 event_id + myp_timer_create（同 C++ 内联特判）

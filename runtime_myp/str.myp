@@ -1,0 +1,45 @@
+// runtime_myp/str.myp — runtime.c 字符串层 myp化（第一批，自举编译器编译）。
+// 用纯 MYP（__myp_charcode 逐字节）实现，符号名与 C runtime 一致：
+//   myp_strlen / myp_str_eq / myp_str_cmp
+// 链接时置于 libmyp_rt.a 之前 + --allow-multiple-definition → MYP 定义优先
+//（首个定义生效），shadow C 版本。验证见 bench/freestanding/rt_str_test.myp。
+//
+// 注意：函数体内不得用字符串 == / < / Str.len（会递归调用自身/运行时）。
+
+// C: int32_t myp_strlen(const char* s) —— 遇 NUL 终止（与 C strlen 一致）
+int myp_strlen(string s) {
+    int n = 0;
+    int i = 0;
+    while (__myp_charcode(s, i) != 0) {
+        n = n + 1;
+        i = i + 1;
+    }
+    return n;
+}
+
+// C: int32_t myp_str_eq(const char* a, const char* b) —— 内容相等（1/0）
+int myp_str_eq(string a, string b) {
+    int i = 0;
+    while (1) {
+        int ca = __myp_charcode(a, i);
+        int cb = __myp_charcode(b, i);
+        if (ca != cb) return 0;
+        if (ca == 0) return 1;   // 都到结尾
+        i = i + 1;
+    }
+}
+
+// C: int32_t myp_str_cmp(const char* a, const char* b) —— strcmp 语义，归一 -1/0/1
+int myp_str_cmp(string a, string b) {
+    int i = 0;
+    while (1) {
+        int ca = __myp_charcode(a, i);
+        int cb = __myp_charcode(b, i);
+        if (ca != cb) {
+            if (ca < cb) return -1;
+            return 1;
+        }
+        if (ca == 0) return 0;   // 都到结尾，相等
+        i = i + 1;
+    }
+}

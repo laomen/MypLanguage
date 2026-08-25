@@ -1,0 +1,46 @@
+// rt_mem_test.myp — 自举编译器 raw-memory 内建验证（runtime myp化 使能层）。
+// 用 __myp_syscall(mmap) 取内存，经 __myp_mem_store/load_* 读写 i32/i64/double，
+// __myp_memset / __myp_memcpy 批量操作。仅自举编译器（myp_self）支持这些内建。
+int main() {
+    // mmap(0, 4096, PROT_READ|WRITE=3, MAP_PRIVATE|ANONYMOUS=0x22, -1, 0) → 地址
+    long addr = __myp_syscall(9, 0, 4096, 3, 0x22, -1, 0);
+    if (addr == -1 || addr == 0) return 100;
+
+    // i32 往返
+    __myp_mem_store_i32(addr, 12345);
+    int a = __myp_mem_load_i32(addr);
+    if (a != 12345) return 1;
+
+    // i64 往返
+    __myp_mem_store_i64(addr + 8, 9876543210);
+    long b = __myp_mem_load_i64(addr + 8);
+    if (b != 9876543210) return 2;
+
+    // double 往返
+    __myp_mem_store_double(addr + 16, 3.14159);
+    double c = __myp_mem_load_double(addr + 16);
+    double diff = c - 3.14159;
+    if (diff < 0) diff = -diff;
+    if (diff > 0.0001) return 3;
+
+    // memset 0xAB×64 + memcpy 到 128 偏移，逐 i32 核对（0xABABABAB 超 i32 →
+    // 用有符号等价 -1414812757）
+    __myp_memset(addr + 32, 0xAB, 64);
+    __myp_memcpy(addr + 128, addr + 32, 64);
+    int d = __myp_mem_load_i32(addr + 32);
+    int e = __myp_mem_load_i32(addr + 128);
+    if (d != -1414812757) return 4;
+    if (e != -1414812757) return 5;
+
+    // __myp_addr_to_str 回环：字符串数据指针 → 地址 → 转回 string，读字节
+    string s = "MYP-rt";
+    long sp = __myp_str_ptr(s);
+    string back = __myp_addr_to_str(sp);
+    // 逐字节核对（__myp_charcode 越界返回 0；长度 6）
+    string expect = "MYP-rt";
+    for (int i = 0; i < 6; i = i + 1) {
+        if (__myp_charcode(back, i) != __myp_charcode(expect, i)) return 6;
+    }
+
+    return 0;
+}

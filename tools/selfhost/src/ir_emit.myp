@@ -439,6 +439,7 @@ import "./ast.myp";
             sb.append("declare ptr @myp_alloc(i64)\n");
             sb.append("\n");
             sb.append("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
+            sb.append("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
             sb.append("\n");
             sb.append("declare void @myp_free(ptr)\n");
             sb.append("\n");

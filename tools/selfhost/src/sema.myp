@@ -606,6 +606,19 @@ class Sema {
             // libmyp/freestanding 探针（档B，镜像 C++）：原始 syscall + 字符串数据指针。
             addIntr("__myp_syscall", "long");
             addIntr("__myp_str_ptr", "long");
+            // raw memory 内建（自举编译器新增；runtime myp化 使能层——地址以 long
+            // 传，经 inttoptr 访问。自举独有，mypc 无：MYP 运行时模块用它实现
+            // 分配器/字节操作，避免改 mypc）。
+            addIntr("__myp_mem_load_i32", "int");
+            addIntr("__myp_mem_load_i64", "long");
+            addIntr("__myp_mem_load_double", "double");
+            addIntr("__myp_mem_load_ptr", "long");
+            addIntr("__myp_mem_store_i32", "void");
+            addIntr("__myp_mem_store_i64", "void");
+            addIntr("__myp_mem_store_double", "void");
+            addIntr("__myp_memcpy", "void");
+            addIntr("__myp_memset", "void");
+            addIntr("__myp_addr_to_str", "string");
             addIntr("__myp_kbhit", "int");
             addIntr("__myp_getch", "int");
             addIntr("__myp_throw", "void");
