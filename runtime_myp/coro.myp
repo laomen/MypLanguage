@@ -37,29 +37,29 @@ ffi int myp_release(string obj);    // alloc.myp（帧表 release；经 __myp_ad
 
 @static class CoroT {
     property:
-        long ctxBase = 0;       // ctx 槽裸缓冲（arena，CORO_CAP*8；延迟初始化）
-        long retCtxBase = 0;    // retCtx 槽裸缓冲
-        long[1024] stack;       // 栈基址（mmap）
-        long[1024] stackSize;
-        long[1024] fn;          // entry 函数地址
-        long[1024] result;
-        long[1024] yieldVal;
-        long[1024] resumeVal;
-        int[1024] active;
-        int[1024] ready;
-        int[1024] generation;
-        int[1024] resultPending;
-        int[1024] onFreeList;
-        int[1024] discardResult;
-        int[1024] cancelRequested;
+        long ctxBase = 0;       // ctx 槽 arena 缓冲（CoroCap.coro*8；扩容时换新块+拷贝）
+        long retCtxBase = 0;    // retCtx 槽 arena 缓冲
+        long[] stack;       // 栈基址（mmap 预留+守护页）——动态扩容（解除 1024 上限）
+        long[] stackSize;
+        long[] fn;          // entry 函数地址
+        long[] result;
+        long[] yieldVal;
+        long[] resumeVal;
+        int[] active;
+        int[] ready;
+        int[] generation;
+        int[] resultPending;
+        int[] onFreeList;
+        int[] discardResult;
+        int[] cancelRequested;
         // Phase B：等待/唤醒状态
-        int[1024] waitTimeout;       // 被调度器截止期唤醒（1=超时；wait_* 据此返回 -1）
-        int[1024] lastWaitEventId;   // wait_any：唤醒的事件 id（-1=无）
-        int[1024] lastWaitIndex;     // wait_any_of：唤醒的 spec 下标（-1=无）
+        int[] waitTimeout;       // 被调度器截止期唤醒（1=超时；wait_* 据此返回 -1）
+        int[] lastWaitEventId;   // wait_any：唤醒的事件 id（-1=无）
+        int[] lastWaitIndex;     // wait_any_of：唤醒的 spec 下标（-1=无）
         int count = 0;
         int current = -1;
         // 空闲槽复用列表
-        int[1024] freeSlots;
+        int[] freeSlots;
         int freeCount = 0;
 }
 // ---- Phase B：等待表（wait_* 注册；C myp_coro_wait_t 的 @static 并行数组版）----
@@ -67,24 +67,41 @@ ffi int myp_release(string obj);    // alloc.myp（帧表 release；经 __myp_ad
 // 下标；-1 普通等待；-2 waitAnyOf 总体超时标记。deadline=0 表示无截止期。
 @static class CoroW {
     property:
-        int[1024] kind;
-        int[1024] eventId;
-        int[1024] fd;
-        int[1024] fdEvents;     // POLLIN=1 POLLOUT=4
-        long[1024] handle;
-        int[1024] active;
-        long[1024] deadline;
-        int[1024] expired;
-        long[1024] execResult;
-        int[1024] waitIndex;
+        int[] kind;
+        int[] eventId;
+        int[] fd;
+        int[] fdEvents;     // POLLIN=1 POLLOUT=4
+        long[] handle;
+        int[] active;
+        long[] deadline;
+        int[] expired;
+        long[] execResult;
+        int[] waitIndex;
         int count = 0;
 }
-// ---- Phase B：帧表（ARC 镜像；每协程 ≤32 槽，扁平数组 coro*32+i）----
+// ---- Phase B：帧表（ARC 镜像；每协程 ≤32 槽，扁平数组 coro*32+i；随 coro 扩容）----
 @static class CoroF {
     property:
-        long[32768] slotId;     // 1024 协程 × 32 槽（slot_id = alloca 地址，仅作键）
-        long[32768] obj;        // 堆对象指针（release 目标）
-        int[1024] count;
+        long[] slotId;     // CoroCap.coro*32（slot_id = alloca 地址，仅作键）
+        long[] obj;        // 堆对象指针（release 目标）
+        int[] count;
+}
+// ---- 容量跟踪（CoroT/CoroF 用 coro 容量；CoroW 独立 wait 容量）----
+@static class CoroCap {
+    property:
+        int coro = 0;
+        int wait = 0;
+}
+// 数组扩容辅助：new 新容量 + 逐元素拷贝旧内容（低频/容量小，可接受）
+long[] coroGrowLong(long[] src, int old, int nc) {
+    long[] r = new long[nc];
+    for (int i = 0; i < old; i = i + 1) r[i] = src[i];
+    return r;
+}
+int[] coroGrowInt(int[] src, int old, int nc) {
+    int[] r = new int[nc];
+    for (int i = 0; i < old; i = i + 1) r[i] = src[i];
+    return r;
 }
 // ---- Phase B：fd poll 缓冲（arena；8B×1024 pollfd）----
 @static class CoroPoll {
@@ -112,11 +129,68 @@ ffi int myp_release(string obj);    // alloc.myp（帧表 release；经 __myp_ad
     property:
         int done = 0;
 }
+// CoroT/CoroF（per-coro×32）扩容到 ≥n 槽（初始 64，翻倍；CoroW 保持 ≥coro 容量）
+void coroTEnsure(int n) {
+    if (CoroCap.coro >= n) return;
+    int nc = CoroCap.coro == 0 ? 64 : CoroCap.coro * 2;
+    while (nc < n) nc = nc * 2;
+    int old = CoroCap.coro;
+    CoroT.stack = coroGrowLong(CoroT.stack, old, nc);
+    CoroT.stackSize = coroGrowLong(CoroT.stackSize, old, nc);
+    CoroT.fn = coroGrowLong(CoroT.fn, old, nc);
+    CoroT.result = coroGrowLong(CoroT.result, old, nc);
+    CoroT.yieldVal = coroGrowLong(CoroT.yieldVal, old, nc);
+    CoroT.resumeVal = coroGrowLong(CoroT.resumeVal, old, nc);
+    CoroT.active = coroGrowInt(CoroT.active, old, nc);
+    CoroT.ready = coroGrowInt(CoroT.ready, old, nc);
+    CoroT.generation = coroGrowInt(CoroT.generation, old, nc);
+    CoroT.resultPending = coroGrowInt(CoroT.resultPending, old, nc);
+    CoroT.onFreeList = coroGrowInt(CoroT.onFreeList, old, nc);
+    CoroT.discardResult = coroGrowInt(CoroT.discardResult, old, nc);
+    CoroT.cancelRequested = coroGrowInt(CoroT.cancelRequested, old, nc);
+    CoroT.waitTimeout = coroGrowInt(CoroT.waitTimeout, old, nc);
+    CoroT.lastWaitEventId = coroGrowInt(CoroT.lastWaitEventId, old, nc);
+    CoroT.lastWaitIndex = coroGrowInt(CoroT.lastWaitIndex, old, nc);
+    CoroT.freeSlots = coroGrowInt(CoroT.freeSlots, old, nc);
+    // CoroF（per-coro×32 扁平）
+    CoroF.slotId = coroGrowLong(CoroF.slotId, old * 32, nc * 32);
+    CoroF.obj = coroGrowLong(CoroF.obj, old * 32, nc * 32);
+    CoroF.count = coroGrowInt(CoroF.count, old, nc);
+    // ctx/retCtx arena 缓冲（换新块 + 拷贝旧值；ctx_switch 每次经 base+slot*8 取址）
+    long nb = myp_arena_alloc(long(nc) * 8);
+    if (CoroT.ctxBase != 0) __myp_memcpy(nb, CoroT.ctxBase, long(old) * 8);
+    CoroT.ctxBase = nb;
+    long nb2 = myp_arena_alloc(long(nc) * 8);
+    if (CoroT.retCtxBase != 0) __myp_memcpy(nb2, CoroT.retCtxBase, long(old) * 8);
+    CoroT.retCtxBase = nb2;
+    CoroCap.coro = nc;
+    coroWEnsure(nc);   // 等待表保持 ≥ coro 容量
+}
+// CoroW 扩容到 ≥n（可超 coro 容量：wait_any 一个协程可注册多条）
+void coroWEnsure(int n) {
+    if (CoroCap.wait >= n) return;
+    int nc = CoroCap.wait == 0 ? 64 : CoroCap.wait * 2;
+    while (nc < n) nc = nc * 2;
+    int old = CoroCap.wait;
+    CoroW.kind = coroGrowInt(CoroW.kind, old, nc);
+    CoroW.eventId = coroGrowInt(CoroW.eventId, old, nc);
+    CoroW.fd = coroGrowInt(CoroW.fd, old, nc);
+    CoroW.fdEvents = coroGrowInt(CoroW.fdEvents, old, nc);
+    CoroW.active = coroGrowInt(CoroW.active, old, nc);
+    CoroW.expired = coroGrowInt(CoroW.expired, old, nc);
+    CoroW.waitIndex = coroGrowInt(CoroW.waitIndex, old, nc);
+    CoroW.handle = coroGrowLong(CoroW.handle, old, nc);
+    CoroW.deadline = coroGrowLong(CoroW.deadline, old, nc);
+    CoroW.execResult = coroGrowLong(CoroW.execResult, old, nc);
+    CoroCap.wait = nc;
+}
+
 void coroEnsureInit() {
     if (CoroInit.done == 0) {
         CoroInit.done = 1;
         CoroT.current = -1;
     }
+    coroTEnsure(64);   // 惰性分配协程/等待/帧表（初始 64，同 C MYP_CORO_INITIAL_CAPACITY）
 }
 
 // ---- myp_ctx_switch（内联汇编上下文切换，保留原实现）----
@@ -132,12 +206,12 @@ void myp_ctx_switch(long save, long load) {
 }
 
 // ---- 内部辅助 ----
+// ctx/retCtx arena 缓冲由 coroTEnsure 惰性分配 + 扩容（返回当前 base；调用方须已
+// coroEnsureInit）
 long coroCtxBase() {
-    if (CoroT.ctxBase == 0) CoroT.ctxBase = myp_arena_alloc(1024 * 8);
     return CoroT.ctxBase;
 }
 long coroRetCtxBase() {
-    if (CoroT.retCtxBase == 0) CoroT.retCtxBase = myp_arena_alloc(1024 * 8);
     return CoroT.retCtxBase;
 }
 int coroSlotOf(long h) { return int(h & 0xFFFFFFFF); }
@@ -172,17 +246,70 @@ int coroPopFree() {
     if (s >= 0 && s < CoroT.count) CoroT.onFreeList[s] = 0;
     return s;
 }
-// 栈分配：mmap 匿名 RW（同 thread.myp）
-long coroStackAlloc(long size) {
-    long p = __myp_syscall(9, 0, size, 3, 0x22, -1, 0);
-    if (p == -1 || p == 0) return 0;
-    return p;
+// ---- 动态栈：大虚拟预留 + 按需分页 + 守护页（Go 式增长，无拷贝/无编译器改动）----
+// 预留量 = 栈增长上限；mmap 惰性（RSS 只算实际使用页）。底部 4KB PROT_NONE 守护页
+// → 真跑飞（超上限）干净 SIGSEGV（替代静默堆破坏，同 Go maxstacksize 语义）。
+// 常量（MYP 无顶层 const，内联字面量）：
+//   DEFAULT=1MB(1048576)  MIN=64KB(65536)  MAX=64MB(67108864)  GUARD=4096
+long coroReserveSize(long requested) {
+    long reserve = 1048576;   // DEFAULT 1MB
+    // 编译器无 @coro 注解时传 128KB（131072）→ 视为默认，给 1MB 动态余量；
+    // 显式 @coro(stack=N)（≠128KB）尊重 N。
+    if (requested > 0 && requested != 131072) reserve = requested;
+    if (reserve < 65536) reserve = 65536;
+    if (reserve > 67108864) reserve = 67108864;
+    return reserve;
+}
+// mmap reserve+guard，底部一页 PROT_NONE；返回可用栈基址（guard 之上）
+long coroStackAlloc(long reserve) {
+    long total = reserve + 4096;
+    long base = __myp_syscall(9, 0, total, 3, 0x4022, -1, 0);  // RW|NORESERVE|ANON|PRIVATE
+    if (base == -1 || base == 0) return 0;
+    __myp_syscall(10, base, 4096, 0, 0, 0, 0);   // mprotect 低 4KB PROT_NONE
+    return base + 4096;
+}
+// ---- 栈池（C 平价：复用预留，避免 spawn/destroy churn）----
+@static class CoroStackPool {
+    property:
+        long[64] ptrs;     // 可用栈基址
+        long[64] sizes;    // 可用尺寸（预留）
+        long total = 0;    // 池内 VA 总字节
+        int count = 0;
+}
+long coroStackTake(long reserve) {
+    int best = -1;
+    for (int i = 0; i < CoroStackPool.count; i = i + 1) {
+        if (CoroStackPool.sizes[i] >= reserve &&
+            (best < 0 || CoroStackPool.sizes[i] < CoroStackPool.sizes[best]))
+            best = i;
+    }
+    if (best >= 0) {
+        long p = CoroStackPool.ptrs[best];
+        long s = CoroStackPool.sizes[best];
+        CoroStackPool.ptrs[best] = CoroStackPool.ptrs[CoroStackPool.count - 1];
+        CoroStackPool.sizes[best] = CoroStackPool.sizes[CoroStackPool.count - 1];
+        CoroStackPool.total = CoroStackPool.total - s;
+        CoroStackPool.count = CoroStackPool.count - 1;
+        return p;
+    }
+    return coroStackAlloc(reserve);
+}
+// 回池（有界：64 项 / VA 128MB）或 munmap（含守护页）
+void coroStackReturn(long ptr, long reserve) {
+    if (CoroStackPool.count < 64 && CoroStackPool.total + reserve <= 134217728) {
+        CoroStackPool.ptrs[CoroStackPool.count] = ptr;
+        CoroStackPool.sizes[CoroStackPool.count] = reserve;
+        CoroStackPool.total = CoroStackPool.total + reserve;
+        CoroStackPool.count = CoroStackPool.count + 1;
+        return;
+    }
+    __myp_syscall(11, ptr - 4096, reserve + 4096, 0, 0, 0, 0);  // munmap 含守护页
 }
 // 退役栈：trampoline 完成时登记（不能就地 munmap，正运行其上）→ 下次 create/
-// scheduler drain 时 munmap。
+// scheduler drain 时回池/munmap。
 void coroRetiredAdd(long ptr, long size) {
     if (CoroRetired.count >= 256) {
-        __myp_syscall(11, ptr, size, 0, 0, 0, 0);  // munmap 兜底（列表满）
+        coroStackReturn(ptr, size);   // 列表满 → 直接回池/munmap
         return;
     }
     CoroRetired.ptrs[CoroRetired.count] = ptr;
@@ -192,7 +319,7 @@ void coroRetiredAdd(long ptr, long size) {
 void coroRetiredDrain() {
     int i = 0;
     while (i < CoroRetired.count) {
-        __myp_syscall(11, CoroRetired.ptrs[i], CoroRetired.sizes[i], 0, 0, 0, 0);
+        coroStackReturn(CoroRetired.ptrs[i], CoroRetired.sizes[i]);
         i = i + 1;
     }
     CoroRetired.count = 0;
@@ -213,15 +340,17 @@ void coroCtxInit(int slot) {
 long __myp_coro_create(long stack_bytes) {
     coroEnsureInit();
     coroRetiredDrain();
-    long size = stack_bytes > 0 ? stack_bytes : 131072;
+    // 动态栈：预留 = clamp(requested, 64KB, 64MB)；编译器默认 128KB（无 @coro）→
+    // 提升到 1MB 默认预留（Go 式动态增长余量；RSS 按实际使用按需提交）。
+    long size = coroReserveSize(stack_bytes > 0 ? stack_bytes : 131072);
     int idx = coroPopFree();
     if (idx < 0) {
-        if (CoroT.count >= 1024) return -1;
+        coroTEnsure(CoroT.count + 1);   // 解除 1024 上限：动态扩容
         idx = CoroT.count;
         CoroT.count = CoroT.count + 1;
     }
     CoroT.generation[idx] = CoroT.generation[idx] + 1;
-    long st = coroStackAlloc(size);
+    long st = coroStackTake(size);   // 栈池复用或 mmap 预留+守护页
     if (st == 0) return -1;
     CoroT.stack[idx] = st;
     CoroT.stackSize[idx] = size;
@@ -441,15 +570,13 @@ void coroReleaseFrame(int cur) {
 }
 
 // ---- Phase B：等待表辅助 ----
-// 固定 1024 上限（C 动态增长；MYP @static 定容）。满 → -1，调用方保持协程 ready
-// 不 park（同 C OOM 语义：绝不静默丢失/死锁）。
+// 动态扩容（CoroW 独立 cap，解除 1024 上限）；永不因满失败。
 int coroWaitReserve() {
-    if (CoroW.count >= 1024) return -1;
     return 0;
 }
 int coroWaitAdd(int kind, int eventId, int fd, int fdEvents, long handle,
                 long deadline, int waitIndex) {
-    if (coroWaitReserve() != 0) return -1;
+    coroWEnsure(CoroW.count + 1);
     int i = CoroW.count;
     CoroW.kind[i] = kind;
     CoroW.eventId[i] = eventId;
@@ -479,7 +606,8 @@ void coroPollFds() {
         if (CoroW.active[i] != 0 && CoroW.kind[i] == 2) nfd = nfd + 1;
     }
     if (nfd == 0) return;
-    if (CoroPoll.inited == 0) {
+    // poll 缓冲随等待表扩容（≥1024；等待表已解除上限）
+    if (CoroPoll.inited == 0 || CoroPoll.buf == 0) {
         CoroPoll.buf = myp_arena_alloc(1024 * 8);
         CoroPoll.inited = 1;
     }
@@ -786,13 +914,13 @@ void __myp_coro_event_notify(long event_id) {
 
 // ---- M9：协程资源诊断（包 B 依赖包 D 的部分）----
 long myp_diag_coro_slots() { return CoroT.count; }
-long myp_diag_coro_slot_capacity() { return 1024; }
+long myp_diag_coro_slot_capacity() { return CoroCap.coro; }
 long myp_diag_coro_free_slots() { return CoroT.freeCount; }
-// 栈池：MYP 版无栈池（Phase C）→ 恒 0
-long myp_diag_stack_pool_count() { return 0; }
-long myp_diag_stack_pool_capacity() { return 0; }
-long myp_diag_stack_pool_bytes() { return 0; }
-long myp_diag_stack_pool_max_bytes() { return 0; }
+// 栈池：真实统计（预留复用池；C 平价语义）
+long myp_diag_stack_pool_count() { return CoroStackPool.count; }
+long myp_diag_stack_pool_capacity() { return 64; }
+long myp_diag_stack_pool_bytes() { return CoroStackPool.total; }
+long myp_diag_stack_pool_max_bytes() { return 134217728; }
 long myp_diag_retired_count() { return CoroRetired.count; }
 long myp_diag_retired_bytes() {
     long s = 0;

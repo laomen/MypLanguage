@@ -359,6 +359,37 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
   本机驱动下不可验（595.84 201 怪癖）。
 
+### v3.15.52 — runtime myp化 #46：协程动态表（解除 1024 上限）+ Go 式动态栈 + 栈池
+
+**非破坏性**。coro.myp 两项结构性升级（包 D 收尾）：
+
+- **解除协程数量上限（1024 → 动态）**：`CoroT`/`CoroW`/`CoroF` 的定长 `[1024]`/
+  `[32768]` 并行数组改为**动态 `long[]`/`int[]` @static 数组**。`coroTEnsure`/
+  `coroWEnsure`（初始 64，同 C `MYP_CORO_INITIAL_CAPACITY`；翻倍扩容，换引用 +
+  逐元素拷贝）——**115 个 `CoroT.X[slot]` 访问点零改动**（与 C 的 AoS 扩表语义
+  一致：扩表不动字段访问，只是换更大的数组）。ctx/retCtx arena 缓冲随容量扩容
+  （新块 + 拷贝）。`myp_diag_coro_slot_capacity` 返回真实容量（`CoroCap.coro`）。
+- **Go 式动态栈（大虚拟预留 + 按需分页 + 守护页）**：`coroStackAlloc` 预留
+  `clamp(requested, 64KB, 64MB)`；编译器默认 128KB（无 `@coro` 注解）→ **提升到
+  1MB 默认预留**（Go 式增长余量；显式 `@coro(stack=N)` 尊重 N）。`MAP_NORESERVE`
+  惰性 mmap → **RSS 只算实际使用的页**（深递归才多占）；栈向下按需增长，**无拷贝/
+  无指针修正/无编译器改动**（对比 Go 需精确栈图，MYP 不可行的拷贝方案）。底部
+  4KB PROT_NONE **守护页** → 真跑飞（超上限）干净 SIGSEGV（替代静默堆破坏）。
+- **栈池（C 平价）**：`coroStackTake/Return` 有界池（64 项 / VA 128MB，best-fit
+  复用；退役 drain 回池，池满 munmap 含守护页）。`myp_diag_stack_pool_count/
+  capacity/bytes/max_bytes` 从恒 0 → 真实值。
+- **验证**：
+  - rt_coro_test 扩展（section 7/8）：1500 并发槽（`slots=1500 cap=2048`，旧
+    1024 上限处 create 返回 -1）+ `deepRec(20000)=20000`（旧 128KB 栈在 ~2-3k 层
+    SIGSEGV；1MB 预留容纳）+ 栈池 capacity=64。
+  - 探针：`slots=1500 cap=2048`、`1500 concurrent OK`、`deep recursion OK
+    (20000 frames)` exit 0。
+  - rt_coro_test / rt_coro_wait_test / rt_coro_chan_future_test 全过；**shadow
+    34/34**；bootstrap fixpoint 不变；全量 323/323（oracle + selfhost）。
+- **注**：`@coro` 调用返回**句柄**（非结果），须 `Coro.result(handle)` 取结果
+  （既有约定，测试用对即无碍）。`@coro(stack=N)` 语义兼容（N 为预留，下限 64KB、
+  上限 64MB）。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20

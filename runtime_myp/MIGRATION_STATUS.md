@@ -187,9 +187,21 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
     （同步读语义，非阻塞 await 未做）。
   - **测试**：`bench/freestanding/rt_coro_chan_future_test.myp`（channel 基本/
     producer park/consumer park/close + future ready/协程 park，6 项）。
-- **剩余（Phase C）**：release_frame/cleanup/thread_cleanup、栈池、
-  `myp_coro_file_*` 非阻塞 exec worker。
-- **难度**：高（已突破核心+事件层+通道/未来，剩栈池/cleanup/非阻塞 exec）。
+- **✅ 动态栈 + 动态表（#46，v3.15.52）**：协程表/等待表/帧表从定长 `[1024]`
+  改为**动态 `long[]`/`int[]` @static 数组**（`coroTEnsure`/`coroWEnsure` 惰性分配
+  初始 64 + 翻倍扩容，换引用 + 逐元素拷贝；**115 个 `CoroT.X[slot]` 访问点零改动**）
+  ——**解除 1024 并发上限**（同 C AoS 扩表语义）。**动态栈**：`coroStackAlloc` 大
+  虚拟预留（`clamp(requested,64KB,64MB)`；编译器默认 128KB→提升 1MB；显式
+  `@coro(stack=N)` 尊重）+ `MAP_NORESERVE` 按需分页（RSS 只算实际页）+ 底部 4KB
+  PROT_NONE 守护页（超限干净 SIGSEGV，替代静默堆破坏）——Go 式动态增长，无拷贝/
+  无编译器改动。**栈池**（C 平价）：`coroStackTake/Return` 有界（64 项 / VA 128MB）
+  best-fit 复用 + 退役 drain 回池，`myp_diag_stack_pool_*` 返回真实值。
+  验证：rt_coro_test 扩展（1500 并发槽 / cap 动态 2048 / deepRec(20000)=20000）；
+  shadow 34/34；bootstrap + oracle + selfhost 323/323。
+- **剩余（Phase C）**：release_frame/cleanup/thread_cleanup 为 C 内部/atexit 路径
+  （lld 已剥离构造器，影子等效空操作）；`myp_coro_file_*` 非阻塞 exec worker
+  （保持同步读语义）。
+- **难度**：高（已突破核心+事件层+通道/未来+动态表+动态栈）。
 
 ### 包 E：同步原语（mutex + cond + sem + rwlock + once + barrier = 30；future 已在 #38）
 - ✅ **已做（#39 sync.myp，futex 无 libc）**：Mutex（票号锁 serving/next + futex，

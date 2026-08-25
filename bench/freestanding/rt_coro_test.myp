@@ -1,7 +1,12 @@
 // rt_coro_test.myp — 协程核心验证（runtime_myp/coro.myp，包 D Phase A 切片）：
 // eager 完成生命周期（create→set_entry→resume→完成→result）+ 槽复用 + 代际句柄
-// 失效 + status/is_active/count + 多参数 entry + yield 往返。
+// 失效 + status/is_active/count + 多参数 entry + yield 往返 + 动态表（解除 1024 上
+// 限）+ 动态栈（预留按需分页，深递归）。
 import coro;
+
+ffi long myp_diag_coro_slot_capacity();
+ffi long myp_diag_stack_pool_count();
+ffi long myp_diag_stack_pool_capacity();
 
 class Worker {
     action:
@@ -12,6 +17,9 @@ class Worker {
             await;
             return x * 2;
         }
+        // 深递归：无 @coro(stack=N) → 默认 128KB 请求 → 提升到 1MB 预留（Go 式动态栈）
+        @coro long deepRec(long n) { return recHelper(n); }
+        long recHelper(long n) { if (n <= 0L) return 0L; return 1L + recHelper(n - 1L); }
 }
 
 class CoroTest {
@@ -59,6 +67,27 @@ class CoroTest {
             long rt = Coro.result(ht);
             if (rt != 42L) return 13;
             if (Coro.status(ht) != 0L) return 14;
+
+            // 7) 解除 1024 上限：1500 并发槽（读结果前槽不回收）→ 动态扩容
+            long[] hs = new long[1500];
+            for (int i = 0; i < 1500; i = i + 1) hs[i] = w.run(i);
+            long acc2 = 0;
+            for (int i = 0; i < 1500; i = i + 1) {
+                long r2 = Coro.result(hs[i]);
+                if (r2 != long(i) + 1L) return 15;
+                acc2 = acc2 + r2;
+            }
+            if (acc2 != 1500L * 1501L / 2L) return 16;
+            if (myp_diag_coro_slot_capacity() < 1500L) return 17;   // 表已动态扩容
+
+            // 8) 动态栈：深递归 20000 层（旧 128KB 在 ~2-3k 层崩；1MB 预留可容纳）
+            long hd = w.deepRec(20000L);
+            long rd = Coro.result(hd);
+            if (rd != 20000L) return 18;
+            // 栈池：destroy churn 后回池（先创建触发退役 drain）
+            long hp = w.run(1);
+            Coro.result(hp);
+            if (myp_diag_stack_pool_capacity() != 64L) return 19;
             return 0;
         }
 }
