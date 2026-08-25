@@ -1,0 +1,138 @@
+// runtime_myp/net.myp — TCP 网络层 MYP 化：shadow C bridge net_bridge.c 的 8 个
+// myp_net_*（Linux，AF_INET 流套接字）。de-gcc ≠ 去 glibc——libc ffi
+// （socket/bind/listen/accept/connect/send/recv/close/fcntl/setsockopt/
+// gethostbyname），无 gcc、无 C 桥。**薄接口层：只导出 C API，无业务逻辑。**
+//
+// 关键布局：
+//   - sockaddr_in = { sin_family:u16@0(=AF_INET=2), sin_port:u16@2(BE=htons),
+//     sin_addr:u32@4(NB), sin_zero[8]@8 } = 16B。无 store_i16 → family 2×i8 LE，
+//     port 手动 htons（BE：高字节在前）。
+//   - struct hostent = { h_name@0, h_aliases@8, h_addrtype@16, h_length@20,
+//     h_addr_list@24 }（x86-64 glibc）；h_addr_list[0] = 4 字节 IPv4。
+//   - send/recv 用 send/recv（libc，非 sendto/recvfrom）；recv_line 逐字节剥 \r\n。
+//   - 返回字符串按实收长度构建（myp_alloc(n+1) → 头 len=n）。
+
+ffi int myp_strlen(string s);
+ffi string myp_alloc(long size);
+ffi long myp_arena_alloc(long size);
+// libc
+ffi int socket(int domain, int type, int protocol);
+ffi int setsockopt(int fd, int level, int optname, long optval, int optlen);
+ffi int bind(int fd, long addr, int addrlen);
+ffi int listen(int fd, int backlog);
+ffi int accept(int fd, long addr, long addrlen);
+ffi int connect(int fd, long addr, int addrlen);
+ffi int send(int fd, long buf, int len, int flags);
+ffi int recv(int fd, long buf, int len, int flags);
+ffi int close(int fd);
+ffi int fcntl(int fd, int cmd, long arg);
+ffi long gethostbyname(string name);
+
+string netEmpty() {
+    string r = myp_alloc(1);
+    __myp_mem_store_i8(__myp_str_ptr(r), 0);
+    return r;
+}
+
+// 构造 AF_INET sockaddr_in（16B）：port 网络字节序，sin_addr 给定 4 字节
+long netAddrIn(int port, int ip0, int ip1, int ip2, int ip3) {
+    long a = myp_arena_alloc(16);
+    __myp_mem_store_i8(a, 2);                        // sin_family = AF_INET (u16 LE)
+    __myp_mem_store_i8(a + 1, 0);
+    __myp_mem_store_i8(a + 2, int((port >> 8) & 255));   // sin_port = htons (BE)
+    __myp_mem_store_i8(a + 3, int(port & 255));
+    __myp_mem_store_i8(a + 4, ip0);                  // sin_addr（网络字节序 4B）
+    __myp_mem_store_i8(a + 5, ip1);
+    __myp_mem_store_i8(a + 6, ip2);
+    __myp_mem_store_i8(a + 7, ip3);
+    __myp_mem_store_i8(a + 8, 0);                    // sin_zero[8] 清零
+    __myp_mem_store_i8(a + 9, 0);
+    __myp_mem_store_i8(a + 10, 0);
+    __myp_mem_store_i8(a + 11, 0);
+    __myp_mem_store_i8(a + 12, 0);
+    __myp_mem_store_i8(a + 13, 0);
+    __myp_mem_store_i8(a + 14, 0);
+    __myp_mem_store_i8(a + 15, 0);
+    return a;
+}
+
+// C: int32_t myp_net_server(int32_t port) —— bind+listen；-1 socket/-2 bind/-3 listen
+int myp_net_server(int port) {
+    int s = socket(2, 1, 0);   // AF_INET=2, SOCK_STREAM=1
+    if (s < 0) return -1;
+    long optb = myp_arena_alloc(4);
+    __myp_mem_store_i32(optb, 1);
+    setsockopt(s, 1, 2, optb, 4);   // SOL_SOCKET=1, SO_REUSEADDR=2
+    long addr = netAddrIn(port, 0, 0, 0, 0);   // INADDR_ANY
+    if (bind(s, addr, 16) < 0) { close(s); return -2; }
+    if (listen(s, 10) < 0) { close(s); return -3; }
+    return s;
+}
+
+// C: int32_t myp_net_accept(int32_t server_fd) —— 阻塞接受，不需对端信息
+int myp_net_accept(int server_fd) {
+    return accept(server_fd, 0, 0);   // addr=NULL（不填充对端信息）
+}
+
+// C: int32_t myp_net_connect(const char* host, int32_t port)
+// -1 socket / -2 主机解析失败 / -3 connect 失败
+int myp_net_connect(string host, int port) {
+    if (myp_strlen(host) == 0) return -1;
+    int s = socket(2, 1, 0);
+    if (s < 0) return -1;
+    long he = gethostbyname(host);
+    if (he == 0) { close(s); return -2; }
+    // hostent：h_addr_list@24 → char** → [0] = 4B IPv4
+    long hal = __myp_mem_load_i64(he + 24);
+    long ip = __myp_mem_load_i64(hal);
+    long addr = netAddrIn(port,
+        __myp_mem_load_i8(ip), __myp_mem_load_i8(ip + 1),
+        __myp_mem_load_i8(ip + 2), __myp_mem_load_i8(ip + 3));
+    if (connect(s, addr, 16) < 0) { close(s); return -3; }
+    return s;
+}
+
+// C: int32_t myp_net_send(int32_t fd, const char* data)
+int myp_net_send(int fd, string data) {
+    int len = myp_strlen(data);
+    if (len == 0) return 0;
+    return send(fd, __myp_str_ptr(data), len, 0);
+}
+
+// C: char* myp_net_recv(int32_t fd, int32_t max_len) —— 按实收长度构建
+string myp_net_recv(int fd, int max_len) {
+    if (max_len <= 0) max_len = 4096;
+    string buf = myp_alloc(max_len + 1);
+    int n = recv(fd, __myp_str_ptr(buf), max_len, 0);
+    if (n <= 0) return netEmpty();
+    string r = myp_alloc(n + 1);
+    __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(buf), n);
+    __myp_mem_store_i8(__myp_str_ptr(r) + n, 0);
+    return r;
+}
+
+// C: char* myp_net_recv_line(int32_t fd) —— 逐字节到 \n，剥 \r
+string myp_net_recv_line(int fd) {
+    long b = myp_arena_alloc(1);
+    string r = "";
+    while (1) {
+        int n = recv(fd, b, 1, 0);
+        if (n <= 0) break;
+        int c = __myp_mem_load_i8(b);
+        if (c == 10) break;           // '\n'
+        if (c != 13) r = r + __myp_chr(c);   // 剥 '\r'
+    }
+    return r;
+}
+
+// C: void myp_net_close(int32_t fd)
+void myp_net_close(int fd) {
+    if (fd >= 0) close(fd);
+}
+
+// C: void myp_net_set_nonblock(int32_t fd) —— fcntl O_NONBLOCK
+void myp_net_set_nonblock(int fd) {
+    if (fd < 0) return;
+    int flags = fcntl(fd, 3, 0);   // F_GETFL=3
+    if (flags != -1) fcntl(fd, 4, flags | 0x800);   // F_SETFL=4, O_NONBLOCK=0x800
+}

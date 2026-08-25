@@ -359,6 +359,32 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
   本机驱动下不可验（595.84 201 怪癖）。
 
+### v3.15.61 — bridge 包 H 第五批：net 全 8 个 MYP 化（AF_INET TCP，libc ffi 薄接口）
+
+**非破坏性**。TCP 网络 bridge MYP 化——shadow C `net_bridge.c` 的 8 个
+`myp_net_*`（Linux，AF_INET 流套接字），libc ffi 薄接口、无业务逻辑：
+
+- **`runtime_myp/net.myp`（新）**：socket/bind/listen/accept/connect/send/recv/
+  close/fcntl/setsockopt/gethostbyname（libc ffi）。
+  - **sockaddr_in** = `{sin_family:u16@0(=AF_INET=2), sin_port:u16@2(BE=htons),
+    sin_addr:u32@4(NB), sin_zero[8]@8}` = 16B；无 store_i16 → family 2×i8 LE，
+    port 手动 htons（高字节在前）；sin_addr/zero 显式清零（arena 非零初始化）。
+  - **hostent** = `{h_name@0, h_aliases@8, h_addrtype@16, h_length@20,
+    h_addr_list@24}`；`h_addr_list[0]` = 4B IPv4。
+  - 错误码对齐 C：socket -1 / gethostbyname 失败 -2 / connect 失败 -3 / bind -2
+    / listen -3。accept 传 NULL addr（不需对端信息）。
+  - recv_line 逐字节剥 `\r\n`；返回串按实收长度构建。
+- **`link.myp` mypifiedBridge**：加 `net_bridge.c`。
+- **验证**：新 `bench/freestanding/rt_net_test.myp`（回环 server/connect/accept、
+  双向 send/recv + recv_line、主机解析失败 -2、连接拒绝 -3、set_nonblock，11
+  断言）——**一次通过**；**shadow 43/43**；bootstrap 16/16（fixpoint 稳定）；
+  oracle 323/323。bridge 83 → **75**（net 8）。
+- ⚠️ **发现预存在 flaky 测试**（与本批无关）：`tests/exception_thread` 是线程
+  输出竞态——test.output 陈旧为 1 行（`main_done`），但 @thread Worker 现在可靠
+  打印 `thr_caught`+`thr_done`（3 行）→ selfhost 全量偶发 MISMATCH。runtime.c
+  未动、编译器未改 codegen，确认为时序 flake 而非回归（oracle 版同样 3 行）。
+- **未做**：sdl/ttf 侧车模式（薄 ffi 接口，下批）。
+
 ### v3.15.60 — bridge 包 H 第四批：uds 全 9 个 MYP 化（AF_UNIX socket 纯 syscall）
 
 **非破坏性**。Unix domain socket bridge MYP 化——shadow C `uds_bridge.c` 的 9 个
