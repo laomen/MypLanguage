@@ -323,7 +323,15 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   （jsonStrDup，同 C myp_strdup M8）。⚠️ myp_json_free 空操作（arena 进程级
   回收）。shadow 40/40；tests/json shadow 链接输出与 C 逐字一致；bootstrap
   16/16（fixpoint e8033a53）；oracle+selfhost 323/323。bridge 112 → **98**。
-- 剩余：net(14)/uds(18)/process(12)/sdl(40)/ttf(10)。部分纯 MYP 可实现
+- ✅ **已做（v3.15.59，process 全 6 个）**：**process.myp**（新）——libc ffi：
+  `myp_process_run`（system + WIFEXITED/WEXITSTATUS 解码）/ `myp_process_output`
+  （popen + fread 分块 + 增长缓冲 + 精确长度计数串）/ `get_pid`/`get_ppid`
+  （getpid/getppid）/ `is_running`（kill(pid,0)）/ `spawn`（双 fork：中间子
+  _exit，孙进程 setsid + **execve 非常变参 → 手动 argv char* 数组 + envp 取
+  libc environ**，父 waitpid）。link.myp mypifiedBridge 加 process_bridge.c。
+  shadow 41/41；tests/process shadow 输出与 C 一致；oracle+selfhost 323/323。
+  bridge 98 → **92**。
+- 剩余：net(14)/uds(18)（socket syscall，下一批）/sdl(40)/ttf(10)（侧车模式）。部分纯 MYP 可实现
   （date 格式化、regex 引擎、json 解析器、process 的 fork/exec 可经
   `__myp_syscall` 的 clone/execve）；sdl/ttf 需 C 库（SDL2），MYP 只能经
   `__myp_indirect` 绑 SDL2 或保留 bridge。

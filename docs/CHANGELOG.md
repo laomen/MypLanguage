@@ -359,6 +359,32 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
   本机驱动下不可验（595.84 201 怪癖）。
 
+### v3.15.59 — bridge 包 H 第三批：process 全 6 个 MYP 化（libc ffi，双 fork 后台进程）
+
+**非破坏性**。进程管理 bridge MYP 化——shadow C `process_bridge.c` 的 6 个
+`myp_process_*`（Linux），de-gcc ≠ 去 glibc（直接 ffi 调 libc）：
+
+- **`runtime_myp/process.myp`（新）**：
+  - `myp_process_run`：libc `system()` + `WIFEXITED`/`WEXITSTATUS` 解码
+    （`(status&0x7F)==0 → (status>>8)&0xFF`，对齐 C bridge）。
+  - `myp_process_output`：libc `popen("r")` + `fread` 分块（4095B）+ 增长缓冲
+    （×2）+ 精确长度计数字符串（`myp_alloc(len+1)` → 头 len=len）。
+  - `myp_process_get_pid`/`get_ppid`：libc `getpid()`/`getppid()`。
+  - `myp_process_is_running`：libc `kill(pid, 0)`。
+  - `myp_process_spawn`：双 fork 后台进程——`fork()` + 中间子再 `fork()` 后
+    `_exit(0)`；孙进程 `setsid()` + `execve("/bin/sh", ["sh","-c",cmd,NULL],
+    environ)`（execve 非常变参 → 手动构造 argv char* 数组 + envp 取 libc
+    `environ`）；父 `waitpid` 回收中间子。全部 libc ffi，无 gcc、无 C 桥。
+- **`link.myp` mypifiedBridge**：加 `process_bridge.c`（MYP_RT_MYP 归档存在时
+  跳过其 C 编译，与其余 5 个一致）。
+- **验证**：新 `bench/freestanding/rt_process_test.myp`（pid>0/ppid≥0/
+  is_running 自身=1·不存在=0/run true=0·exit 42=42/output echo=hello\n·
+  printf 多行·空 cmd/spawn true=0）——**一次通过**；`tests/process` MYP shadow
+  链接输出与 C 一致（code=0/out=hello_myp_test/pid_gt0=1）；**shadow 41/41**；
+  fixpoint `e7efd1b3` 不变（编译器仅加跳过列表）；oracle + selfhost 全量 323/323。
+  bridge 98 → **92**（process 6）。
+- **未做**：net(14)/uds(18) 经 syscall（下一批）；sdl/ttf 侧车模式。
+
 ### v3.15.58 — `.myp.libs` 侧车：纯 ffi 访问外部系统库（Go `#cgo LDFLAGS` 风格）
 
 **非破坏性**。MYP 模块旁放 `<模块>.myp.libs` 侧车即可声明额外链接库——**纯 ffi 调

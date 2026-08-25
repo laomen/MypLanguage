@@ -1,0 +1,120 @@
+// runtime_myp/process.myp — 进程管理层 MYP 化：shadow C bridge process_bridge.c
+// 的 6 个 myp_process_*（Linux）。de-gcc ≠ 去 glibc——直接 ffi 调 libc
+// （system/popen/fread/pclose/getpid/getppid/kill/fork/setsid/execve/waitpid/
+// _exit），消除「用 gcc 现编译 process_bridge.c」这一步；运行时仍用 -lc。
+//
+// 对齐 C bridge 语义：
+//   - run：system() → WIFEXITED/WEXITSTATUS 解码（status&0x7F==0 → (status>>8)&0xFF）
+//   - output：popen("r") + fread 分块 + 增长缓冲 + 精确长度计数字符串
+//   - is_running：kill(pid, 0) == 0
+//   - spawn：双 fork → 中间子退出、孙进程 setsid + execve(/bin/sh -c cmd)
+//     （execve 非常变参，argv 手动构造 char* 数组；envp 取 libc environ 继承）
+
+ffi int myp_strlen(string s);
+ffi string myp_alloc(long size);
+ffi long myp_arena_alloc(long size);
+// libc
+ffi int system(string cmd);
+ffi long popen(string cmd, string mode);
+ffi long fread(long ptr, long size, long nmemb, long stream);
+ffi int pclose(long stream);
+ffi int getpid();
+ffi int getppid();
+ffi int kill(int pid, int sig);
+ffi int fork();
+ffi int setsid();
+ffi int execve(string path, long argv, long envp);
+ffi int waitpid(int pid, long status, int options);
+ffi void _exit(int status);
+
+string procEmpty() {
+    string r = myp_alloc(1);
+    __myp_mem_store_i8(__myp_str_ptr(r), 0);
+    return r;
+}
+
+// C: int32_t myp_process_run(const char* cmd) —— system(); 返回真实退出码
+int myp_process_run(string cmd) {
+    if (myp_strlen(cmd) == 0) return -1;
+    int status = system(cmd);
+    if (status == -1) return -1;
+    if ((status & 0x7F) == 0) return (status >> 8) & 0xFF;   // WIFEXITED → WEXITSTATUS
+    return 1;   // 被信号终止等
+}
+
+// C: char* myp_process_output(const char* cmd) —— popen 抓 stdout
+string myp_process_output(string cmd) {
+    if (myp_strlen(cmd) == 0) return procEmpty();
+    long fp = popen(cmd, "r");
+    if (fp == 0) return procEmpty();
+    int cap = 4096;
+    int len = 0;
+    string buf = myp_alloc(cap);
+    string tmp = myp_alloc(4096);
+    while (1) {
+        long n = fread(__myp_str_ptr(tmp), 1, 4095, fp);
+        if (n <= 0) break;
+        int in = int(n);
+        if (len + in > cap - 1) {
+            int nc = cap * 2;
+            while (nc <= len + in) nc = nc * 2;
+            string nb = myp_alloc(nc);
+            if (len > 0) __myp_memcpy(__myp_str_ptr(nb), __myp_str_ptr(buf), len);
+            buf = nb;
+            cap = nc;
+        }
+        __myp_memcpy(__myp_str_ptr(buf) + len, __myp_str_ptr(tmp), in);
+        len = len + in;
+    }
+    pclose(fp);
+    // 精确长度计数字符串：myp_alloc(len+1) → 头 len = len（同 C myp_alloc）
+    string r = myp_alloc(len + 1);
+    if (len > 0) __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(buf), len);
+    __myp_mem_store_i8(__myp_str_ptr(r) + len, 0);
+    return r;
+}
+
+// C: int32_t myp_process_get_pid(void)
+int myp_process_get_pid() {
+    return getpid();
+}
+
+// C: int32_t myp_process_get_ppid(void)
+int myp_process_get_ppid() {
+    return getppid();
+}
+
+// C: int32_t myp_process_is_running(int32_t pid)
+int myp_process_is_running(int pid) {
+    if (pid <= 0) return 0;
+    return (kill(pid, 0) == 0) ? 1 : 0;
+}
+
+// C: int32_t myp_process_spawn(const char* cmd) —— 双 fork 后台进程，不等待
+int myp_process_spawn(string cmd) {
+    if (myp_strlen(cmd) == 0) return -1;
+    int pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        // 中间子：再 fork 出真后台进程后立即退出，父 waitpid 回收
+        int pid2 = fork();
+        if (pid2 < 0) _exit(1);
+        if (pid2 == 0) {
+            setsid();   // 脱离父会话/控制终端
+            // execve 非常变参：手动构造 argv = ["sh","-c",cmd,NULL]
+            long argv = myp_arena_alloc(32);
+            __myp_mem_store_i64(argv, __myp_str_ptr("sh"));
+            __myp_mem_store_i64(argv + 8, __myp_str_ptr("-c"));
+            __myp_mem_store_i64(argv + 16, __myp_str_ptr(cmd));
+            __myp_mem_store_i64(argv + 24, 0);
+            // envp = libc environ（继承环境，同 execl）
+            long envp = __myp_mem_load_i64(__myp_fn_addr("environ"));
+            execve("/bin/sh", argv, envp);
+            _exit(127);
+        }
+        _exit(0);
+    }
+    // 父回收中间子（后台进程已被 init 收养）
+    waitpid(pid, 0, 0);
+    return 0;
+}

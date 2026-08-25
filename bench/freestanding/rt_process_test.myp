@@ -1,0 +1,38 @@
+// rt_process_test.myp — MYP 运行时进程层验证（runtime_myp/process.myp shadow C bridge）。
+// 覆盖：pid/ppid/is_running、run 退出码（true=0 / exit 42=42）、output 抓取
+// （echo/printf 多行）、空 cmd、spawn 后台进程。
+// main 不允许直接调函数 → 包进 class static。
+import env;
+
+ffi int myp_process_run(string cmd);
+ffi string myp_process_output(string cmd);
+ffi int myp_process_get_pid();
+ffi int myp_process_get_ppid();
+ffi int myp_process_is_running(int pid);
+ffi int myp_process_spawn(string cmd);
+
+class ProcessProbe {
+    static:
+        int run() {
+            // pid / ppid / is_running
+            int pid = myp_process_get_pid();
+            if (pid <= 0) return 11;
+            if (myp_process_get_ppid() < 0) return 12;
+            if (myp_process_is_running(pid) != 1) return 13;
+            if (myp_process_is_running(99999999) != 0) return 14;   // 不存在 pid
+            // run：退出码
+            if (myp_process_run("true") != 0) return 21;
+            if (myp_process_run("exit 42") != 42) return 22;
+            // output：抓取 stdout
+            if (myp_process_output("echo hello") != "hello\n") return 23;
+            if (myp_process_output("printf 'a\\nb'") != "a\nb") return 24;
+            if (myp_process_output("") != "") return 25;   // 空 cmd → 空串
+            // spawn：后台进程（不等待，双 fork 分离）
+            if (myp_process_spawn("true") != 0) return 31;
+            return 0;
+        }
+}
+
+int main() {
+    return ProcessProbe.run();
+}
