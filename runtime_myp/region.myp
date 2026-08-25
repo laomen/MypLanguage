@@ -26,6 +26,8 @@
 
 // 跨模块调用：alloc.myp 的 mmap bump 进程 arena（--shared 外部符号）
 ffi long myp_arena_alloc(long size);
+// 跨模块调用：alloc.myp 的 myp_release（ref-counted backing 释放）
+ffi int myp_release(string obj);
 
 // C: myp_region_bump_alloc —— region bump 分配。失败（mmap 错）返回 0。
 long myp_region_bump(long size) {
@@ -73,9 +75,57 @@ long myp_arena_mark() {
     return Region.cur + 32 + Region.cur_used;
 }
 
-// C: void myp_arena_release(void* mark) —— 离开 region：munmap 比 mark 更新的
-// chunk，回卷 mark 所在 chunk 的 used 到水位，depth-1。
+// ---- 类 slice 清理链（§五-1 M8）：slice<类> backing 在 region 内注册，region
+// 出口按 depth 释放元素。C 版用 TLS 链表 + C 的 myp_region_depth；MYP 版用
+// @static 链表 + Region.depth（与 region 层一致）。node：
+// [next:i64 @0][data:i64 @8][depth:i64 @16]。
+@static class ClsSlice {
+    property:
+        long head = 0;
+}
+
+// 跨模块调用：alloc.myp 的 ref-counted slice backing（CLASS 元素）
+ffi string myp_alloc_slice_backing(long count, int elem_size, int elem_kind);
+
+// C: void* myp_alloc_class_slice(uint64_t count) —— slice<类> backing 分配 +
+// 按当前 region depth 注册清理（当前无 codegen 调用方，完整覆盖）。
+string myp_alloc_class_slice(long count) {
+    string data = myp_alloc_slice_backing(count, 8, 0);   // CLASS 元素
+    long addr = __myp_str_ptr(data);
+    if (addr == 0) return data;
+    long node = myp_arena_alloc(24);
+    if (node == 0) return data;
+    __myp_mem_store_i64(node, ClsSlice.head);
+    __myp_mem_store_i64(node + 8, addr);
+    __myp_mem_store_i64(node + 16, Region.depth);
+    ClsSlice.head = node;
+    return data;
+}
+
+// C: void myp_release_class_slices_from_depth(int) —— 释放 depth >= 给定值的
+// 注册 backing，保留更早的（外层 region 还会用）。
+void myp_release_class_slices_from_depth(long depth) {
+    long node = ClsSlice.head;
+    long newhead = 0;
+    while (node != 0) {
+        long next = __myp_mem_load_i64(node);
+        long d = __myp_mem_load_i64(node + 16);
+        if (d >= depth) {
+            long data = __myp_mem_load_i64(node + 8);
+            myp_release(__myp_addr_to_str(data));   // 级联释放元素
+        } else {
+            __myp_mem_store_i64(node, newhead);     // 头插保留
+            newhead = node;
+        }
+        node = next;
+    }
+    ClsSlice.head = newhead;
+}
+
+// C: void myp_arena_release(void* mark) —— 离开 region：先释放本 depth 及以上
+// 的类 slice backing（镜像 C），再 munmap 比 mark 更新的 chunk、回卷 used。
 void myp_arena_release(long mark) {
+    myp_release_class_slices_from_depth(Region.depth);
     long target = mark;
     long chunk = Region.cur;
     while (chunk != 0) {

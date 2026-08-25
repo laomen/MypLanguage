@@ -1,0 +1,161 @@
+// runtime_myp/weak.myp — @weak 弱引用注册表 MYP 化（#15）。
+// shadow C runtime 的 myp_weak_store / myp_weak_load / myp_weak_clear。
+//
+// 模型（镜像 C M7）：`@weak` 字段存裸指针（不 retain）。全局注册表把目标对象
+// → 指向它的弱槽地址集合。对象 rc→0 时先置空所有注册弱槽（读者永不见悬垂弱引
+// 用）、移除注册项、再释放。持有者销毁时（destroy stub 调 myp_weak_clear）注销
+// 自己的槽——目标列表里永不含已释放持有者内存。
+//
+// 与 C 版差异：
+//   - 注册表用 @static 全局单链表（C 用 64 桶哈希；weak 稀少，线性扫描即可）。
+//   - 自旋锁用 __myp_atomic_add_i32_addr（atomicrmw add 返回旧值：0=获取，
+//     atomicrmw 原子串行保证互斥）。锁字在进程 arena 分配，Weak.lock 存其地址。
+//   - 死亡通知 myp_weak_notify_death 导出（C 版是 static），alloc.myp 的
+//     myp_release 类分支先调它（null 本注册表弱槽）再委托 myp_release_class_obj_ex
+//     （后者对 C 注册表做冗余 notify——MYP shadow 全部弱入口后 C 注册表恒空，
+//     不干扰）。
+//
+// entry:    [next:i64 @0][target:i64 @8][slots_head:i64 @16]   （24B）
+// slotnode: [next:i64 @0][slot_addr:i64 @8]                    （16B）
+
+// 跨模块调用：alloc.myp 的进程 arena（节点分配）与 myp_retain（弱→强升级）
+ffi long myp_arena_alloc(long size);
+ffi void myp_retain(string obj);
+
+@static class Weak {
+    property:
+        long head = 0;    // entry 链表头地址
+        long lock = 0;    // 自旋锁字地址（arena 分配，0=未初始化）
+}
+
+long weakLockAddr() {
+    if (Weak.lock == 0) {
+        long p = myp_arena_alloc(8);
+        if (p == 0) return 0;
+        __myp_mem_store_i32(p, 0);
+        Weak.lock = p;
+    }
+    return Weak.lock;
+}
+void weakLock() {
+    long l = weakLockAddr();
+    if (l == 0) return;
+    while (__myp_atomic_add_i32_addr(l, 1) != 0) { }
+}
+void weakUnlock() {
+    long l = Weak.lock;
+    if (l != 0) __myp_atomic_store_i32_addr(l, 0);
+}
+
+// 查找 target 的 entry（无则 0）
+long weakFindEntry(long target) {
+    long e = Weak.head;
+    while (e != 0) {
+        if (__myp_mem_load_i64(e + 8) == target) return e;
+        e = __myp_mem_load_i64(e);
+    }
+    return 0;
+}
+// 从 Weak.head 链移除 entry
+void weakRemoveEntry(long e) {
+    long prev = 0;
+    long cur = Weak.head;
+    while (cur != 0) {
+        if (cur == e) {
+            long nxt = __myp_mem_load_i64(e);
+            if (prev == 0) Weak.head = nxt;
+            else __myp_mem_store_i64(prev, nxt);
+            return;
+        }
+        prev = cur;
+        cur = __myp_mem_load_i64(cur);
+    }
+}
+// 注册：entry（按需建）+ 槽节点
+void weakAddSlot(long target, long slotAddr) {
+    long e = weakFindEntry(target);
+    if (e == 0) {
+        e = myp_arena_alloc(24);
+        if (e == 0) return;
+        __myp_mem_store_i64(e, Weak.head);
+        __myp_mem_store_i64(e + 8, target);
+        __myp_mem_store_i64(e + 16, 0);
+        Weak.head = e;
+    }
+    long sn = myp_arena_alloc(16);
+    if (sn == 0) return;
+    long sh = __myp_mem_load_i64(e + 16);
+    __myp_mem_store_i64(sn, sh);
+    __myp_mem_store_i64(sn + 8, slotAddr);
+    __myp_mem_store_i64(e + 16, sn);
+}
+// 注销：移除槽节点；entry 无槽则移除 entry
+void weakRemoveSlot(long target, long slotAddr) {
+    long e = weakFindEntry(target);
+    if (e == 0) return;
+    long prev = 0;
+    long sn = __myp_mem_load_i64(e + 16);
+    while (sn != 0) {
+        long snext = __myp_mem_load_i64(sn);
+        if (__myp_mem_load_i64(sn + 8) == slotAddr) {
+            if (prev == 0) __myp_mem_store_i64(e + 16, snext);
+            else __myp_mem_store_i64(prev, snext);
+            if (__myp_mem_load_i64(e + 16) == 0) weakRemoveEntry(e);
+            return;
+        }
+        prev = sn;
+        sn = snext;
+    }
+}
+
+// C: void myp_weak_store(void** slot, void* obj) —— 设弱槽（不计数）+ 更新注册表
+void myp_weak_store(long slot, long obj) {
+    weakLock();
+    long old = __myp_mem_load_i64(slot);
+    if (old != obj) {
+        if (old != 0) weakRemoveSlot(old, slot);
+        __myp_mem_store_i64(slot, obj);
+        if (obj != 0) weakAddSlot(obj, slot);
+    }
+    weakUnlock();
+}
+
+// C: void myp_weak_clear(void** slot) —— 持有者销毁：注销弱槽并置空
+void myp_weak_clear(long slot) {
+    weakLock();
+    long old = __myp_mem_load_i64(slot);
+    __myp_mem_store_i64(slot, 0);
+    if (old != 0) weakRemoveSlot(old, slot);
+    weakUnlock();
+}
+
+// C: void* myp_weak_load(void** slot) —— 弱→强升级：返回强引用（rc+1）或 0。
+// 调用方持有返回引用（如 fresh 值一样释放）。
+long myp_weak_load(long slot) {
+    weakLock();
+    long obj = __myp_mem_load_i64(slot);
+    if (obj != 0) myp_retain(__myp_addr_to_str(obj));   // 锁内 retain，目标不会死
+    weakUnlock();
+    return obj;
+}
+
+// 死亡通知（C 版 static，此处导出供 alloc.myp）：rc 已到 0 时置空观察此对象的
+// 全部弱槽并移除 entry。返回 1=本线程真正最后持有者（应释放）；0=并发 weak_load
+// 在锁内重新 bump rc（对象存活，新持有者释放）。
+int myp_weak_notify_death(string obj) {
+    long addr = __myp_str_ptr(obj);
+    weakLock();
+    if (__myp_atomic_load_i32_addr(addr - 8) != 0) { weakUnlock(); return 0; }
+    long e = weakFindEntry(addr);
+    if (e != 0) {
+        long sn = __myp_mem_load_i64(e + 16);
+        while (sn != 0) {
+            long slotAddr = __myp_mem_load_i64(sn + 8);
+            __myp_mem_store_i64(slotAddr, 0);   // null 弱槽
+            sn = __myp_mem_load_i64(sn);
+        }
+        weakRemoveEntry(e);
+    }
+    weakUnlock();
+    return 1;
+}

@@ -18,6 +18,8 @@
 //（16 对齐）。mmap 页对齐 → data 16 对齐；每次分配再对齐到 16。超大分配独占
 // 一块；bump 永不归还内存（进程退出由 OS 回收）——与 C 的 arena 模型一致。
 ffi void myp_release_class_obj_ex(string obj);
+// 跨模块调用：weak.myp 的死亡通知（null 观察此对象的弱槽）
+ffi int myp_weak_notify_death(string obj);
 
 @static class Arena {
     property:
@@ -145,7 +147,13 @@ int myp_release(string obj) {
     } else if (tid == -2) {
         if (Live.strings > 0) Live.strings = Live.strings - 1;
     } else {
-        myp_release_class_obj_ex(obj);   // 类对象（weak + 表分发 + free）
+        // 类对象：先 MYP 弱通知（null 本注册表弱槽；C helper 会对 C 注册表做冗余
+        // notify——MYP shadow 全部弱入口后 C 注册表恒空，不干扰）。并发 weak_load
+        // 在锁内重新 bump rc → 返回 0（对象存活，新持有者负责释放）。
+        if (myp_weak_notify_death(obj) == 0) {
+            return __myp_atomic_load_i32_addr(addr - 8);
+        }
+        myp_release_class_obj_ex(obj);   // weak + release_table 分发 + free
     }
     return 0;
 }

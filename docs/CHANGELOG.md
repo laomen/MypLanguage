@@ -35,6 +35,30 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.18 — runtime myp化 #15：类 slice 清理链 + @weak 弱引用注册表
+
+**非破坏性**。补齐内存核心的最后两块（此前评估为"C 无法触及/死代码"的部分）：
+
+**① `myp_alloc_class_slice` + `myp_release_class_slices_from_depth`**（region.myp）：
+slice<类> backing 分配时按当前 `Region.depth` 注册进 @static 清理链
+（node `[next@0][data@8][depth@16]`）；`myp_arena_release` 入口先释放 depth >=
+当前值的注册 backing（保留外层 region 的），再回卷 arena（镜像 C）。当前无 codegen
+调用方（slice backing 走 ref-counted `myp_alloc_slice_backing`），完整覆盖。
+
+**② `@weak` 弱引用注册表**（新 `runtime_myp/weak.myp`）：
+shadow C 的 `myp_weak_store`/`myp_weak_load`/`myp_weak_clear`。@static 全局单链表
+注册表（C 用 64 桶哈希；weak 稀少线性扫描即可）+ **add-原子自旋锁**（用已有的
+`__myp_atomic_add_i32_addr`——atomicrmw add 返回旧值，0=获取；无需新内建）。
+`myp_alloc` 的 `myp_release` 类分支先调导出的 `myp_weak_notify_death`（null 本注册
+表观察此对象的弱槽；并发 weak_load 在锁内重 bump rc → 返回 0 不释放），再委托
+`myp_release_class_obj_ex`（其对 C 注册表做冗余 notify——MYP shadow 全部弱入口后
+C 注册表恒空，不干扰）。弱槽地址经 raw 内存 `__myp_mem_load/store_i64` 读写。
+
+验证：shadow 测试新增 **rt_weak_test**（弱存储不 retain / 弱读升级 rc+1 / 目标销毁
+自动置空 / 持有者销毁注销）exit=0；真实 weak 测试用 MYP shadow 全过——weak_cycle
+（断环+自动置空）、weak_multi_sub（多订阅者）、**cross_thread_arc（多线程 @weak，
+验证自旋锁）**。bootstrap 16/16、全量 323/323。build.sh 循环新增 rt_weak_test。
+
 ### v3.15.17 — runtime myp化 #14：@region 层（myp_region_alloc + mark/release + 诊断）+ 修复 #13 类数组级联 bug
 
 **非破坏性**。`runtime_myp/region.myp` shadow C runtime 的 @region 两级内存 region

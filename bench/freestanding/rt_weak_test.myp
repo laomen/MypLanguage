@@ -1,0 +1,53 @@
+// rt_weak_test.myp — @weak 弱引用 MYP 化（#15）验证：
+// 弱存储不 retain、弱读升级强引用、目标销毁自动置空、持有者销毁注销。
+ffi int myp_release(string s);
+ffi long myp_live_object_count();
+
+class Child {
+    property:
+        int val = 0;
+}
+class Holder {
+    property:
+        @weak Child target;
+    action:
+        void setTarget(Child c) { target = c; }    // myp_weak_store（不 retain）
+        Child getTarget() { return target; }        // myp_weak_load（弱→强升级）
+}
+
+class WeakProbe {
+    static:
+        int run() {
+            long o0 = myp_live_object_count();
+            Holder h = new Holder();
+            Child c = new Child();
+            long o1 = myp_live_object_count();
+            if (o1 != o0 + 2) return 1;         // h + c
+
+            // 弱存储：不 retain（c 的 rc 仍 1）
+            h.setTarget(c);
+            long cp = __myp_str_ptr(c);
+            int rc = __myp_mem_load_i32(cp - 8);
+            if (rc != 1) return 2;
+
+            // 弱读升级：返回强引用（rc+1），用完释放回 1
+            Child c2 = h.getTarget();
+            if (__myp_str_ptr(c2) != cp) return 3;
+            int rc2 = __myp_mem_load_i32(cp - 8);
+            if (rc2 != 2) return 4;
+            myp_release(c2);
+
+            // c 销毁 → myp_weak_notify_death → h.target 自动置空
+            myp_release(c);
+            long o2 = myp_live_object_count();
+            if (o2 != o0 + 1) return 5;         // 只剩 h
+            Child g = h.getTarget();
+            if (__myp_str_ptr(g) != 0) return 6;   // 弱槽已 null
+
+            // h 作用域末销毁 → destroy stub → myp_weak_clear（注销）
+            return 0;
+        }
+}
+int main() {
+    return WeakProbe.run();
+}
