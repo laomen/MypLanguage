@@ -27,6 +27,10 @@
 ffi long myp_arena_alloc(long size);
 ffi int myp_strlen(string s);
 ffi string myp_alloc(long size);
+ffi void myp_event_process_all();   // C 事件系统（包 F 前保留 C；dispatch → MYP event_notify）
+ffi long myp_now_ms();              // time.myp
+ffi void myp_sleep_ms(long ms);     // time.myp（非协程 sleep 回退）
+ffi int myp_release(string obj);    // alloc.myp（帧表 release；经 __myp_addr_to_str 桥接任意指针）
 
 // ---- 协程表（进程级 @static；C 为 TLS）----
 // 常量内联（MYP 无顶层 const；字面量）
@@ -48,11 +52,45 @@ ffi string myp_alloc(long size);
         int[1024] onFreeList;
         int[1024] discardResult;
         int[1024] cancelRequested;
+        // Phase B：等待/唤醒状态
+        int[1024] waitTimeout;       // 被调度器截止期唤醒（1=超时；wait_* 据此返回 -1）
+        int[1024] lastWaitEventId;   // wait_any：唤醒的事件 id（-1=无）
+        int[1024] lastWaitIndex;     // wait_any_of：唤醒的 spec 下标（-1=无）
         int count = 0;
         int current = -1;
         // 空闲槽复用列表
         int[1024] freeSlots;
         int freeCount = 0;
+}
+// ---- Phase B：等待表（wait_* 注册；C myp_coro_wait_t 的 @static 并行数组版）----
+// kind：0=EVENT 1=TIMER(sleep) 2=FD 3=EXEC(未用)。waitIndex：>=0 waitAnyOf spec
+// 下标；-1 普通等待；-2 waitAnyOf 总体超时标记。deadline=0 表示无截止期。
+@static class CoroW {
+    property:
+        int[1024] kind;
+        int[1024] eventId;
+        int[1024] fd;
+        int[1024] fdEvents;     // POLLIN=1 POLLOUT=4
+        long[1024] handle;
+        int[1024] active;
+        long[1024] deadline;
+        int[1024] expired;
+        long[1024] execResult;
+        int[1024] waitIndex;
+        int count = 0;
+}
+// ---- Phase B：帧表（ARC 镜像；每协程 ≤32 槽，扁平数组 coro*32+i）----
+@static class CoroF {
+    property:
+        long[32768] slotId;     // 1024 协程 × 32 槽（slot_id = alloca 地址，仅作键）
+        long[32768] obj;        // 堆对象指针（release 目标）
+        int[1024] count;
+}
+// ---- Phase B：fd poll 缓冲（arena；8B×1024 pollfd）----
+@static class CoroPoll {
+    property:
+        long buf = 0;
+        int inited = 0;
 }
 @static class CoroArgs {
     property:
@@ -180,6 +218,10 @@ long __myp_coro_create(long stack_bytes) {
     CoroT.cancelRequested[idx] = 0;
     CoroT.yieldVal[idx] = 0;
     CoroT.resumeVal[idx] = 0;
+    CoroT.waitTimeout[idx] = 0;
+    CoroT.lastWaitEventId[idx] = -1;
+    CoroT.lastWaitIndex[idx] = -1;
+    CoroF.count[idx] = 0;      // 帧表重置（防槽复用时残留）
     return coroMakeHandle(idx);
 }
 
@@ -299,18 +341,24 @@ void __myp_coro_destroy(long handle) {
     int idx = coroSlotOf(handle);
     if (CoroT.stack[idx] == 0) {
         // 已完成（栈已退役）：丢弃结果，槽可复用
+        coroReleaseFrame(idx);
         CoroT.resultPending[idx] = 0;
         coroTryRecycle(idx);
         return;
     }
     if (idx == CoroT.current) {
-        // 不能释放当前运行协程的栈：标记 discard，trampoline 收尾时处理
+        // 不能释放当前运行协程的栈：标记 discard，trampoline 收尾时处理（先释放
+        // 帧 ARC，body 返回后 trampoline 也释放——置空表防双重释放）
+        coroReleaseFrame(idx);
         CoroT.active[idx] = 0;
         CoroT.ready[idx] = 0;
         CoroT.discardResult[idx] = 1;
         return;
     }
-    // 强制销毁挂起/活跃协程：释放栈（退役列表，延迟 munmap）
+    // 强制销毁挂起/活跃协程：释放帧 ARC（堆指针，栈未展开也安全）+ 清等待记录 +
+    // 释放栈（退役列表，延迟 munmap）
+    coroReleaseFrame(idx);
+    coroWaitClearFor(idx);
     CoroT.active[idx] = 0;
     CoroT.ready[idx] = 0;
     coroRetiredAdd(CoroT.stack[idx], CoroT.stackSize[idx]);
@@ -320,14 +368,185 @@ void __myp_coro_destroy(long handle) {
     coroTryRecycle(idx);
 }
 
-// C: void __myp_coro_scheduler(void) —— 合作式调度：每个 ready 协程推进一步。
-// plain `await` = yield 且 ready 保持 → 每次 scheduler() 让每个活跃 ready 协程
-// 前进一个 await。事件等待（wait_*）/ exec pump 属 Phase B（届时 ready 门控 + 等待
-// 表）。含退役回收安全点。
+// ---- Phase B：帧表（ARC 镜像，同 C §五-1 收尾）----
+// @coro 体内每个存活 ARC 槽（局部类/接口/闭包）在 store 时把 {slot_id(alloca 地址,
+// 仅作键), obj(堆对象指针)} 镜像进帧表；正常 release 时 frame_clear 移除。destroy/
+// 未捕获异常路径（跳过了 epilogue 的释放）→ release 仍在表的 obj（堆指针，栈已
+// 展开也安全）。每协程 ≤32 槽（满则放弃跟踪——同 C OOM 语义，防泄漏不防 UAF）。
+void __myp_coro_frame_set(long slot_id, long obj) {
+    int cur = CoroT.current;
+    if (cur < 0 || cur >= CoroT.count) return;
+    if (slot_id == 0) return;
+    int base = cur * 32;
+    for (int i = 0; i < CoroF.count[cur]; i = i + 1) {
+        if (CoroF.slotId[base + i] == slot_id) {
+            CoroF.obj[base + i] = obj;   // 原地更新（无重复）
+            return;
+        }
+    }
+    if (CoroF.count[cur] >= 32) return;
+    CoroF.slotId[base + CoroF.count[cur]] = slot_id;
+    CoroF.obj[base + CoroF.count[cur]] = obj;
+    CoroF.count[cur] = CoroF.count[cur] + 1;
+}
+void __myp_coro_frame_clear(long slot_id) {
+    int cur = CoroT.current;
+    if (cur < 0 || cur >= CoroT.count) return;
+    if (slot_id == 0) return;
+    int base = cur * 32;
+    for (int i = 0; i < CoroF.count[cur]; i = i + 1) {
+        if (CoroF.slotId[base + i] == slot_id) {
+            CoroF.slotId[base + i] = CoroF.slotId[base + CoroF.count[cur] - 1];
+            CoroF.obj[base + i] = CoroF.obj[base + CoroF.count[cur] - 1];
+            CoroF.count[cur] = CoroF.count[cur] - 1;
+            return;
+        }
+    }
+}
+// release 帧表仍在表的 obj（destroy/异常收尾）
+void coroReleaseFrame(int cur) {
+    if (cur < 0 || cur >= CoroT.count) return;
+    int base = cur * 32;
+    for (int i = 0; i < CoroF.count[cur]; i = i + 1) {
+        long o = CoroF.obj[base + i];
+        if (o != 0) myp_release(__myp_addr_to_str(o));
+    }
+    CoroF.count[cur] = 0;
+}
+
+// ---- Phase B：等待表辅助 ----
+// 固定 1024 上限（C 动态增长；MYP @static 定容）。满 → -1，调用方保持协程 ready
+// 不 park（同 C OOM 语义：绝不静默丢失/死锁）。
+int coroWaitReserve() {
+    if (CoroW.count >= 1024) return -1;
+    return 0;
+}
+int coroWaitAdd(int kind, int eventId, int fd, int fdEvents, long handle,
+                long deadline, int waitIndex) {
+    if (coroWaitReserve() != 0) return -1;
+    int i = CoroW.count;
+    CoroW.kind[i] = kind;
+    CoroW.eventId[i] = eventId;
+    CoroW.fd[i] = fd;
+    CoroW.fdEvents[i] = fdEvents;
+    CoroW.handle[i] = handle;
+    CoroW.active[i] = 1;
+    CoroW.deadline[i] = deadline;
+    CoroW.expired[i] = 0;
+    CoroW.execResult[i] = 0;
+    CoroW.waitIndex[i] = waitIndex;
+    CoroW.count = CoroW.count + 1;
+    return 0;
+}
+// 唤醒后清除某协程的其余等待记录（wait_any/any_of 只许一个 spec 唤醒）
+void coroWaitClearFor(int cur) {
+    for (int i = 0; i < CoroW.count; i = i + 1) {
+        if (CoroW.active[i] != 0 && CoroW.handle[i] == long(cur))
+            CoroW.active[i] = 0;
+    }
+}
+// ---- Phase B：fd poll（syscall 7；pollfd 8B = {fd i32@0, events i32@4}，revents
+// 读回 +4 高 16 位）----
+void coroPollFds() {
+    int nfd = 0;
+    for (int i = 0; i < CoroW.count; i = i + 1) {
+        if (CoroW.active[i] != 0 && CoroW.kind[i] == 2) nfd = nfd + 1;
+    }
+    if (nfd == 0) return;
+    if (CoroPoll.inited == 0) {
+        CoroPoll.buf = myp_arena_alloc(1024 * 8);
+        CoroPoll.inited = 1;
+    }
+    long base = CoroPoll.buf;
+    int k = 0;
+    for (int i = 0; i < CoroW.count; i = i + 1) {
+        if (CoroW.active[i] != 0 && CoroW.kind[i] == 2) {
+            // pollfd 8B：fd@0(i32) + events@4(i32，低 16 位，高 16 位=revents 先清 0)
+            __myp_mem_store_i32(base + long(k) * 8, CoroW.fd[i]);
+            __myp_mem_store_i32(base + long(k) * 8 + 4, CoroW.fdEvents[i]);
+            k = k + 1;
+        }
+    }
+    long r = __myp_syscall(7, base, long(nfd), 0, 0, 0, 0);
+    if (r > 0) {
+        for (int j = 0; j < nfd; j = j + 1) {
+            long rev = __myp_mem_load_i32(base + long(j) * 8 + 4);
+            rev = (rev >> 16) & 0xFFFF;   // revents
+            if ((rev & (1 | 4 | 8 | 16)) != 0) {   // POLLIN|POLLOUT|POLLERR|POLLHUP
+                // 找到对应的等待表记录（j 是 fd 等待的序号；线性反查）
+                int wj = 0;
+                int found = -1;
+                for (int i = 0; i < CoroW.count && found < 0; i = i + 1) {
+                    if (CoroW.active[i] != 0 && CoroW.kind[i] == 2) {
+                        if (wj == j) found = i;
+                        wj = wj + 1;
+                    }
+                }
+                if (found >= 0) {
+                    int hs = int(CoroW.handle[found]);
+                    CoroW.active[found] = 0;
+                    if (hs >= 0 && hs < CoroT.count && CoroT.active[hs] != 0) {
+                        if (CoroW.waitIndex[found] >= 0)   // waitAnyOf
+                            CoroT.lastWaitIndex[hs] = CoroW.waitIndex[found];
+                        CoroT.ready[hs] = 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// C: void __myp_coro_scheduler(void) —— 合作式调度（Phase B：事件/截止期/fd 就绪
+// 推进 + ready 快照 resume 一步）。
 void __myp_coro_scheduler() {
     coroRetiredDrain();
-    // 快照语义：遍历槽位，对 active && ready 的 resume 一步（新协程高槽位本趟
-    // 不访问）。resume 内上下文切到协程，yield/完成切回本函数继续循环。
+    // 压缩等待表：drop inactive（fd-poll/截止期/事件唤醒过的记录不再累积）
+    if (CoroW.count > 0) {
+        int w = 0;
+        for (int i = 0; i < CoroW.count; i = i + 1) {
+            if (CoroW.active[i] != 0) {
+                if (w != i) {
+                    CoroW.kind[w] = CoroW.kind[i];
+                    CoroW.eventId[w] = CoroW.eventId[i];
+                    CoroW.fd[w] = CoroW.fd[i];
+                    CoroW.fdEvents[w] = CoroW.fdEvents[i];
+                    CoroW.handle[w] = CoroW.handle[i];
+                    CoroW.active[w] = CoroW.active[i];
+                    CoroW.deadline[w] = CoroW.deadline[i];
+                    CoroW.expired[w] = CoroW.expired[i];
+                    CoroW.execResult[w] = CoroW.execResult[i];
+                    CoroW.waitIndex[w] = CoroW.waitIndex[i];
+                }
+                w = w + 1;
+            }
+        }
+        CoroW.count = w;
+    }
+    // 处理事件队列（C myp_event_process_all → dispatch → MYP __myp_coro_event_notify
+    // 重新 ready 事件等待者，本趟即可运行）。
+    myp_event_process_all();
+    // 截止期过期：重新 ready + waitTimeout 标记（wait_event_timeout 区分超时 vs 到达）
+    long now = myp_now_ms();
+    for (int i = 0; i < CoroW.count; i = i + 1) {
+        if (CoroW.active[i] != 0 && CoroW.deadline[i] > 0 && now >= CoroW.deadline[i]) {
+            CoroW.active[i] = 0;
+            int hs = int(CoroW.handle[i]);
+            if (hs >= 0 && hs < CoroT.count && CoroT.active[hs] != 0) {
+                if (CoroW.waitIndex[i] >= 0 && CoroW.kind[i] == 1) {
+                    // waitAnyOf TIMER spec：它自己的截止期 → 报 spec 下标
+                    CoroT.lastWaitIndex[hs] = CoroW.waitIndex[i];
+                    CoroT.ready[hs] = 1;
+                } else {
+                    CoroT.waitTimeout[hs] = 1;   // 总体超时/普通等待
+                    CoroT.ready[hs] = 1;
+                }
+            }
+        }
+    }
+    // fd 就绪轮询（批量 poll 一次）
+    coroPollFds();
+    // 快照语义：遍历槽位，对 active && ready 的 resume 一步（本趟新增的 ready 协程
+    // 高槽位不访问——与 C 快照近似；yield 保持 ready 的协程本趟不重入）。
     for (int i = 0; i < CoroT.count; i = i + 1) {
         if (CoroT.active[i] != 0 && CoroT.ready[i] != 0) {
             long h = coroMakeHandle(i);
@@ -335,11 +554,6 @@ void __myp_coro_scheduler() {
         }
     }
 }
-
-// ---- 帧表（ARC 镜像；Phase A 切片 stub 空操作——@coro 函数 epilogue 正常释放，
-// 仅在 destroy/未捕获异常路径会泄漏；Phase B 补）----
-void __myp_coro_frame_set(long slot_id, long obj) { }
-void __myp_coro_frame_clear(long slot_id) { }
 
 // ---- trampoline：协程栈首次进入的入口 ----
 void __myp_coro_trampoline() {
@@ -356,8 +570,10 @@ void __myp_coro_trampoline() {
         string m = "uncaught exception in coroutine: " + e + "\n";
         __myp_syscall(1, 2, __myp_str_ptr(m), myp_strlen(m), 0, 0, 0);
     }
-    // 收尾：退役栈（不能就地 munmap，正运行其上）→ 标记完成 → 切回调用者
+    // 收尾：释放帧 ARC（未捕获异常跳过了 epilogue 的释放）→ 退役栈（不能就地
+    // munmap，正运行其上）→ 标记完成 → 切回调用者
     if (id >= 0 && id < CoroT.count) {
+        coroReleaseFrame(id);
         coroRetiredAdd(CoroT.stack[id], CoroT.stackSize[id]);
         CoroT.stack[id] = 0;
         CoroT.active[id] = 0;
@@ -373,4 +589,181 @@ void __myp_coro_trampoline() {
         myp_ctx_switch(coroCtxBase() + long(id) * 8,
                        coroRetCtxBase() + long(id) * 8);
     }
+}
+
+// ---- Phase B：事件/等待层（C4 + §五-5 P1/P2/P4）----
+// 等待 = 注册等待表记录 + ready=0（park）+ __myp_coro_yield；唤醒由调度器驱动
+// （事件 notify / 截止期过期 / fd poll 重新 ready）。park 后 resume 返回时必须
+// 用 waitTimeout/lastWait* 区分「事件到达 vs 超时」。
+
+// C: int64_t __myp_coro_wait_event_timeout(int64_t event_id, int64_t timeout_ms,
+//                                         int64_t val)
+// 阻塞至 event_id 触发（返回 resume 传入值）或 timeout_ms 超时（返回 -1）。
+// 调度器驱动截止期；不调 scheduler 则定时等待表现为无限等待（同 C）。
+long __myp_coro_wait_event_timeout(long event_id, long timeout_ms, long val) {
+    long deadline = 0;
+    if (timeout_ms > 0) deadline = myp_now_ms() + timeout_ms;
+    int cur = CoroT.current;
+    if (cur >= 0 && cur < CoroT.count) {
+        if (coroWaitAdd(0, int(event_id), -1, 0, long(cur), deadline, -1) == 0) {
+            CoroT.ready[cur] = 0;   // park
+        }
+        CoroT.waitTimeout[cur] = 0;
+        long r = __myp_coro_yield(val);
+        if (CoroT.waitTimeout[cur] != 0) {
+            CoroT.waitTimeout[cur] = 0;
+            return -1;
+        }
+        return r;
+    }
+    return val;   // 非协程：不挂起，直接返回
+}
+
+// C: int64_t __myp_coro_wait_event(int64_t event_id, int64_t val)
+long __myp_coro_wait_event(long event_id, long val) {
+    return __myp_coro_wait_event_timeout(event_id, 0, val);
+}
+
+// C: int64_t __myp_coro_wait_any(const int64_t* ids, int64_t count, int64_t
+//                                timeout_ms, int64_t val)
+// 等任一事件触发：返回唤醒的事件 id，超时 -1。ids = 数组 data 指针（long）。
+long __myp_coro_wait_any(long ids, long count, long timeout_ms, long val) {
+    long deadline = 0;
+    if (timeout_ms > 0) deadline = myp_now_ms() + timeout_ms;
+    int cur = CoroT.current;
+    if (cur >= 0 && cur < CoroT.count && ids != 0 && count > 0) {
+        for (long i = 0; i < count; i = i + 1) {
+            long ev = __myp_mem_load_i64(ids + i * 8);
+            if (coroWaitAdd(0, int(ev), -1, 0, long(cur), deadline, -1) != 0) break;
+        }
+        CoroT.ready[cur] = 0;
+        CoroT.lastWaitEventId[cur] = -1;
+    }
+    if (cur >= 0 && cur < CoroT.count) CoroT.waitTimeout[cur] = 0;
+    long r = __myp_coro_yield(val);
+    if (cur >= 0 && cur < CoroT.count) {
+        // 只许一个事件唤醒 waitAny——清除本协程其余等待记录（后续 fire 不再重 ready）
+        coroWaitClearFor(cur);
+        if (CoroT.waitTimeout[cur] != 0) {
+            CoroT.waitTimeout[cur] = 0;
+            return -1;
+        }
+        if (CoroT.lastWaitEventId[cur] >= 0) return long(CoroT.lastWaitEventId[cur]);
+        return r;
+    }
+    return r;
+}
+
+// C: int64_t __myp_coro_wait_any_of(const int64_t* spec, int64_t count,
+//                                   int64_t timeout_ms, int64_t val)
+// 统一 waitAny：spec = 扁平 long[]（count*3 项）[kind,id,flag]；返回触发的 spec
+// 下标（0 起），总体超时 -1，非协程 -2。
+long __myp_coro_wait_any_of(long spec, long count, long timeout_ms, long val) {
+    if (spec == 0 || count <= 0) return -2;
+    int cur = CoroT.current;
+    if (cur < 0 || cur >= CoroT.count) return -2;   // 非协程
+    long now0 = myp_now_ms();
+    long deadline = (timeout_ms > 0) ? now0 + timeout_ms : 0;
+    for (long i = 0; i < count; i = i + 1) {
+        long kind = __myp_mem_load_i64(spec + i * 24);
+        long id = __myp_mem_load_i64(spec + i * 24 + 8);
+        long flag = __myp_mem_load_i64(spec + i * 24 + 16);
+        int wkind = int(kind);
+        int wfdEvents = 0;
+        if (wkind == 2) {
+            if ((flag & 1) != 0) wfdEvents = wfdEvents | 1;   // POLLIN
+            if ((flag & 2) != 0) wfdEvents = wfdEvents | 4;   // POLLOUT
+        }
+        long wdeadline = (wkind == 1) ? ((flag > 0) ? now0 + flag : 0) : deadline;
+        int wev = (wkind == 0) ? int(id) : -1;
+        int wfd = (wkind == 2) ? int(id) : -1;
+        if (coroWaitAdd(wkind, wev, wfd, wfdEvents, long(cur), wdeadline, int(i)) != 0) break;
+    }
+    // 总体超时标记（kind=TIMER, waitIndex=-2）注册最后——平局时总体超时在后才输
+    if (deadline > 0) coroWaitAdd(1, -1, -1, 0, long(cur), deadline, -2);
+    CoroT.ready[cur] = 0;
+    CoroT.lastWaitIndex[cur] = -1;
+    CoroT.waitTimeout[cur] = 0;
+    long r = __myp_coro_yield(val);
+    coroWaitClearFor(cur);
+    if (CoroT.lastWaitIndex[cur] >= 0) return long(CoroT.lastWaitIndex[cur]);
+    if (CoroT.waitTimeout[cur] != 0) {
+        CoroT.waitTimeout[cur] = 0;
+        return -1;
+    }
+    return r;
+}
+
+// C: int64_t __myp_coro_sleep(int64_t ms) —— 协程内定时挂起（不阻塞线程）；非协程
+// 回退阻塞 myp_sleep_ms。
+long __myp_coro_sleep(long ms) {
+    if (ms <= 0) return 0;
+    int cur = CoroT.current;
+    if (cur < 0 || cur >= CoroT.count) {
+        myp_sleep_ms(ms);   // 非协程：阻塞回退
+        return 0;
+    }
+    long deadline = myp_now_ms() + ms;
+    if (coroWaitAdd(1, -1, -1, 0, long(cur), deadline, -1) == 0) {
+        CoroT.ready[cur] = 0;   // park
+        CoroT.waitTimeout[cur] = 0;
+    }
+    __myp_coro_yield(0);
+    return 0;
+}
+
+// C: int64_t __myp_coro_wait_fd(int64_t fd, int64_t want_read, int64_t want_write,
+//                               int64_t timeout_ms) —— 就绪返回 1，超时 -1，非协程 0。
+long __myp_coro_wait_fd(long fd, long want_read, long want_write, long timeout_ms) {
+    int cur = CoroT.current;
+    if (cur < 0 || cur >= CoroT.count) return 0;   // 非协程
+    long deadline = 0;
+    if (timeout_ms > 0) deadline = myp_now_ms() + timeout_ms;
+    int events = 0;
+    if (want_read != 0) events = events | 1;       // POLLIN
+    if (want_write != 0) events = events | 4;      // POLLOUT
+    if (coroWaitAdd(2, -1, int(fd), events, long(cur), deadline, -1) == 0) {
+        CoroT.ready[cur] = 0;
+        CoroT.waitTimeout[cur] = 0;
+    }
+    __myp_coro_yield(0);
+    if (CoroT.waitTimeout[cur] != 0) {
+        CoroT.waitTimeout[cur] = 0;
+        return -1;
+    }
+    return 1;   // fd 就绪（或手动 resume）
+}
+
+// ---- 事件唤醒（C myp_event_dispatch 调用；非 static 使 MYP 版可 shadow）----
+// C: void __myp_coro_event_notify(int event_id) —— 重新 ready 等待该事件的协程。
+void __myp_coro_event_notify(long event_id) {
+    for (int i = 0; i < CoroW.count; i = i + 1) {
+        if (CoroW.active[i] != 0 && CoroW.eventId[i] == int(event_id)) {
+            long h = CoroW.handle[i];
+            CoroW.active[i] = 0;
+            int hs = int(h);
+            if (hs >= 0 && hs < CoroT.count && CoroT.active[hs] != 0) {
+                CoroT.lastWaitEventId[hs] = int(event_id);   // wait_any
+                if (CoroW.waitIndex[i] >= 0)                 // waitAnyOf
+                    CoroT.lastWaitIndex[hs] = CoroW.waitIndex[i];
+                CoroT.ready[hs] = 1;
+            }
+        }
+    }
+}
+
+// ---- M9：协程资源诊断（包 B 依赖包 D 的部分）----
+long myp_diag_coro_slots() { return CoroT.count; }
+long myp_diag_coro_slot_capacity() { return 1024; }
+long myp_diag_coro_free_slots() { return CoroT.freeCount; }
+// 栈池：MYP 版无栈池（Phase C）→ 恒 0
+long myp_diag_stack_pool_count() { return 0; }
+long myp_diag_stack_pool_capacity() { return 0; }
+long myp_diag_stack_pool_bytes() { return 0; }
+long myp_diag_stack_pool_max_bytes() { return 0; }
+long myp_diag_retired_count() { return CoroRetired.count; }
+long myp_diag_retired_bytes() {
+    long s = 0;
+    for (int i = 0; i < CoroRetired.count; i = i + 1) s = s + CoroRetired.sizes[i];
+    return s;
 }

@@ -2604,7 +2604,9 @@ void myp_event_fire(int event_id, void* sender, void* event_data, int data_size)
 }
 
 // Coroutine event-wait notification (defined in the coroutine section).
-static void __myp_coro_event_notify(int event_id);
+// 非 static：MYP shadow（runtime_myp/coro.myp __myp_coro_event_notify）需截获
+// 事件派发的协程唤醒（--allow-multiple-definition → MYP .o 在前则 MYP 版生效）。
+void __myp_coro_event_notify(int event_id);
 
 // Current thread's myp_thread_t (NULL = main thread / no @thread association).
 static myp_thread_t* myp_thread_current(void) {
@@ -5162,7 +5164,7 @@ char* myp_coro_file_read_all(int io_handle) {
 }
 
 // Re-ready (and resume if currently dispatching) waiters for an event.
-static void __myp_coro_event_notify(int event_id) {
+void __myp_coro_event_notify(int event_id) {
     for (int i = 0; i < myp_coro_wait_count; i++) {
         if (myp_coro_waits[i].active && myp_coro_waits[i].event_id == event_id) {
             int64_t h = myp_coro_waits[i].handle;

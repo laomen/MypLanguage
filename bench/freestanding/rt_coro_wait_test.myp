@@ -1,0 +1,126 @@
+// rt_coro_wait_test.myp — 协程事件/等待层验证（runtime_myp/coro.myp，包 D Phase B）：
+// waitEvent 到达 / waitEventTimeout 超时 / waitAny 返回触发事件 id / Coro.sleep
+// 定时器 / waitAnyOf 总体超时 / waitFd（pipe 就绪）。
+// 返回码：0 = 全过；N = 第 N 项失败。
+import env;
+import coro;
+import time;
+
+// 事件类：go 全局 id = 0（本 TU 首个事件）；bb id = 1
+class Signal {
+    action:
+        void send(long v) { go(v); }
+    event:
+        go(long v);
+}
+class SignalB {
+    action:
+        void sendB() { bb(); }
+    event:
+        bb();
+}
+
+class Waiter {
+    action:
+        // 事件到达：等 Signal.go → scheduler resume 传 0
+        @coro(stack=64) long evtArrive() {
+            return await Signal.go;
+        }
+        // 超时：等不存在的 event 9999，20ms → -1
+        @coro(stack=64) long evtTimeout() {
+            return Coro.waitEventTimeout(9999, 20, 7);
+        }
+        // waitAny：等 go(0)/bb(1)，任一触发 → 返回其 id
+        @coro(stack=64) long anyWait(long[] ids, long n) {
+            return Coro.waitAny(ids, n, 100000, 0);
+        }
+        // Coro.sleep：睡 30ms 后返回 42（scheduler 截止期唤醒）
+        @coro(stack=64) long sleepThen() {
+            Coro.sleep(30);
+            return 42;
+        }
+        // waitAnyOf 总体超时：只等一个永不触发的事件 + timeout 50 → -1
+        @coro(stack=64) long anyOfTimeout() {
+            long[] spec = new long[3];
+            spec[0] = 0;      // kind EVENT
+            spec[1] = 8888;   // id（永不触发）
+            spec[2] = 0;
+            return Coro.waitAnyOf(spec, 1, 50, 0);
+        }
+        // waitFd：等 fd 可读（pipe 读端）
+        @coro(stack=64) long fdReady(long fd) {
+            return Coro.waitFd(fd, 1, 0, 1000);
+        }
+}
+
+class CoroWaitTest {
+    static:
+        int run() {
+            Waiter w = new Waiter();
+
+            // 1) 事件到达：park → fire → scheduler → 恢复，r=0
+            long h1 = w.evtArrive();
+            Coro.scheduler();
+            Signal s = new Signal();
+            s.send(5);
+            Coro.scheduler();
+            long r1 = Coro.result(h1);
+            if (r1 != 0L) return 1;
+
+            // 2) 超时：20ms 超时 → -1
+            long h2 = w.evtTimeout();
+            Coro.scheduler();
+            Time.sleep(40);
+            Coro.scheduler();
+            long r2 = Coro.result(h2);
+            if (r2 != -1L) return 2;
+
+            // 3) waitAny：fire bb(1) → 返回 1
+            long[] ids = new long[2];
+            ids[0] = 0;
+            ids[1] = 1;
+            long h3 = w.anyWait(ids, 2);
+            Coro.scheduler();
+            SignalB sb = new SignalB();
+            sb.sendB();
+            Coro.scheduler();
+            long r3 = Coro.result(h3);
+            if (r3 != 1L) return 3;
+
+            // 4) Coro.sleep：30ms 定时器 → 42
+            long h4 = w.sleepThen();
+            Coro.scheduler();
+            Time.sleep(50);
+            Coro.scheduler();
+            long r4 = Coro.result(h4);
+            if (r4 != 42L) return 4;
+
+            // 5) waitAnyOf 总体超时 → -1
+            long h5 = w.anyOfTimeout();
+            Coro.scheduler();
+            Time.sleep(70);
+            Coro.scheduler();
+            long r5 = Coro.result(h5);
+            if (r5 != -1L) return 5;
+
+            // 6) waitFd：pipe 读就绪 → 1（pipe syscall 22 写 2 个 i32 到缓冲，
+            // long[] 元素是 8B 错位 → 用 raw i32 读 rfd@0/wfd@4）
+            long[] pf = new long[2];
+            long pbuf = __myp_str_ptr(pf);
+            __myp_syscall(22, pbuf, 0, 0, 0, 0, 0);
+            int rfd = int(__myp_mem_load_i32(pbuf));
+            int wfd = int(__myp_mem_load_i32(pbuf + 4));
+            long h6 = w.fdReady(long(rfd));
+            Coro.scheduler();
+            __myp_syscall(1, long(wfd), __myp_str_ptr("x"), 1, 0, 0, 0);
+            Coro.scheduler();
+            long r6 = Coro.result(h6);
+            if (r6 != 1L) return 6;
+
+            return 0;
+        }
+}
+
+int main() {
+    return CoroWaitTest.run();
+}

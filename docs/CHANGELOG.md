@@ -27,6 +27,33 @@
 
 ## 编译器版本历史
 
+### v3.15.41 — runtime myp化 #37：包 D 协程 Phase B（事件/等待层 + 帧表 + 诊断）
+
+**非破坏性**。协程事件/等待层 + ARC 帧表 MYP 化——shadow C 的 `__myp_coro_*`
+事件契约（CORO_DESIGN Phase B 切片）：
+
+- **事件/等待层（coro.myp）**：`__myp_coro_wait_event(_timeout)`/`wait_any`/
+  `wait_any_of`/`sleep`/`wait_fd` + `__myp_coro_event_notify`。等待表 `@static CoroW`
+  并行数组（kind/eventId/fd/fdEvents/handle/deadline/waitIndex，定容 1024）；等待 =
+  注册 + park（ready=0）+ yield，唤醒由 scheduler 驱动。
+- **调度器增强**：等待表压缩（drop inactive，防 O(N²) 累积）+ `myp_event_process_all()`
+  （C 事件队列 → dispatch → MYP notify）+ 截止期过期（waitTimeout 标记区分超时 vs
+  到达）+ fd 批量 poll（syscall 7，pollfd 8B 布局）。
+- **C 桥**：`__myp_coro_event_notify` 去 static（runtime.c）——MYP 版 shadow 后可截获
+  C `myp_event_dispatch` 的协程唤醒。
+- **帧表 ARC 镜像**：`frame_set`/`frame_clear` 真实现（每协程 ≤32 槽，扁平数组；
+  obj 为堆指针，`myp_release(__myp_addr_to_str(obj))`）+ `coroReleaseFrame` 挂进
+  destroy（三路径）+ trampoline 收尾 → 强杀/未捕获异常零泄漏。
+- **诊断**：`myp_diag_coro_slots/slot_capacity/free_slots` + `retired_count/bytes`
+  （栈池无 → 恒 0，Phase C）。
+- **验证**：新 `bench/freestanding/rt_coro_wait_test.myp`（事件到达/超时/waitAny/
+  sleep/waitAnyOf 总体超时/waitFd-pipe，6 项 exit=0）；**shadow 26/26**；语言级
+  `await evt`/`await evt timeout N` + `Coro.waitAny` + 帧 ARC 对拍——
+  `tests/coro_timeout`/`coro_any`/`coro_frame_arc` 用 MYP shadow 链接**输出逐字一致**；
+  bootstrap 16/16（fixpoint `9f5cf25b`，runtime 重链编译器逻辑不变）；全量 323/323。
+- **未做（Phase C）**：通道、future（wait/wake_future）、exec worker、栈池、
+  thread_cleanup/cleanup_all。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20

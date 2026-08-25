@@ -6,7 +6,7 @@
 >
 > **迁移机制**：MYP 模块 `--shared` 编译（函数外部链接 `define`）→ `.o` 置于
 > `libmyp_rt.a` 之前 + `--allow-multiple-definition` → **MYP 定义优先**（shadow）。
-> 验证 `runtime_myp/build.sh`（shadow 18/18）；每批跑 bootstrap 16/16 + 全量
+> 验证 `runtime_myp/build.sh`（shadow 26/26）；每批跑 bootstrap 16/16 + 全量
 > 323/323。
 
 ---
@@ -16,16 +16,17 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper） | **161**（~33%） |
-| 未 shadow（C runtime 剩余） | **329** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#37 后重算） | **224**（~46%） |
+| 未 shadow（C runtime 剩余） | **266** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
 | runtime_myp 模块 | **21** 个 |
 
-已完成的层（#1–#35 里程碑）：字符串 str / 整数 num（含 `myp_str_parse_int_opt`
+已完成的层（#1–#37 里程碑）：字符串 str / 整数 num（含 `myp_str_parse_int_opt`
 long-参数 ABI shadow，#31）/ 浮点 float / 内存核心 alloc（含 `myp_diag_arena_*`，#31）+
 arc+region+weak / 文件 I/O io / 时间 time / 文件系统 fs(12) / 环境 get / 命令行参数
-args / 终端 term / 数学 math(19) / base64 / crc / hash-sha256 / bytes / 协程上下文
-切换 coro(myp_ctx_switch) / 汇编原语 asm / 诊断 diag(type_live + fail_alloc，#35)。
+args / 终端 term / 数学 math(19) / base64 / crc / hash-sha256 / bytes / 汇编原语 asm /
+诊断 diag(type_live + fail_alloc，#35) / **协程 coro 全生命周期（#36 Phase A 核心 +
+#37 Phase B 事件/等待层 + 帧表 + 诊断）**。
 
 **编译器内建层（无需 shadow，编译器直发 LLVM）**：Atomic（`__myp_atomic_*` →
 `atomicrmw`/load/store）、raw-memory（`__myp_mem_*`/`__myp_syscall`/`__myp_memcpy`）、
@@ -87,17 +88,30 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 ### 包 D：协程运行时（`__myp_coro_*` 49 + `channel` 13 = 62）
 - ✅ **已做（#36，Phase A 生命周期核心）**：create/set_entry/yield/resume/set_result/
   result/status/is_active/count/current_handle/request_cancel/cancel_requested/
-  cancel_clear/destroy/scheduler/trampoline/frame_set/clear(stub) + set_entry_arg/
-  get_entry_arg（20 个）。协程表 @static 并行数组 + 代际句柄 + 空闲槽复用；栈 mmap
-  + 退役列表；trampoline 异常边界 = MYP try/catch；scheduler 合作式推进 ready。
-  `myp_ctx_switch`（#25/#26）保留。
-- **剩余（Phase B/C）**：wait_event(_timeout)/wait_any(_of)/sleep/wait_fd（事件层 +
-  等待表）、frame_set/clear 补 ARC 镜像、release_frame/cleanup/thread_cleanup、
-  栈池、`myp_coro_wait_future/wake_future`、`myp_coro_am_i_coro`、exec worker
+  cancel_clear/destroy/scheduler/trampoline + set_entry_arg/get_entry_arg（20 个）。
+  协程表 @static 并行数组 + 代际句柄 + 空闲槽复用；栈 mmap + 退役列表；trampoline
+  异常边界 = MYP try/catch；scheduler 合作式推进 ready。`myp_ctx_switch`（#25/#26）。
+- ✅ **已做（#37，Phase B 事件/等待层 + 帧表 + 诊断）**：
+  - **事件/等待层**：wait_event(_timeout)/wait_any/wait_any_of/sleep/wait_fd +
+    `__myp_coro_event_notify`（C myp_event_dispatch 调用，已去 static 可 shadow）。
+    等待表 `@static CoroW` 并行数组（kind/eventId/fd/fdEvents/handle/deadline/
+    waitIndex，定容 1024）；scheduler 加 压缩 + `myp_event_process_all()`（C 队列
+    → dispatch → MYP notify）+ 截止期过期（waitTimeout 标记）+ fd 批量 poll
+    （syscall 7）。语言级 `await evt`/`await evt timeout N` 全路径验证
+    （coro_timeout/coro_any 输出逐字一致）。
+  - **帧表**：frame_set/frame_clear 真实现 + coroReleaseFrame（`myp_release(
+    __myp_addr_to_str(obj))`）→ destroy/未捕获异常路径 release 帧 ARC
+    （coro_frame_arc 输出逐字一致：destroy/异常零泄漏）。
+  - **诊断**：myp_diag_coro_slots/slot_capacity/free_slots + retired_count/bytes
+    （栈池无 → 恒 0，Phase C）。
+  - **测试**：`bench/freestanding/rt_coro_wait_test.myp`（事件到达/超时/waitAny/
+    sleep/waitAnyOf 总体超时/waitFd-pipe，6 项）。
+- **剩余（Phase B/C）**：release_frame/cleanup/thread_cleanup、栈池、
+  `myp_coro_wait_future/wake_future`、`myp_coro_am_i_coro`、exec worker
   （myp_coro_file_*）。
 - **channel**：create/send/recv/try_send/try_recv/close/destroy/size/wake_one/...
-  （Phase B 之后）。
-- **难度**：高（已突破核心，剩事件/通道/栈检测）。
+  （Phase C）。
+- **难度**：高（已突破核心+事件层，剩通道/未来/exec worker/栈池）。
 
 ### 包 E：同步原语（mutex 7 + cond 6 + sem 6 + rwlock 8 + once 5 + barrier 3 + future 4 = 39）
 - **策略**：futex syscall(202) 实现互斥/条件变量；或 `__myp_indirect` 调 pthread。
