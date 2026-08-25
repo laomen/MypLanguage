@@ -1,0 +1,77 @@
+// rt_io_thread_test.myp — 每线程当前文件句柄验证（#42：MYP IoCur gettid 表）。
+// C TLS `myp_io_cur` 对 MYP clone @thread 是**共享**的（无 CLONE_SETTLS）→ 并发
+// 文件 I/O 会串号；MYP IoCur 表按 gettid 分线程 → 各线程自己的句柄。
+// 2 个 @thread worker 各开自己的文件写一行；main 等两者完成后读回验证互不串号。
+// 注：main 先开一个文件初始化 ioTable/IoCur 表 → worker 只锁定追加（不分配 arena）。
+import env;
+import io;
+import atomic;
+import time;
+
+@static class IoDone {
+    property:
+        int[] done;   // 完成计数（main 分配，worker Atomic 递增）
+}
+
+class WriterA {
+    action:
+        @startup void run() {
+            File f = new File();
+            int ok = f.open("/tmp/rt_io_wA.txt", "w");
+            if (ok == 0) {
+                f.writeLine("AAAA");
+                f.close();
+            }
+            Atomic.addInt(IoDone.done, 0, 1);
+        }
+}
+class WriterB {
+    action:
+        @startup void run() {
+            File f = new File();
+            int ok = f.open("/tmp/rt_io_wB.txt", "w");
+            if (ok == 0) {
+                f.writeLine("BBBB");
+                f.close();
+            }
+            Atomic.addInt(IoDone.done, 0, 1);
+        }
+}
+class Main {
+    action:
+        @startup void run() {
+            // 先初始化 io 表（main 线程）→ worker 只锁定追加不分配 arena
+            File probe = new File();
+            probe.open("/tmp/rt_io_probe.txt", "w");
+            probe.writeLine("probe");
+            probe.close();
+            IoDone.done = new int[1];
+            IoDone.done[0] = 0;
+            WriterA a = new WriterA() @thread;
+            WriterB b = new WriterB() @thread;
+            // 等两个 worker 完成
+            int spins = 0;
+            while (Atomic.loadInt(IoDone.done, 0) < 2 && spins < 1000000) {
+                spins = spins + 1;
+                Time.sleep(1);
+            }
+            // 读回验证（各自文件内容独立 = 每线程句柄正确）
+            File fa = new File();
+            fa.open("/tmp/rt_io_wA.txt", "r");
+            string la = fa.readLine();
+            fa.close();
+            File fb = new File();
+            fb.open("/tmp/rt_io_wB.txt", "r");
+            string lb = fb.readLine();
+            fb.close();
+            Console.writeString("A=[" + la + "] B=[" + lb + "] done=" + IoDone.done[0] + "\n");
+            if (la != "AAAA" || lb != "BBBB" || IoDone.done[0] != 2) {
+                Console.writeString("FAIL: per-thread io handle\n");
+            }
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

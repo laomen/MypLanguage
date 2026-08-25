@@ -220,6 +220,26 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：static constructor / C TLS 残留（需改 runtime.c 或留 TLS，见
   MIGRATION_STATUS 边界说明）。
 
+### v3.15.48 — runtime myp化 #42 补：C-TLS 当前句柄 → MYP IoCur 表（hello/sync 二进制 0 C myp_*）
+
+**非破坏性**。解决 #42 遗留的 C-TLS `myp_io_cur_get/set`（每线程当前文件句柄）：
+
+- **io.myp 新增 MYP `myp_io_cur_get/set`**：`@static IoCur` gettid 键控表（append-only，
+  每线程只写自己的槽 → get 无锁扫描、set 追加用 futex 票号锁）。
+- **⚠️ 根因**：MYP clone @thread 无 `CLONE_SETTLS` → 共享父 TLS → C `__thread
+  myp_io_cur` 对并发 @thread 实为**共享**（文件 I/O 会串号）。IoCur 表按 gettid 分
+  线程 → 真正每线程隔离（既是去 C TLS 也是并发正确性修复）。
+- **新测试** `bench/freestanding/rt_io_thread_test.myp`：2 个 @thread 各开自己的
+  文件写 `AAAA`/`BBBB`，main 读回验证 `A=[AAAA] B=[BBBB] done=2` 无串号。
+- **顺带发现**：ld.lld `--gc-sections` 会剥离未引用的 `.init_array` 项 → 新构建的
+  hello/sync 二进制里 C static constructor（`myp_capture_args`/`__myp_coro_register_
+  cleanup` 等）**也消失**（nm 实测 0 个 C myp_* 符号）。args 由 MYP args.myp 惰性
+  接管、atexit 清理由 OS 回收兜底 → 运行正常。
+- **验证**：**shadow 33/33**；hello（exit 42）/tests/sync（逐字一致）二进制 C
+  myp_* 符号 = **0**；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323（oracle +
+  selfhost）。
+- **未做**：GPU/bridges（包 G/H，功能层仍 C）。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20

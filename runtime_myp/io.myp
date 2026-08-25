@@ -5,8 +5,10 @@
 //   - 句柄表 64 槽，每槽 16B [fd:i64 @0][pending:i64 @8]（fd=-1 空闲；
 //     pending=-1 无预读，>=0 预读字节——has_next/read 的 peek）。进程级 @static。
 //   - 自旋锁用 __myp_atomic_add_i32_addr（atomicrmw 返回旧值，0=获取）。
-//   - **myp_io_cur（当前句柄）留在 C TLS**（io_thread 并发 File 依赖每线程当前
-//     句柄），经 C helper myp_io_cur_get/set 读写。
+//   - **myp_io_cur（当前句柄）= MYP 每线程表**（#42 去 C TLS）：MYP 无 TLS，且
+//     clone 线程共享父 TLS → C __thread myp_io_cur 对 MYP @thread 实际是**共享**
+//     （并发文件 I/O 会串号）。改用 gettid(186) 键控的 IoCur 表：append-only
+//     （线程首设句柄时登记），每线程只写自己的槽 → get 无锁扫描、set 追加用票号锁。
 //   - 所有文件操作 raw syscall：open=2 / read=0 / write=1 / lseek=8 / close=3。
 //   - mode 串 → open flags；新建文件权限 0644（0x1A4）。
 //   - 每次 I/O 用 arena scratch 缓冲（bump 不归还，I/O 量小可接受）。
@@ -15,14 +17,72 @@
 ffi long myp_arena_alloc(long size);
 ffi string myp_alloc(long size);
 ffi int myp_strlen(string s);
-// C TLS 当前句柄访问（io_thread 每线程独立）
-ffi int myp_io_cur_get();
-ffi void myp_io_cur_set(int h);
 
 @static class Io {
     property:
         long table = 0;    // fd 表基址（arena 64*16，0=未初始化）
         long lock = 0;     // 自旋锁字地址（arena）
+}
+
+// ---- 每线程当前句柄（MYP 无 TLS → gettid 键控表）----
+@static class IoCur {
+    property:
+        long tids = 0;   // long[64]: 线程 gettid
+        long vals = 0;   // int[64]: 每线程当前句柄
+        long count = 0;  // int: 登记线程数（arena 字）
+        long lockS = 0;  // int: 票号锁 serving
+        long lockN = 0;  // int: 票号锁 next
+}
+void ioCurInit() {
+    if (IoCur.tids == 0) {
+        IoCur.tids = myp_arena_alloc(64 * 8);
+        IoCur.vals = myp_arena_alloc(64 * 4);
+        IoCur.count = myp_arena_alloc(4);
+        IoCur.lockS = myp_arena_alloc(4);
+        IoCur.lockN = myp_arena_alloc(4);
+    }
+}
+// 当前线程在表中的槽（未登记 → -1）；gettid 表 append-only → 无锁扫描安全
+int ioCurSlot() {
+    long my = __myp_syscall(186, 0, 0, 0, 0, 0, 0);   // gettid
+    int n = __myp_mem_load_i32(IoCur.count);
+    for (int i = 0; i < n; i = i + 1)
+        if (__myp_mem_load_i64(IoCur.tids + long(i) * 8) == my) return i;
+    return -1;
+}
+// C: int32_t myp_io_cur_get(void)
+int myp_io_cur_get() {
+    ioCurInit();
+    int s = ioCurSlot();
+    if (s < 0) return 0;
+    return __myp_mem_load_i32(IoCur.vals + long(s) * 4);
+}
+// C: void myp_io_cur_set(int32_t h)
+void myp_io_cur_set(int h) {
+    ioCurInit();
+    long my = __myp_syscall(186, 0, 0, 0, 0, 0, 0);
+    int s = ioCurSlot();
+    if (s >= 0) { __myp_mem_store_i32(IoCur.vals + long(s) * 4, h); return; }
+    // 未登记 → 票号锁内追加（再查一次防并发追加竞态）
+    int tk = __myp_atomic_add_i32_addr(IoCur.lockN, 1);
+    for (;;) {
+        if (__myp_atomic_load_i32_addr(IoCur.lockS) == tk) break;
+        __myp_syscall(202, IoCur.lockS, 128, __myp_atomic_load_i32_addr(IoCur.lockS), 0, 0, 0);
+    }
+    int n = __myp_mem_load_i32(IoCur.count);
+    if (n < 64) {
+        int found = -1;
+        for (int i = 0; i < n; i = i + 1)
+            if (__myp_mem_load_i64(IoCur.tids + long(i) * 8) == my) { found = i; break; }
+        if (found < 0) {
+            found = n;
+            __myp_mem_store_i64(IoCur.tids + long(found) * 8, my);
+            __myp_mem_store_i32(IoCur.count, n + 1);
+        }
+        __myp_mem_store_i32(IoCur.vals + long(found) * 4, h);
+    }
+    __myp_atomic_add_i32_addr(IoCur.lockS, 1);
+    __myp_syscall(202, IoCur.lockS, 129, 2147483647, 0, 0, 0);
 }
 
 long ioLockAddr() {

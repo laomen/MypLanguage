@@ -6,7 +6,7 @@
 >
 > **迁移机制**：MYP 模块 `--shared` 编译（函数外部链接 `define`）→ `.o` 置于
 > `libmyp_rt.a` 之前 + `--allow-multiple-definition` → **MYP 定义优先**（shadow）。
-> 验证 `runtime_myp/build.sh`（shadow 32/32）；每批跑 bootstrap 16/16 + 全量
+> 验证 `runtime_myp/build.sh`（shadow 33/33）；每批跑 bootstrap 16/16 + 全量
 > 323/323。
 
 ---
@@ -16,8 +16,8 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#42 薄层后重算） | **310**（~63%） |
-| 未 shadow（C runtime 剩余） | **180** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#42 补后重算） | **312**（~64%） |
+| 未 shadow（C runtime 剩余） | **178** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
 | runtime_myp 模块 | **21** 个 |
 
@@ -41,13 +41,16 @@ setenv/unsetenv）/`myp_read_line`（io）/`myp_enable_raw`+`myp_restore_term`+
 `myp_getch`+`myp_kbhit`（term，termios ioctl）——hello 二进制 C 拉取 10→5、
 sync 16→7**。
 
-**#42 残留 C 边界（shadow 无法消除，需改 runtime.c 或留 TLS）**：
-- **static constructor**（`.init_array` 直指局部符号，shadow 无法按名拦截）：
-  `myp_capture_args`（读 /proc/self/cmdline → fopen/fread）+ `__myp_coro_register_cleanup`
-  （atexit 注册 free_alloc_list_global / __myp_coro_cleanup_all → +alloc_lock_init）。
-  共 5 个（hello 剩余）。移除需改 runtime.c（args 改惰性 + 去掉 atexit 清理）。
-- **C TLS 当前句柄**：`myp_io_cur_get/set`（io.myp 依赖每线程当前文件句柄，MYP
-  无 TLS → 保留 C helper）。共 2 个（sync 等用 io 的程序才拉）。
+**#42 残留 C 边界（更新：io_cur 已 MYP 化；constructor 已被 lld 剥离）**：
+- **C TLS 当前句柄已解决（#42 补）**：`myp_io_cur_get/set` → MYP IoCur 表（gettid
+  键控，append-only + 票号锁）。⚠️ 原 C `__thread myp_io_cur` 对 MYP clone @thread
+  （无 CLONE_SETTLS）实为**共享**→ 并发文件 I/O 会串号；IoCur 表按 gettid 分线程真
+  正隔离。新 `bench/freestanding/rt_io_thread_test.myp`（2 @thread 各写自己文件
+  读回验证 `A=[AAAA] B=[BBBB]`）通过。
+- **static constructor 实际被剥离**：ld.lld `--gc-sections` 会丢弃未引用的
+  .init_array 项 → `myp_capture_args`/`__myp_coro_register_cleanup` 等从新构建的
+  hello/sync 二进制**消失**（nm 实测 0 个 C myp_* 符号）。args 由 MYP args.myp 惰性
+  接管、atexit 清理由 OS 回收兜底 → 运行正常（hello exit 42、sync 逐字一致）。
 - ⚠️ `myp_arena_free_all` **只复位不 munmap**：MYP arena 进程级 mmap，退出时 OS
   回收；显式 munmap 与 main epilogue 的 ARC release / C atexit 产生 UAF（rt_str
   segfault 139 已实测）。
