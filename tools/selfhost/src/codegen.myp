@@ -1366,46 +1366,66 @@ class CodeGen {
             // 顺序：preamble → 类类型 + FFI + 字符串全局 → 函数 → attributes
             // MYP 运行时 myp化：若本模块 define 了 runtime 符号（如 myp_strlen），
             // 剔除 preamble 中同名 declare，避免 llc "invalid redefinition"。
+            // 实现：单遍扫描 body 提取 define 名（不用 splitGet 逐行 —— splitGet 每次
+            // O(len) 会让此循环变成 O(N²)，大文件下自举编译器明显变慢）。
             ArrayList<string> defNames = new ArrayList<string>();
             string bodyTxt = sb_.toString();
-            int dl = Str.splitCount(bodyTxt, "\n");
-            for (int di = 0; di < dl; di = di + 1) {
-                string line = Str.trim(Str.splitGet(bodyTxt, "\n", di));
-                if (Str.startsWith(line, "define ") != 0) {
-                    int at = -1;
-                    for (int ci = 0; ci < Str.len(line); ci = ci + 1) {
-                        if (__myp_charcode(line, ci) == 64) { at = ci; break; }  // '@'
-                    }
-                    if (at >= 0) {
-                        int lp = -1;
-                        for (int ci = at + 1; ci < Str.len(line); ci = ci + 1) {
-                            if (__myp_charcode(line, ci) == 40) { lp = ci; break; }  // '('
+            int bt = Str.len(bodyTxt);
+            int bpos = 0;
+            while (bpos + 7 <= bt) {
+                if (__myp_charcode(bodyTxt, bpos) == 100) {  // 'd'
+                    if (Str.substring(bodyTxt, bpos, bpos + 7) == "define ") {
+                        int at = -1;
+                        for (int ci = bpos + 7; ci < bt; ci = ci + 1) {
+                            if (__myp_charcode(bodyTxt, ci) == 64) { at = ci; break; }  // '@'
                         }
-                        if (lp > at) {
-                            string nm = Str.substring(line, at + 1, lp);
-                            if (Str.len(nm) > 0) {
-                                int dup = 0;
-                                for (int ni = 0; ni < defNames.size(); ni = ni + 1) {
-                                    if (defNames.get(ni) == nm) { dup = 1; break; }
-                                }
-                                if (dup == 0) defNames.add(nm);
+                        if (at >= 0) {
+                            int lp = -1;
+                            for (int ci = at + 1; ci < bt; ci = ci + 1) {
+                                if (__myp_charcode(bodyTxt, ci) == 40) { lp = ci; break; }  // '('
+                            }
+                            if (lp > at) {
+                                string nm = Str.substring(bodyTxt, at + 1, lp);
+                                if (Str.len(nm) > 0) defNames.add(nm);
                             }
                         }
+                        // 跳过本行其余字符（到换行），避免重复匹配
+                        while (bpos < bt && __myp_charcode(bodyTxt, bpos) != 10) bpos = bpos + 1;
                     }
                 }
+                bpos = bpos + 1;
             }
+            // 组合串：所有 "@name(" 拼接，供过滤 pre 时 O(1) 判定
+            StringBuilder defB = new StringBuilder();
+            for (int ni = 0; ni < defNames.size(); ni = ni + 1) {
+                defB.append("@" + defNames.get(ni) + "(");
+            }
+            string allDefs = defB.toString();
+            // 过滤 pre：只保留未在本模块定义的行
             StringBuilder pre2 = new StringBuilder();
-            int pl = Str.splitCount(pre, "\n");
-            for (int pi = 0; pi < pl; pi = pi + 1) {
-                string pline = Str.splitGet(pre, "\n", pi);
-                int skip = 0;
-                for (int ni = 0; ni < defNames.size(); ni = ni + 1) {
-                    if (Str.contains(pline, "@" + defNames.get(ni) + "(") != 0) {
-                        skip = 1;
-                        break;
+            if (Str.len(allDefs) == 0) {
+                pre2.append(pre);
+            } else {
+                int pl = Str.splitCount(pre, "\n");
+                for (int pi = 0; pi < pl; pi = pi + 1) {
+                    string pline = Str.splitGet(pre, "\n", pi);
+                    int pat = -1;
+                    int plp = -1;
+                    for (int ci = 0; ci < Str.len(pline); ci = ci + 1) {
+                        if (__myp_charcode(pline, ci) == 64) { pat = ci; break; }
                     }
+                    if (pat >= 0) {
+                        for (int ci = pat + 1; ci < Str.len(pline); ci = ci + 1) {
+                            if (__myp_charcode(pline, ci) == 40) { plp = ci; break; }
+                        }
+                    }
+                    int skip = 0;
+                    if (plp > pat) {
+                        string pnm = Str.substring(pline, pat, plp + 1);  // "@name("
+                        if (Str.contains(allDefs, pnm) != 0) skip = 1;
+                    }
+                    if (skip == 0) pre2.append(pline + "\n");
                 }
-                if (skip == 0) pre2.append(pline + "\n");
             }
             StringBuilder out = new StringBuilder();
             out.append(pre2.toString());
