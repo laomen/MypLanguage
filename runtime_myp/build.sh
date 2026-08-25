@@ -15,10 +15,14 @@ DL=/lib64/ld-linux-x86-64.so.2
 rm -f "$OUT" "$OUT".o
 RT_OBJS=""
 for m in runtime_myp/*.myp; do
-    base="${m%.myp}"
-    "$SELF" "$m" --emit-llvm -o /tmp/rt_myp_m >/dev/null 2>&1
-    "$LLC" /tmp/rt_myp_m.ll -filetype=obj -relocation-model=pic -o /tmp/rt_myp_m.o
-    RT_OBJS="$RT_OBJS /tmp/rt_myp_m.o"
+    base="$(basename "${m%.myp}")"
+    # --shared（库模式）：函数外部链接（define 而非 define internal）——否则符号是
+    # 局部（t），无法 shadow libmyp_rt.a 里的同名全局符号（此前机制失效，测试实际
+    # 走的 C runtime）。
+    # 每个模块用独立 /tmp/rt_myp_<base>.o（共用同一路径会被后编译的模块覆盖）。
+    "$SELF" "$m" --emit-llvm --shared -o "/tmp/rt_myp_${base}" >/dev/null 2>&1
+    "$LLC" "/tmp/rt_myp_${base}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_myp_${base}.o"
+    RT_OBJS="$RT_OBJS /tmp/rt_myp_${base}.o"
 done
 
 # 每个 shadow 验证程序单独链接+运行（都有各自 main()）

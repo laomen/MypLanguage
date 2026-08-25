@@ -35,6 +35,28 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.12 — runtime myp化 #9：base64 层 + **shadow 机制修复**（此前测试走 C runtime）+ 2 个真实 bug
+
+**非破坏性**。`runtime_myp/base64.myp` 新增 `myp_base64_encode`/`myp_base64_decode`
+（bridge 纯函数，shadow 验证；rt_str_test 加 12 条断言含 round-trip）。
+
+**⚠️ shadow 机制修复（关键）**：此前 `runtime_myp/build.sh` 编译 MYP 模块**未加
+`--shared`** → 函数是 `define internal`（局部符号 `t`），无法 shadow libmyp_rt.a 的
+同名全局符号 → **之前所有 "shadow PASS" 实际测试的是 C runtime，MYP 版本从未被真正
+调用**。同时 build.sh 模块循环复用同一 `/tmp/rt_myp_m.o` 路径，后编译模块覆盖前面的。
+修复：`--shared`（库模式，函数外部链接 `define`）+ 每模块独立 `.o`。反汇编确认
+`myp_strlen` 现为 MYP 的 charcode 扫描循环（非 C `call strlen`）。
+
+**shadow 生效后抓到的 2 个真实 bug（均修复）**：
+1. **`myp_charcode` 自递归**：MYP 版内部用 `__myp_charcode` 内建（发射 `call @myp_charcode`）
+   → 无限递归段错误。改用 raw-memory 直接读字节 `__myp_mem_load_i8(ptr(s)+i)`。
+2. **`myp_str_replace_all` 空 old_str 死循环**：`oldl==0` 检查放在 count 循环之后——
+   oldl=0 时 `j<oldl` 循环不跑 → found=k=i → i 不前进 → 死循环（perf 定位 99.9%
+   在该函数）。C 版对 `!*old_str` 提前返回拷贝，对齐修正。perf 定位：完整测试在
+   多次分配后堆布局下触发，gdb/ASAN 布局不同不触发（掩蔽性极高）。
+
+验证：runtime_myp shadow PASS（str+num 全断言，MYP 版本真实执行）。
+
 ### v3.15.11 — runtime myp化 #8：热字符串助手 myp_ord/charcode/chr/strdup
 
 **非破坏性**。`runtime_myp/str.myp` 补 4 个高频小函数（shadow C runtime 验证，

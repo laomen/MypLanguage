@@ -310,6 +310,14 @@ string myp_str_replace_all(string s, string old_str, string new_str) {
     int sl = myp_strlen(s);
     int oldl = myp_strlen(old_str);
     int newl = myp_strlen(new_str);
+    // 空 old_str → 返回 s 拷贝（对齐 C：`!*old_str` 提前返回）。必须在 count 循环
+    // 之前——oldl==0 时 `j < oldl` 循环不跑 → found=k=i → i 不前进 → 死循环。
+    if (oldl == 0) {
+        string r = myp_alloc(sl + 1);
+        __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(s), sl);
+        __myp_mem_store_i8(__myp_str_ptr(r) + sl, 0);
+        return r;
+    }
     int count = 0;
     int i = 0;
     while (i + oldl <= sl) {
@@ -476,13 +484,15 @@ string myp_strdup(string s) {
 
 // C: int32_t myp_ord(const char* s) —— 首字符 ASCII 码（空回 0）
 int myp_ord(string s) {
-    return __myp_charcode(s, 0);
+    return __myp_mem_load_i8(__myp_str_ptr(s));
 }
 
 // C: int32_t myp_charcode(const char* s, int32_t i) —— O(1) 第 i 字符码（i<0 回 0）
+// 注意：不能经 __myp_charcode（该内建发射 call @myp_charcode → 本函数 → 无限递归）；
+// 直接 raw-memory 读字节（= (unsigned char)s[i]，同 C 版无上界检查）。
 int myp_charcode(string s, int i) {
     if (i < 0) return 0;
-    return __myp_charcode(s, i);
+    return __myp_mem_load_i8(__myp_str_ptr(s) + i);
 }
 
 // C: const char* myp_chr(int32_t code) —— 码点 → 1-4 字节 UTF-8 计数字符串

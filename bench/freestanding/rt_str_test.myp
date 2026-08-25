@@ -2,6 +2,7 @@
 // 通过 text.myp 的 Str 方法触发 myp_str_* FFI，链接时 MYP 版本优先
 //（--allow-multiple-definition）。期望与 C 版本一致。
 import text;
+import base64;
 
 // 直接调 ord/charcode/chr/strdup（Str.ord/chr 走 __myp_* 内建发射同名 runtime 调用）
 ffi int myp_charcode(string s, int i);
@@ -137,5 +138,17 @@ int main() {
     if (Str.chr(-1) != "�") return 207;           // 非法码点 → 0xFFFD 替换符
     if (myp_strdup("hello") != "hello") return 208;
     if (myp_strdup("") != "") return 209;
+    // base64 编解码（bridge 纯函数，MYP 模块提供符号）
+    if (Base64.encode("hello") != "aGVsbG8=") return 221;
+    if (Base64.encode("") != "") return 222;
+    if (Base64.encode("a") != "YQ==") return 223;
+    if (Base64.encode("ab") != "YWI=") return 224;
+    if (Base64.encode("abc") != "YWJj") return 225;
+    if (Base64.encode("MYP") != "TVlQ") return 226;
+    if (Base64.decode("aGVsbG8=") != "hello") return 231;
+    if (Base64.decode("YQ==") != "a") return 232;
+    if (Base64.decode("YWI=") != "ab") return 233;
+    if (Base64.decode("YWJj") != "abc") return 234;
+    if (Base64.decode(Base64.encode("The quick brown fox 0123456789")) != "The quick brown fox 0123456789") return 235;
     return 0;
 }
