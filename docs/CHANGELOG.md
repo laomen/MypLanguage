@@ -27,364 +27,6 @@
 
 ## 编译器版本历史
 
-### v3.15.41 — runtime myp化 #37：包 D 协程 Phase B（事件/等待层 + 帧表 + 诊断）
-
-**非破坏性**。协程事件/等待层 + ARC 帧表 MYP 化——shadow C 的 `__myp_coro_*`
-事件契约（CORO_DESIGN Phase B 切片）：
-
-- **事件/等待层（coro.myp）**：`__myp_coro_wait_event(_timeout)`/`wait_any`/
-  `wait_any_of`/`sleep`/`wait_fd` + `__myp_coro_event_notify`。等待表 `@static CoroW`
-  并行数组（kind/eventId/fd/fdEvents/handle/deadline/waitIndex，定容 1024）；等待 =
-  注册 + park（ready=0）+ yield，唤醒由 scheduler 驱动。
-- **调度器增强**：等待表压缩（drop inactive，防 O(N²) 累积）+ `myp_event_process_all()`
-  （C 事件队列 → dispatch → MYP notify）+ 截止期过期（waitTimeout 标记区分超时 vs
-  到达）+ fd 批量 poll（syscall 7，pollfd 8B 布局）。
-- **C 桥**：`__myp_coro_event_notify` 去 static（runtime.c）——MYP 版 shadow 后可截获
-  C `myp_event_dispatch` 的协程唤醒。
-- **帧表 ARC 镜像**：`frame_set`/`frame_clear` 真实现（每协程 ≤32 槽，扁平数组；
-  obj 为堆指针，`myp_release(__myp_addr_to_str(obj))`）+ `coroReleaseFrame` 挂进
-  destroy（三路径）+ trampoline 收尾 → 强杀/未捕获异常零泄漏。
-- **诊断**：`myp_diag_coro_slots/slot_capacity/free_slots` + `retired_count/bytes`
-  （栈池无 → 恒 0，Phase C）。
-- **验证**：新 `bench/freestanding/rt_coro_wait_test.myp`（事件到达/超时/waitAny/
-  sleep/waitAnyOf 总体超时/waitFd-pipe，6 项 exit=0）；**shadow 26/26**；语言级
-  `await evt`/`await evt timeout N` + `Coro.waitAny` + 帧 ARC 对拍——
-  `tests/coro_timeout`/`coro_any`/`coro_frame_arc` 用 MYP shadow 链接**输出逐字一致**；
-  bootstrap 16/16（fixpoint `9f5cf25b`，runtime 重链编译器逻辑不变）；全量 323/323。
-- **未做（Phase C）**：通道、future（wait/wake_future）、exec worker、栈池、
-  thread_cleanup/cleanup_all。
-
-### v3.15.42 — runtime myp化 #38：包 D 协程 Phase C（channel + future + current 初始化修复）
-
-**非破坏性**。协程 Channel + Future MYP 化——shadow C 的 `myp_channel_*`/
-`myp_future_*`/`myp_coro_{wait,wake}_future`/`myp_coro_am_i_coro`（CORO_DESIGN
-Phase C 切片）：
-
-- **Channel**：`myp_channel_create/destroy/send/recv/try_send/try_recv/size/close`
-  + 内部 `wake_one`（同步交接：协程调用方内联 resume 对端一步，深度守卫 64）/
-  `wake_ready`（close/try 只 ready）。`@static Chan` 并行数组（环形缓冲
-  head/count/capacity/closed + 256×256 recvW/sendW FIFO waiter）。协程 send 满/
-  recv 空 → park；非协程满/空 → -1（不挂起）。
-- **Future**：`myp_future_create/set/get/destroy` + `myp_coro_wait_future/
-  wake_future`/`am_i_coro`。协程 get 未 ready → park（不阻塞线程）；同线程 set
-  唤醒；非协程未 ready → 自旋 + sleep 回退（MYP 无 pthread_cond）。
-- **⚠️ CoroT.current 初始化 bug（本里程碑发现+修复）**：`--shared` 库模式下
-  @static 属性默认值不生效（全局 zeroinitializer）→ `CoroT.current = -1` 实际从
-  0 起，恰等于首个协程槽号 → main（非协程）在 spawn 后被误判为「在协程 0」→
-  channel/wait 走协程分支（内联 resume 改变输出时序/误 park）。修复：
-  `coroEnsureInit()` 一次性显式置 current=-1，挂在全部公共 API 入口（26 处）。
-  该 bug 亦影响此前 Phase A/B（被「首协程恰为槽 0」掩盖）。
-- **验证**：新 `bench/freestanding/rt_coro_chan_future_test.myp`（channel 基本/
-  producer park/consumer park/close + future ready/协程 park，6 项 exit=0）；
-  **shadow 27/27**；`tests/coro_channel`/`coro_future`/`future`/
-  `channel_multi_consumer` 用 MYP shadow 链接**输出逐字一致**；
-  `tests/stress/channel_stress`（cap=1/8，sum=199990000）PASS；bootstrap 16/16
-  （fixpoint 不变）；全量 323/323。
-- **未做（Phase C 尾）**：非阻塞 exec worker、栈池、cleanup_all/thread_cleanup。
-
-### v3.15.43 — runtime myp化 #39：包 E 同步原语（sync.myp，futex 无 libc）
-
-**非破坏性**。同步原语 MYP 化——shadow C 的 `myp_mutex_*`/`myp_sem_*`/`myp_cond_*`/
-`myp_rwlock_*`/`myp_once_*`/`myp_barrier_*`（30 个），**不依赖 libc/pthread**：
-
-- **futex 实现**（syscall 202，FUTEX_WAIT=128/WAKE=129 PRIVATE）+ 原子
-  `__myp_atomic_add/sub/load/store_i32_addr`（atomicrmw，无 CAS）。
-- **Mutex**：票号锁（serving/next 两字）+ futex；unlock 广播唤醒。recursive 用
-  owner(tid via gettid 186) + depth，由票号锁守护。tryLock 用票号归还（安全：
-  未持有票号 serving 不会越过）。
-- **Semaphore**：原子计数（可负=等待者数）+ futex wait/wake；tryWait 归还。
-- **CondVar**：waiters 计数 + seq（经典 futex seq 条件变量）；wait 释放关联
-  Mutex、唤醒后重取；`while(!cond) wait()` 模式安全。
-- **RWLock**：state（0 空闲 / >0 读者 / <0 写者）+ futex；tryRead/WriteLock 原子尝试。
-- **Once**：done + **自带票号锁**（不复用 Mutex 表——once_create 在全局分配锁
-  临界区内调 myp_mutex_create 会**嵌套分配锁自死锁**，首版 bug 已修）。
-- **Barrier**：arrived 计数 + seq + futex（可复用，最后到达者换代唤醒全部）。
-- **全局槽分配锁**：所有 create 用单一把 futex 票号锁互斥扫描空闲槽。
-- **验证**：新 `bench/freestanding/rt_sync_test.myp`（单线程 API 全 + 2 worker
-  跨线程互斥累加 200）；**shadow 28/28**；`tests/sync`（4 @thread worker
-  mutex_count=400 + condvar=42 + tryLock/recursive/rwlock/sem/once API）用 MYP
-  shadow 链接**输出逐字一致**；bootstrap 16/16（fixpoint 不变）；全量 323/323。
-- **未做**：`myp_sem_getvalue` 等 C 内部 helper；future 已在 #38。
-
-### v3.15.44 — runtime myp化 #40：包 F `@parallel for` 线程池（pool.myp，futex 无 libc）
-
-**非破坏性**。`@parallel for` 线程池 MYP 化——shadow C 的 `myp_pool_*` 8 个核心
-API（`ensure_global`/`parallel_for`/`worker_id`/`thread_count`/`set_threads`/
-`worker_count`/`is_active`/`destroy`），**不依赖 pthread/libc**：
-
-- **全局单池** `@static PoolTab`（arena 缓冲字段 + 直接值字段分层；--shared
-  默认值不生效 → 显式 lazy 分配）。首次 `ensure_global` 建池：`sched_getaffinity`
-  （syscall 204）数硬件并发 → `myp_thread_spawn`（clone，#34）建 N worker。
-- **spawn 握手**：父设共享 `spawnTid` + 子读后写 `workerReady`（父轮询等 ready
-  才 spawn 下一个，无竞态）；worker_id 用 `gettid`（syscall 186）查表。
-- **parallel_for**：`[start,end)` 按 step 分 ≤ nThreads*4 块，round-robin 推入
-  各 worker 的 work-stealing deque（票号锁守护）→ `workSeq` futex 广播唤醒 →
-  barrier 等 `doneCount==totalChunks`（futex seq 字）。worker：pop 自家底部 →
-  steal 他人顶部 → 空则 futex 等 workSeq。
-- **并行 body 经 `__myp_indirect_void` 调用**（body 4 参 + fn 地址 = 5 实参），
-  arg = 捕获的局部变量结构体。⚠️ worker 并发跑 body——**body 不得分配 arena**
-  （thread.myp 同限制）；Atomic/数组读写安全。
-- **修复**：首版 `myp_pool_set_threads` 段错误（139）——`inited`/`nThreads` 等
-  标量**值字段**被 `__myp_mem_load_i32(field)` 当**地址**解引用（值为 0 → NULL）。
-  正解：值字段直接 `PoolTab.X` 访问；共享/原子字（running/spawnTid/workSeq/
-  barSeq/doneCount/totalChunks）arena 分配后经地址访问。
-- **验证**：新 `bench/freestanding/rt_pool_test.myp`（2 worker：int/long
-  @parallel 1000 累加=499500、10×100 累加、isActive/workerCount/threadCount）；
-  **shadow 29/29**；`tests/@test/manual_ch9_myp.myp`（含 @parallel for）用 MYP
-  shadow 链接 **3 tests / 11 assertions 全过**；bootstrap 16/16（fixpoint
-  `9f5cf25b` 不变，编译器未改）；全量 323/323（oracle + selfhost）。
-- **未做**：`@thread`/`@threadpool` 事件路由（event 10）、`myp_pool_create/once/
-  init_global` 等 C 内部旧 API、exec worker、任务队列。
-
-### v3.15.45 — runtime myp化 #41：包 F `@thread` 生命周期 + 事件系统（event.myp，futex 无 libc/TLS）
-
-**非破坏性**。`@thread`/`@threadpool` 全生命周期 + 事件系统 MYP 化——shadow C 的
-`myp_thread_*` 8 个（create/run_loop/stop/destroy/self/is_current/
-associate_instance/post_event）+ `myp_event_*` 7 个（register/push_scope/
-pop_scope/fire/process_all/process_one/route_to_instance）+ `myp_timer_*` 3 个
-（create/check/cancel_all）+ C 内部 helper 4 个（dispatch/route_to_thread/
-timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
-
-- **每线程事件队列** = arena 环形缓冲（256）+ 每队列票号锁 + futex seq 字。
-  「当前线程」= `gettid`(186) 扫线程表（clone 子线程共享父 TLS → MYP 无 TLS，须
-  自建）。线程槽 `@static EvTab`（slot 0=主线程保留；create 返回 slot，编译调用方
-  当不透明 ptr，ABI i64/ptr 同寄存器 + ld.lld 不查签名）。
-- **spawn 握手**：父设共享 spawnSlot → `myp_thread_spawn`（thread.myp clone 原语）
-  → 子读后写 ready[slot]=1 → 父等 ready 才返回（逐线程 spawn 无竞态）。
-- **子事件循环**：跑 `startup_fn(startup_arg, NULL)` → `while(running){ process_all +
-  qWait(下个 timer 截止) }` → done=1 → syscall 60 退出；destroy 轮询 done（无 join）。
-- **跨线程事件路由（BUG-005）**：dispatch 两遍——先路由他线程 handler（同目标只投
-  一份，per-slot 去重缓冲；载荷 mmap 深拷贝 → munmap 释放，不用共享 arena——子线程
-  不可并发 bump）→ 再跑本线程 handler → `__myp_coro_event_notify`（coro.myp）。
-- **handler 表/定时器/实例映射**共用全局 futex 票号锁；timer 载荷用每线程 tPval
-  缓冲（fire + process_one 立即处理，同 C 语义）。
-- **顺带修复（潜伏 bug）**：alloc.myp `myp_diag_arena_reserved` 从 `Arena.head`
-  （最旧 chunk）正向走 next 链只统计首 chunk——多 chunk 时 reserved 低估 → used >
-  reserved 误报。evInit 一次 ~550KB 大分配首次暴露（rt_pkgA_test exit 12）。
-  改为从 `Arena.cur`（最新）走 next 链（与 C 版一致）。
-- **验证**：新 `bench/freestanding/rt_threadpool_test.myp`；**shadow 30/30**；
-  `tests/threadpool`（@thread + 4 worker @threadpool "wwww"）与 `tests/sync`
-  （4 @thread worker mutex_count=400 + condvar=42）shadow 链接**逐字一致**；
-  coro_event/coro_timer/startup/multi_event/mapping_chain/scope_mapping/
-  lambda_mapping shadow 逐字一致；manual_ch9（@parallel + @gpu）3/11 通过；
-  bootstrap fixpoint `9f5cf25b` 不变（编译器未改）；全量 323/323（oracle+selfhost）。
-- **未做**：`myp_event_id_by_name`（纯字符串查表，保留 C）、work 任务队列 / exec
-  worker、@thread 子线程共享 arena 并发分配（文档化限制）。
-
-### v3.15.46 — runtime myp化 #41 收尾：包 F 全链路零 C 依赖（不保留 C）
-
-**非破坏性**。#41 补完 `myp_event_id_by_name`（codegen 对 `__myp_timer_create(
-<运行时 string>, ...)` 生成调用的动态事件名查表），使包 F（`@thread`/`@threadpool`/
-事件系统/定时器/每线程队列）**不再保留任何 C 实现**：
-
-- **event.myp 新增** `myp_event_id_by_name(name, names, ids, count)`——逐字节
-  strcmp（MYP string = `'\0'` 结尾 char*；names 是 char* 的 i64 数组，ids 是 i32
-  数组），未命中/空名/count=0 → -1。
-- **零 C 依赖证明**：`nm` 审计 6 个 shadow 链接二进制（threadpool / sync /
-  coro_timer / coro_event / multi_event / mapping_chain），包 F 域（event/thread/
-  timer/queue/work/handler/id_by_name）C-only 符号均为 **0**——`--gc-sections` 下
-  C 的 myp_work_deque_*/myp_queue_*/myp_timer_wake_target 等内部静态函数无引用被
-  剥离，不进入二进制。
-- **验证**：新 `bench/freestanding/rt_evname_test.myp`（命中 beta=20/gamma=30、
-  未命中 nope=-1、空名 -1、count=0 -1）；**shadow 31/31**；6 个 pkg F 测试二进制
-  shadow 链接**逐字一致**；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323
-  （oracle + selfhost）。
-- **未做**：@thread 子线程共享 arena 并发分配（文档化限制）；C 内部静态
-  work/queue/exec worker（无程序引用，已死代码）。
-
-### v3.15.47 — runtime myp化 #42：薄层收尾（10 个残留 C 函数 → MYP，去 C runtime 清理链）
-
-**非破坏性**。按 #41 审计，shadow 掉程序**实际拉取**的残留 C 函数（hello 10 个、
-@thread 程序 16 个）中的可 shadow 部分（10 个），使 hello 二进制 C 拉取 10→**5**、
-`tests/sync` 16→**7**：
-
-- **alloc.myp**：`myp_free_all`（codegen 在 main 退出调用；MYP 版 = restore_term +
-  级联释放 class slice + region_free_all + arena_free_all）+ `myp_arena_free_all`。
-  ⚠️ **只复位不 munmap**——MYP arena 进程级 mmap，退出时 OS 回收；显式 munmap 与
-  main epilogue 的 ARC release / C atexit 产生 UAF（rt_str_test 段错误 139 实测）。
-- **weak.myp**：`myp_weak_free_all`（MYP 弱表复位；节点随 arena 回收）。
-- **env.myp**：`myp_env_set`/`myp_env_unset`——setenv/unsetenv 无 syscall 等价物
-  → **ffi 直调 libc**（去掉 C runtime 包装，仍用 libc；与读侧 myp_env_get 走同一
-  environ 一致）。
-- **io.myp**：`myp_read_line`（read syscall 逐字节读 fd 0 至 '\n'，计数串）。
-- **term.myp**：`myp_enable_raw`/`myp_restore_term`（termios ioctl=16，TCGETS/
-  TCSETS）+ `myp_kbhit`（poll syscall）+ `myp_getch`（raw 读 1 字节）。
-- **残留边界（shadow 无法消除）**：static constructor `myp_capture_args`（→fopen/
-  fread）+ `__myp_coro_register_cleanup`（atexit 3 个清理）共 5 个——`.init_array`
-  直指局部符号，需改 runtime.c 才能移除；`myp_io_cur_get/set`（C TLS 当前句柄，
-  MYP 无 TLS）2 个。
-- **验证**：新 `bench/freestanding/rt_thin_test.myp`（env set/get/unset 往返 +
-  readLine，build.sh 管道喂 `hello thin`）；**shadow 32/32**；hello/sync 二进制
-  C 拉取确认降至 5/7；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323（oracle +
-  selfhost）。
-- **未做**：static constructor / C TLS 残留（需改 runtime.c 或留 TLS，见
-  MIGRATION_STATUS 边界说明）。
-
-### v3.15.48 — runtime myp化 #42 补：C-TLS 当前句柄 → MYP IoCur 表（hello/sync 二进制 0 C myp_*）
-
-**非破坏性**。解决 #42 遗留的 C-TLS `myp_io_cur_get/set`（每线程当前文件句柄）：
-
-- **io.myp 新增 MYP `myp_io_cur_get/set`**：`@static IoCur` gettid 键控表（append-only，
-  每线程只写自己的槽 → get 无锁扫描、set 追加用 futex 票号锁）。
-- **⚠️ 根因**：MYP clone @thread 无 `CLONE_SETTLS` → 共享父 TLS → C `__thread
-  myp_io_cur` 对并发 @thread 实为**共享**（文件 I/O 会串号）。IoCur 表按 gettid 分
-  线程 → 真正每线程隔离（既是去 C TLS 也是并发正确性修复）。
-- **新测试** `bench/freestanding/rt_io_thread_test.myp`：2 个 @thread 各开自己的
-  文件写 `AAAA`/`BBBB`，main 读回验证 `A=[AAAA] B=[BBBB] done=2` 无串号。
-- **顺带发现**：ld.lld `--gc-sections` 会剥离未引用的 `.init_array` 项 → 新构建的
-  hello/sync 二进制里 C static constructor（`myp_capture_args`/`__myp_coro_register_
-  cleanup` 等）**也消失**（nm 实测 0 个 C myp_* 符号）。args 由 MYP args.myp 惰性
-  接管、atexit 清理由 OS 回收兜底 → 运行正常。
-- **验证**：**shadow 33/33**；hello（exit 42）/tests/sync（逐字一致）二进制 C
-  myp_* 符号 = **0**；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323（oracle +
-  selfhost）。
-- **未做**：GPU/bridges（包 G/H，功能层仍 C）。
-
-### v3.15.49 — runtime myp化 #43：包 G GPU Stage A（gpu.myp，init/设备查询/内存/流）
-
-**非破坏性**。GPU 运行时 MYP 化第一片——shadow C `runtime_gpu.c` 的初始化/设备
-查询/内存+handle/流 35 个 `myp_gpu_*`：
-
-- **runtime_myp/gpu.myp 新增**（`@static Gpu` 表）：
-  - **init**：`myp_gpu_init` → `ffi long dlopen("libcuda.so.1", 1)` + dlsym 17 个
-    `cu*` 函数指针（存 @static 字段）→ `__myp_indirect_*` 调用 cuInit(0) /
-    cuDeviceGetCount / cuDeviceGet / cuCtxCreate_v2 / cuCtxSetCurrent（CUDA TLS
-    修复：接触上下文的入口显式 setCurrent）。`MYP_GPU=1` env gate（无则 CPU
-    回退）。
-  - **设备查询 19**：`gpuAttr(id)` helper 走 `__myp_indirect_i32(fDeviceGetAttribute,
-    attrVal, id, dev)`，out-param 用 arena 缓冲；name/cap/多处理器/时钟/内存等。
-  - **内存+handle 12**：cuMemAlloc_v2 / cuMemFree / cuMemcpyHtoD_v2 / cuMemcpyDtoH_v2
-    + 类型化 copy（h2d/d2h × double/float）+ d2d + alloc_handle/free_handle +
-    sync_all。
-  - **流 3**：cuStreamCreate / StreamSynchronize / StreamDestroy。
-  - ⚠️ `@static Gpu` 访问约定：state 字段（initFlag/availFlag/devInit/devCount）
-    直接值访问；arena address 字段经 `__myp_mem_load/store_*`（勿把值字段当地址
-    解引用）。
-- **新测试** `bench/freestanding/rt_gpu_test.myp` 双模式：
-  - 无 MYP_GPU → CPU fallback（vendor="cpu"、devs=0、queries=0）exit 0。
-  - MYP_GPU=1 → 真实 RTX 2070 SUPER：`name=NVIDIA GeForce RTX 2070 SUPER
-    cap=705 memMB=7752` + cuMemAlloc/cuMemcpyHtoD/cuMemcpyDtoH/cuMemFree 内存
-    roundtrip（host buffer i*3 校验）exit 0。
-- **GPU MYP/C 状态分裂边界（已确认安全）**：MYP init 只设 MYP `Gpu.availFlag`；C
-  `myp_gpu_load_kernel`/`launch`（Stage B 未 shadow）见 C static `avail`=0 →
-  load_kernel 返回 NULL → codegen `@gpu for` 发射 `CreateCondBr(k_ok, launch_bb,
-  cpu_bb)` → **CPU 回退**（不产生垃圾数据）。manual_ch9 shadow 链接 MYP_GPU=1
-  → 3 tests/11 assertions 全过。shadow 二进制中 @gpu for 真实 GPU 需待 Stage B
-  shadow load/launch 统一状态；oracle/deeplearning 用 C runtime 不受影响。
-- **验证**：**shadow 34/34**；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323
-  （oracle + selfhost）。shadow 计数 312 → **347**（~71%）。
-- **未做**：Stage B 内核（cuModuleLoadDataEx + cuLaunchKernel 12-arg 编组 + byoc/
-  printf）与 Stage C 流/事件/图（deeplearning 分项目 changelog）。
-
-### v3.15.50 — runtime myp化 #44：包 G GPU Stage B（gpu.myp 内核 load/launch/byoc/printf，@gpu for 真实 GPU）
-
-**非破坏性**。GPU 内核执行层 MYP 化——shadow C `runtime_gpu.c` 内核路径 11 个
-`myp_gpu_*`，**`@gpu for` 在 shadow 下首次跑真实 GPU**（状态分裂统一）：
-
-- **gpu.myp 新增**（@static Gpu 扩展）：
-  - 新 dlsym：`cuModuleLoadData`/`cuModuleGetFunction`/`cuModuleUnload`/
-    `cuLaunchKernel`/`cuMemcpyDtoHAsync`（init 必需校验）。
-  - **`myp_gpu_load_kernel`**：内核缓存（`kcPtx/kcName/kcRec` 128 槽按 (ptx,name)
-    指针身份复用，同 C g_kcache；避免训练逐样本模块加载显存暴涨）。记录
-    `{mod,fn,name}` = 24B arena，句柄 = 记录地址（同 C kernel_t*）。入口显式
-    `cuCtxSetCurrent`（CUDA TLS 教训）。
-  - **`myp_gpu_launch`**：`cuLaunchKernel` 11 参数 `__myp_indirect_i32` 编组
-    （fn, gx,1,1, bx,1,1, 0, stream, args, NULL）；stream==0 同步
-    （cuCtxSynchronize）。args = 编译器 void**（kernelParams 约定）直传。
-  - **`myp_gpu_destroy_kernel`**：缓存命中保持不 unload；未缓存（缓存满回退）
-    cuModuleUnload。
-  - **`myp_gpu_to_host_async`**（cuMemcpyDtoHAsync，stream 模式回拷）。
-  - **BYOC**：`myp_gpu_byoc_load`（→load_kernel）/`byoc_launch`（host long[] →
-    void** arena 临时编组，n≤64）。
-  - **kernel printk/assert**：`myp_gpu_printf_buf/cnt/fail`（惰性分配设备 staging
-    pbuf 1024×56B / pcnt / pfail）+ `myp_gpu_flush_printf`（D2H 回读记录 → 宿主
-    mini-printf：% 转换消费 int/double 由 mask 定，直接写 fd=1；assert 失败
-    stderr+exit(1)）。**注**：selfhost `@gpu for` 不发射 printk staging（仅 declare），
-    该路径为 oracle（走 C runtime）平价实现，shadow 套件不运行时触发。
-  - **`myp_gpu_scatter_check_fail`**（noreturn：stderr+exit(1)，scatter unique 契约
-    违约）。
-- **rt_gpu_test.myp 扩展**：新增 `@gpu for` 真实内核执行段
-  `data[i]=sqrt(4)+sin(1)→2.8414709848078967`（128 元素，1e-9 容差）——双模式同
-  结果（CPU 回退 / 真 GPU）。
-- **验证**：
-  - rt_gpu_test 双模式：fallback `GPU CPU-FALLBACK OK`；真 GPU `name=NVIDIA GeForce
-    RTX 2070 SUPER cap=705 memMB=7752` + `GPU OK`（含 @gpu for 内核执行）exit 0。
-  - **直接探针**（`/tmp/rt_gpu_load_probe`）：`myp_gpu_load_kernel` 返回 `kctx=…`
-    （非 0，真 PTX 加载）+ `launch=1` —— 确凿证明 GPU 路径。
-  - manual_ch9 shadow 链接 **MYP_GPU=1** → 3 tests/11 assertions 全过（@gpu for +
-    Vectors.add/sum 真 GPU）。
-  - **shadow 34/34**；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323（oracle +
-    selfhost）。shadow 计数 347 → **358**（~73%）。
-- **未做**：Stage C 流/事件/图（cuStream*/cuEvent*/cuGraph*，deeplearning 分项目
-  changelog）。
-
-### v3.15.51 — runtime myp化 #45：包 G GPU Stage C（gpu.myp 异步拷贝/事件/CUDA Graph，包 G 收官）
-
-**非破坏性**。GPU 流/事件/图层 MYP 化——shadow C `runtime_gpu.c` 剩余 17 个
-`myp_gpu_*`，**包 G 三 Stage 全部完成（63 个 shadow）**：
-
-- **gpu.myp 新增**：
-  - **异步拷贝 5**：`myp_gpu_copy_h2d/d2h_async_d/f`（cuMemcpyHtoDAsync/
-    cuMemcpyDtoHAsync）+ `d2d_async`（cuMemcpyDtoDAsync）——入口显式 `cuCtxSetCurrent`
-    （201 INVALID_CONTEXT 教训）。
-  - **事件 6**：`myp_gpu_event_create_h`（cuEventCreate，flags=0 计时）/ `record_h`
-    （cuEventRecord）/ `wait_h`（cuStreamWaitEvent 跨流依赖）/ `sync_h`（cuEventSync）/
-    `elapsed_ms`（cuEventElapsedTime，**float 出参 → `__myp_mem_load_i32` +
-    `bitcast<float>` 位型重释**）/ `destroy_h`（cuEventDestroy）。
-  - **CUDA Graph 6**：`myp_gpu_graph_capture_begin`（cuStreamBeginCapture THREAD_LOCAL=1）/
-    `capture_end`（cuStreamEndCapture）/ `instantiate`（cuGraphInstantiate）/
-    `launch`（cuGraphLaunch）/ `destroy`+`exec_destroy`。
-- **发现并修复两个 400 STREAM_CAPTURE_INVALIDATED 根因**：
-  - **`cuStreamEndCapture(CUstream, CUgraph*)` 参数顺序**：MYP 曾传
-    `(Gpu.graphVal, stream)`（交换）→ 驱动返回 400、graph=0。改为
-    `(stream, Gpu.graphVal)`。
-  - **capture 期间禁 `cuCtxSetCurrent`**：捕获入口设当前上下文会使 EndCapture 返回
-    400（纯 C 也不调用）→ 移除 capture_begin/end 的 setCurrent（cuGraphInstantiate
-    仍保留，已验）。
-- **⚠️ 本机驱动 595.84 怪癖（纯 C 复现，非迁移问题）**：`cuMemcpy*Async` 恒 201
-  INVALID_CONTEXT（cuCtxGetCurrent 确认上下文已当前仍 201）→ 异步拷贝实现与 C
-  runtime **平价**（返回 1，忽略 CUresult），数据迁移在本机不可验；事件/图真实路径
-  全部正常。cuStreamEndCapture 修复前 capture 期间调 setCurrent 曾加剧（已去掉）。
-- **rt_gpu_test.myp 扩展**：GPU 分支新增 `runStageC()`——流 create/sync/destroy +
-  事件 create/record/sync/elapsed/destroy + 异步拷贝 C 平价（返回 1）+ CUDA Graph
-  空捕获→instantiate→launch→destroy（新流避免失败 async 污染）。
-- **验证**：
-  - rt_gpu_test 双模式：fallback `GPU CPU-FALLBACK OK`；真 GPU `GPU OK`（含 Stage C
-    流/事件/图）exit 0。
-  - Stage C 探针（`/tmp/rt_gpu_stagec_probe`）：`STREAM OK / ASYNC-CALL OK /
-    EVENT OK（elapsed≈0.002ms）/ GRAPH OK（graph+exec 非 0，instantiate/launch 全
-    过）` exit 0。
-  - **shadow 34/34**；bootstrap fixpoint 不变；全量 323/323（oracle + selfhost）。
-    shadow 计数 358 → **375**（~77%）。**包 G 收官**（cublas 2 个厂商 hook 保留 C）。
-- **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
-  本机驱动下不可验（595.84 201 怪癖）。
-
-### v3.15.61 — bridge 包 H 第五批：net 全 8 个 MYP 化（AF_INET TCP，libc ffi 薄接口）
-
-**非破坏性**。TCP 网络 bridge MYP 化——shadow C `net_bridge.c` 的 8 个
-`myp_net_*`（Linux，AF_INET 流套接字），libc ffi 薄接口、无业务逻辑：
-
-- **`runtime_myp/net.myp`（新）**：socket/bind/listen/accept/connect/send/recv/
-  close/fcntl/setsockopt/gethostbyname（libc ffi）。
-  - **sockaddr_in** = `{sin_family:u16@0(=AF_INET=2), sin_port:u16@2(BE=htons),
-    sin_addr:u32@4(NB), sin_zero[8]@8}` = 16B；无 store_i16 → family 2×i8 LE，
-    port 手动 htons（高字节在前）；sin_addr/zero 显式清零（arena 非零初始化）。
-  - **hostent** = `{h_name@0, h_aliases@8, h_addrtype@16, h_length@20,
-    h_addr_list@24}`；`h_addr_list[0]` = 4B IPv4。
-  - 错误码对齐 C：socket -1 / gethostbyname 失败 -2 / connect 失败 -3 / bind -2
-    / listen -3。accept 传 NULL addr（不需对端信息）。
-  - recv_line 逐字节剥 `\r\n`；返回串按实收长度构建。
-- **`link.myp` mypifiedBridge**：加 `net_bridge.c`。
-- **验证**：新 `bench/freestanding/rt_net_test.myp`（回环 server/connect/accept、
-  双向 send/recv + recv_line、主机解析失败 -2、连接拒绝 -3、set_nonblock，11
-  断言）——**一次通过**；**shadow 43/43**；bootstrap 16/16（fixpoint 稳定）；
-  oracle 323/323。bridge 83 → **75**（net 8）。
-- ⚠️ **发现预存在 flaky 测试**（与本批无关）：`tests/exception_thread` 是线程
-  输出竞态——test.output 陈旧为 1 行（`main_done`），但 @thread Worker 现在可靠
-  打印 `thr_caught`+`thr_done`（3 行）→ selfhost 全量偶发 MISMATCH。runtime.c
-  未动、编译器未改 codegen，确认为时序 flake 而非回归（oracle 版同样 3 行）。
-- **未做**：sdl/ttf 侧车模式（薄 ffi 接口，下批）。
-
 ### v3.15.62 — sdl/ttf 移出标准库为外部库（libs/，薄接口 + `.myp.libs` 侧车）
 
 **非破坏性**。架构分层落地：**GPU 是语言能力**（`@gpu for` 绑定 → 留在运行时），
@@ -412,6 +54,32 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
   bootstrap 16/16（fixpoint 稳定）。tests/bench 源无 sdl/ttf 依赖。
 - **stdlib 精简**：删 `stdlib/sdl.myp`、`stdlib/ttf.myp`、`stdlib/bridges/sdl_bridge.c*`、
   `sdl_ttf_bridge.c*`。桥计数维持 **75**（sdl/ttf 不计入运行时桥）。
+
+### v3.15.61 — bridge 包 H 第五批：net 全 8 个 MYP 化（AF_INET TCP，libc ffi 薄接口）
+
+**非破坏性**。TCP 网络 bridge MYP 化——shadow C `net_bridge.c` 的 8 个
+`myp_net_*`（Linux，AF_INET 流套接字），libc ffi 薄接口、无业务逻辑：
+
+- **`runtime_myp/net.myp`（新）**：socket/bind/listen/accept/connect/send/recv/
+  close/fcntl/setsockopt/gethostbyname（libc ffi）。
+  - **sockaddr_in** = `{sin_family:u16@0(=AF_INET=2), sin_port:u16@2(BE=htons),
+    sin_addr:u32@4(NB), sin_zero[8]@8}` = 16B；无 store_i16 → family 2×i8 LE，
+    port 手动 htons（高字节在前）；sin_addr/zero 显式清零（arena 非零初始化）。
+  - **hostent** = `{h_name@0, h_aliases@8, h_addrtype@16, h_length@20,
+    h_addr_list@24}`；`h_addr_list[0]` = 4B IPv4。
+  - 错误码对齐 C：socket -1 / gethostbyname 失败 -2 / connect 失败 -3 / bind -2
+    / listen -3。accept 传 NULL addr（不需对端信息）。
+  - recv_line 逐字节剥 `\r\n`；返回串按实收长度构建。
+- **`link.myp` mypifiedBridge**：加 `net_bridge.c`。
+- **验证**：新 `bench/freestanding/rt_net_test.myp`（回环 server/connect/accept、
+  双向 send/recv + recv_line、主机解析失败 -2、连接拒绝 -3、set_nonblock，11
+  断言）——**一次通过**；**shadow 43/43**；bootstrap 16/16（fixpoint 稳定）；
+  oracle 323/323。bridge 83 → **75**（net 8）。
+- ⚠️ **发现预存在 flaky 测试**（与本批无关）：`tests/exception_thread` 是线程
+  输出竞态——test.output 陈旧为 1 行（`main_done`），但 @thread Worker 现在可靠
+  打印 `thr_caught`+`thr_done`（3 行）→ selfhost 全量偶发 MISMATCH。runtime.c
+  未动、编译器未改 codegen，确认为时序 flake 而非回归（oracle 版同样 3 行）。
+- **未做**：sdl/ttf 侧车模式（薄 ffi 接口，下批）。
 
 ### v3.15.60 — bridge 包 H 第四批：uds 全 9 个 MYP 化（AF_UNIX socket 纯 syscall）
 
@@ -651,6 +319,359 @@ gcc 现编译：
   （既有约定，测试用对即无碍）。`@coro(stack=N)` 语义兼容（N 为预留，下限 64KB、
   上限 64MB）。
 
+### v3.15.51 — runtime myp化 #45：包 G GPU Stage C（gpu.myp 异步拷贝/事件/CUDA Graph，包 G 收官）
+
+**非破坏性**。GPU 流/事件/图层 MYP 化——shadow C `runtime_gpu.c` 剩余 17 个
+`myp_gpu_*`，**包 G 三 Stage 全部完成（63 个 shadow）**：
+
+- **gpu.myp 新增**：
+  - **异步拷贝 5**：`myp_gpu_copy_h2d/d2h_async_d/f`（cuMemcpyHtoDAsync/
+    cuMemcpyDtoHAsync）+ `d2d_async`（cuMemcpyDtoDAsync）——入口显式 `cuCtxSetCurrent`
+    （201 INVALID_CONTEXT 教训）。
+  - **事件 6**：`myp_gpu_event_create_h`（cuEventCreate，flags=0 计时）/ `record_h`
+    （cuEventRecord）/ `wait_h`（cuStreamWaitEvent 跨流依赖）/ `sync_h`（cuEventSync）/
+    `elapsed_ms`（cuEventElapsedTime，**float 出参 → `__myp_mem_load_i32` +
+    `bitcast<float>` 位型重释**）/ `destroy_h`（cuEventDestroy）。
+  - **CUDA Graph 6**：`myp_gpu_graph_capture_begin`（cuStreamBeginCapture THREAD_LOCAL=1）/
+    `capture_end`（cuStreamEndCapture）/ `instantiate`（cuGraphInstantiate）/
+    `launch`（cuGraphLaunch）/ `destroy`+`exec_destroy`。
+- **发现并修复两个 400 STREAM_CAPTURE_INVALIDATED 根因**：
+  - **`cuStreamEndCapture(CUstream, CUgraph*)` 参数顺序**：MYP 曾传
+    `(Gpu.graphVal, stream)`（交换）→ 驱动返回 400、graph=0。改为
+    `(stream, Gpu.graphVal)`。
+  - **capture 期间禁 `cuCtxSetCurrent`**：捕获入口设当前上下文会使 EndCapture 返回
+    400（纯 C 也不调用）→ 移除 capture_begin/end 的 setCurrent（cuGraphInstantiate
+    仍保留，已验）。
+- **⚠️ 本机驱动 595.84 怪癖（纯 C 复现，非迁移问题）**：`cuMemcpy*Async` 恒 201
+  INVALID_CONTEXT（cuCtxGetCurrent 确认上下文已当前仍 201）→ 异步拷贝实现与 C
+  runtime **平价**（返回 1，忽略 CUresult），数据迁移在本机不可验；事件/图真实路径
+  全部正常。cuStreamEndCapture 修复前 capture 期间调 setCurrent 曾加剧（已去掉）。
+- **rt_gpu_test.myp 扩展**：GPU 分支新增 `runStageC()`——流 create/sync/destroy +
+  事件 create/record/sync/elapsed/destroy + 异步拷贝 C 平价（返回 1）+ CUDA Graph
+  空捕获→instantiate→launch→destroy（新流避免失败 async 污染）。
+- **验证**：
+  - rt_gpu_test 双模式：fallback `GPU CPU-FALLBACK OK`；真 GPU `GPU OK`（含 Stage C
+    流/事件/图）exit 0。
+  - Stage C 探针（`/tmp/rt_gpu_stagec_probe`）：`STREAM OK / ASYNC-CALL OK /
+    EVENT OK（elapsed≈0.002ms）/ GRAPH OK（graph+exec 非 0，instantiate/launch 全
+    过）` exit 0。
+  - **shadow 34/34**；bootstrap fixpoint 不变；全量 323/323（oracle + selfhost）。
+    shadow 计数 358 → **375**（~77%）。**包 G 收官**（cublas 2 个厂商 hook 保留 C）。
+- **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
+  本机驱动下不可验（595.84 201 怪癖）。
+
+### v3.15.50 — runtime myp化 #44：包 G GPU Stage B（gpu.myp 内核 load/launch/byoc/printf，@gpu for 真实 GPU）
+
+**非破坏性**。GPU 内核执行层 MYP 化——shadow C `runtime_gpu.c` 内核路径 11 个
+`myp_gpu_*`，**`@gpu for` 在 shadow 下首次跑真实 GPU**（状态分裂统一）：
+
+- **gpu.myp 新增**（@static Gpu 扩展）：
+  - 新 dlsym：`cuModuleLoadData`/`cuModuleGetFunction`/`cuModuleUnload`/
+    `cuLaunchKernel`/`cuMemcpyDtoHAsync`（init 必需校验）。
+  - **`myp_gpu_load_kernel`**：内核缓存（`kcPtx/kcName/kcRec` 128 槽按 (ptx,name)
+    指针身份复用，同 C g_kcache；避免训练逐样本模块加载显存暴涨）。记录
+    `{mod,fn,name}` = 24B arena，句柄 = 记录地址（同 C kernel_t*）。入口显式
+    `cuCtxSetCurrent`（CUDA TLS 教训）。
+  - **`myp_gpu_launch`**：`cuLaunchKernel` 11 参数 `__myp_indirect_i32` 编组
+    （fn, gx,1,1, bx,1,1, 0, stream, args, NULL）；stream==0 同步
+    （cuCtxSynchronize）。args = 编译器 void**（kernelParams 约定）直传。
+  - **`myp_gpu_destroy_kernel`**：缓存命中保持不 unload；未缓存（缓存满回退）
+    cuModuleUnload。
+  - **`myp_gpu_to_host_async`**（cuMemcpyDtoHAsync，stream 模式回拷）。
+  - **BYOC**：`myp_gpu_byoc_load`（→load_kernel）/`byoc_launch`（host long[] →
+    void** arena 临时编组，n≤64）。
+  - **kernel printk/assert**：`myp_gpu_printf_buf/cnt/fail`（惰性分配设备 staging
+    pbuf 1024×56B / pcnt / pfail）+ `myp_gpu_flush_printf`（D2H 回读记录 → 宿主
+    mini-printf：% 转换消费 int/double 由 mask 定，直接写 fd=1；assert 失败
+    stderr+exit(1)）。**注**：selfhost `@gpu for` 不发射 printk staging（仅 declare），
+    该路径为 oracle（走 C runtime）平价实现，shadow 套件不运行时触发。
+  - **`myp_gpu_scatter_check_fail`**（noreturn：stderr+exit(1)，scatter unique 契约
+    违约）。
+- **rt_gpu_test.myp 扩展**：新增 `@gpu for` 真实内核执行段
+  `data[i]=sqrt(4)+sin(1)→2.8414709848078967`（128 元素，1e-9 容差）——双模式同
+  结果（CPU 回退 / 真 GPU）。
+- **验证**：
+  - rt_gpu_test 双模式：fallback `GPU CPU-FALLBACK OK`；真 GPU `name=NVIDIA GeForce
+    RTX 2070 SUPER cap=705 memMB=7752` + `GPU OK`（含 @gpu for 内核执行）exit 0。
+  - **直接探针**（`/tmp/rt_gpu_load_probe`）：`myp_gpu_load_kernel` 返回 `kctx=…`
+    （非 0，真 PTX 加载）+ `launch=1` —— 确凿证明 GPU 路径。
+  - manual_ch9 shadow 链接 **MYP_GPU=1** → 3 tests/11 assertions 全过（@gpu for +
+    Vectors.add/sum 真 GPU）。
+  - **shadow 34/34**；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323（oracle +
+    selfhost）。shadow 计数 347 → **358**（~73%）。
+- **未做**：Stage C 流/事件/图（cuStream*/cuEvent*/cuGraph*，deeplearning 分项目
+  changelog）。
+
+### v3.15.49 — runtime myp化 #43：包 G GPU Stage A（gpu.myp，init/设备查询/内存/流）
+
+**非破坏性**。GPU 运行时 MYP 化第一片——shadow C `runtime_gpu.c` 的初始化/设备
+查询/内存+handle/流 35 个 `myp_gpu_*`：
+
+- **runtime_myp/gpu.myp 新增**（`@static Gpu` 表）：
+  - **init**：`myp_gpu_init` → `ffi long dlopen("libcuda.so.1", 1)` + dlsym 17 个
+    `cu*` 函数指针（存 @static 字段）→ `__myp_indirect_*` 调用 cuInit(0) /
+    cuDeviceGetCount / cuDeviceGet / cuCtxCreate_v2 / cuCtxSetCurrent（CUDA TLS
+    修复：接触上下文的入口显式 setCurrent）。`MYP_GPU=1` env gate（无则 CPU
+    回退）。
+  - **设备查询 19**：`gpuAttr(id)` helper 走 `__myp_indirect_i32(fDeviceGetAttribute,
+    attrVal, id, dev)`，out-param 用 arena 缓冲；name/cap/多处理器/时钟/内存等。
+  - **内存+handle 12**：cuMemAlloc_v2 / cuMemFree / cuMemcpyHtoD_v2 / cuMemcpyDtoH_v2
+    + 类型化 copy（h2d/d2h × double/float）+ d2d + alloc_handle/free_handle +
+    sync_all。
+  - **流 3**：cuStreamCreate / StreamSynchronize / StreamDestroy。
+  - ⚠️ `@static Gpu` 访问约定：state 字段（initFlag/availFlag/devInit/devCount）
+    直接值访问；arena address 字段经 `__myp_mem_load/store_*`（勿把值字段当地址
+    解引用）。
+- **新测试** `bench/freestanding/rt_gpu_test.myp` 双模式：
+  - 无 MYP_GPU → CPU fallback（vendor="cpu"、devs=0、queries=0）exit 0。
+  - MYP_GPU=1 → 真实 RTX 2070 SUPER：`name=NVIDIA GeForce RTX 2070 SUPER
+    cap=705 memMB=7752` + cuMemAlloc/cuMemcpyHtoD/cuMemcpyDtoH/cuMemFree 内存
+    roundtrip（host buffer i*3 校验）exit 0。
+- **GPU MYP/C 状态分裂边界（已确认安全）**：MYP init 只设 MYP `Gpu.availFlag`；C
+  `myp_gpu_load_kernel`/`launch`（Stage B 未 shadow）见 C static `avail`=0 →
+  load_kernel 返回 NULL → codegen `@gpu for` 发射 `CreateCondBr(k_ok, launch_bb,
+  cpu_bb)` → **CPU 回退**（不产生垃圾数据）。manual_ch9 shadow 链接 MYP_GPU=1
+  → 3 tests/11 assertions 全过。shadow 二进制中 @gpu for 真实 GPU 需待 Stage B
+  shadow load/launch 统一状态；oracle/deeplearning 用 C runtime 不受影响。
+- **验证**：**shadow 34/34**；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323
+  （oracle + selfhost）。shadow 计数 312 → **347**（~71%）。
+- **未做**：Stage B 内核（cuModuleLoadDataEx + cuLaunchKernel 12-arg 编组 + byoc/
+  printf）与 Stage C 流/事件/图（deeplearning 分项目 changelog）。
+
+### v3.15.48 — runtime myp化 #42 补：C-TLS 当前句柄 → MYP IoCur 表（hello/sync 二进制 0 C myp_*）
+
+**非破坏性**。解决 #42 遗留的 C-TLS `myp_io_cur_get/set`（每线程当前文件句柄）：
+
+- **io.myp 新增 MYP `myp_io_cur_get/set`**：`@static IoCur` gettid 键控表（append-only，
+  每线程只写自己的槽 → get 无锁扫描、set 追加用 futex 票号锁）。
+- **⚠️ 根因**：MYP clone @thread 无 `CLONE_SETTLS` → 共享父 TLS → C `__thread
+  myp_io_cur` 对并发 @thread 实为**共享**（文件 I/O 会串号）。IoCur 表按 gettid 分
+  线程 → 真正每线程隔离（既是去 C TLS 也是并发正确性修复）。
+- **新测试** `bench/freestanding/rt_io_thread_test.myp`：2 个 @thread 各开自己的
+  文件写 `AAAA`/`BBBB`，main 读回验证 `A=[AAAA] B=[BBBB] done=2` 无串号。
+- **顺带发现**：ld.lld `--gc-sections` 会剥离未引用的 `.init_array` 项 → 新构建的
+  hello/sync 二进制里 C static constructor（`myp_capture_args`/`__myp_coro_register_
+  cleanup` 等）**也消失**（nm 实测 0 个 C myp_* 符号）。args 由 MYP args.myp 惰性
+  接管、atexit 清理由 OS 回收兜底 → 运行正常。
+- **验证**：**shadow 33/33**；hello（exit 42）/tests/sync（逐字一致）二进制 C
+  myp_* 符号 = **0**；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323（oracle +
+  selfhost）。
+- **未做**：GPU/bridges（包 G/H，功能层仍 C）。
+
+### v3.15.47 — runtime myp化 #42：薄层收尾（10 个残留 C 函数 → MYP，去 C runtime 清理链）
+
+**非破坏性**。按 #41 审计，shadow 掉程序**实际拉取**的残留 C 函数（hello 10 个、
+@thread 程序 16 个）中的可 shadow 部分（10 个），使 hello 二进制 C 拉取 10→**5**、
+`tests/sync` 16→**7**：
+
+- **alloc.myp**：`myp_free_all`（codegen 在 main 退出调用；MYP 版 = restore_term +
+  级联释放 class slice + region_free_all + arena_free_all）+ `myp_arena_free_all`。
+  ⚠️ **只复位不 munmap**——MYP arena 进程级 mmap，退出时 OS 回收；显式 munmap 与
+  main epilogue 的 ARC release / C atexit 产生 UAF（rt_str_test 段错误 139 实测）。
+- **weak.myp**：`myp_weak_free_all`（MYP 弱表复位；节点随 arena 回收）。
+- **env.myp**：`myp_env_set`/`myp_env_unset`——setenv/unsetenv 无 syscall 等价物
+  → **ffi 直调 libc**（去掉 C runtime 包装，仍用 libc；与读侧 myp_env_get 走同一
+  environ 一致）。
+- **io.myp**：`myp_read_line`（read syscall 逐字节读 fd 0 至 '\n'，计数串）。
+- **term.myp**：`myp_enable_raw`/`myp_restore_term`（termios ioctl=16，TCGETS/
+  TCSETS）+ `myp_kbhit`（poll syscall）+ `myp_getch`（raw 读 1 字节）。
+- **残留边界（shadow 无法消除）**：static constructor `myp_capture_args`（→fopen/
+  fread）+ `__myp_coro_register_cleanup`（atexit 3 个清理）共 5 个——`.init_array`
+  直指局部符号，需改 runtime.c 才能移除；`myp_io_cur_get/set`（C TLS 当前句柄，
+  MYP 无 TLS）2 个。
+- **验证**：新 `bench/freestanding/rt_thin_test.myp`（env set/get/unset 往返 +
+  readLine，build.sh 管道喂 `hello thin`）；**shadow 32/32**；hello/sync 二进制
+  C 拉取确认降至 5/7；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323（oracle +
+  selfhost）。
+- **未做**：static constructor / C TLS 残留（需改 runtime.c 或留 TLS，见
+  MIGRATION_STATUS 边界说明）。
+
+### v3.15.46 — runtime myp化 #41 收尾：包 F 全链路零 C 依赖（不保留 C）
+
+**非破坏性**。#41 补完 `myp_event_id_by_name`（codegen 对 `__myp_timer_create(
+<运行时 string>, ...)` 生成调用的动态事件名查表），使包 F（`@thread`/`@threadpool`/
+事件系统/定时器/每线程队列）**不再保留任何 C 实现**：
+
+- **event.myp 新增** `myp_event_id_by_name(name, names, ids, count)`——逐字节
+  strcmp（MYP string = `'\0'` 结尾 char*；names 是 char* 的 i64 数组，ids 是 i32
+  数组），未命中/空名/count=0 → -1。
+- **零 C 依赖证明**：`nm` 审计 6 个 shadow 链接二进制（threadpool / sync /
+  coro_timer / coro_event / multi_event / mapping_chain），包 F 域（event/thread/
+  timer/queue/work/handler/id_by_name）C-only 符号均为 **0**——`--gc-sections` 下
+  C 的 myp_work_deque_*/myp_queue_*/myp_timer_wake_target 等内部静态函数无引用被
+  剥离，不进入二进制。
+- **验证**：新 `bench/freestanding/rt_evname_test.myp`（命中 beta=20/gamma=30、
+  未命中 nope=-1、空名 -1、count=0 -1）；**shadow 31/31**；6 个 pkg F 测试二进制
+  shadow 链接**逐字一致**；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323
+  （oracle + selfhost）。
+- **未做**：@thread 子线程共享 arena 并发分配（文档化限制）；C 内部静态
+  work/queue/exec worker（无程序引用，已死代码）。
+
+### v3.15.45 — runtime myp化 #41：包 F `@thread` 生命周期 + 事件系统（event.myp，futex 无 libc/TLS）
+
+**非破坏性**。`@thread`/`@threadpool` 全生命周期 + 事件系统 MYP 化——shadow C 的
+`myp_thread_*` 8 个（create/run_loop/stop/destroy/self/is_current/
+associate_instance/post_event）+ `myp_event_*` 7 个（register/push_scope/
+pop_scope/fire/process_all/process_one/route_to_instance）+ `myp_timer_*` 3 个
+（create/check/cancel_all）+ C 内部 helper 4 个（dispatch/route_to_thread/
+timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
+
+- **每线程事件队列** = arena 环形缓冲（256）+ 每队列票号锁 + futex seq 字。
+  「当前线程」= `gettid`(186) 扫线程表（clone 子线程共享父 TLS → MYP 无 TLS，须
+  自建）。线程槽 `@static EvTab`（slot 0=主线程保留；create 返回 slot，编译调用方
+  当不透明 ptr，ABI i64/ptr 同寄存器 + ld.lld 不查签名）。
+- **spawn 握手**：父设共享 spawnSlot → `myp_thread_spawn`（thread.myp clone 原语）
+  → 子读后写 ready[slot]=1 → 父等 ready 才返回（逐线程 spawn 无竞态）。
+- **子事件循环**：跑 `startup_fn(startup_arg, NULL)` → `while(running){ process_all +
+  qWait(下个 timer 截止) }` → done=1 → syscall 60 退出；destroy 轮询 done（无 join）。
+- **跨线程事件路由（BUG-005）**：dispatch 两遍——先路由他线程 handler（同目标只投
+  一份，per-slot 去重缓冲；载荷 mmap 深拷贝 → munmap 释放，不用共享 arena——子线程
+  不可并发 bump）→ 再跑本线程 handler → `__myp_coro_event_notify`（coro.myp）。
+- **handler 表/定时器/实例映射**共用全局 futex 票号锁；timer 载荷用每线程 tPval
+  缓冲（fire + process_one 立即处理，同 C 语义）。
+- **顺带修复（潜伏 bug）**：alloc.myp `myp_diag_arena_reserved` 从 `Arena.head`
+  （最旧 chunk）正向走 next 链只统计首 chunk——多 chunk 时 reserved 低估 → used >
+  reserved 误报。evInit 一次 ~550KB 大分配首次暴露（rt_pkgA_test exit 12）。
+  改为从 `Arena.cur`（最新）走 next 链（与 C 版一致）。
+- **验证**：新 `bench/freestanding/rt_threadpool_test.myp`；**shadow 30/30**；
+  `tests/threadpool`（@thread + 4 worker @threadpool "wwww"）与 `tests/sync`
+  （4 @thread worker mutex_count=400 + condvar=42）shadow 链接**逐字一致**；
+  coro_event/coro_timer/startup/multi_event/mapping_chain/scope_mapping/
+  lambda_mapping shadow 逐字一致；manual_ch9（@parallel + @gpu）3/11 通过；
+  bootstrap fixpoint `9f5cf25b` 不变（编译器未改）；全量 323/323（oracle+selfhost）。
+- **未做**：`myp_event_id_by_name`（纯字符串查表，保留 C）、work 任务队列 / exec
+  worker、@thread 子线程共享 arena 并发分配（文档化限制）。
+
+### v3.15.44 — runtime myp化 #40：包 F `@parallel for` 线程池（pool.myp，futex 无 libc）
+
+**非破坏性**。`@parallel for` 线程池 MYP 化——shadow C 的 `myp_pool_*` 8 个核心
+API（`ensure_global`/`parallel_for`/`worker_id`/`thread_count`/`set_threads`/
+`worker_count`/`is_active`/`destroy`），**不依赖 pthread/libc**：
+
+- **全局单池** `@static PoolTab`（arena 缓冲字段 + 直接值字段分层；--shared
+  默认值不生效 → 显式 lazy 分配）。首次 `ensure_global` 建池：`sched_getaffinity`
+  （syscall 204）数硬件并发 → `myp_thread_spawn`（clone，#34）建 N worker。
+- **spawn 握手**：父设共享 `spawnTid` + 子读后写 `workerReady`（父轮询等 ready
+  才 spawn 下一个，无竞态）；worker_id 用 `gettid`（syscall 186）查表。
+- **parallel_for**：`[start,end)` 按 step 分 ≤ nThreads*4 块，round-robin 推入
+  各 worker 的 work-stealing deque（票号锁守护）→ `workSeq` futex 广播唤醒 →
+  barrier 等 `doneCount==totalChunks`（futex seq 字）。worker：pop 自家底部 →
+  steal 他人顶部 → 空则 futex 等 workSeq。
+- **并行 body 经 `__myp_indirect_void` 调用**（body 4 参 + fn 地址 = 5 实参），
+  arg = 捕获的局部变量结构体。⚠️ worker 并发跑 body——**body 不得分配 arena**
+  （thread.myp 同限制）；Atomic/数组读写安全。
+- **修复**：首版 `myp_pool_set_threads` 段错误（139）——`inited`/`nThreads` 等
+  标量**值字段**被 `__myp_mem_load_i32(field)` 当**地址**解引用（值为 0 → NULL）。
+  正解：值字段直接 `PoolTab.X` 访问；共享/原子字（running/spawnTid/workSeq/
+  barSeq/doneCount/totalChunks）arena 分配后经地址访问。
+- **验证**：新 `bench/freestanding/rt_pool_test.myp`（2 worker：int/long
+  @parallel 1000 累加=499500、10×100 累加、isActive/workerCount/threadCount）；
+  **shadow 29/29**；`tests/@test/manual_ch9_myp.myp`（含 @parallel for）用 MYP
+  shadow 链接 **3 tests / 11 assertions 全过**；bootstrap 16/16（fixpoint
+  `9f5cf25b` 不变，编译器未改）；全量 323/323（oracle + selfhost）。
+- **未做**：`@thread`/`@threadpool` 事件路由（event 10）、`myp_pool_create/once/
+  init_global` 等 C 内部旧 API、exec worker、任务队列。
+
+### v3.15.43 — runtime myp化 #39：包 E 同步原语（sync.myp，futex 无 libc）
+
+**非破坏性**。同步原语 MYP 化——shadow C 的 `myp_mutex_*`/`myp_sem_*`/`myp_cond_*`/
+`myp_rwlock_*`/`myp_once_*`/`myp_barrier_*`（30 个），**不依赖 libc/pthread**：
+
+- **futex 实现**（syscall 202，FUTEX_WAIT=128/WAKE=129 PRIVATE）+ 原子
+  `__myp_atomic_add/sub/load/store_i32_addr`（atomicrmw，无 CAS）。
+- **Mutex**：票号锁（serving/next 两字）+ futex；unlock 广播唤醒。recursive 用
+  owner(tid via gettid 186) + depth，由票号锁守护。tryLock 用票号归还（安全：
+  未持有票号 serving 不会越过）。
+- **Semaphore**：原子计数（可负=等待者数）+ futex wait/wake；tryWait 归还。
+- **CondVar**：waiters 计数 + seq（经典 futex seq 条件变量）；wait 释放关联
+  Mutex、唤醒后重取；`while(!cond) wait()` 模式安全。
+- **RWLock**：state（0 空闲 / >0 读者 / <0 写者）+ futex；tryRead/WriteLock 原子尝试。
+- **Once**：done + **自带票号锁**（不复用 Mutex 表——once_create 在全局分配锁
+  临界区内调 myp_mutex_create 会**嵌套分配锁自死锁**，首版 bug 已修）。
+- **Barrier**：arrived 计数 + seq + futex（可复用，最后到达者换代唤醒全部）。
+- **全局槽分配锁**：所有 create 用单一把 futex 票号锁互斥扫描空闲槽。
+- **验证**：新 `bench/freestanding/rt_sync_test.myp`（单线程 API 全 + 2 worker
+  跨线程互斥累加 200）；**shadow 28/28**；`tests/sync`（4 @thread worker
+  mutex_count=400 + condvar=42 + tryLock/recursive/rwlock/sem/once API）用 MYP
+  shadow 链接**输出逐字一致**；bootstrap 16/16（fixpoint 不变）；全量 323/323。
+- **未做**：`myp_sem_getvalue` 等 C 内部 helper；future 已在 #38。
+
+### v3.15.42 — runtime myp化 #38：包 D 协程 Phase C（channel + future + current 初始化修复）
+
+**非破坏性**。协程 Channel + Future MYP 化——shadow C 的 `myp_channel_*`/
+`myp_future_*`/`myp_coro_{wait,wake}_future`/`myp_coro_am_i_coro`（CORO_DESIGN
+Phase C 切片）：
+
+- **Channel**：`myp_channel_create/destroy/send/recv/try_send/try_recv/size/close`
+  + 内部 `wake_one`（同步交接：协程调用方内联 resume 对端一步，深度守卫 64）/
+  `wake_ready`（close/try 只 ready）。`@static Chan` 并行数组（环形缓冲
+  head/count/capacity/closed + 256×256 recvW/sendW FIFO waiter）。协程 send 满/
+  recv 空 → park；非协程满/空 → -1（不挂起）。
+- **Future**：`myp_future_create/set/get/destroy` + `myp_coro_wait_future/
+  wake_future`/`am_i_coro`。协程 get 未 ready → park（不阻塞线程）；同线程 set
+  唤醒；非协程未 ready → 自旋 + sleep 回退（MYP 无 pthread_cond）。
+- **⚠️ CoroT.current 初始化 bug（本里程碑发现+修复）**：`--shared` 库模式下
+  @static 属性默认值不生效（全局 zeroinitializer）→ `CoroT.current = -1` 实际从
+  0 起，恰等于首个协程槽号 → main（非协程）在 spawn 后被误判为「在协程 0」→
+  channel/wait 走协程分支（内联 resume 改变输出时序/误 park）。修复：
+  `coroEnsureInit()` 一次性显式置 current=-1，挂在全部公共 API 入口（26 处）。
+  该 bug 亦影响此前 Phase A/B（被「首协程恰为槽 0」掩盖）。
+- **验证**：新 `bench/freestanding/rt_coro_chan_future_test.myp`（channel 基本/
+  producer park/consumer park/close + future ready/协程 park，6 项 exit=0）；
+  **shadow 27/27**；`tests/coro_channel`/`coro_future`/`future`/
+  `channel_multi_consumer` 用 MYP shadow 链接**输出逐字一致**；
+  `tests/stress/channel_stress`（cap=1/8，sum=199990000）PASS；bootstrap 16/16
+  （fixpoint 不变）；全量 323/323。
+- **未做（Phase C 尾）**：非阻塞 exec worker、栈池、cleanup_all/thread_cleanup。
+
+### v3.15.41 — runtime myp化 #37：包 D 协程 Phase B（事件/等待层 + 帧表 + 诊断）
+
+**非破坏性**。协程事件/等待层 + ARC 帧表 MYP 化——shadow C 的 `__myp_coro_*`
+事件契约（CORO_DESIGN Phase B 切片）：
+
+- **事件/等待层（coro.myp）**：`__myp_coro_wait_event(_timeout)`/`wait_any`/
+  `wait_any_of`/`sleep`/`wait_fd` + `__myp_coro_event_notify`。等待表 `@static CoroW`
+  并行数组（kind/eventId/fd/fdEvents/handle/deadline/waitIndex，定容 1024）；等待 =
+  注册 + park（ready=0）+ yield，唤醒由 scheduler 驱动。
+- **调度器增强**：等待表压缩（drop inactive，防 O(N²) 累积）+ `myp_event_process_all()`
+  （C 事件队列 → dispatch → MYP notify）+ 截止期过期（waitTimeout 标记区分超时 vs
+  到达）+ fd 批量 poll（syscall 7，pollfd 8B 布局）。
+- **C 桥**：`__myp_coro_event_notify` 去 static（runtime.c）——MYP 版 shadow 后可截获
+  C `myp_event_dispatch` 的协程唤醒。
+- **帧表 ARC 镜像**：`frame_set`/`frame_clear` 真实现（每协程 ≤32 槽，扁平数组；
+  obj 为堆指针，`myp_release(__myp_addr_to_str(obj))`）+ `coroReleaseFrame` 挂进
+  destroy（三路径）+ trampoline 收尾 → 强杀/未捕获异常零泄漏。
+- **诊断**：`myp_diag_coro_slots/slot_capacity/free_slots` + `retired_count/bytes`
+  （栈池无 → 恒 0，Phase C）。
+- **验证**：新 `bench/freestanding/rt_coro_wait_test.myp`（事件到达/超时/waitAny/
+  sleep/waitAnyOf 总体超时/waitFd-pipe，6 项 exit=0）；**shadow 26/26**；语言级
+  `await evt`/`await evt timeout N` + `Coro.waitAny` + 帧 ARC 对拍——
+  `tests/coro_timeout`/`coro_any`/`coro_frame_arc` 用 MYP shadow 链接**输出逐字一致**；
+  bootstrap 16/16（fixpoint `9f5cf25b`，runtime 重链编译器逻辑不变）；全量 323/323。
+- **未做（Phase C）**：通道、future（wait/wake_future）、exec worker、栈池、
+  thread_cleanup/cleanup_all。
+
+### v3.15.40 — 编译器修复：裸 const 标识符折叠 + selfhost `__myp_*` 去前缀豁免（BUG-050）
+
+**非破坏性**。两个编译期解析缺口（runtime myp化 #36 暴露）双编译器修复：
+
+- **裸 const 标识符折叠**：顶层 `const int CAP = 1024;` 解析为零参 const-decl 函数
+  ——此前只有 `CAP()` 显式调用能折叠；裸引用 `CAP`（如 `CAP * 8`）报
+  `expected numeric type, got 'function'`（selfhost）/'() -> int'（mypc）。修复：sema
+  把 const-decl 零参函数的**裸引用**改判为其返回类型，codegen 发射隐式零参调用
+  `call i32 @CAP()`（双编译器一致）。
+  - **关键守卫**：`CAP()` 的 callee **不折叠**——`visitCall` 解析 callee 时置
+    `in_call_callee_`，否则 `const string A; ... A()` 被误折叠成值类型 →
+    `'A' is not callable`。
+- **selfhost `__myp_*` 去前缀豁免**：codegen 通用 callee 路径的一刀切
+  `__myp_`→去掉前缀 误伤真 `__myp_coro_*`/`__myp_destroy_*` 符号（未定义符号 +
+  字面量实参不提升 i64）。修复：去前缀排除 `__myp_coro_`/`__myp_destroy_` 前缀
+  （对齐 C++ oracle 显式 `intrinsic_map_` 的别名语义）。
+- **验证**：裸 const `/tmp/const_bare5.myp` 双编译 exit=0（IR `call i32 @CAP()` 两处）；
+  shadow 25/25（rt_coro_test 直调 `__myp_coro_resume` IR 全名 + i64 字面量）；
+  bootstrap 16/16（新 fixpoint `091d2204`，编译器改）；全量 323/323（含
+  const_string/eval 回归）。BUGLIST 记 BUG-050。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20
@@ -687,27 +708,6 @@ gcc 现编译：
 - **未做（Phase B/C，回落 C runtime 或 stub）**：`wait_event`/`sleep`/`wait_fd`/
   `wait_any`/`wait_any_of`（事件层）、`frame_set/clear`（ARC 帧表镜像 stub）、通道/
   未来、exec worker、栈池。
-
-### v3.15.40 — 编译器修复：裸 const 标识符折叠 + selfhost `__myp_*` 去前缀豁免（BUG-050）
-
-**非破坏性**。两个编译期解析缺口（runtime myp化 #36 暴露）双编译器修复：
-
-- **裸 const 标识符折叠**：顶层 `const int CAP = 1024;` 解析为零参 const-decl 函数
-  ——此前只有 `CAP()` 显式调用能折叠；裸引用 `CAP`（如 `CAP * 8`）报
-  `expected numeric type, got 'function'`（selfhost）/'() -> int'（mypc）。修复：sema
-  把 const-decl 零参函数的**裸引用**改判为其返回类型，codegen 发射隐式零参调用
-  `call i32 @CAP()`（双编译器一致）。
-  - **关键守卫**：`CAP()` 的 callee **不折叠**——`visitCall` 解析 callee 时置
-    `in_call_callee_`，否则 `const string A; ... A()` 被误折叠成值类型 →
-    `'A' is not callable`。
-- **selfhost `__myp_*` 去前缀豁免**：codegen 通用 callee 路径的一刀切
-  `__myp_`→去掉前缀 误伤真 `__myp_coro_*`/`__myp_destroy_*` 符号（未定义符号 +
-  字面量实参不提升 i64）。修复：去前缀排除 `__myp_coro_`/`__myp_destroy_` 前缀
-  （对齐 C++ oracle 显式 `intrinsic_map_` 的别名语义）。
-- **验证**：裸 const `/tmp/const_bare5.myp` 双编译 exit=0（IR `call i32 @CAP()` 两处）；
-  shadow 25/25（rt_coro_test 直调 `__myp_coro_resume` IR 全名 + i64 字面量）；
-  bootstrap 16/16（新 fixpoint `091d2204`，编译器改）；全量 323/323（含
-  const_string/eval 回归）。BUGLIST 记 BUG-050。
 
 ### v3.15.38 — runtime myp化 #35：包 B 诊断/统计（diag.myp：type_live + fail_alloc）
 
