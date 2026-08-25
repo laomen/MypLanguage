@@ -445,7 +445,7 @@ import collections; // ArrayList
         }
 
         // bridge .c 是否已被 runtime_myp MYP 化（编译器可跳过其 C 编译）。
-        // 与 runtime_myp/*.myp 同步维护：base64/date/hash/json/regex/process。
+        // 与 runtime_myp/*.myp 同步维护：base64/date/hash/json/regex/process/uds。
         int mypifiedBridge(string c) {
             int sl = Str.len(c);
             string b = c;
@@ -458,6 +458,7 @@ import collections; // ArrayList
             if (b == "json_bridge.c") return 1;
             if (b == "regex_bridge.c") return 1;
             if (b == "process_bridge.c") return 1;
+            if (b == "uds_bridge.c") return 1;
             return 0;
         }
 

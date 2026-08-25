@@ -1,0 +1,54 @@
+// rt_uds_test.myp — MYP 运行时 Unix domain socket 层验证（runtime_myp/uds.myp
+// shadow C bridge）。覆盖：server/connect/accept、客户端→服务端 send/recv、
+// 服务端→客户端 recv_line（剥 \r\n）、poll 多路复用、unlink 清理。
+// main 不允许直接调函数 → 包进 class static。
+import env;
+
+ffi int myp_uds_server(string path);
+ffi int myp_uds_accept(int server_fd);
+ffi int myp_uds_connect(string path);
+ffi int myp_uds_send(int fd, string data);
+ffi string myp_uds_recv(int fd, int max_len);
+ffi string myp_uds_recv_line(int fd);
+ffi void myp_uds_close(int fd);
+ffi void myp_uds_unlink(string path);
+ffi int myp_uds_poll(int[] fds, int count, int timeout_ms);
+
+class UdsProbe {
+    static:
+        int run() {
+            string path = "/tmp/myp_rt_uds_test.sock";
+            myp_uds_unlink(path);   // 清残留
+            int srv = myp_uds_server(path);
+            if (srv < 0) return 11;
+            int cli = myp_uds_connect(path);
+            if (cli < 0) return 12;
+            int ac = myp_uds_accept(srv);
+            if (ac < 0) return 13;
+            // 客户端 → 服务端（send/recv）
+            int ns = myp_uds_send(cli, "hello");
+            if (ns != 5) return 14;
+            if (myp_uds_recv(ac, 100) != "hello") return 15;
+            // 服务端 → 客户端（recv_line 剥 \n）
+            if (myp_uds_send(ac, "world\n") != 6) return 16;
+            if (myp_uds_recv_line(cli) != "world") return 17;
+            // poll：客户端再发，服务端侧 ac 应就绪（索引 0）
+            myp_uds_send(cli, "x");
+            int[] fds = new int[2];
+            fds[0] = ac;
+            fds[1] = srv;
+            int hit = myp_uds_poll(fds, 2, 1000);
+            if (hit != 0) return 18;
+            if (myp_uds_recv(ac, 10) != "x") return 19;
+            // 清理
+            myp_uds_close(ac);
+            myp_uds_close(cli);
+            myp_uds_close(srv);
+            myp_uds_unlink(path);
+            return 0;
+        }
+}
+
+int main() {
+    return UdsProbe.run();
+}

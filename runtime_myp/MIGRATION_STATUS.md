@@ -331,7 +331,14 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   libc environ**，父 waitpid）。link.myp mypifiedBridge 加 process_bridge.c。
   shadow 41/41；tests/process shadow 输出与 C 一致；oracle+selfhost 323/323。
   bridge 98 → **92**。
-- 剩余：net(14)/uds(18)（socket syscall，下一批）/sdl(40)/ttf(10)（侧车模式）。部分纯 MYP 可实现
+- ✅ **已做（v3.15.60，uds 全 9 个）**：**uds.myp**（新）——AF_UNIX socket 纯
+  syscall（41/42/43/44/45/49/50 + poll 7 + close 3 + unlink 87）。sockaddr_un
+  110B（family u16@0=AF_UNIX=1 用 2×i8 LE，path@2）；send/recv 走 sendto/
+  recvfrom；recv_line 逐字节剥 \r\n；poll 构造 pollfd 8B 数组（revents i8 判
+  非 0，POLL* 值均 <256）。错误码对齐 C（bind -2/listen -3/connect -2）。
+  link.myp mypifiedBridge 加 uds_bridge.c。rt_uds_test 一次通过；shadow 42/42；
+  bootstrap 16/16；oracle+selfhost 323/323。bridge 92 → **83**。
+- 剩余：net(14)（socket + getaddrinfo，下一批）/sdl(40)/ttf(10)（侧车模式）。部分纯 MYP 可实现
   （date 格式化、regex 引擎、json 解析器、process 的 fork/exec 可经
   `__myp_syscall` 的 clone/execve）；sdl/ttf 需 C 库（SDL2），MYP 只能经
   `__myp_indirect` 绑 SDL2 或保留 bridge。

@@ -359,6 +359,28 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
   本机驱动下不可验（595.84 201 怪癖）。
 
+### v3.15.60 — bridge 包 H 第四批：uds 全 9 个 MYP 化（AF_UNIX socket 纯 syscall）
+
+**非破坏性**。Unix domain socket bridge MYP 化——shadow C `uds_bridge.c` 的 9 个
+`myp_uds_*`（Linux），**纯 syscall 无 libc 包装、无 gcc**：
+
+- **`runtime_myp/uds.myp`（新）**：socket 41 / bind 49 / listen 50 / accept 43 /
+  connect 42 / sendto 44 / recvfrom 45 / close 3 / poll 7 / unlink 87。
+  - **sockaddr_un** = `{sun_family:u16@0(=AF_UNIX=1), sun_path[108]@2}` = 110B；
+    无 `__myp_mem_store_i16` → family 用 2 个 i8（LE 01 00）。
+  - send/recv 走 sendto/recvfrom（已连接流套接字 dest=NULL）；返回串按实收
+    长度构建（`myp_alloc(n+1)` → 头 len=n）。
+  - `recv_line` 逐字节到 `\n` 剥 `\r`（`+` 累积，myp_str_append 快路径）。
+  - `poll` 构造 pollfd 数组（8B：fd:i32@0 events:i16@4 revents:i16@6，POLLIN=1，
+    revents 值均 <256 故 i8 判非 0），syscall 7，返回首个就绪索引。
+  - 错误码对齐 C：bind 失败 -2、listen 失败 -3、connect 失败 -2。
+- **`link.myp` mypifiedBridge**：加 `uds_bridge.c`。
+- **验证**：新 `bench/freestanding/rt_uds_test.myp`（server/connect/accept、客户端
+  →服务端 send/recv、服务端→客户端 recv_line 剥 \n、poll 多路复用、unlink 清理，
+  9 断言）——**一次通过**；**shadow 42/42**；bootstrap 16/16（fixpoint 稳定）；
+  oracle + selfhost 全量 323/323。bridge 92 → **83**（uds 9）。
+- **未做**：net(14) 经 socket + getaddrinfo（下一批）；sdl/ttf 侧车模式。
+
 ### v3.15.59 — bridge 包 H 第三批：process 全 6 个 MYP 化（libc ffi，双 fork 后台进程）
 
 **非破坏性**。进程管理 bridge MYP 化——shadow C `process_bridge.c` 的 6 个

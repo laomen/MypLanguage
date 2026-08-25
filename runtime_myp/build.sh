@@ -45,7 +45,7 @@ for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
          bench/freestanding/rt_bounds_fail_test.myp \
          bench/freestanding/rt_hash_test.myp bench/freestanding/rt_date_test.myp \
          bench/freestanding/rt_regex_test.myp bench/freestanding/rt_json_test.myp \
-         bench/freestanding/rt_process_test.myp; do
+         bench/freestanding/rt_process_test.myp bench/freestanding/rt_uds_test.myp; do
     tb="$(basename "$t" .myp)"
     "$SELF" "$t" --emit-llvm -o "/tmp/rt_${tb}" >/dev/null 2>&1
     "$LLC" "/tmp/rt_${tb}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_${tb}.o"
