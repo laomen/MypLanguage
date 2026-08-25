@@ -328,6 +328,15 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   `__myp_syscall` 的 clone/execve）；sdl/ttf 需 C 库（SDL2），MYP 只能经
   `__myp_indirect` 绑 SDL2 或保留 bridge。
 - **难度**：视库而异（纯算法类中低，SDL 类需绑定策略）。
+- ✅ **编译器 bridge 跳过机制（v3.15.57，de-gcc 第二步）**：`tools/selfhost/src/
+  link.myp` 新增 `mypRtLib()`（定位 `libmyp_rt_myp.a`，`MYP_RT_MYP` env 覆盖）+
+  `mypifiedBridge()`（5 个已 MYP 化 bridge：base64/date/hash/json/regex）。
+  归档存在时：bridge 发现循环跳过这些 C bridge 的 `compileBridge`（gcc 免）；
+  lld 命令把归档置于 `libmyp_rt.a` 前 + `--allow-multiple-definition`（MYP 优先）。
+  **验证**：假 gcc（任何调用即失败）+ MYP_RT_MYP → tests/json 与 json+date+regex+
+  hash 综合程序编译/链接/运行全过（gcc 完全绕过）；默认路径行为不变（oracle +
+  selfhost 323/323；shadow 40/40；bootstrap 16/16 fixpoint 606bdca4）。归档激活：
+  `ar rcs libmyp_rt_myp.a /tmp/rt_myp_*.o`（shadow 套件产物）。
 
 ---
 

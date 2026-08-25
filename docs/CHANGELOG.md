@@ -359,6 +359,29 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
   本机驱动下不可验（595.84 201 怪癖）。
 
+### v3.15.57 — de-gcc 第二步：自举编译器 bridge 跳过机制（MYP_RT_MYP，MYP 化 bridge 免 gcc）
+
+**非破坏性**。自举编译器（`tools/selfhost/src/link.myp`）支持用**预编译 MYP 运行时
+归档**替代已 MYP 化的 C bridge——这些 bridge（base64/date/hash/json/regex）不再用
+gcc 现编译：
+
+- **`Link.mypRtLib()`**：定位 `libmyp_rt_myp.a`（`MYP_RT_MYP` env 显式覆盖；默认
+  取编译器二进制旁 / build/ / ./build/）。找不到返回 ""（回退 C bridge，行为不变）。
+- **`Link.mypifiedBridge(c)`**：按 basename 判定 5 个已 MYP 化 bridge
+  （base64/date/hash/json/regex_bridge.c），与 `runtime_myp/*.myp` 同步维护。
+- **链接**：归档存在时 ① bridge 发现循环跳过 MYP 化 bridge 的 C 编译（`compileBridge`
+  不被调用 → gcc 免）；② lld 命令把归档置于 `libmyp_rt.a` 之前 +
+  `--allow-multiple-definition` → MYP 定义优先（shadow 机制，提供被跳过符号）。
+- **验证（决定性）**：用**假 gcc**（任何调用即失败）+ `MYP_RT_MYP=/tmp/libmyp_rt_myp.a`
+  （由 shadow 套件 /tmp/rt_myp_*.o 归档）编译 `tests/json` → `Link OK` + 运行输出
+  与 C 逐字一致；json+date+regex+hash 综合程序同样编译/链接/运行全过（exit 0）——
+  **gcc 完全被绕过**。二进制 `nm` 确认 `myp_json_*` 为 MYP 定义。默认路径（无归档）
+  行为不变：oracle + selfhost 全量 323/323；shadow 40/40；bootstrap 16/16（新
+  fixpoint `606bdca4`，link.myp 已改）。
+- **说明**：归档默认不落 build/（避免默认激活改变所有程序链接面）；`MYP_RT_MYP`
+  显式指定即启用。激活方式：`ar rcs libmyp_rt_myp.a /tmp/rt_myp_*.o`（shadow
+  套件产物）。
+
 ### v3.15.56 — bridge 包 H 第二批：json 全 14 个 MYP 化（解析/查询/编辑/序列化）
 
 **非破坏性**。JSON bridge 全量 MYP 化——shadow C `json_bridge.c` 的 14 个

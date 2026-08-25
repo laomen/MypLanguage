@@ -407,6 +407,44 @@ import collections; // ArrayList
             return "";
         }
 
+        // 预编译 MYP 运行时归档（libmyp_rt_myp.a，随编译器分发，de-gcc 关键）。
+        // 含 runtime_myp/*.myp 的 --shared 对象（base64/date/hash/json/regex 等
+        // bridge 的 MYP 版 + 全部 runtime 层）。MYP_RT_MYP 显式覆盖；默认取编译
+        // 器二进制旁。找到时：① 跳过对应 C bridge 编译（gcc 职责减），② 链接时
+        // 置于 libmyp_rt.a 之前 + --allow-multiple-definition → MYP 定义优先。
+        // 找不到返回 ""（回退 C bridge 编译，行为不变）。
+        string mypRtLib() {
+            string e = Console.getEnv("MYP_RT_MYP");
+            if (Str.len(e) > 0 && Fs.isFile(e) != 0) return e;
+            ArrayList<string> cands = new ArrayList<string>();
+            if (Args.count() > 0) {
+                cands.add(Fs.join(Fs.dirname(Args.get(0)), "libmyp_rt_myp.a"));
+            }
+            cands.add("build/libmyp_rt_myp.a");
+            cands.add("./build/libmyp_rt_myp.a");
+            cands.add("libmyp_rt_myp.a");
+            for (int i = 0; i < cands.size(); i = i + 1) {
+                if (Fs.isFile(cands.get(i)) != 0) return cands.get(i);
+            }
+            return "";
+        }
+
+        // bridge .c 是否已被 runtime_myp MYP 化（编译器可跳过其 C 编译）。
+        // 与 runtime_myp/*.myp 同步维护：base64/date/hash/json/regex。
+        int mypifiedBridge(string c) {
+            int sl = Str.len(c);
+            string b = c;
+            for (int i = sl - 1; i >= 0; i = i - 1) {
+                if (__myp_charcode(c, i) == 47) { b = Str.substring(c, i + 1, sl); break; }   // '/'
+            }
+            if (b == "base64_bridge.c") return 1;
+            if (b == "date_bridge.c") return 1;
+            if (b == "hash_bridge.c") return 1;
+            if (b == "json_bridge.c") return 1;
+            if (b == "regex_bridge.c") return 1;
+            return 0;
+        }
+
         // llPath(.ll) → [opt -O<level>] → llc → obj → gcc 链接 runtime → outPath 可执行。
         // 默认 **-O2**（CLI 默认 optLevel=2；v3.12.44 修复 opt -O2 跨 setjmp/longjmp
         // 的 finally 语义破坏根因——codegen 在 try 入口把全部在作用域局部 + finally
@@ -456,6 +494,8 @@ import collections; // ArrayList
             // 档A 收尾：预编译核心 runtime 归档（libmyp_rt.a，随编译器分发）。
             // 找到时直接链接（免 C 编译器——gcc 只剩 bridge 的 C 编译职责）。
             string prebuiltRt = Link.prebuiltRt();
+            // 预编译 MYP 运行时归档（可选）：找到时跳过 MYP 化 bridge 的 C 编译。
+            string mypRt = Link.mypRtLib();
             string inc = Link.findIncDir(stdlib);
             string runtimeC = Link.findRuntimeC(stdlib);
             // runtime.c 约 6000 行，gcc -O2 每次编译 ~0.9s，占单文件编译总耗时
@@ -556,6 +596,9 @@ import collections; // ArrayList
                 for (int i = 0; i < allB.size(); i = i + 1) {
                     string c = allB.get(i);
                     if (Link.symContains(sel, c) != 0) continue;
+                    // MYP 运行时归档提供该 bridge 的全部符号 → 跳过 C 编译
+                    // （de-gcc：这些 bridge 不再用 gcc 现编译）。
+                    if (Str.len(mypRt) != 0 && Link.mypifiedBridge(c) != 0) continue;
                     string bflags = Link.readSidecar(c + ".cflags");
                     string blibs = Link.readSidecar(c + ".libs");
                     string bObj = Link.compileBridge(c, inc, bflags);
@@ -618,14 +661,18 @@ import collections; // ArrayList
                 int pie = (Fs.isFile(crt + "/Scrt1.o") != 0) ? 1 : 0;
                 string start = (pie != 0) ? crt + "/Scrt1.o" : crt + "/crt1.o";
                 string pieFlag = (pie != 0) ? "-pie " : "";
+                // MYP 运行时归档：置于 libmyp_rt.a 之前 + --allow-multiple-definition
+                // → MYP 定义优先（shadow 机制），提供被跳过的 MYP 化 bridge 符号。
+                string mypRtObj = (Str.len(mypRt) > 0) ? " " + mypRt : "";
+                string amd = (Str.len(mypRt) > 0) ? " --allow-multiple-definition" : "";
                 cmd = ld + " " + pieFlag + "--dynamic-linker " + dynl + " -o " + outPath
                     + " " + start + " " + crt + "/crti.o"
-                    + " " + objPath + runtimeObjs
+                    + " " + objPath + mypRtObj + runtimeObjs
                     + bridgeObjList
                     + " -L" + crt
                     + " -lc -lm -lpthread -ldl"
                     + " " + bridgeLibs + " " + crt + "/crtn.o"
-                    + " --gc-sections 2>&1";
+                    + " --gc-sections" + amd + " 2>&1";
             } else if (shared != 0) {
                 cmd = cc + " -shared -fPIC " + objPath + " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj
                     + bridgeObjList + " -o " + outPath + libs + bridgeLibs
