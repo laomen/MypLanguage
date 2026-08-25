@@ -651,6 +651,84 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
     return doCompile(*ast, filename, opt_level, emit_llvm, library_mode, test_mode, debug, passes, macro_expand, diag, auto_main, freestanding);
 }
 
+// ---- 档A：ld.lld 链接（去 gcc 的链接职责，保留 libc）----
+// 工具探测（/usr/bin 等常见目录 + PATH）。返回绝对路径或 ""。
+static std::string findToolInPath(const std::string& name) {
+    const char* dirs[] = {"/usr/bin", "/usr/local/bin", "/bin"};
+    for (auto d : dirs)
+        if (fileExists(std::string(d) + "/" + name)) return std::string(d) + "/" + name;
+    std::string cmd = "command -v " + name + " 2>/dev/null";
+    FILE* f = popen(cmd.c_str(), "r");
+    if (f) {
+        char buf[512] = {0};
+        if (fgets(buf, sizeof(buf), f)) {
+            pclose(f);
+            std::string s(buf);
+            while (!s.empty() && (s.back() == '\n' || s.back() == ' ' || s.back() == '\r'))
+                s.pop_back();
+            return s;
+        }
+        pclose(f);
+    }
+    return "";
+}
+
+// 定位链接器：MYP_LD → ld.lld-21/20/19/ld.lld/lld → ld → ""（未找到）。
+static std::string findLld() {
+    if (const char* e = getenv("MYP_LD"); e && e[0]) return e;
+    const char* cands[] = {"ld.lld-21", "ld.lld-20", "ld.lld-19", "ld.lld", "lld", "ld"};
+    for (auto c : cands) {
+        std::string p = findToolInPath(c);
+        if (!p.empty()) return p;
+    }
+    return "";
+}
+
+// CRT 启动文件目录（含 crt1.o）。
+static std::string findCrtDir() {
+    const char* dirs[] = {"/usr/lib/x86_64-linux-gnu", "/usr/lib64",
+                          "/usr/lib/aarch64-linux-gnu", "/usr/lib/arm-linux-gnueabihf",
+                          "/lib/x86_64-linux-gnu", "/lib64", "/usr/lib"};
+    for (auto d : dirs) if (fileExists(std::string(d) + "/crt1.o")) return d;
+    return "";
+}
+
+// libgcc 目录（含 libgcc.a；/usr/lib/gcc/<arch>/<ver>/ 取最高版本）。
+static std::string findGccLibDir() {
+    std::vector<std::string> hits;
+    DIR* d = opendir("/usr/lib/gcc");
+    if (d) {
+        struct dirent* e;
+        while ((e = readdir(d))) {
+            if (e->d_name[0] == '.') continue;
+            // 只认原生 glibc 工具链（排除 mingw/musl/darwin 交叉目录）
+            if (std::string(e->d_name).find("linux-gnu") == std::string::npos) continue;
+            std::string arch = std::string("/usr/lib/gcc/") + e->d_name;
+            DIR* d2 = opendir(arch.c_str());
+            if (!d2) continue;
+            struct dirent* e2;
+            while ((e2 = readdir(d2))) {
+                if (e2->d_name[0] == '.') continue;
+                std::string ver = arch + "/" + e2->d_name;
+                if (fileExists(ver + "/libgcc.a")) hits.push_back(ver);
+            }
+            closedir(d2);
+        }
+        closedir(d);
+    }
+    if (hits.empty()) return "";
+    std::sort(hits.begin(), hits.end());
+    return hits.back();  // 字典序最大 ≈ 版本最高
+}
+
+// 动态加载器路径（x86-64 / aarch64 常见布局）。
+static std::string findDynLinker() {
+    const char* cands[] = {"/lib64/ld-linux-x86-64.so.2", "/lib/ld-linux-aarch64.so.1",
+                           "/lib/ld-linux-x86-64.so.2", "/lib64/ld-linux-x86-64.so.1"};
+    for (auto c : cands) if (fileExists(c)) return c;
+    return "/lib64/ld-linux-x86-64.so.2";  // 兜底
+}
+
 [[nodiscard]] static bool linkObjects(const std::vector<std::string>& obj_files,
                                        const std::string& output_name,
                                        const std::string& stdlib_path,
@@ -972,6 +1050,14 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
         }
     }
 
+    // ---- 档A：默认 ld.lld 链接（去 gcc 的链接职责，保留 libc）。回退 gcc：
+    //   MYP_LINKER=gcc 显式指定；sanitizer 模式；shared；未找到 lld。----
+    std::string linker_choice = "lld";
+    if (const char* le = getenv("MYP_LINKER"); le && le[0]) linker_choice = le;
+    bool want_lld = (linker_choice == "lld") && san_flags.empty() && !shared_lib;
+    std::string lld = want_lld ? findLld() : "";
+    bool use_lld = want_lld && !lld.empty();
+
     std::string link_cmd;
     if (shared_lib) {
         link_cmd = kCC + " -shared -fPIC -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list
@@ -985,6 +1071,22 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
         }
         std::cout << "Static lib OK: " << output_name << "\n";
         return true;
+    } else if (use_lld) {
+        // PIE 动态可执行（对齐 gcc Ubuntu 默认）。Scrt1.o（PIE 启动）优先，
+        // 否则 crt1.o + 去 -pie。libgcc 置于 libc 两侧（循环依赖）。
+        std::string crt = findCrtDir();
+        std::string gccd = findGccLibDir();
+        std::string dynl = findDynLinker();
+        bool pie_start = fileExists(crt + "/Scrt1.o");
+        std::string pie_flag = pie_start ? "-pie " : "";
+        std::string start = pie_start ? crt + "/Scrt1.o" : crt + "/crt1.o";
+        link_cmd = lld + " " + pie_flag + "--dynamic-linker " + dynl + " -o " + output_name
+                 + " " + start + " " + crt + "/crti.o"
+                 + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list
+                 + " -L" + gccd + " -L" + crt
+                 + " -lgcc -lgcc_s -lc -lm -lpthread -ldl -lgcc -lgcc_s"
+                 + " " + bridge_libs + " " + crt + "/crtn.o"
+                 + " --gc-sections 2>&1";
     } else {
         link_cmd = kCC + " -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list
                  + " -o " + output_name + kPlatformLibs + " " + bridge_libs + gc_link + " 2>&1";
