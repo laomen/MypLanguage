@@ -1,0 +1,27 @@
+// rt_speed_test.myp — 运行时速度微基准：字符串操作 + 分配 + 比较热循环。
+// 对比预编译 libmyp_rt.a 与 gcc -O2 编译 runtime 的生成程序运行速度。
+import text;
+
+int main() {
+    long t0 = __myp_now_ms();
+    // 1) 字符串拼接 + 子串 + 比较热循环
+    int n = 200000;
+    int acc = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        string s = "prefix_" + Str.substring("0123456789abcdefghij", i % 10, (i % 10) + 6);
+        if (Str.startsWith(s, "prefix_") != 0) acc = acc + 1;
+        if (Str.contains(s, "0123") != 0 || Str.contains(s, "4567") != 0) acc = acc + 2;
+        if (Str.len(s) != 13) acc = acc + 1000;
+    }
+    // 2) toUpper/toLower/trim 热循环
+    for (int i = 0; i < 50000; i = i + 1) {
+        string u = Str.toUpper("hello world");
+        string l = Str.toLower("HELLO WORLD");
+        string t = Str.trim("   pad   ");
+        if (Str.len(u) != 11 || Str.len(l) != 11 || Str.len(t) != 3) acc = acc + 10000;
+    }
+    long t1 = __myp_now_ms();
+    // 校验 acc 恒定，防止被优化掉
+    if (acc < 0) return 1;
+    return int(t1 - t0);
+}
