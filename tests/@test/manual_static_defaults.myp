@@ -1,0 +1,26 @@
+// 静态类属性默认值（v3.15.68 根因修复）：`@static class` 属性默认值此前被
+// `zeroinitializer` 丢弃（非零默认实际得 0），runtime 被迫用 syncInit/evInit 显式
+// 补。现 codegen 发射显式常量初始化器（字面量/一元负号/Convert/二元常量折叠/
+// 字符串），`ClassName.prop` 直接读默认值。
+import test;
+
+@static class SDef {
+    property:
+        int a = 42;
+        long b = 2 * 3 + 1;   // 嵌套常量折叠 → 7
+        double c = -2.5;      // 一元负号浮点
+        bool d = true;
+        int e;                // 无默认 → 0
+        string s = "hi";      // 字符串默认 → @str 常量 GEP
+        int f = 10 / 4;       // 整数除法折叠 → 2
+}
+
+@test void t_static_defaults() {
+    Test.assertEq(SDef.a, 42, "static int default");
+    Test.assert(SDef.b == 7, "static long const-fold default");
+    Test.assert(SDef.c < 0.0, "static double unary default");
+    Test.assert(SDef.d, "static bool default");
+    Test.assertEq(SDef.e, 0, "static no-default zero");
+    Test.assertStrEq(SDef.s, "hi", "static string default");
+    Test.assertEq(SDef.f, 2, "static int div fold");
+}

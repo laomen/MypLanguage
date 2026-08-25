@@ -1491,8 +1491,13 @@ class CodeGen {
         }
 
         // @static class：为每个带属性的静态类发射全局结构体实例
-        // `@__myp_static_<Cls> = global %<Cls> zeroinitializer`，属性访问
+        // `@__myp_static_<Cls> = global %<Cls> zeroinitializer`（默认），属性访问
         // ClassName.prop → GEP 进该全局（同 C++ static_property_globals_）。
+        // **根因修复（v3.15.68）**：属性默认值此前被 zeroinitializer 丢弃（非零默认
+        // 如 `int a = 42` 实际得 0），runtime 被迫用 syncInit/evInit 显式补零/置值。
+        // 现在：存在**可折叠的非零默认值** → 发射显式结构体常量初始化器
+        // `{ i32 42, i64 7, ... }`（数组/结构体元素用零初始化器，字符串默认用 @str
+        // 常量 GEP）；否则保持 zeroinitializer（零改动，保护既有模块/归档）。
         void emitStaticClassGlobals() {
             if (tu_ == null) return;
             ArrayList<string> emitted = new ArrayList<string>();
@@ -1506,8 +1511,131 @@ class CodeGen {
                 }
                 if (dup != 0) continue;
                 emitted.add(c.name());
-                stringGlobals_.append("@__myp_static_" + c.name() + " = global %" + c.name() + " zeroinitializer\n");
+                // 收集每属性常量值；全零/无可折叠 → zeroinitializer（既有行为）。
+                ArrayList<string> cvs = new ArrayList<string>();
+                int hasNonZero = 0;
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    AstProp prop = c.props().get(pi);
+                    string ft = propType(c.name(), prop.name());
+                    string cv = "0";
+                    if (prop.init() != null) cv = staticPropConst(prop.init(), ft);
+                    cvs.add(cv);
+                    if (constIsZero(cv) == 0) hasNonZero = 1;
+                }
+                if (hasNonZero == 0) {
+                    stringGlobals_.append("@__myp_static_" + c.name() + " = global %" + c.name() + " zeroinitializer\n");
+                    continue;
+                }
+                string init = "{ ";
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    if (pi != 0) init = init + ", ";
+                    string ft = propType(c.name(), c.props().get(pi).name());
+                    init = init + staticConstElem(ft, cvs.get(pi));
+                }
+                init = init + " }";
+                stringGlobals_.append("@__myp_static_" + c.name() + " = global %" + c.name() + " " + init + "\n");
             }
+        }
+
+        // 标量 LLVM 类型（可作常量初始化元素）判断。
+        int isScalarLt(string ft) {
+            if (ft == "i1" || ft == "i8" || ft == "i16" || ft == "i32" || ft == "i64"
+                || ft == "float" || ft == "double" || ft == "ptr") return 1;
+            return 0;
+        }
+        // 常量值串是否全零（zeroinitializer 缩写 / hasNonZero 判定）。
+        int constIsZero(string cv) {
+            if (cv == "0" || cv == "false" || cv == "null"
+                || cv == "0x0000000000000000" || cv == "0x00000000") return 1;
+            return 0;
+        }
+        // 结构体初始化元素：标量直接 `ft cv`（ptr 无默认 → null）；数组/结构体/向量
+        // → `ft zeroinitializer`；字符串默认（常量 GEP）→ `ptr <gep>`。
+        string staticConstElem(string ft, string cv) {
+            if (isScalarLt(ft) != 0) {
+                if (ft == "ptr" && (cv == "0" || cv == "null")) return "ptr null";
+                return ft + " " + cv;
+            }
+            return ft + " zeroinitializer";
+        }
+        // 整数折叠结果按目标 ft 归一（int 字段 → 数字串；float/double → hex 位型）。
+        string foldIntConst(long v, string ft) {
+            if (ft == "double" || ft == "float") return floatLiteral(double(v), ft == "float" ? 1 : 0);
+            return "" + v;
+        }
+        // 整数常量表达式递归求值（字面量/一元负/Convert/二元嵌套；失败 constEvalOk_=0）。
+        // 覆盖 `2 * 3 + 1`（AST 左结合 Binary(+, Binary(*,2,3), 1)）等嵌套折叠。
+        long constIntEval(AstExpr e) {
+            if (e == null) { constEvalOk_ = 0; return 0; }
+            string k = e.kind();
+            if (k == "Integer") { constEvalOk_ = 1; return e.value(); }
+            if (k == "Unary" && e.op() == "-") {
+                long v = constIntEval(e.operand());
+                if (constEvalOk_ != 0) return 0 - v;
+                return 0;
+            }
+            if (k == "Convert") return constIntEval(e.operand());
+            if (k == "Binary") {
+                long l = constIntEval(e.lhs());
+                int lok = constEvalOk_;
+                long r = constIntEval(e.rhs());
+                int rok = constEvalOk_;
+                if (lok == 0 || rok == 0) { constEvalOk_ = 0; return 0; }
+                string o = e.op();
+                if (o == "+") return l + r;
+                if (o == "-") return l - r;
+                if (o == "*") return l * r;
+                if (o == "/" && r != 0) return l / r;
+                if (o == "%" && r != 0) return l % r;
+                if (o == "&") return l & r;
+                if (o == "|") return l | r;
+                if (o == "^") return l ^ r;
+                constEvalOk_ = 0;
+                return 0;
+            }
+            constEvalOk_ = 0;
+            return 0;
+        }
+        // 属性默认表达式 → 常量值串（无类型前缀；调用方补 ft）。支持：整数/浮点/
+        // bool/null/字符串字面量 + 一元负号 + Convert 透传 + 二元整数/浮点常量折叠
+        // （+ - * / % & | ^，含嵌套）；其余（含非常量表达式）→ "0"（对齐旧行为）。
+        string staticPropConst(AstExpr init, string ft) {
+            if (init == null) return "0";
+            string k = init.kind();
+            if (k == "Integer") {
+                if (ft == "double" || ft == "float")
+                    return floatLiteral(double(init.value()), ft == "float" ? 1 : 0);
+                return "" + init.value();
+            }
+            if (k == "Float") return floatLiteral(init.fval(), init.f32());
+            if (k == "Bool") { if (init.value() != 0L) return "true"; return "false"; }
+            if (k == "Null") return "null";
+            if (k == "String") return stringLiteral(init.stringValue());
+            if (k == "Unary" || k == "Convert" || k == "Binary") {
+                long iv = constIntEval(init);
+                if (constEvalOk_ != 0) return foldIntConst(iv, ft);
+                // 非整数常量（float 一元负/二元）：回退直接 Float 字面量折叠。
+                if (k == "Unary" && init.op() == "-") {
+                    AstExpr op = init.operand();
+                    if (op != null && op.kind() == "Float")
+                        return floatLiteral(0.0 - op.fval(), op.f32());
+                }
+                if (k == "Binary") {
+                    AstExpr l = init.lhs();
+                    AstExpr r = init.rhs();
+                    string lk = l == null ? "" : l.kind();
+                    string rk = r == null ? "" : r.kind();
+                    if (lk == "Float" && rk == "Float") {
+                        double lv = l.fval(); double rv = r.fval();
+                        if (init.op() == "+") return floatLiteral(lv + rv, l.f32());
+                        if (init.op() == "-") return floatLiteral(lv - rv, l.f32());
+                        if (init.op() == "*") return floatLiteral(lv * rv, l.f32());
+                        if (init.op() == "/" && rv != 0.0) return floatLiteral(lv / rv, l.f32());
+                    }
+                }
+                return "0";
+            }
+            return "0";
         }
 
         // name 是否为 @static class（其属性是全局，ClassName.prop 访问）。
@@ -11529,6 +11657,7 @@ class CodeGen {
         ArrayList<string> loopContinue_;
         StringBuilder stringGlobals_;
         int strCounter_;
+        int constEvalOk_;   // staticPropConst 常量求值有效标志
         AstTU tu_;
         string curClass_;
         ArrayList<string> cellOwnerNames_;

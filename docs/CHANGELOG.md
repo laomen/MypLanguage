@@ -27,6 +27,25 @@
 
 ## 编译器版本历史
 
+### v3.15.69 — 根因修复：`@static class` 属性默认值真正生效（显式常量初始化器）
+
+**非破坏性**。此前 `@static class` 全局一律发 `zeroinitializer`，**属性默认值被丢弃**
+（`int a = 42` 实际得 0，`--shared` 亦然）——runtime 被迫用 syncInit/evInit 显式补
+零/置值（"--shared 默认值不生效"注释）。现 selfhost codegen `emitStaticClassGlobals`
+支持**显式结构体常量初始化器**：
+
+- 存在**可折叠的非零默认值** → 发 `global %Cls { i32 42, i64 7, double 0x... }`；
+  否则保持 `zeroinitializer`（零改动，保护既有模块/归档）。
+- 支持：整数/浮点/bool/null/字符串字面量 + 一元负号 + Convert 透传 + 二元整数/浮点
+  **常量折叠**（`+ - * / % & | ^`，`constIntEval` 递归处理 `2 * 3 + 1` 左结合嵌套）。
+- 数组/结构体/向量属性 → `ft zeroinitializer` 元素；字符串默认 → `@str` 常量 GEP。
+- 字段类型归一：int 字段数字串、float/double 十六进制位型（`floatLiteral`）、i1
+  true/false、ptr null。
+
+**验证**：`--shared` 与普通模式均发射默认值（`Foo.a=42` 运行正确）；新增
+`tests/@test/manual_static_defaults.myp`（7 断言：int/long 折叠/一元浮点/bool/
+无默认零/字符串/int 除法）；全量 **324/324**（+1）、自举不动点 16/16、shadow 冒烟。
+
 ### v3.15.68 — MYP 运行时性能回归修复：`s=s+i` O(N²) arena 内存爆炸（块容量原地扩展 + 空闲链表 + 回收修复）
 
 **非破坏性**。性能回归查找（`bench/rt_myp_bench.myp` 8 用例 + `bench/probe_strcat.myp`
