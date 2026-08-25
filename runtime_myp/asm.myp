@@ -1,0 +1,49 @@
+// runtime_myp/asm.myp — 内联汇编原语集合（精选、类型安全，经通用 __myp_asm 内建）。
+// 服务运行时基础设施：计时（rdtsc）/自旋锁提示（pause）/内存屏障（fence）。
+// 只封装经过验证的操作，不暴露裸 asm 字符串给调用方。x86-64 限定。
+//
+// 设计注意：
+//   - 不写 AT&T `$` 立即数（LLVM 内联 asm 把 `$N` 当操作数引用，$32 报 Invalid
+//     $ operand number；MYP 字符串 `$` 也是插值前缀）。需要立即数的操作用寄存器/
+//     缓冲规避。
+//   - 返回值经 `={rax}` 硬编码输出约束或写缓冲；clobber 列 ~{memory}。
+
+// alloc.myp（shadow 同伴模块）——跨模块 FFI
+ffi long myp_arena_alloc(long size);
+
+@static class TscBuf {
+    property:
+        long addr = 0;   // 16B TSC 缓冲（lo@0, hi@4），arena 一次性分配
+}
+
+// x86 时间戳计数器（纳秒级单调时钟；现代 CPU 恒定频率）。完整 64 位。
+// asm 里无 `$`：rdtsc 写 eax/edx，分别存入缓冲低/高 32 位，MYP 读回 i64。
+long myp_rdtsc() {
+    if (TscBuf.addr == 0) {
+        long p = myp_arena_alloc(8);
+        if (p == 0) return 0;   // OOM
+        TscBuf.addr = p;
+    }
+    long b = TscBuf.addr;
+    __myp_asm(
+        "rdtsc; movl %eax, (%rdi); movl %edx, 4(%rdi)",
+        "{rdi},~{rax},~{rdx},~{memory}",
+        b);
+    return __myp_mem_load_i64(b);
+}
+
+// PAUSE 指令：自旋锁等待提示（省电 + 提升超线程公平性）。空转循环替代。
+void myp_pause() {
+    __myp_asm("pause", "~{memory}");
+}
+
+// 全内存屏障：mfence（读写）/ lfence（读）/ sfence（写）。
+void myp_mfence() {
+    __myp_asm("mfence", "~{memory}");
+}
+void myp_lfence() {
+    __myp_asm("lfence", "~{memory}");
+}
+void myp_sfence() {
+    __myp_asm("sfence", "~{memory}");
+}

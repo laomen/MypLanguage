@@ -27,6 +27,30 @@
 
 ## 编译器版本历史
 
+### v3.15.30 — runtime myp化 #27：精选汇编原语标准库 `runtime_myp/asm.myp`
+
+**非破坏性**。在 #26 通用 `__myp_asm` 内建之上，封装**精选 x86-64 汇编原语**为
+类型安全的标准库，供运行时基础设施使用（计时/自旋锁/内存屏障），不暴露裸 asm：
+
+- 新建 `runtime_myp/asm.myp`：
+  - `myp_rdtsc()` → long——x86 时间戳计数器（纳秒级、恒定频率）。**缓冲法规避
+    `$` 立即数**：`rdtsc; movl %eax, (%rdi); movl %edx, 4(%rdi)` 写 8B arena 缓冲
+    （`@static TscBuf.addr` 惰性分配），MYP 用 `__myp_mem_load_i64` 读回完整 64 位。
+  - `myp_pause()` / `myp_mfence()` / `myp_lfence()` / `myp_sfence()`——自旋锁提示
+    与内存屏障，统一 `~{memory}` clobber。
+- 新建 `bench/freestanding/rt_asm_test.myp`：rdtsc 非零 + 单调（100 采样）、
+  pause/三种 fence 可执行；接入 `runtime_myp/build.sh` 测试循环。
+- **实测踩坑记录（重要）**：
+  - LLVM 内联 asm 把 `$N` 当**操作数引用**——AT&T `$32` 立即数报 `Invalid $
+    operand number`，与 MYP 字符串 `$` 插值双重重叠。→ asm 一律不写 `$` 立即数，
+    需要立即数/返回值走寄存器或缓冲。
+  - `\$` 转义**无效**：lexer 虽能生成 `\`，但 `parser.myp expandDollarInterp`
+    会对字符串值重新扫描 `$`（char 36）→ 仍被当插值前缀。**三引号原始串
+    `"""..."""`（raw=1）才是字面 `$` 的正确机制**（跳过展开）。
+  - 曾临时给 lexer 加 `\$` 转义（2 处）——**已回滚**，净零变更（git diff 为空）。
+- 验证：shadow **12/12**（新增 rt_asm_test）、bootstrap 16/16（fixpoint
+  `dfe0f3b6…`，与 #26 相同，确认 lexer 回滚干净）、全量 323/323。
+
 ### mypview 框架变更 → 见 `mypview/CHANGELOG.md`
 
 mypview 框架（控件/布局/UIX/AppRunner/示例/测试）的变更记录迁移到

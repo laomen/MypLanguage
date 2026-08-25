@@ -1,0 +1,36 @@
+// rt_asm_test.myp — 内联汇编原语集合验证（runtime_myp/asm.myp）：
+// rdtsc 单调非零 / pause·fence 可执行。
+import text;
+
+ffi long myp_rdtsc();
+ffi void myp_pause();
+ffi void myp_mfence();
+ffi void myp_lfence();
+ffi void myp_sfence();
+
+class AsmProbe {
+    static:
+        int run() {
+            long t0 = myp_rdtsc();
+            if (t0 == 0) return 1;   // rdtsc 非零
+            myp_pause();
+            myp_mfence();
+            myp_lfence();
+            myp_sfence();
+            long t1 = myp_rdtsc();
+            if (t1 < t0) return 2;   // TSC 单调递增
+            // 循环采样验证持续单调
+            long prev = t1;
+            for (int i = 0; i < 100; i = i + 1) {
+                long c = myp_rdtsc();
+                if (c < prev) return 3;
+                prev = c;
+            }
+            return 0;
+        }
+}
+
+int main() {
+    int r = AsmProbe.run();
+    return r;
+}
