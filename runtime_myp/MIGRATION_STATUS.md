@@ -16,8 +16,8 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#43 补后重算） | **347**（~71%） |
-| 未 shadow（C runtime 剩余） | **143** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#44 补后重算） | **358**（~73%） |
+| 未 shadow（C runtime 剩余） | **132** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
 | runtime_myp 模块 | **21** 个 |
 
@@ -61,6 +61,11 @@ roundtrip，host buffer i*3 校验）。
 不产生垃圾数据）。manual_ch9 shadow 链接 MYP_GPU=1 → 3 tests/11 assertions 全过。
 即：shadow 二进制中 @gpu for 即使 MYP_GPU=1 也 CPU 回退（直到 Stage B shadow
 load/launch 统一状态）；oracle/deeplearning 用 C runtime，不受影响。
+
+**#44 GPU MYP/C 状态分裂已统一（Stage B 关键）**：MYP `myp_gpu_load_kernel`/`launch`
+shadow 后，`@gpu for` 在 MYP_GPU=1 下走**真实 GPU**（不再是 CPU 回退）。
+rt_gpu_test 双模式 + manual_ch9 MYP_GPU=1 真 GPU 3 tests/11 assertions 全过；
+直接探针 `kctx=1356287584 launch=1` 确凿证明 PTX 加载 + cuLaunchKernel。
 
 **#42 残留 C 边界（更新：io_cur 已 MYP 化；constructor 已被 lld 剥离）**：
 - **C TLS 当前句柄已解决（#42 补）**：`myp_io_cur_get/set` → MYP IoCur 表（gettid
@@ -244,15 +249,19 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 - **✅ Stage A 已做（#43 gpu.myp，35 个 shadow）**：init（dlopen+dlsym 17 个
   `cu*` + cuInit/cuCtxCreate_v2/cuCtxSetCurrent）/ 设备查询 19 / 内存+handle 12 /
   流 3。`@static Gpu` 表 + `__myp_indirect_*` 调 cu*。rt_gpu_test 双模式验证。
-- **剩余 Stage B（内核）**：cuModuleLoadDataEx + PTX 缓存 + cuLaunchKernel 12-arg
-  编组 + byoc + printf —— 使 @gpu for 真实 GPU 在 shadow 下可用（当前 load_kernel==
-  NULL → CPU 回退，安全）。
+- **✅ Stage B 已做（#44，11 个 shadow）**：`myp_gpu_load_kernel`（内核缓存
+  kcPtx/kcName/kcRec 128 槽按指针身份复用；记录 {mod,fn,name} 24B arena，句柄=记录
+  地址；入口显式 cuCtxSetCurrent）/ `myp_gpu_launch`（cuLaunchKernel 11 参数
+  `__myp_indirect_i32` 编组，stream==0 同步）/ `myp_gpu_destroy_kernel`（缓存命中
+  保持不 unload，未缓存 cuModuleUnload）/ `myp_gpu_to_host_async`（cuMemcpyDtoHAsync）/
+  `myp_gpu_byoc_load`+`byoc_launch`（long[]→void** arena 临时编组）/ `myp_gpu_printf_buf/
+  cnt/fail`+`flush_printf`（设备 staging 回读 + mini-printf：% 转换消费 int/double
+  由 mask 定，直接写 fd=1）+ `myp_gpu_scatter_check_fail`（stderr+exit 1）。
+  **@gpu for 真实 GPU 在 shadow 下可用**（状态分裂已统一）。
 - **剩余 Stage C（流/事件/图）**：cuStream*/cuEvent*/cuGraph*（deeplearning）。
 - **使能已就绪**：`__myp_indirect_*`（#30）+ `ffi long dlopen/dlsym`（libc 导出）。
-- **⚠️**：CUDA TLS（接触上下文的入口显式 `cuCtxSetCurrent`）；**状态分裂边界**：
-  MYP init 只设 MYP avail，C load_kernel 仍见 avail=0 → @gpu for CPU 回退（安全），
-  Stage B 统一后才真实 GPU。改动记 `examples/deeplearning/CHANGELOG.md`
-  （独立分项目）。
+- **⚠️**：CUDA TLS（接触上下文的入口显式 `cuCtxSetCurrent`）。改动记
+  `examples/deeplearning/CHANGELOG.md`（独立分项目）。
 
 ### 包 H：bridge 层（122）
 - **json**(14) / **net**(14) / **uds**(18) / **process**(12) / **sdl**(40) /

@@ -1,10 +1,12 @@
-// rt_gpu_test.myp — GPU 层 Stage A shadow 验证（#43：init + 设备查询 + 内存/handle）。
+// rt_gpu_test.myp — GPU 层 shadow 验证（#43 Stage A init/查询/内存 + #44 Stage B 内核）。
 // 双模式：
-//   - 无 MYP_GPU（shadow 套件默认）→ CPU 回退：vendor="cpu"、查询全 0。
-//   - MYP_GPU=1（有 CUDA 驱动）→ 真 GPU：vendor="nvidia"、device_count>=1、
-//     设备名/算力/显存 + cuMemAlloc/cuMemcpyHtoD/cuMemcpyDtoH/cuMemFree 内存往返。
+//   - 无 MYP_GPU（shadow 套件默认）→ CPU 回退：vendor="cpu"、查询全 0、@gpu for
+//     走 CPU 回退同结果。
+//   - MYP_GPU=1（有 CUDA 驱动）→ 真 GPU：设备名/算力/显存 + 内存往返 + @gpu for
+//     真实内核执行（load_kernel+launch+destroy）。
 // exit 0 = 通过（两种模式各自断言一致）。
 import env;
+import math;
 
 ffi int myp_gpu_device_count();
 ffi long myp_gpu_device_memory();
@@ -26,11 +28,12 @@ class GpuProbe {
             Console.write(devs);
             Console.writeString("\n");
             if (vendor == "cpu") {
-                // CPU 回退：查询全 0
+                // CPU 回退：查询全 0；@gpu for CPU 回退同结果
                 if (devs != 0) { Console.writeString("FAIL: cpu fallback devs\n"); return; }
                 if (myp_gpu_device_memory() != 0) { Console.writeString("FAIL: cpu mem\n"); return; }
                 if (myp_gpu_compute_capability() != 0) { Console.writeString("FAIL: cpu cap\n"); return; }
                 if (__myp_gpu_mem_alignment() != 16) { Console.writeString("FAIL: align\n"); return; }
+                if (runKernel() == 0) { Console.writeString("FAIL: cpu kernel\n"); return; }
                 Console.writeString("GPU CPU-FALLBACK OK\n");
                 return;
             }
@@ -61,7 +64,25 @@ class GpuProbe {
             }
             myp_gpu_free(dev);
             if (ok == 0) { Console.writeString("FAIL: gpu mem roundtrip\n"); return; }
+            // Stage B：@gpu for 真实内核执行（load_kernel + launch + destroy）
+            if (runKernel() == 0) { Console.writeString("FAIL: gpu kernel\n"); return; }
             Console.writeString("GPU OK\n");
+        }
+        // @gpu for 内核执行：data[i] = sqrt(4) + sin(1) → 2.8414709848078967
+        // CPU 回退与真 GPU 同结果（codegen @gpu for 统一语义）。
+        int runKernel() {
+            long n = 128L;
+            double[] data = new double[n];
+            for (long i = 0L; i < n; i = i + 1L) data[i] = 4.0;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = Math.sqrt(data[i]) + Math.sin(1.0);
+            }
+            double expect = 2.0 + 0.8414709848078965;
+            for (long i = 0L; i < n; i = i + 1L) {
+                double v = data[i];
+                if (v < expect - 1e-9 || v > expect + 1e-9) return 0;
+            }
+            return 1;
         }
 }
 

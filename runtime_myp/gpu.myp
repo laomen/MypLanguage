@@ -18,6 +18,8 @@ ffi int dlclose(long lib);                // libc
 ffi string myp_env_get(string name);      // env.myp
 ffi long myp_arena_alloc(long size);      // alloc.myp
 ffi string myp_alloc(long size);          // alloc.myp
+ffi string myp_to_string_i64(long val);   // num.myp（flush_printf 整数格式化）
+ffi string myp_fmt_double_g(double v, int prec);  // float.myp（%g 语义）
 
 @static class Gpu {
     property:
@@ -44,6 +46,12 @@ ffi string myp_alloc(long size);          // alloc.myp
         long fStreamCreate = 0;
         long fStreamSync = 0;
         long fStreamDestroy = 0;
+        // Stage B：内核 load/launch/byoc/printf 所需 cu* 函数指针
+        long fModuleLoadData = 0;     // cuModuleLoadData
+        long fModuleGetFunction = 0;  // cuModuleGetFunction
+        long fModuleUnload = 0;       // cuModuleUnload
+        long fLaunchKernel = 0;       // cuLaunchKernel
+        long fMemcpyDtoHAsync = 0;    // cuMemcpyDtoHAsync
         // arena 出参缓冲（地址）
         long devVal = 0;    // int: &dev
         long ctxVal = 0;    // long: &ctx
@@ -53,6 +61,24 @@ ffi string myp_alloc(long size);          // alloc.myp
         long allocVal = 0;  // long: cuMemAlloc 结果
         long nameBuf = 0;   // char[256]: 设备名缓冲
         long streamVal = 0; // long: cuStreamCreate 结果
+        long modVal = 0;    // long: cuModuleLoadData 结果
+        long fnVal = 0;     // long: cuModuleGetFunction 结果
+        // 内核缓存（按 (ptx,name) 指针身份；复用模块避免逐次 load 显存暴涨）
+        long kcPtx = 0;     // long[128]: ptx 指针
+        long kcName = 0;    // long[128]: name 指针
+        long kcRec = 0;     // long[128]: kernel record 地址
+        long kcN = 0;       // int: 缓存条目数
+        // kernel printk/assert staging（设备指针，直接值）
+        long pfBuf = 0;     // 记录缓冲（1024*7*8）
+        long pfCnt = 0;     // 计数（8B）
+        long pfFail = 0;    // 失败标志（8B）
+        long pfInit = 0;    // staging 已分配
+        // flush 宿主 staging（arena 地址）
+        long pfTmpCnt = 0;  // 8B
+        long pfTmpFail = 0; // 8B
+        long pfTmpRec = 0;  // 1024*56B 记录回读
+        long pfCh = 0;      // 1B：单字符写缓冲
+        long pfDb = 0;      // 8B：i64→double 位型重释槽
 }
 
 void gpuTab() {
@@ -65,6 +91,16 @@ void gpuTab() {
         Gpu.allocVal = myp_arena_alloc(8);
         Gpu.nameBuf = myp_arena_alloc(256);
         Gpu.streamVal = myp_arena_alloc(8);
+        Gpu.modVal = myp_arena_alloc(8);
+        Gpu.fnVal = myp_arena_alloc(8);
+        Gpu.kcPtx = myp_arena_alloc(128 * 8);
+        Gpu.kcName = myp_arena_alloc(128 * 8);
+        Gpu.kcRec = myp_arena_alloc(128 * 8);
+        Gpu.pfTmpCnt = myp_arena_alloc(8);
+        Gpu.pfTmpFail = myp_arena_alloc(8);
+        Gpu.pfTmpRec = myp_arena_alloc(1024 * 56);
+        Gpu.pfCh = myp_arena_alloc(1);
+        Gpu.pfDb = myp_arena_alloc(8);
     }
 }
 
@@ -94,9 +130,15 @@ int myp_gpu_init() {
     Gpu.fStreamCreate = dlsym(lib, __myp_str_ptr("cuStreamCreate"));
     Gpu.fStreamSync = dlsym(lib, __myp_str_ptr("cuStreamSynchronize"));
     Gpu.fStreamDestroy = dlsym(lib, __myp_str_ptr("cuStreamDestroy"));
+    Gpu.fModuleLoadData = dlsym(lib, __myp_str_ptr("cuModuleLoadData"));
+    Gpu.fModuleGetFunction = dlsym(lib, __myp_str_ptr("cuModuleGetFunction"));
+    Gpu.fModuleUnload = dlsym(lib, __myp_str_ptr("cuModuleUnload"));
+    Gpu.fLaunchKernel = dlsym(lib, __myp_str_ptr("cuLaunchKernel"));
+    Gpu.fMemcpyDtoHAsync = dlsym(lib, __myp_str_ptr("cuMemcpyDtoHAsync"));
     if (Gpu.fCuInit == 0 || Gpu.fCtxCreate == 0 || Gpu.fDeviceGet == 0 ||
         Gpu.fDeviceGetCount == 0 || Gpu.fMemAlloc == 0 || Gpu.fMemFree == 0 ||
-        Gpu.fMemcpyHtoD == 0 || Gpu.fMemcpyDtoH == 0 || Gpu.fCtxSynchronize == 0) {
+        Gpu.fMemcpyHtoD == 0 || Gpu.fMemcpyDtoH == 0 || Gpu.fCtxSynchronize == 0 ||
+        Gpu.fModuleLoadData == 0 || Gpu.fModuleGetFunction == 0 || Gpu.fLaunchKernel == 0) {
         return 0;
     }
     if (__myp_indirect_i32(Gpu.fCuInit, 0) != 0) return 0;   // cuInit(0)
@@ -271,4 +313,243 @@ int myp_gpu_stream_destroy_h(long s) {
     if (Gpu.availFlag == 0 || s == 0 || Gpu.fStreamDestroy == 0) return 0;
     __myp_indirect_i32(Gpu.fStreamDestroy, s);
     return 1;
+}
+
+// ============================================================================
+// Stage B（#44）：内核 load / launch / destroy / byoc / printf（@gpu for 真实 GPU）
+// ============================================================================
+
+// C: void* myp_gpu_load_kernel(const char* ptx, const char* name)
+// 按 (ptx, name) 指针身份缓存内核模块/函数（嵌入 PTX/name 为程序常量，地址稳定；
+// 与 C g_kcache 同语义）。返回内核记录地址（0=失败 → codegen @gpu for 走 CPU 回退）。
+long myp_gpu_load_kernel(long ptx, long name) {
+    if (Gpu.availFlag == 0) return 0;
+    // cuModuleLoadData 依赖当前线程上下文 TLS；@thread/协程上下文可能不同 → 显式
+    // cuCtxSetCurrent（同 C 版 / memory 教训：避免依赖隐式当前上下文）。
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    long i = 0;
+    while (i < Gpu.kcN) {
+        if (__myp_mem_load_i64(Gpu.kcPtx + i * 8) == ptx &&
+            __myp_mem_load_i64(Gpu.kcName + i * 8) == name)
+            return __myp_mem_load_i64(Gpu.kcRec + i * 8);
+        i = i + 1;
+    }
+    if (Gpu.fModuleLoadData == 0 || Gpu.fModuleGetFunction == 0) return 0;
+    if (__myp_indirect_i32(Gpu.fModuleLoadData, Gpu.modVal, ptx) != 0) return 0;
+    long mod = __myp_mem_load_i64(Gpu.modVal);
+    if (__myp_indirect_i32(Gpu.fModuleGetFunction, Gpu.fnVal, mod, name) != 0) {
+        if (Gpu.fModuleUnload != 0) __myp_indirect_i32(Gpu.fModuleUnload, mod);
+        return 0;
+    }
+    long fn = __myp_mem_load_i64(Gpu.fnVal);
+    // 内核记录 {mod, fn, name} = 24B arena（句柄 = 记录地址，同 C kernel_t*）
+    long rec = myp_arena_alloc(24);
+    if (rec == 0) return 0;
+    __myp_mem_store_i64(rec, mod);
+    __myp_mem_store_i64(rec + 8, fn);
+    __myp_mem_store_i64(rec + 16, name);
+    // 缓存（满 → 不缓存，destroy 时 unload；128 与 C MYP_GPU_KERNEL_CACHE_MAX 一致）
+    if (Gpu.kcN < 128) {
+        __myp_mem_store_i64(Gpu.kcPtx + Gpu.kcN * 8, ptx);
+        __myp_mem_store_i64(Gpu.kcName + Gpu.kcN * 8, name);
+        __myp_mem_store_i64(Gpu.kcRec + Gpu.kcN * 8, rec);
+        Gpu.kcN = Gpu.kcN + 1;
+    }
+    return rec;
+}
+
+// C: int myp_gpu_launch(void* kctx, unsigned gx, unsigned bx, void** args, unsigned n, long stream)
+// args = 编译器构造的 void**（每元素 = 指向参数值 8B 的指针，即 cuLaunchKernel
+// kernelParams 约定）；stream==0 同步（launch 后 cuCtxSynchronize）。
+int myp_gpu_launch(long kctx, int gx, int bx, long args, int n, long stream) {
+    if (Gpu.availFlag == 0 || kctx == 0) return 0;
+    long fn = __myp_mem_load_i64(kctx + 8);
+    // cuLaunchKernel(fn, gx,1,1, bx,1,1, 0, stream, args, NULL)
+    int r = __myp_indirect_i32(Gpu.fLaunchKernel, fn, gx, 1, 1, bx, 1, 1, 0,
+                               stream, args, 0);
+    if (r != 0) return 0;
+    if (stream == 0) {
+        if (__myp_indirect_i32(Gpu.fCtxSynchronize) != 0) return 0;
+    }
+    return 1;
+}
+
+// C: void myp_gpu_destroy_kernel(void* kctx)
+// 缓存条目进程生命周期保持（复用同一模块）；未缓存（缓存满回退）→ cuModuleUnload。
+void myp_gpu_destroy_kernel(long kctx) {
+    if (Gpu.availFlag == 0 || kctx == 0) return;
+    long i = 0;
+    while (i < Gpu.kcN) {
+        if (__myp_mem_load_i64(Gpu.kcRec + i * 8) == kctx) return;
+        i = i + 1;
+    }
+    if (Gpu.fModuleUnload != 0)
+        __myp_indirect_i32(Gpu.fModuleUnload, __myp_mem_load_i64(kctx));
+}
+
+// C: void myp_gpu_to_host_async(void* d, const void* s, size_t sz, long stream)
+void myp_gpu_to_host_async(long d, long s, long sz, long stream) {
+    if (Gpu.availFlag == 0 || Gpu.fMemcpyDtoHAsync == 0 || sz == 0) return;
+    __myp_indirect_i32(Gpu.fMemcpyDtoHAsync, d, s, sz, stream);
+}
+
+// ---- BYOC：自定义 PTX 内核 FFI（§P6 ③）----
+// C: long myp_gpu_byoc_load(const char* ptx, const char* name)
+long myp_gpu_byoc_load(long ptx, long name) {
+    if (Gpu.availFlag == 0 || ptx == 0 || name == 0) return 0;
+    return myp_gpu_load_kernel(ptx, name);
+}
+// C: int myp_gpu_byoc_launch(long kctx, int grid, int block, const long* args, int n, long stream)
+// args = host long[]（每项 8B：设备指针放指针值 / 标量放数值 / double 按位型）；
+// 构造 void** 指向各 8B 存储后交 cuLaunchKernel（arena 临时缓冲，bump 不归还可接受）。
+int myp_gpu_byoc_launch(long kctx, int grid, int block, long args, int n, long stream) {
+    if (Gpu.availFlag == 0 || kctx == 0 || args == 0 || n <= 0) return 0;
+    if (n > 64) return 0;   // cuLaunchKernel 参数上限
+    long ptrs = myp_arena_alloc(long(n) * 8);
+    if (ptrs == 0) return 0;
+    long i = 0;
+    while (i < long(n)) {
+        __myp_mem_store_i64(ptrs + i * 8, args + i * 8);
+        i = i + 1;
+    }
+    return myp_gpu_launch(kctx, grid, block, ptrs, n, stream);
+}
+
+// ---- kernel printk/assert staging（§P5 ②）----
+// 布局（7×i64=56B）：[0]type(0=printk/1=assert) [1]fmt_id [2]gid
+//   [3..5]a0..a2（int=zext i64 / double=位型 i64） [6]mask（bit_i=1 表示 a_i 为 double）
+// 设备缓冲由 kernel 以附加 i64 参数持有（避免 cuModuleGetGlobal 依赖上下文 TLS）。
+void gpuPfEnsure() {
+    if (Gpu.pfInit != 0) return;
+    Gpu.pfInit = 1;
+    if (Gpu.availFlag == 0 || Gpu.fMemAlloc == 0) return;
+    if (__myp_indirect_i32(Gpu.fMemAlloc, Gpu.allocVal, 1024 * 7 * 8) == 0)
+        Gpu.pfBuf = __myp_mem_load_i64(Gpu.allocVal);
+    if (__myp_indirect_i32(Gpu.fMemAlloc, Gpu.allocVal, 8) == 0)
+        Gpu.pfCnt = __myp_mem_load_i64(Gpu.allocVal);
+    if (__myp_indirect_i32(Gpu.fMemAlloc, Gpu.allocVal, 8) == 0)
+        Gpu.pfFail = __myp_mem_load_i64(Gpu.allocVal);
+}
+long myp_gpu_printf_buf()  { gpuPfEnsure(); return Gpu.pfBuf; }
+long myp_gpu_printf_cnt()  { gpuPfEnsure(); return Gpu.pfCnt; }
+long myp_gpu_printf_fail() { gpuPfEnsure(); return Gpu.pfFail; }
+
+// ---- flush 辅助：直接写 fd（不经 @test 捕获，同 C fprintf）----
+long pfStrLen(long s) {
+    long n = 0;
+    while (__myp_mem_load_i8(s + n) != 0) n = n + 1;
+    return n;
+}
+void pfWrite(long s, long n) {
+    __myp_syscall(1, 1, s, n, 0, 0, 0);
+}
+void pfWriteCStr(long s) {
+    pfWrite(s, pfStrLen(s));
+}
+void pfWriteErrCStr(long s) {
+    __myp_syscall(1, 2, s, pfStrLen(s), 0, 0, 0);
+}
+void pfWriteI64(long v) {
+    string s = myp_to_string_i64(v);
+    pfWrite(__myp_str_ptr(s), pfStrLen(__myp_str_ptr(s)));
+}
+void pfWriteDouble(double d) {
+    string s = myp_fmt_double_g(d, 6);
+    pfWrite(__myp_str_ptr(s), pfStrLen(__myp_str_ptr(s)));
+}
+
+// C: void myp_gpu_flush_printf(long pbuf, long pcnt, long pfail, const char** fmts, int nfmt)
+void myp_gpu_flush_printf(long pbuf, long pcnt, long pfail, long fmts, int nfmt) {
+    if (Gpu.availFlag == 0 || pcnt == 0) return;
+    __myp_indirect_i32(Gpu.fMemcpyDtoH, Gpu.pfTmpCnt, pcnt, 8);
+    long cnt = __myp_mem_load_i64(Gpu.pfTmpCnt);
+    long fail = 0;
+    if (pfail != 0) {
+        __myp_indirect_i32(Gpu.fMemcpyDtoH, Gpu.pfTmpFail, pfail, 8);
+        fail = __myp_mem_load_i64(Gpu.pfTmpFail);
+    }
+    if (cnt < 0) cnt = 0;
+    if (cnt > 1024) cnt = 1024;
+    if (cnt > 0 && pbuf != 0) {
+        __myp_indirect_i32(Gpu.fMemcpyDtoH, Gpu.pfTmpRec, pbuf, cnt * 56);
+        long r = 0;
+        while (r < cnt) {
+            long rec = Gpu.pfTmpRec + r * 56;
+            long type = __myp_mem_load_i64(rec);
+            long fid = __myp_mem_load_i64(rec + 8);
+            long gid = __myp_mem_load_i64(rec + 16);
+            long mask = __myp_mem_load_i64(rec + 48);
+            long a0 = __myp_mem_load_i64(rec + 24);
+            long a1 = __myp_mem_load_i64(rec + 32);
+            long a2 = __myp_mem_load_i64(rec + 40);
+            long fmt = 0;
+            if (fid >= 0 && fid < long(nfmt)) fmt = __myp_mem_load_i64(fmts + fid * 8);
+            if (fmt == 0) fmt = __myp_str_ptr("(?)");
+            pfWriteCStr(__myp_str_ptr("kernel[gid="));
+            pfWriteI64(gid);
+            if (type == 1) pfWriteCStr(__myp_str_ptr("] ASSERT FAIL: "));
+            else pfWriteCStr(__myp_str_ptr("] "));
+            // mini-printf：% 转换（跳过长修饰 l）；每转换消费一个 arg（int/double 由 mask）
+            long ai = 0;
+            long p = 0;
+            while (__myp_mem_load_i8(fmt + p) != 0) {
+                long c = __myp_mem_load_i8(fmt + p);
+                p = p + 1;
+                if (c != 37) {
+                    __myp_mem_store_i8(Gpu.pfCh, c);
+                    pfWrite(Gpu.pfCh, 1);
+                    continue;
+                }
+                c = __myp_mem_load_i8(fmt + p);
+                p = p + 1;
+                if (c == 37) {   // %% → 字面 %
+                    __myp_mem_store_i8(Gpu.pfCh, 37);
+                    pfWrite(Gpu.pfCh, 1);
+                    continue;
+                }
+                if (c == 108) {  // 'l' 跳过（%ld/%lf）
+                    c = __myp_mem_load_i8(fmt + p);
+                    p = p + 1;
+                }
+                if (ai > 2) { pfWriteCStr(__myp_str_ptr("%?")); continue; }
+                long v = a0;
+                if (ai == 1) v = a1;
+                else if (ai == 2) v = a2;
+                int is_double = int((mask >> ai) & 1);
+                if (is_double != 0) {
+                    __myp_mem_store_i64(Gpu.pfDb, v);
+                    double d = __myp_mem_load_double(Gpu.pfDb);
+                    pfWriteDouble(d);
+                } else {
+                    pfWriteI64(v);
+                }
+                ai = ai + 1;
+            }
+            pfWriteCStr(__myp_str_ptr("\n"));
+            r = r + 1;
+        }
+    }
+    // 重置计数器与失败标志（下个 kernel 从 0 起）
+    __myp_mem_store_i64(Gpu.pfDb, 0);
+    __myp_indirect_i32(Gpu.fMemcpyHtoD, pcnt, Gpu.pfDb, 8);
+    if (pfail != 0) __myp_indirect_i32(Gpu.fMemcpyHtoD, pfail, Gpu.pfDb, 8);
+    if (fail != 0) {
+        pfWriteErrCStr(__myp_str_ptr(
+            "[myp GPU] @gpu kernel ASSERT FAILED — aborting (device-side assert, §P5 ②)\n"));
+        __myp_syscall(60, 1, 0, 0, 0, 0, 0);   // exit(1)
+    }
+}
+
+// C: __attribute__((noreturn)) void myp_gpu_scatter_check_fail(const char* msg)
+// @gpu scatter(unique) 索引预扫失败（越界/重复）→ 契约违约，打印 + 退出。
+void myp_gpu_scatter_check_fail(long msg) {
+    pfWriteErrCStr(__myp_str_ptr("[myp GPU] @gpu scatter(unique) index check failed: "));
+    if (msg != 0) {
+        long n = 0;
+        while (__myp_mem_load_i8(msg + n) != 0) n = n + 1;
+        __myp_syscall(1, 2, msg, n, 0, 0, 0);
+    }
+    __myp_syscall(1, 2, __myp_str_ptr("\n"), 1);
+    __myp_syscall(60, 1, 0, 0, 0, 0, 0);   // exit(1)；永不返回
 }

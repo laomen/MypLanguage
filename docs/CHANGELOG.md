@@ -276,6 +276,48 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：Stage B 内核（cuModuleLoadDataEx + cuLaunchKernel 12-arg 编组 + byoc/
   printf）与 Stage C 流/事件/图（deeplearning 分项目 changelog）。
 
+### v3.15.50 — runtime myp化 #44：包 G GPU Stage B（gpu.myp 内核 load/launch/byoc/printf，@gpu for 真实 GPU）
+
+**非破坏性**。GPU 内核执行层 MYP 化——shadow C `runtime_gpu.c` 内核路径 11 个
+`myp_gpu_*`，**`@gpu for` 在 shadow 下首次跑真实 GPU**（状态分裂统一）：
+
+- **gpu.myp 新增**（@static Gpu 扩展）：
+  - 新 dlsym：`cuModuleLoadData`/`cuModuleGetFunction`/`cuModuleUnload`/
+    `cuLaunchKernel`/`cuMemcpyDtoHAsync`（init 必需校验）。
+  - **`myp_gpu_load_kernel`**：内核缓存（`kcPtx/kcName/kcRec` 128 槽按 (ptx,name)
+    指针身份复用，同 C g_kcache；避免训练逐样本模块加载显存暴涨）。记录
+    `{mod,fn,name}` = 24B arena，句柄 = 记录地址（同 C kernel_t*）。入口显式
+    `cuCtxSetCurrent`（CUDA TLS 教训）。
+  - **`myp_gpu_launch`**：`cuLaunchKernel` 11 参数 `__myp_indirect_i32` 编组
+    （fn, gx,1,1, bx,1,1, 0, stream, args, NULL）；stream==0 同步
+    （cuCtxSynchronize）。args = 编译器 void**（kernelParams 约定）直传。
+  - **`myp_gpu_destroy_kernel`**：缓存命中保持不 unload；未缓存（缓存满回退）
+    cuModuleUnload。
+  - **`myp_gpu_to_host_async`**（cuMemcpyDtoHAsync，stream 模式回拷）。
+  - **BYOC**：`myp_gpu_byoc_load`（→load_kernel）/`byoc_launch`（host long[] →
+    void** arena 临时编组，n≤64）。
+  - **kernel printk/assert**：`myp_gpu_printf_buf/cnt/fail`（惰性分配设备 staging
+    pbuf 1024×56B / pcnt / pfail）+ `myp_gpu_flush_printf`（D2H 回读记录 → 宿主
+    mini-printf：% 转换消费 int/double 由 mask 定，直接写 fd=1；assert 失败
+    stderr+exit(1)）。**注**：selfhost `@gpu for` 不发射 printk staging（仅 declare），
+    该路径为 oracle（走 C runtime）平价实现，shadow 套件不运行时触发。
+  - **`myp_gpu_scatter_check_fail`**（noreturn：stderr+exit(1)，scatter unique 契约
+    违约）。
+- **rt_gpu_test.myp 扩展**：新增 `@gpu for` 真实内核执行段
+  `data[i]=sqrt(4)+sin(1)→2.8414709848078967`（128 元素，1e-9 容差）——双模式同
+  结果（CPU 回退 / 真 GPU）。
+- **验证**：
+  - rt_gpu_test 双模式：fallback `GPU CPU-FALLBACK OK`；真 GPU `name=NVIDIA GeForce
+    RTX 2070 SUPER cap=705 memMB=7752` + `GPU OK`（含 @gpu for 内核执行）exit 0。
+  - **直接探针**（`/tmp/rt_gpu_load_probe`）：`myp_gpu_load_kernel` 返回 `kctx=…`
+    （非 0，真 PTX 加载）+ `launch=1` —— 确凿证明 GPU 路径。
+  - manual_ch9 shadow 链接 **MYP_GPU=1** → 3 tests/11 assertions 全过（@gpu for +
+    Vectors.add/sum 真 GPU）。
+  - **shadow 34/34**；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323（oracle +
+    selfhost）。shadow 计数 347 → **358**（~73%）。
+- **未做**：Stage C 流/事件/图（cuStream*/cuEvent*/cuGraph*，deeplearning 分项目
+  changelog）。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20
