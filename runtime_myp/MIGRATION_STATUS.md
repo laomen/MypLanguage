@@ -15,12 +15,24 @@
 
 | 项 | 数量 |
 |---|---|
-| C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#47 补后重算） | **380**（~78%） |
-| 未 shadow（C runtime 剩余） | **115** |
+| C runtime 顶层 `__?myp_*` 函数（runtime.c + gpu 63 + lib 2） | **480** |
+| 已 shadow（`nm build/libmyp_rt_myp.a` 归档实际提供定义 ∩ C） | **377**（~79%） |
+| 未 shadow（C runtime 剩余） | **103** |
+| ├─ 被 codegen/stdlib 直接引用 | **3**（`myp_printf` varargs / `myp_cublas_available` / `myp_cublas_sgemm`——**均刻意保留 C**） |
+| └─ 仅 C 内部/死代码（gc-sections 剥离或只藏在 MYP 化公共 API 背后） | **100** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/process/regex/date/hash-md5-sha1） | **75** |
 | 已移出为外部库（libs/，v3.15.62：sdl 40 / ttf 10） | **50** |
-| runtime_myp 模块 | **22** 个 |
+| runtime_myp 模块 | **36** 个 |
+
+> **收尾结论（v3.15.63，权威审计口径）**：runtime 迁移对 **de-gcc 目标已达成**。
+> 剩余 103 个未影 C 函数里，**没有一个是 MYP 程序或编译器必须直接调用的**——
+> 100 个是 C 内部 helper（分配器内部、事件路由、协程栈池、exec worker、atexit
+> 清理等，`--gc-sections` 剥离或仅在已 MYP 化公共 API 的实现内部被调用），
+> 3 个是刻意保留 C 的边界（`myp_printf` varargs 无法优雅 shadow、cuBLAS 厂商
+> 库钩子经 `__myp_indirect` 亦可但无必要）。审计命令：
+> `nm build/libmyp_rt_myp.a | grep ' T '` 取归档定义 ∩ C 顶层定义。
+> 全部大包（A–H）已完成；shadow 套件 43/43；bootstrap 16/16 不动点稳定；
+> oracle+selfhost 全量 323/323。
 
 已完成的层（#1–#37 里程碑）：字符串 str / 整数 num（含 `myp_str_parse_int_opt`
 long-参数 ABI shadow，#31）/ 浮点 float / 内存核心 alloc（含 `myp_diag_arena_*`，#31）+
@@ -395,7 +407,28 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 6. ✅ **包 F pool + @thread + 事件系统**（#40 pool.myp；#41 event.myp
    thread/event 路由全做；剩余 work/queue/exec worker 小项）
 7. ✅ **包 G GPU 已完成**（#43/#44/#45：init/查询/内存/流 → 内核 load/launch/byoc/printf → 流/事件/图，63 个 shadow）
-8. **包 H bridge**（按库分批）
+8. ✅ **包 H bridge 已完成**（v3.15.55–62：date/hash/regex/json/process/uds/net 全 MYP 化 + sdl/ttf 移出外部库 libs/）
 
 > 注：包 A–C 无硬前置可立即做；包 D–F 相互依赖（D→E→F）；G 独立可随时做；
 > H 里纯算法类（date/regex/json/hash）可随时做。
+
+## 五、收尾后剩余可做项（非 de-gcc 必需）
+
+- **⚠️ MYP 运行时 bug（归档默认化的前置，下一里程碑）**：归档被 myp_self2 自动
+  拾取时，全量 323 套件 10 失败——MYP coro.myp 栈池（`coroStackReturn` 在 1500
+  协程驱动时崩溃）、io（async_file/io MISMATCH）、struct_arc 等实现与 C 语义有
+  差异。rt_* 单测覆盖不到这些模式 → **修复后 `MYP_MAKE_ARCHIVE=1` 才可默认分发**。
+- **`myp_printf`（varargs）**：唯一保留 C 的 codegen 契约。MYP 程序不调用
+  （`Console.*`/`__myp_print*` 走独立路径）；若未来需要可加 `__myp_printf_va`
+  变长参数包装（低优先）。
+- **cuBLAS 钩子（`myp_cublas_available`/`sgemm`）**：厂商库，经 `__myp_indirect`
+  绑可去 C，但无实际调用方（deeplearning 未用），保留 C 平价。
+- **100 个 C 内部 helper**：分配器内部（arena/region bump、alloc_list）、事件
+  路由（dispatch/route_to_thread）、协程栈池/退役/exec worker、atexit 清理
+  （free_alloc_list_global/coro_cleanup_all）等——随各公共 API 的 MYP 化已无
+  外部引用，`--gc-sections` 在未引用时剥离。如需彻底归零 C 面，只能逐层把
+  公共 API 内部也 MYP 化（非 de-gcc 收益，工作量/风险不成比例）。
+- **de-gcc 工具链验证（显式归档）**：`MYP_MAKE_ARCHIVE=1 bash runtime_myp/
+  build.sh` 产出归档 → `MYP_RT_MYP=build/libmyp_rt_myp.a` + 假 gcc + `myp_self2`
+  编译链接覆盖 hash/json/regex/date/process/net/uds 的综合程序全过（gcc 完全
+  绕过）。归档默认不进 build/（避免破坏默认 selfhost 全量）。

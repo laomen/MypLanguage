@@ -1,4 +1,6 @@
 // @thread 线程内异常：子线程 handler 栈独立，线程内 try/catch 捕获
+// 确定性：Worker 直接在 main 里 spawn → 句柄进 main 的 threadHandles_，
+// main 收尾 stop+join 等待 Worker 完整跑完 startup（输出不再竞态）。
 import env;
 
 class Worker {
@@ -15,15 +17,7 @@ class Worker {
         }
 }
 
-class Main {
-    action:
-        @startup void run() {
-            Worker w = new Worker() @thread;
-            Console.writeString("main_done\n");
-        }
-}
-
 int main() {
-    Main m = new Main() @thread;
+    Worker w = new Worker() @thread;
     return 0;
 }

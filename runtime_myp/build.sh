@@ -26,12 +26,22 @@ for m in runtime_myp/*.myp; do
     RT_OBJS="$RT_OBJS /tmp/rt_myp_${base}.o"
 done
 
-# 归档：libmyp_rt_myp.a（随编译器分发，de-gcc 关键）。oracle/selfhost 链接程序时
-# 默认在 <编译器二进制旁>/build/ 找到它 → 跳过 MYP 化 bridge 的 gcc 编译 + 置于
-# libmyp_rt.a 前 + --allow-multiple-definition（MYP 定义优先）。
-rm -f build/libmyp_rt_myp.a
-ar rcs build/libmyp_rt_myp.a $RT_OBJS
-echo "== 归档 build/libmyp_rt_myp.a （$(echo $RT_OBJS | wc -w) 个模块对象）=="
+# 归档（OPT-IN，MYP_MAKE_ARCHIVE=1 才产出 build/libmyp_rt_myp.a）：
+# de-gcc 关键——selfhost 链接程序时经 mypRtLib() 在 <编译器二进制旁>/build/ 找到
+# 它 → 跳过 MYP 化 bridge 的 gcc 编译 + 置于 libmyp_rt.a 前 + --allow-multiple-
+# definition（MYP 定义优先）。
+# ⚠️ 默认关闭：MYP 运行时（coro.myp 栈池 / io / struct_arc 等）在全量 323 套件
+# 的某些模式（如 1500 协程驱动）下有真实 bug，归档被 selfhost 自动拾取会导致
+# selfhost 全量变红（见 MIGRATION_STATUS 收尾结论）。缺省保持 C 运行时；显式
+# MYP_MAKE_ARCHIVE=1 产出归档后，用 MYP_RT_MYP=<path> 显式验证 de-gcc。
+if [ "${MYP_MAKE_ARCHIVE:-0}" = "1" ]; then
+    rm -f build/libmyp_rt_myp.a
+    ar rcs build/libmyp_rt_myp.a $RT_OBJS
+    echo "== 归档 build/libmyp_rt_myp.a （$(echo $RT_OBJS | wc -w) 个模块对象）=="
+else
+    rm -f build/libmyp_rt_myp.a
+    echo "== 跳过归档产出（MYP_MAKE_ARCHIVE=1 启用；MYP 运行时 bug 未清前勿自动分发）=="
+fi
 
 # 每个 shadow 验证程序单独链接+运行（都有各自 main()）
 for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \

@@ -27,6 +27,46 @@
 
 ## 编译器版本历史
 
+### v3.15.63 — runtime 迁移收尾审计 + exception_thread flaky 修复 + 归档固化
+
+**非破坏性**。runtime myp化 收尾：**权威审计确认 de-gcc 目标达成**；顺手修复
+预存在 flaky 测试；固化 MYP 运行时归档产出。
+
+- **架构原则定案**：oracle（mypc）= **种子编译器，冻结、不扩展特性**——只负责
+  编译 `tools/selfhost/src/*.myp` → `myp_self`（stage-0 自举）。runtime_myp
+  模块/用户程序/stdlib 一律由不动点 selfhost 编译器（`myp_self`/`myp_self2`，
+  全特性）编译。此前误把 oracle 当模块编译器（撞缺 `__myp_mem_store_i64`）已纠正。
+- **权威审计（nm 口径）**：C runtime 顶层 `myp_*` **480** 个，`nm
+  build/libmyp_rt_myp.a` 归档提供 **377**（~79%）；未影 **103** 个中**仅 3 个被
+  codegen/stdlib 直接引用且均刻意保留 C**（`myp_printf` varargs / `myp_cublas_
+  available` / `myp_cublas_sgemm`），其余 **100** 个是 C 内部 helper（gc-sections
+  剥离或只藏在 MYP 化公共 API 背后）→ **runtime 迁移对 de-gcc 目标已达成**，
+  `runtime_myp/MIGRATION_STATUS.md` 更新收尾结论 + 剩余可做项清单。
+- **归档（OPT-IN，MYP_MAKE_ARCHIVE=1）**：`runtime_myp/build.sh` 可产出
+  `build/libmyp_rt_myp.a`（MYP_RT_MYP 归档，供 selfhost 链接跳过 MYP 化 bridge
+  的 gcc 编译）。**默认关闭**——⚠️ 审计发现 MYP 运行时（coro.myp 栈池 / io /
+  struct_arc 等）在全量 323 套件的某些模式（如 1500 协程驱动）下有真实 bug：
+  归档被 myp_self2 自动拾取（#51 mypRtLib）时 selfhost 全量变红（10 失败：
+  coro_capacity/more/stack/thread、async_file、io、struct_arc 等），归档移走后
+  恢复 323/323。**→ 修复这些 MYP 运行时 bug 是「归档成为默认」的前置**（下一
+  里程碑）。e2e 假 gcc 验证仍有效（显式 MYP_RT_MYP 指向归档，7 个 MYP 化
+  bridge 全过，gcc 完全绕过）。
+- **陈旧二进制教训**：本次或此前给 `src/main.cpp` 加过 MYP_RT_MYP 归档支持又
+  回滚源码，但 `build/mypc` 未重建（strace 显示仍打开 `libmyp_rt_myp.a`）→
+  归档出现时 oracle 套件 10 失败。**回滚编译器源码后必须重建二进制**（touch
+  三文件 + cmake build）。
+- **e2e 假 gcc 验证**：`myp_self2` + `MYP_RT_MYP` 归档，单程序覆盖
+  hash/json/regex/date/process/net/uds 全部 7 个 MYP 化 bridge，假 gcc（任何
+  调用即 exit 99）下编译链接运行 exit 0——gcc 完全绕过。
+- **flaky 修复**：`tests/exception_thread` 线程输出竞态——根因是嵌套 @thread
+  （Main.run 里 spawn Worker）的句柄在**每函数作用域** `threadHandles_` 中，
+  main 收尾只 join 本函数创建的句柄 → 嵌套 Worker 从未 join，进程退出时偶发
+  截断输出（20 次里 2 次）。修复：Worker 直接在 main spawn（句柄进 main 的
+  threadHandles_ → 收尾确定性 stop+join，startup 必在 join 前跑完），期望输出
+  更新为确定性的 `thr_caught=worker_err` + `thr_done`。双编译器各 30/30 稳定。
+- 验证：oracle+selfhost 全量 323/323（exception_thread 不再偶发 MISMATCH）；
+  bootstrap 16/16。
+
 ### v3.15.62 — sdl/ttf 移出标准库为外部库（libs/，薄接口 + `.myp.libs` 侧车）
 
 **非破坏性**。架构分层落地：**GPU 是语言能力**（`@gpu for` 绑定 → 留在运行时），
