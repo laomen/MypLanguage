@@ -75,16 +75,20 @@ long myp_arena_alloc_ex(long size, int grow) {
 long myp_arena_alloc(long size) { return myp_arena_alloc_ex(size, 0); }
 
 // C: int64_t myp_diag_arena_reserved/used —— 诊断（Memory.arenaReserved/Used）。
-// reserved：遍历 chunk 链表（next@0 → cap@8，head 起）累计总预留。
+// reserved：遍历 chunk 链表累计总预留。⚠️ 链方向 = 新→旧（新 chunk 的 next@0 指向
+// 旧 chunk，`if (Arena.cur == 0) Arena.head = c` 只记最旧 chunk）→ 必须从 **Arena.cur
+// （最新）** 走 next 链（C 版 `for (c = myp_arena_cur; c; c = c->next)`）。旧实现从
+// head（最旧）走只统计第一个 chunk —— 多 chunk（如 evInit 一次 ~550KB）时 reserved
+// 低估 → used > reserved 诊断误报（#41 暴露的潜伏 bug）。
 // used：MYP arena 只维护 Arena.cur_used（当前 chunk）+ total_used（累计 bump），
 // 不写每 chunk 的 used@16（C 版逐 chunk 读 used 字段——MYP 无此维护）→ 直接用
 // total_used。bump 永不归还（region 自己管），total_used 即当前已用。
 long myp_diag_arena_reserved() {
     long total = 0;
-    long c = Arena.head;
+    long c = Arena.cur;
     while (c != 0) {
         total = total + __myp_mem_load_i64(c + 8);   // cap
-        c = __myp_mem_load_i64(c);                   // next
+        c = __myp_mem_load_i64(c);                   // next = 更旧 chunk
     }
     return total;
 }

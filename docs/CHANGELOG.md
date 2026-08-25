@@ -136,6 +136,41 @@ API（`ensure_global`/`parallel_for`/`worker_id`/`thread_count`/`set_threads`/
 - **未做**：`@thread`/`@threadpool` 事件路由（event 10）、`myp_pool_create/once/
   init_global` 等 C 内部旧 API、exec worker、任务队列。
 
+### v3.15.45 — runtime myp化 #41：包 F `@thread` 生命周期 + 事件系统（event.myp，futex 无 libc/TLS）
+
+**非破坏性**。`@thread`/`@threadpool` 全生命周期 + 事件系统 MYP 化——shadow C 的
+`myp_thread_*` 8 个（create/run_loop/stop/destroy/self/is_current/
+associate_instance/post_event）+ `myp_event_*` 7 个（register/push_scope/
+pop_scope/fire/process_all/process_one/route_to_instance）+ `myp_timer_*` 3 个
+（create/check/cancel_all）+ C 内部 helper 4 个（dispatch/route_to_thread/
+timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
+
+- **每线程事件队列** = arena 环形缓冲（256）+ 每队列票号锁 + futex seq 字。
+  「当前线程」= `gettid`(186) 扫线程表（clone 子线程共享父 TLS → MYP 无 TLS，须
+  自建）。线程槽 `@static EvTab`（slot 0=主线程保留；create 返回 slot，编译调用方
+  当不透明 ptr，ABI i64/ptr 同寄存器 + ld.lld 不查签名）。
+- **spawn 握手**：父设共享 spawnSlot → `myp_thread_spawn`（thread.myp clone 原语）
+  → 子读后写 ready[slot]=1 → 父等 ready 才返回（逐线程 spawn 无竞态）。
+- **子事件循环**：跑 `startup_fn(startup_arg, NULL)` → `while(running){ process_all +
+  qWait(下个 timer 截止) }` → done=1 → syscall 60 退出；destroy 轮询 done（无 join）。
+- **跨线程事件路由（BUG-005）**：dispatch 两遍——先路由他线程 handler（同目标只投
+  一份，per-slot 去重缓冲；载荷 mmap 深拷贝 → munmap 释放，不用共享 arena——子线程
+  不可并发 bump）→ 再跑本线程 handler → `__myp_coro_event_notify`（coro.myp）。
+- **handler 表/定时器/实例映射**共用全局 futex 票号锁；timer 载荷用每线程 tPval
+  缓冲（fire + process_one 立即处理，同 C 语义）。
+- **顺带修复（潜伏 bug）**：alloc.myp `myp_diag_arena_reserved` 从 `Arena.head`
+  （最旧 chunk）正向走 next 链只统计首 chunk——多 chunk 时 reserved 低估 → used >
+  reserved 误报。evInit 一次 ~550KB 大分配首次暴露（rt_pkgA_test exit 12）。
+  改为从 `Arena.cur`（最新）走 next 链（与 C 版一致）。
+- **验证**：新 `bench/freestanding/rt_threadpool_test.myp`；**shadow 30/30**；
+  `tests/threadpool`（@thread + 4 worker @threadpool "wwww"）与 `tests/sync`
+  （4 @thread worker mutex_count=400 + condvar=42）shadow 链接**逐字一致**；
+  coro_event/coro_timer/startup/multi_event/mapping_chain/scope_mapping/
+  lambda_mapping shadow 逐字一致；manual_ch9（@parallel + @gpu）3/11 通过；
+  bootstrap fixpoint `9f5cf25b` 不变（编译器未改）；全量 323/323（oracle+selfhost）。
+- **未做**：`myp_event_id_by_name`（纯字符串查表，保留 C）、work 任务队列 / exec
+  worker、@thread 子线程共享 arena 并发分配（文档化限制）。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20

@@ -1,0 +1,27 @@
+// rt_threadpool_test.myp — @thread 生命周期 + 事件系统 shadow 验证（包 F #41）。
+// 行为等价 tests/threadpool/test.myp：主实例作 @thread（@startup 建 4 worker
+// @threadpool，每 worker @startup 打印 "w"）→ 期望 stdout "wwww\n" + exit 0。
+// 注：@thread 子线程 @startup 不分配共享 arena（bump 无锁）；仅打印/原子/同步原语。
+import env;
+import time;
+
+class Worker {
+    action:
+        @startup void run() {
+            Console.writeString("w");
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Worker[4] pool @threadpool;
+            Time.sleep(100);   // 等 4 个 worker 打印完
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

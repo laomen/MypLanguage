@@ -1,0 +1,606 @@
+// runtime_myp/event.myp — 事件系统 + 定时器 + @thread 生命周期 MYP 化（包 F #41）。
+// shadow C runtime 的 myp_event_* / myp_timer_* / myp_thread_*（@thread 事件循环），
+// **不依赖 pthread/TLS/libc**：
+//   - 每线程事件队列 = arena 环形缓冲 + 票号锁 + futex seq 字（C 用 pthread_cond/TLS；
+//     clone 子线程共享父 TLS → 必须 MYP 自建「当前线程」机制：gettid(186) 扫表）。
+//   - 线程槽表 @static EvTab：slot 0 = 主线程保留，1..N = @thread；myp_thread_create
+//     返回 slot（编译调用方当不透明 ptr，ABI i64/ptr 同寄存器，ld.lld 不查签名）。
+//   - spawn 握手：父设共享 spawnSlot → myp_thread_spawn（thread.myp clone 原语）→
+//     子读后写 ready[slot]=1 → 父等 ready 才返回（逐线程 spawn，无竞态）。
+//   - 子事件循环：跑 startup_fn(startup_arg, NULL) → while(running){ process_all +
+//     qWait(下个 timer 截止) } → done=1 → syscall 60 退出；destroy 轮询 done。
+//   - 跨线程事件载荷深拷贝：mmap(9)+munmap(11)（不用共享 arena——子线程不可并发 bump）。
+//   - handler 表/定时器/实例映射共用一把全局 futex 票号锁（EvTab.lockServing/Next）；
+//     每队列独立票号锁。
+//
+// ⚠️ 与 C 语义对齐的关键点：
+//   - myp_event_register 的 instance 是「实例全局地址」(&__myp_inst_X)；dispatch 里
+//     handler 首参 = 该地址原样（代码生成 handler 内部自行 load），路由判定用
+//     evHandlerTarget（load *(void**)inst）。
+//   - myp_event_fire：sender 有归属线程 → 路由深拷贝；否则投当前线程队列（同线程
+//     data 是栈指针，codegen 紧跟 fire 调 process_all 立即派发）。
+//   - dispatch 两遍：先跨线程路由（同目标只投一份，per-slot 去重缓冲）→ 再跑本线程
+//     handler → __myp_coro_event_notify（coro.myp）→ munmap 路由副本。
+//   - myp_timer_check 用本线程 tPval 缓冲当载荷，fire + process_one 立即处理。
+//   - @thread 子线程 @startup/body 不得并发分配共享 arena（bump 无锁，与 pool.myp 同
+//     限制）；仅 Atomic/数组读写 + futex 原语安全。
+
+ffi void myp_pause();
+ffi long myp_arena_alloc(long size);
+ffi void myp_thread_spawn(long entryAddr);        // thread.myp（clone 原语）
+ffi long myp_now_ms();                            // time.myp
+ffi void __myp_coro_event_notify(long event_id);  // coro.myp（dispatch 后唤醒事件等待者）
+
+// ---- 常量 ----
+// 64 线程槽（0=主）、队列 256、handler 512、timer 64、实例映射 128、scope 64
+
+@static class EvTab {
+    property:
+        // 全局锁（futex 票号）
+        long lockServing = 0;  // int
+        long lockNext = 0;     // int
+        // 线程槽
+        long thrRunning = 0;   // int[64]：atomic running
+        long thrTid = 0;       // long[64]：OS gettid
+        long thrId = 0;        // int[64]：稳定 id（1 起）
+        long thrFn = 0;        // long[64]：startup fn
+        long thrArg = 0;       // long[64]：startup arg
+        long thrDone = 0;      // int[64]：子退出标志（destroy 轮询）
+        long thrCount = 0;     // int：已分配线程数（值用 arena 字）
+        long spawnSlot = 0;    // int：spawn 握手（父设子读）
+        long ready = 0;        // int[64]：spawn 握手
+        // 每线程队列（容量 256）
+        long qHead = 0;        // int[64]
+        long qTail = 0;        // int[64]
+        long qSeq = 0;         // int[64]：futex 唤醒字
+        long qLockServing = 0; // int[64]：每队列票号锁
+        long qLockNext = 0;    // int[64]
+        long qEid = 0;         // int[64*256]
+        long qSender = 0;      // long[64*256]
+        long qData = 0;        // long[64*256]
+        long qSize = 0;        // int[64*256]
+        long qOwned = 0;       // int[64*256]：1 = data 是 mmap 副本
+        long qRouted = 0;      // int[64*256]
+        // 每线程弹出的事件（qPop 写入，dispatch 读；仅本线程访问自己的槽）
+        long curEid = 0;       // int[64]
+        long curSender = 0;    // long[64]
+        long curData = 0;      // long[64]
+        long curSize = 0;      // int[64]
+        long curOwned = 0;     // int[64]
+        long curRouted = 0;    // int[64]
+        // 实例→线程映射
+        long mapInst = 0;      // long[128]
+        long mapThr = 0;       // long[128]
+        long mapCount = 0;     // int
+        // handler 表
+        long hEid = 0;         // int[512]
+        long hInst = 0;        // long[512]：实例全局地址（0=无）
+        long hFn = 0;          // long[512]
+        long hReg = 0;         // int[512]
+        long hCount = 0;       // int
+        // scope 栈
+        long scDepth = 0;      // int
+        long scStack = 0;      // int[64]
+        // 跨线程路由去重缓冲（per-slot，防并发 dispatch 竞态）
+        long routeThr = 0;     // int[64*64]
+        long routeN = 0;       // int[64]
+        // timers
+        long tEid = 0;         // int[64]
+        long tInst = 0;        // long[64]
+        long tFire = 0;        // long[64]
+        long tParam = 0;       // long[64]
+        long tInterval = 0;    // long[64]
+        long tActive = 0;      // int[64]
+        long tCount = 0;       // int
+        long tPval = 0;        // long[64]：每线程 timer 载荷缓冲
+        long tTimespec = 0;    // long[64*2]：每线程 futex 超时 timespec（sec/nsec）
+}
+
+void evInit() {
+    if (EvTab.thrRunning == 0) {
+        EvTab.lockServing = myp_arena_alloc(4);
+        EvTab.lockNext = myp_arena_alloc(4);
+        EvTab.thrRunning = myp_arena_alloc(64 * 4);
+        EvTab.thrTid = myp_arena_alloc(64 * 8);
+        EvTab.thrId = myp_arena_alloc(64 * 4);
+        EvTab.thrFn = myp_arena_alloc(64 * 8);
+        EvTab.thrArg = myp_arena_alloc(64 * 8);
+        EvTab.thrDone = myp_arena_alloc(64 * 4);
+        EvTab.thrCount = myp_arena_alloc(4);
+        EvTab.spawnSlot = myp_arena_alloc(4);
+        EvTab.ready = myp_arena_alloc(64 * 4);
+        EvTab.qHead = myp_arena_alloc(64 * 4);
+        EvTab.qTail = myp_arena_alloc(64 * 4);
+        EvTab.qSeq = myp_arena_alloc(64 * 4);
+        EvTab.qLockServing = myp_arena_alloc(64 * 4);
+        EvTab.qLockNext = myp_arena_alloc(64 * 4);
+        EvTab.qEid = myp_arena_alloc(64 * 256 * 4);
+        EvTab.qSender = myp_arena_alloc(64 * 256 * 8);
+        EvTab.qData = myp_arena_alloc(64 * 256 * 8);
+        EvTab.qSize = myp_arena_alloc(64 * 256 * 4);
+        EvTab.qOwned = myp_arena_alloc(64 * 256 * 4);
+        EvTab.qRouted = myp_arena_alloc(64 * 256 * 4);
+        EvTab.curEid = myp_arena_alloc(64 * 4);
+        EvTab.curSender = myp_arena_alloc(64 * 8);
+        EvTab.curData = myp_arena_alloc(64 * 8);
+        EvTab.curSize = myp_arena_alloc(64 * 4);
+        EvTab.curOwned = myp_arena_alloc(64 * 4);
+        EvTab.curRouted = myp_arena_alloc(64 * 4);
+        EvTab.mapInst = myp_arena_alloc(128 * 8);
+        EvTab.mapThr = myp_arena_alloc(128 * 8);
+        EvTab.mapCount = myp_arena_alloc(4);
+        EvTab.hEid = myp_arena_alloc(512 * 4);
+        EvTab.hInst = myp_arena_alloc(512 * 8);
+        EvTab.hFn = myp_arena_alloc(512 * 8);
+        EvTab.hReg = myp_arena_alloc(512 * 4);
+        EvTab.hCount = myp_arena_alloc(4);
+        EvTab.scDepth = myp_arena_alloc(4);
+        EvTab.scStack = myp_arena_alloc(64 * 4);
+        EvTab.routeThr = myp_arena_alloc(64 * 64 * 4);
+        EvTab.routeN = myp_arena_alloc(64 * 4);
+        EvTab.tEid = myp_arena_alloc(64 * 4);
+        EvTab.tInst = myp_arena_alloc(64 * 8);
+        EvTab.tFire = myp_arena_alloc(64 * 8);
+        EvTab.tParam = myp_arena_alloc(64 * 8);
+        EvTab.tInterval = myp_arena_alloc(64 * 8);
+        EvTab.tActive = myp_arena_alloc(64 * 4);
+        EvTab.tCount = myp_arena_alloc(4);
+        EvTab.tPval = myp_arena_alloc(64 * 8);
+        EvTab.tTimespec = myp_arena_alloc(64 * 16);
+    }
+}
+
+// ---- 全局锁（futex 票号）----
+void evLock() {
+    int tk = __myp_atomic_add_i32_addr(EvTab.lockNext, 1);
+    for (;;) {
+        int s = __myp_atomic_load_i32_addr(EvTab.lockServing);
+        if (s == tk) return;
+        __myp_syscall(202, EvTab.lockServing, 128, s, 0, 0, 0);
+    }
+}
+void evUnlock() {
+    __myp_atomic_add_i32_addr(EvTab.lockServing, 1);
+    __myp_syscall(202, EvTab.lockServing, 129, 2147483647, 0, 0, 0);
+}
+// 每队列票号锁
+void qLock(int slot) {
+    int tk = __myp_atomic_add_i32_addr(EvTab.qLockNext + long(slot) * 4, 1);
+    for (;;) {
+        int s = __myp_atomic_load_i32_addr(EvTab.qLockServing + long(slot) * 4);
+        if (s == tk) return;
+        __myp_syscall(202, EvTab.qLockServing + long(slot) * 4, 128, s, 0, 0, 0);
+    }
+}
+void qUnlock(int slot) {
+    __myp_atomic_add_i32_addr(EvTab.qLockServing + long(slot) * 4, 1);
+    __myp_syscall(202, EvTab.qLockServing + long(slot) * 4, 129, 2147483647, 0, 0, 0);
+}
+
+// ---- 当前线程槽（gettid 扫表；主线程=0）----
+int evCurrentSlot() {
+    long my = __myp_syscall(186, 0, 0, 0, 0, 0, 0);
+    int n = __myp_mem_load_i32(EvTab.thrCount);
+    for (int i = 1; i <= n; i = i + 1) {
+        if (__myp_mem_load_i64(EvTab.thrTid + long(i) * 8) == my) return i;
+    }
+    return 0;
+}
+
+// ---- 队列操作 ----
+void qWake(int slot) {
+    __myp_atomic_add_i32_addr(EvTab.qSeq + long(slot) * 4, 1);
+    __myp_syscall(202, EvTab.qSeq + long(slot) * 4, 129, 2147483647, 0, 0, 0);
+}
+void qPush(int slot, int eid, long sender, long data, int size, int owned, int routed) {
+    qLock(slot);
+    int h = __myp_mem_load_i32(EvTab.qHead + long(slot) * 4);
+    int t = __myp_mem_load_i32(EvTab.qTail + long(slot) * 4);
+    int next = (h + 1) % 256;
+    if (next != t) {
+        long idx = long(slot) * 256 + long(h);
+        __myp_mem_store_i32(EvTab.qEid + idx * 4, eid);
+        __myp_mem_store_i64(EvTab.qSender + idx * 8, sender);
+        __myp_mem_store_i64(EvTab.qData + idx * 8, data);
+        __myp_mem_store_i32(EvTab.qSize + idx * 4, size);
+        __myp_mem_store_i32(EvTab.qOwned + idx * 4, owned);
+        __myp_mem_store_i32(EvTab.qRouted + idx * 4, routed);
+        __myp_mem_store_i32(EvTab.qHead + long(slot) * 4, next);
+    }
+    qUnlock(slot);
+    qWake(slot);
+}
+int qPop(int slot) {
+    qLock(slot);
+    int h = __myp_mem_load_i32(EvTab.qHead + long(slot) * 4);
+    int t = __myp_mem_load_i32(EvTab.qTail + long(slot) * 4);
+    if (t == h) { qUnlock(slot); return 0; }
+    long idx = long(slot) * 256 + long(t);
+    __myp_mem_store_i32(EvTab.curEid + long(slot) * 4, __myp_mem_load_i32(EvTab.qEid + idx * 4));
+    __myp_mem_store_i64(EvTab.curSender + long(slot) * 8, __myp_mem_load_i64(EvTab.qSender + idx * 8));
+    __myp_mem_store_i64(EvTab.curData + long(slot) * 8, __myp_mem_load_i64(EvTab.qData + idx * 8));
+    __myp_mem_store_i32(EvTab.curSize + long(slot) * 4, __myp_mem_load_i32(EvTab.qSize + idx * 4));
+    __myp_mem_store_i32(EvTab.curOwned + long(slot) * 4, __myp_mem_load_i32(EvTab.qOwned + idx * 4));
+    __myp_mem_store_i32(EvTab.curRouted + long(slot) * 4, __myp_mem_load_i32(EvTab.qRouted + idx * 4));
+    __myp_mem_store_i32(EvTab.qTail + long(slot) * 4, (t + 1) % 256);
+    qUnlock(slot);
+    return 1;
+}
+// 队列空 + running → futex 等（可选相对超时 ms；<0=阻塞，0=立即返回）
+void qWait(int slot, long delay_ms) {
+    int empty = 0;
+    qLock(slot);
+    int h = __myp_mem_load_i32(EvTab.qHead + long(slot) * 4);
+    int t = __myp_mem_load_i32(EvTab.qTail + long(slot) * 4);
+    int run = __myp_atomic_load_i32_addr(EvTab.thrRunning + long(slot) * 4);
+    int old = __myp_atomic_load_i32_addr(EvTab.qSeq + long(slot) * 4);
+    qUnlock(slot);
+    if (t != h || run == 0) return;
+    if (delay_ms < 0) {
+        __myp_syscall(202, EvTab.qSeq + long(slot) * 4, 128, old, 0, 0, 0);
+    } else if (delay_ms == 0) {
+        // 立即返回（下次 process_all 处理到期 timer）
+    } else {
+        long ts = EvTab.tTimespec + long(slot) * 16;
+        __myp_mem_store_i64(ts, delay_ms / 1000);
+        __myp_mem_store_i64(ts + 8, (delay_ms % 1000) * 1000000);
+        __myp_syscall(202, EvTab.qSeq + long(slot) * 4, 128, old, ts, 0, 0);
+    }
+}
+
+// ---- 事件载荷深拷贝（mmap，避免共享 arena 竞态）----
+void evRouteToThread(int slot, int eid, long sender, long data, int size, int routed) {
+    long copy = 0;
+    int owned = 0;
+    if (size > 0 && data != 0) {
+        copy = __myp_syscall(9, 0, 32 + long(size), 3, 0x22, -1, 0);
+        if (copy == -1 || copy == 0) { copy = 0; }
+        else {
+            __myp_memcpy(copy, data, size);
+            owned = 1;
+        }
+    }
+    qPush(slot, eid, sender, copy, size, owned, routed);
+}
+
+// ---- handler target（*h->instance；0=无实例）----
+long evHandlerTarget(int i) {
+    long hi = __myp_mem_load_i64(EvTab.hInst + long(i) * 8);
+    if (hi == 0) return 0;
+    return __myp_mem_load_i64(hi);
+}
+
+// ---- 实例→线程 ----
+int evThreadForInstance(long inst) {
+    if (inst == 0) return 0;
+    int n = __myp_mem_load_i32(EvTab.mapCount);
+    for (int i = 0; i < n; i = i + 1) {
+        if (__myp_mem_load_i64(EvTab.mapInst + long(i) * 8) == inst)
+            return int(__myp_mem_load_i64(EvTab.mapThr + long(i) * 8));
+    }
+    return 0;
+}
+
+// ---- 派发（slot = 当前线程槽；事件在 cur*[slot]）----
+void evDispatch(int slot) {
+    int eid = __myp_mem_load_i32(EvTab.curEid + long(slot) * 4);
+    long sender = __myp_mem_load_i64(EvTab.curSender + long(slot) * 8);
+    long data = __myp_mem_load_i64(EvTab.curData + long(slot) * 8);
+    int size = __myp_mem_load_i32(EvTab.curSize + long(slot) * 4);
+    int owned = __myp_mem_load_i32(EvTab.curOwned + long(slot) * 4);
+    int routed = __myp_mem_load_i32(EvTab.curRouted + long(slot) * 4);
+    // 第一遍：路由到其他线程（同目标只投一份）
+    if (routed == 0) {
+        int n = __myp_mem_load_i32(EvTab.hCount);
+        int rn = 0;
+        long rb = long(slot) * 64;
+        for (int i = 0; i < n; i = i + 1) {
+            if (__myp_mem_load_i32(EvTab.hReg + long(i) * 4) == 0) continue;
+            if (__myp_mem_load_i32(EvTab.hEid + long(i) * 4) != eid) continue;
+            long tgt = evHandlerTarget(i);
+            int hthr = evThreadForInstance(tgt);
+            if (hthr == 0 || hthr == slot) continue;
+            int dup = 0;
+            for (int j = 0; j < rn; j = j + 1) {
+                if (__myp_mem_load_i32(EvTab.routeThr + (rb + long(j)) * 4) == hthr) { dup = 1; break; }
+            }
+            if (dup) continue;
+            __myp_mem_store_i32(EvTab.routeThr + (rb + long(rn)) * 4, hthr);
+            rn = rn + 1;
+            evRouteToThread(hthr, eid, sender, data, size, 1);
+        }
+    }
+    // 第二遍：运行归属本线程（或无 @thread）的 handler
+    int n2 = __myp_mem_load_i32(EvTab.hCount);
+    for (int i = 0; i < n2; i = i + 1) {
+        if (__myp_mem_load_i32(EvTab.hReg + long(i) * 4) == 0) continue;
+        if (__myp_mem_load_i32(EvTab.hEid + long(i) * 4) != eid) continue;
+        long tgt = evHandlerTarget(i);
+        int hthr = evThreadForInstance(tgt);
+        if (hthr != 0 && hthr != slot) continue;
+        long hfn = __myp_mem_load_i64(EvTab.hFn + long(i) * 8);
+        long hi = __myp_mem_load_i64(EvTab.hInst + long(i) * 8);
+        if (hfn != 0) __myp_indirect_void(hfn, hi, data);
+    }
+    // 重新 ready 等待该事件的协程（C4）
+    __myp_coro_event_notify(long(eid));
+    // 路由副本载荷由本线程 munmap（接收线程处理的是自己的深拷贝）
+    if (owned != 0 && data != 0) {
+        __myp_syscall(11, data, 0, 0, 0, 0, 0);
+        __myp_mem_store_i64(EvTab.curData + long(slot) * 8, 0);
+    }
+}
+
+// ====================== 公共 API：事件系统 ======================
+
+void myp_event_register(int event_id, long instance, long handler) {
+    evInit();
+    evLock();
+    int n = __myp_mem_load_i32(EvTab.hCount);
+    if (n < 512) {
+        __myp_mem_store_i32(EvTab.hEid + long(n) * 4, event_id);
+        __myp_mem_store_i64(EvTab.hInst + long(n) * 8, instance);
+        __myp_mem_store_i64(EvTab.hFn + long(n) * 8, handler);
+        __myp_mem_store_i32(EvTab.hReg + long(n) * 4, 1);
+        __myp_mem_store_i32(EvTab.hCount, n + 1);
+    }
+    evUnlock();
+}
+
+void myp_event_push_scope() {
+    evInit();
+    evLock();
+    int d = __myp_mem_load_i32(EvTab.scDepth);
+    if (d < 64) {
+        __myp_mem_store_i32(EvTab.scStack + long(d) * 4, __myp_mem_load_i32(EvTab.hCount));
+        __myp_mem_store_i32(EvTab.scDepth, d + 1);
+    }
+    evUnlock();
+}
+void myp_event_pop_scope() {
+    evInit();
+    evLock();
+    int d = __myp_mem_load_i32(EvTab.scDepth);
+    if (d > 0) {
+        d = d - 1;
+        __myp_mem_store_i32(EvTab.hCount, __myp_mem_load_i32(EvTab.scStack + long(d) * 4));
+        __myp_mem_store_i32(EvTab.scDepth, d);
+    }
+    evUnlock();
+}
+
+void myp_event_fire(int event_id, long sender, long data, int data_size) {
+    evInit();
+    int slot = evCurrentSlot();
+    int target = evThreadForInstance(sender);
+    if (target != 0) {
+        evRouteToThread(target, event_id, sender, data, data_size, 0);
+    } else {
+        qPush(slot, event_id, sender, data, data_size, 0, 0);
+    }
+}
+
+void myp_event_process_all() {
+    evInit();
+    int slot = evCurrentSlot();
+    while (qPop(slot) != 0) evDispatch(slot);
+    myp_timer_check();
+}
+
+int myp_event_process_one() {
+    evInit();
+    int slot = evCurrentSlot();
+    if (qPop(slot) == 0) return 0;
+    evDispatch(slot);
+    return 1;
+}
+
+void myp_event_route_to_instance(long instance, int event_id, long data, int data_size) {
+    evInit();
+    int thr = evThreadForInstance(instance);
+    if (thr == 0) return;
+    evRouteToThread(thr, event_id, instance, data, data_size, 0);
+}
+
+// ---- 定时器 ----
+int myp_timer_create(int event_id, long instance, long delay_ms, long param, long interval_ms) {
+    evInit();
+    evLock();
+    int n = __myp_mem_load_i32(EvTab.tCount);
+    int r = -1;
+    if (n < 64) {
+        long now = myp_now_ms();
+        __myp_mem_store_i32(EvTab.tEid + long(n) * 4, event_id);
+        __myp_mem_store_i64(EvTab.tInst + long(n) * 8, instance);
+        __myp_mem_store_i64(EvTab.tFire + long(n) * 8, now + delay_ms);
+        __myp_mem_store_i64(EvTab.tParam + long(n) * 8, param);
+        __myp_mem_store_i64(EvTab.tInterval + long(n) * 8, interval_ms);
+        __myp_mem_store_i32(EvTab.tActive + long(n) * 4, 1);
+        __myp_mem_store_i32(EvTab.tCount, n + 1);
+        r = 0;
+    }
+    evUnlock();
+    if (r == 0) {
+        int thr = evThreadForInstance(instance);
+        if (thr != 0) qWake(thr);   // 唤醒目标线程事件循环
+    }
+    return r;
+}
+
+long myp_timer_next_delay_ms() {
+    evInit();
+    long next = -1;
+    long now = myp_now_ms();
+    evLock();
+    int n = __myp_mem_load_i32(EvTab.tCount);
+    for (int i = 0; i < n; i = i + 1) {
+        if (__myp_mem_load_i32(EvTab.tActive + long(i) * 4) == 0) continue;
+        long delay = __myp_mem_load_i64(EvTab.tFire + long(i) * 8) - now;
+        if (delay < 0) delay = 0;
+        if (next < 0 || delay < next) next = delay;
+    }
+    evUnlock();
+    return next;
+}
+
+void myp_timer_cancel_all(long instance) {
+    evInit();
+    evLock();
+    int n = __myp_mem_load_i32(EvTab.tCount);
+    for (int i = 0; i < n; i = i + 1) {
+        if (__myp_mem_load_i32(EvTab.tActive + long(i) * 4) != 0 &&
+            __myp_mem_load_i64(EvTab.tInst + long(i) * 8) == instance)
+            __myp_mem_store_i32(EvTab.tActive + long(i) * 4, 0);
+    }
+    evUnlock();
+}
+
+// 检查并触发到期定时器（事件循环调用）；重复扫描直到无到期（处理触发期间新建）
+int myp_timer_check() {
+    evInit();
+    int fired = 0;
+    for (;;) {
+        int fireIdx = -1;
+        long fireEid = 0; long fireInst = 0; long fireParam = 0;
+        evLock();
+        int n = __myp_mem_load_i32(EvTab.tCount);
+        long now = myp_now_ms();
+        for (int i = 0; i < n; i = i + 1) {
+            if (__myp_mem_load_i32(EvTab.tActive + long(i) * 4) == 0) continue;
+            if (now >= __myp_mem_load_i64(EvTab.tFire + long(i) * 8)) { fireIdx = i; break; }
+        }
+        if (fireIdx >= 0) {
+            fireEid = __myp_mem_load_i64(EvTab.tEid + long(fireIdx) * 4);
+            fireInst = __myp_mem_load_i64(EvTab.tInst + long(fireIdx) * 8);
+            fireParam = __myp_mem_load_i64(EvTab.tParam + long(fireIdx) * 8);
+            if (__myp_mem_load_i64(EvTab.tInterval + long(fireIdx) * 8) > 0)
+                __myp_mem_store_i64(EvTab.tFire + long(fireIdx) * 8, myp_now_ms() + __myp_mem_load_i64(EvTab.tInterval + long(fireIdx) * 8));
+            else
+                __myp_mem_store_i32(EvTab.tActive + long(fireIdx) * 4, 0);
+        }
+        evUnlock();
+        if (fireIdx < 0) break;
+        // 用本线程 param 缓冲当载荷，fire + 立即 process_one（参数仍是栈/缓冲值）
+        int slot = evCurrentSlot();
+        __myp_mem_store_i64(EvTab.tPval + long(slot) * 8, fireParam);
+        myp_event_fire(int(fireEid), fireInst, EvTab.tPval + long(slot) * 8, 8);
+        myp_event_process_one();
+        fired = fired + 1;
+    }
+    return fired;
+}
+
+// ====================== 公共 API：@thread 生命周期 ======================
+
+long myp_thread_create(long startup_fn, long startup_arg) {
+    evInit();
+    evLock();
+    int n = __myp_mem_load_i32(EvTab.thrCount);
+    long r = 0;
+    if (n + 1 < 64) {
+        int slot = n + 1;
+        __myp_mem_store_i32(EvTab.thrCount, slot);
+        __myp_mem_store_i32(EvTab.thrId + long(slot) * 4, slot);
+        __myp_mem_store_i64(EvTab.thrFn + long(slot) * 8, startup_fn);
+        __myp_mem_store_i64(EvTab.thrArg + long(slot) * 8, startup_arg);
+        __myp_mem_store_i32(EvTab.thrRunning + long(slot) * 4, 1);
+        __myp_mem_store_i32(EvTab.thrDone + long(slot) * 4, 0);
+        __myp_mem_store_i64(EvTab.thrTid + long(slot) * 8, -1);
+        __myp_mem_store_i32(EvTab.qHead + long(slot) * 4, 0);
+        __myp_mem_store_i32(EvTab.qTail + long(slot) * 4, 0);
+        __myp_mem_store_i32(EvTab.qSeq + long(slot) * 4, 0);
+        __myp_mem_store_i32(EvTab.qLockServing + long(slot) * 4, 0);
+        __myp_mem_store_i32(EvTab.qLockNext + long(slot) * 4, 0);
+        r = long(slot);
+    }
+    evUnlock();
+    return r;
+}
+
+// 子线程事件循环入口（经 myp_thread_spawn → myp_thread_child_entry 调用；无参）
+void myp_thread_loop_entry() {
+    int slot = __myp_mem_load_i32(EvTab.spawnSlot);
+    __myp_mem_store_i64(EvTab.thrTid + long(slot) * 8, __myp_syscall(186, 0, 0, 0, 0, 0, 0));
+    __myp_mem_store_i32(EvTab.ready + long(slot) * 4, 1);   // 握手：已读 spawnSlot
+    long fn = __myp_mem_load_i64(EvTab.thrFn + long(slot) * 8);
+    long arg = __myp_mem_load_i64(EvTab.thrArg + long(slot) * 8);
+    if (fn != 0) __myp_indirect_void(fn, arg, 0);   // @startup(startup_arg, NULL)
+    while (__myp_atomic_load_i32_addr(EvTab.thrRunning + long(slot) * 4) != 0) {
+        myp_event_process_all();
+        long delay = myp_timer_next_delay_ms();
+        qWait(slot, delay);
+    }
+    __myp_mem_store_i32(EvTab.thrDone + long(slot) * 4, 1);
+    __myp_syscall(60, 0);   // 退出本线程
+}
+
+void myp_thread_run_loop(long thr) {
+    int slot = int(thr);
+    __myp_mem_store_i32(EvTab.spawnSlot, slot);
+    __myp_mem_store_i32(EvTab.ready + long(slot) * 4, 0);
+    myp_thread_spawn(__myp_fn_addr("myp_thread_loop_entry"));
+    long guard = 0;
+    while (__myp_mem_load_i32(EvTab.ready + long(slot) * 4) == 0) {
+        guard = guard + 1;
+        if (guard > 100000000) break;
+        myp_pause();
+    }
+}
+
+void myp_thread_stop(long thr) {
+    evInit();
+    int slot = int(thr);
+    __myp_mem_store_i32(EvTab.thrRunning + long(slot) * 4, 0);
+    qWake(slot);
+}
+
+void myp_thread_destroy(long thr) {
+    myp_thread_stop(thr);
+    int slot = int(thr);
+    long guard = 0;
+    while (__myp_mem_load_i32(EvTab.thrDone + long(slot) * 4) == 0) {
+        guard = guard + 1;
+        if (guard > 1000000000) break;
+        myp_pause();
+    }
+}
+
+void myp_thread_associate_instance(long instance, long thr) {
+    evInit();
+    evLock();
+    int n = __myp_mem_load_i32(EvTab.mapCount);
+    if (n < 128) {
+        __myp_mem_store_i64(EvTab.mapInst + long(n) * 8, instance);
+        __myp_mem_store_i64(EvTab.mapThr + long(n) * 8, thr);
+        __myp_mem_store_i32(EvTab.mapCount, n + 1);
+    }
+    evUnlock();
+}
+
+// 当前线程稳定 id（主线程/无 @thread = 0）
+int myp_thread_self() {
+    evInit();
+    int slot = evCurrentSlot();
+    if (slot == 0) return 0;
+    return __myp_mem_load_i32(EvTab.thrId + long(slot) * 4);
+}
+
+// BUG-005：instance 归属线程是否等于当前线程（无归属/主线程 → 1）
+int myp_thread_is_current(long instance) {
+    evInit();
+    int thr = evThreadForInstance(instance);
+    if (thr == 0) return 1;
+    return (thr == evCurrentSlot()) ? 1 : 0;
+}
+
+void myp_thread_post_event(long thr, int event_id, long sender, long data) {
+    evInit();
+    int slot = int(thr);
+    qPush(slot, event_id, sender, data, 0, 0, 0);
+}
+
+// 内部：当前线程槽（C 静态 myp_thread_current 的 MYP 版，返回 slot）
+long myp_thread_current() {
+    evInit();
+    return long(evCurrentSlot());
+}
