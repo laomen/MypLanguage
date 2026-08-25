@@ -359,6 +359,37 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
   本机驱动下不可验（595.84 201 怪癖）。
 
+### v3.15.58 — `.myp.libs` 侧车：纯 ffi 访问外部系统库（Go `#cgo LDFLAGS` 风格）
+
+**非破坏性**。MYP 模块旁放 `<模块>.myp.libs` 侧车即可声明额外链接库——**纯 ffi 调
+外部库（SDL/GL/zlib 等）无需 C 桥文件、无需 gcc**：
+
+- **自举 `tools/selfhost/src/{link,main}.myp`**：`LinkSidecar` @static 累积器 +
+  `Link.addLibsSidecar()`；`loadModule`（import 模块）与 `compile`（主文件）读
+  `<file>.myp.libs` 累积；`link()` 在 bridge 发现后追加 `-l` 标志到链接命令
+  （lld/shared/gcc 三路径都生效）。
+- **oracle `src/main.cpp` 镜像**：`g_mypLibsSidecar` 累积器 + `addMypLibsSidecar()`
+  在 `loadModule`/`compileSingle` 读侧车、bridge 发现后追加到 `bridge_libs`。
+- **用法**：
+  ```myp
+  // sdlffi.myp — 无桥文件，ffi 直达 SDL2
+  ffi int SDL_Init(int flags);
+  ```
+  ```sh
+  # sdlffi.myp.libs（模块旁）
+  -lSDL2
+  ```
+  ```sh
+  myp_self foo.myp    # 自动带 -lSDL2
+  ```
+- **验证（决定性）**：假 gcc（任何调用即失败）+ 纯 ffi 调 SDL2 + `-lSDL2` 侧车 →
+  自举 myp_self2 与 oracle mypc 均 `Link OK` + 运行 `SDL_Init(0)=0`（主文件侧车 +
+  import 模块侧车两路径都过）。**无桥文件、无 gcc**。shadow PASS；bootstrap 16/16
+  （fixpoint `e7efd1b3`，编译器已改）；oracle + selfhost 全量 323/323。
+- **与既有机制的关系**：bridge .c 的 `.libs` 侧车照旧（MYP 化 bridge 走
+  `MYP_RT_MYP` 归档）；本特性是**纯 ffi 用户的轻量替代**——不想写/不想要 C 桥时，
+  直接 ffi + `.myp.libs`。
+
 ### v3.15.57 — de-gcc 第二步：自举编译器 bridge 跳过机制（MYP_RT_MYP，MYP 化 bridge 免 gcc）
 
 **非破坏性**。自举编译器（`tools/selfhost/src/link.myp`）支持用**预编译 MYP 运行时

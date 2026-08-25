@@ -278,6 +278,10 @@ class LoadedSet {
                 return 0;
             }
             string src = Frontend.readFile(path);
+            // 模块 .myp.libs 侧车：纯 ffi 外部库链接标志（Go #cgo LDFLAGS 风格）。
+            if (Fs.exists(path + ".libs") != 0) {
+                Link.addLibsSidecar(Str.trim(Frontend.readFile(path + ".libs")));
+            }
             Lexer lx = new Lexer(src);
             ArrayList<Tok> toks = lx.tokenize();
             DiagEngine subDiag = lx.diags();
@@ -474,6 +478,11 @@ class LoadedSet {
                 return 1;
             }
             string src = Frontend.readFile(file);
+            // 主文件 .myp.libs 侧车：纯 ffi 外部库链接标志（Go #cgo LDFLAGS 风格）。
+            // 编译任意调外部库（SDL/GL 等）的纯 ffi 程序时，模块旁放 foo.myp.libs 即可。
+            if (Fs.exists(file + ".libs") != 0) {
+                Link.addLibsSidecar(Str.trim(Frontend.readFile(file + ".libs")));
+            }
             Lexer lx = new Lexer(src);
             ArrayList<Tok> toks = lx.tokenize();
             DiagEngine diag = lx.diags();

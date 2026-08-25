@@ -7,8 +7,23 @@ import env;
 import io;          // File（读侧车文件）
 import collections; // ArrayList
 
+// .myp.libs 侧车累积器：MYP 模块声明额外链接库（纯 ffi 访问外部系统库，Go
+// #cgo LDFLAGS 风格）。Frontend 加载 import 时读 <module>.myp.libs 累积，
+// link() 追加到链接命令。
+@static class LinkSidecar {
+    property:
+        string flags = "";
+}
+
 @static class Link {
     static:
+        // 累积 .myp.libs 侧车标志（main.myp loadModule/compile 调用）
+        void addLibsSidecar(string f) {
+            string t = Str.trim(f);
+            if (Str.len(t) == 0) return;
+            if (Str.len(LinkSidecar.flags) > 0) LinkSidecar.flags = LinkSidecar.flags + " " + t;
+            else LinkSidecar.flags = t;
+        }
         // 通用工具探测（P0 去硬编码）：<envKey> 环境变量 → `command -v`（PATH 优
         // 先，含 <name>-<ver> 版本化命令）→ 版本绝对路径候选表 → 回退裸命令名。
         // versions 为按新到旧排列的 LLVM 主版本候选（数据驱动，跨机可扩展）。
@@ -639,6 +654,8 @@ import collections; // ArrayList
                     changed = 1;
                 }
             }
+            // .myp.libs 侧车（纯 ffi 外部库，Go #cgo LDFLAGS 风格）：追加 -l 标志。
+            if (Str.len(LinkSidecar.flags) > 0) bridgeLibs = bridgeLibs + " " + LinkSidecar.flags;
             string cc = Link.findCc();
             string libs = Link.ldLibs();
             // runtime 对象列表：预编译归档优先（免 C 编译），否则单个对象。

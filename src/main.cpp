@@ -124,6 +124,17 @@ static std::string tempDir() {
     return s;
 }
 
+// .myp.libs 侧车累积器：MYP 模块声明额外链接库（纯 ffi 外部库，Go #cgo LDFLAGS
+// 风格）。loadModule/compileSingle 读 <module>.myp.libs 累积，链接命令追加。
+// 与自举 link.myp LinkSidecar 镜像。
+static std::string g_mypLibsSidecar;
+static void addMypLibsSidecar(const std::string& path) {
+    std::string t = readSidecar(path);
+    if (t.empty()) return;
+    if (!g_mypLibsSidecar.empty()) g_mypLibsSidecar += " " + t;
+    else g_mypLibsSidecar = t;
+}
+
 // 列出目录下所有 .c 文件
 [[nodiscard]] static std::vector<std::string> listCFiles(const std::string& dir) {
     std::vector<std::string> out;
@@ -389,6 +400,8 @@ static bool loadModule(const std::string& module_name,
         std::cerr << "Error: cannot open import '" << path << "'\n";
         return false;
     }
+    // 模块 .myp.libs 侧车：纯 ffi 外部库链接标志（Go #cgo LDFLAGS 风格）。
+    addMypLibsSidecar(path + ".libs");
     mylang::Lexer lex(src_mgr, diag);
     auto toks = lex.tokenize();
     if (diag.hasErrors()) return false;
@@ -611,6 +624,8 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
         std::cerr << "Error: cannot open file '" << filename << "'\n";
         return "";
     }
+    // 主文件 .myp.libs 侧车：纯 ffi 外部库链接标志（Go #cgo LDFLAGS 风格）。
+    addMypLibsSidecar(filename + ".libs");
     phaseMark("load");
 
     mylang::DiagnosticEngine diag(source_mgr);
@@ -1009,6 +1024,8 @@ static std::string findDynLinker() {
             changed = true;
         }
     }
+    // .myp.libs 侧车（纯 ffi 外部库，Go #cgo LDFLAGS 风格）：追加 -l 标志。
+    if (!g_mypLibsSidecar.empty()) bridge_libs += " " + g_mypLibsSidecar;
     phaseMark("bridges");
 
     // Build GPU runtime object（runtime_gpu.c 是 dlopen 胶水，任何 Linux 可编译；
