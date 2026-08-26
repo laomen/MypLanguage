@@ -33,6 +33,7 @@ ffi void myp_sleep_ms(long ms);     // time.myp（非协程 sleep 回退）
 ffi int myp_release(string obj);    // alloc.myp（帧表 release；经 __myp_addr_to_str 桥接任意指针）
 ffi long myp_thread_spawn(long entryAddr);   // thread.myp（clone 原语；async exec worker）
 ffi void myp_pause();               // 自旋让步（weak.myp/内建）
+ffi long pthread_self();             // libc：exec mailbox 的 owner 线程匹配（pump）
 ffi long execIoReadLineRaw(int handle);      // io.myp（raw addr，无 string 局部）
 ffi long execIoReadAllRaw(int handle);       // io.myp
 
@@ -41,67 +42,17 @@ ffi long execIoReadAllRaw(int handle);       // io.myp
 // 协程表会损坏（槽分配/current/退役竞态）。用**递归锁**（owner tid + depth）：
 //   - resume 持锁跨 ctx_switch（协程一步运行期间独占全局）
 //   - yield 递归重入不释放（由 resume 统一释放）→ 深度账目干净
-//   - 其余 API 独立 lock/unlock（内部递归安全）
-// 效果：跨线程一次只跑一个协程步（全局序列化；协程非热路径，gettid 开销可忽略）。
-// ⚠️ 锁序：scheduler 调 myp_event_process_all 必须在 coroLock 之外（事件回调
-// 会走 coro API，避免 coro→ev 与 ev→coro 反转）。
-@static class CoroLock {
-    property:
-        long mutex = 0;      // 自旋锁字地址（mmap 直分配，勿用 arena）
-        long owner = 0;      // 持锁线程 gettid
-        int depth = 0;       // 递归深度
-        int multiThread = 0; // 1=@thread 已出现 → 全局锁需 gettid 身份；0=M:1 单线程
-}
-void coroLockInit() {
-    if (CoroLock.mutex == 0) {
-        long p = __myp_syscall(9, 0, 4, 3, 0x22, -1, 0);
-        if (p != -1 && p != 0) {
-            __myp_mem_store_i32(p, 0);
-            CoroLock.mutex = p;
-        }
-    }
-}
-// M:1 单线程快路径：纯深度记账（无 syscall、无原子、无互斥）。协程表进程级
-// 全局，单线程独占访问本无需锁——深度仅用于嵌套 API（set_result/channel 等）的
-// 配平记账。@thread 出现（myp_thread_spawn → coroMarkMultiThread）后走下方
-// 多线程全局递归锁。
-void coroLock() {
-    coroLockInit();
-    if (CoroLock.mutex == 0) return;
-    if (CoroLock.multiThread == 0) {
-        CoroLock.depth = CoroLock.depth + 1;
-        return;
-    }
-    long my = __myp_syscall(186, 0, 0, 0, 0, 0, 0);  // gettid
-    if (CoroLock.owner == my) { CoroLock.depth = CoroLock.depth + 1; return; }
-    while (__myp_atomic_add_i32_addr(CoroLock.mutex, 1) != 0) { }
-    CoroLock.owner = my;
-    CoroLock.depth = 1;
-}
-void coroUnlock() {
-    if (CoroLock.mutex == 0) return;
-    if (CoroLock.depth > 1) { CoroLock.depth = CoroLock.depth - 1; return; }
-    CoroLock.depth = 0;
-    CoroLock.owner = 0;
-    if (CoroLock.multiThread != 0) __myp_atomic_store_i32_addr(CoroLock.mutex, 0);
-}
-// 标记进入多线程模式（唯一调用点：thread.myp myp_thread_spawn，clone 前）。
-// 若翻转时正持锁（depth>0 且 owner==0=单线程快路径窗口，如 async_file 在锁窗口
-// 内 spawn worker）→ 无缝转换：补 owner=gettid + mutex=1（供其他线程自旋）——
-// 当前窗口以多线程语义继续，无需释放重取；窗口外（depth==0）仅置标志。
-void coroMarkMultiThread() {
-    if (CoroLock.multiThread != 0) return;
-    if (CoroLock.depth > 0 && CoroLock.owner == 0) {
-        CoroLock.owner = __myp_syscall(186, 0, 0, 0, 0, 0, 0);
-        __myp_atomic_store_i32_addr(CoroLock.mutex, 1);
-    }
-    CoroLock.multiThread = 1;
-}
+// N×M:1 每线程表（v3.15.77）：协程表是 @static @thread（每线程一份），同一线程
+// 独占访问无需互斥。coroLock/coroUnlock 保留为 no-op（40+ 调用点不变）；跨线程
+// exec 结果走 CoroExec mailbox（自带自旋锁）。
+void coroLock() { }
+void coroUnlock() { }
+void coroMarkMultiThread() { }   // 每线程表无全局锁，无需切换
 
-// ---- 协程表（进程级 @static；C 为 TLS）----
+// ---- 协程表（每线程 @static @thread；C 为 TLS）----
 // 常量内联（MYP 无顶层 const；字面量）
 
-@static class CoroT {
+@static @thread class CoroT {
     property:
         long ctxBase = 0;       // ctx 槽 arena 缓冲（CoroCap.coro*8；扩容时换新块+拷贝）
         long retCtxBase = 0;    // retCtx 槽 arena 缓冲
@@ -132,7 +83,7 @@ void coroMarkMultiThread() {
 // ---- Phase B：等待表（wait_* 注册；C myp_coro_wait_t 的 @static 并行数组版）----
 // kind：0=EVENT 1=TIMER(sleep) 2=FD 3=EXEC(未用)。waitIndex：>=0 waitAnyOf spec
 // 下标；-1 普通等待；-2 waitAnyOf 总体超时标记。deadline=0 表示无截止期。
-@static class CoroW {
+@static @thread class CoroW {
     property:
         int[] kind;
         int[] eventId;
@@ -147,14 +98,14 @@ void coroMarkMultiThread() {
         int count = 0;
 }
 // ---- Phase B：帧表（ARC 镜像；每协程 ≤32 槽，扁平数组 coro*32+i；随 coro 扩容）----
-@static class CoroF {
+@static @thread class CoroF {
     property:
         long[] slotId;     // CoroCap.coro*32（slot_id = alloca 地址，仅作键）
         long[] obj;        // 堆对象指针（release 目标）
         int[] count;
 }
 // ---- 容量跟踪（CoroT/CoroF 用 coro 容量；CoroW 独立 wait 容量）----
-@static class CoroCap {
+@static @thread class CoroCap {
     property:
         int coro = 0;
         int wait = 0;
@@ -171,16 +122,16 @@ int[] coroGrowInt(int[] src, int old, int nc) {
     return r;
 }
 // ---- Phase B：fd poll 缓冲（arena；8B×1024 pollfd）----
-@static class CoroPoll {
+@static @thread class CoroPoll {
     property:
         long buf = 0;
         int inited = 0;
 }
-@static class CoroArgs {
+@static @thread class CoroArgs {
     property:
         long[16] args;    // entry 参数（this@0 + params@1..；共享槽，同 C 线程本地）
 }
-@static class CoroRetired {
+@static @thread class CoroRetired {
     property:
         long[] ptrs;     // 动态扩容（同 C realloc；退役栈只在安全点 drain 时释放）
         long[] sizes;
@@ -202,7 +153,7 @@ void coroRetiredEnsure(int n) {
 // CoroT.current `= -1` 从 0 起，0 恰等于首个协程槽号 → main（非协程）在 spawn 后
 // 被误判为「在协程 0」→ 需 coroEnsureInit() 显式置 -1。现默认值由显式初始化器
 // 生效，`CoroT.current = -1` 已回滚（初始值即 -1），仅保留惰性表分配。
-@static class CoroInit {
+@static @thread class CoroInit {
     property:
         int done = 0;
 }
@@ -347,7 +298,7 @@ long coroStackAlloc(long reserve) {
     return base + 4096;
 }
 // ---- 栈池（C 平价：复用预留，避免 spawn/destroy churn）----
-@static class CoroStackPool {
+@static @thread class CoroStackPool {
     property:
         long[64] ptrs;     // 可用栈基址
         long[64] sizes;    // 可用尺寸（预留）
@@ -780,30 +731,97 @@ void coroPollFds() {
 // （capture 握手）→ yield → worker 在独立线程阻塞读（io.myp execIoRead*Raw，返回
 // raw addr，无 string 局部 → 无 ARC release）→ coroLock 内写 execResult + ready=1 →
 // 调度器 resume 协程 → __myp_addr_to_str(retain +1 → rc=1) 返回。非协程同步回退。
+// 跨线程 exec 投递 mailbox（进程级 @static；worker 写、owner 调度器 pump）。
+// C runtime 同款模式：worker 只往 mailbox 写（带 owner 线程标记 + 自旋锁），
+// 绝不碰 owner 的 per-thread 协程表；owner 调度器每轮 pump 属于本线程的结果
+// 进自己的 CoroT.execResult + ready。
 @static class CoroExec {
     property:
-        long handle = 0;   // io_handle
+        long handle = 0;   // io_handle（任务槽）
         long op = 0;       // 0=readLine 1=readAll
         long coro = 0;     // 目标协程槽
         long captured = 0; // 握手：worker 已读任务槽（父才可覆盖/续跑）
+        long ownerTid = 0; // owner 线程 pthread_self()（pump 匹配）
+        // ---- mailbox（定容 16；exec 逐次投递，一次至多一个在途）----
+        long mbLock = 0;   // 自旋锁字地址（arena）
+        long[] mbOwner;    // 目标线程 pthread_self()
+        long[] mbSlot;     // 目标协程槽
+        long[] mbResult;   // raw result addr
+        int[] mbActive;
+        int mbCount = 0;
+        int mbCap = 0;
 }
-// worker 入口（clone 子线程；先 capture 任务到局部 → captured=1 → 阻塞读 → 投递）
-// worker 入口（clone 子线程；先 capture 任务到局部 → captured=1 → 阻塞读 → 投递）
+void coroExecMailInit() {
+    if (CoroExec.mbCap == 0) {
+        CoroExec.mbCap = 16;
+        CoroExec.mbOwner = new long[16];
+        CoroExec.mbSlot = new long[16];
+        CoroExec.mbResult = new long[16];
+        CoroExec.mbActive = new int[16];
+        CoroExec.mbCount = 0;
+        long p = myp_arena_alloc(8);
+        if (p != 0) { __myp_mem_store_i32(p, 0); CoroExec.mbLock = p; }
+    }
+}
+void coroExecMailPush(long owner, long slot, long result) {
+    coroExecMailInit();
+    if (CoroExec.mbLock != 0) {
+        while (__myp_atomic_add_i32_addr(CoroExec.mbLock, 1) != 0) { }
+    }
+    if (CoroExec.mbCount < CoroExec.mbCap) {
+        CoroExec.mbOwner[CoroExec.mbCount] = owner;
+        CoroExec.mbSlot[CoroExec.mbCount] = slot;
+        CoroExec.mbResult[CoroExec.mbCount] = result;
+        CoroExec.mbActive[CoroExec.mbCount] = 1;
+        CoroExec.mbCount = CoroExec.mbCount + 1;
+    }
+    if (CoroExec.mbLock != 0) __myp_atomic_store_i32_addr(CoroExec.mbLock, 0);
+}
+// owner 调度器 pump：把属于本线程的结果写进本线程 CoroT.execResult + ready，压缩表。
+void coroExecPump() {
+    if (CoroExec.mbCap == 0) return;
+    long me = pthread_self();
+    if (CoroExec.mbLock != 0) {
+        while (__myp_atomic_add_i32_addr(CoroExec.mbLock, 1) != 0) { }
+    }
+    for (int i = 0; i < CoroExec.mbCount; i = i + 1) {
+        if (CoroExec.mbActive[i] != 0 && CoroExec.mbOwner[i] == me) {
+            long slot = CoroExec.mbSlot[i];
+            long res = CoroExec.mbResult[i];
+            CoroExec.mbActive[i] = 0;
+            int si = int(slot);
+            if (si >= 0 && si < CoroT.count && CoroT.active[si] != 0) {
+                CoroT.execResult[si] = res;
+                CoroT.ready[si] = 1;
+            }
+        }
+    }
+    int w = 0;
+    for (int i = 0; i < CoroExec.mbCount; i = i + 1) {
+        if (CoroExec.mbActive[i] != 0) {
+            if (w != i) {
+                CoroExec.mbOwner[w] = CoroExec.mbOwner[i];
+                CoroExec.mbSlot[w] = CoroExec.mbSlot[i];
+                CoroExec.mbResult[w] = CoroExec.mbResult[i];
+                CoroExec.mbActive[w] = 1;
+            }
+            w = w + 1;
+        }
+    }
+    CoroExec.mbCount = w;
+    if (CoroExec.mbLock != 0) __myp_atomic_store_i32_addr(CoroExec.mbLock, 0);
+}
+// worker 入口（pthread 子线程；先 capture 任务到局部 → captured=1 → 阻塞读 → 写 mailbox）
 void coroExecWorker() {
     long h = CoroExec.handle;
     long op = CoroExec.op;
     long c = CoroExec.coro;
+    long owner = CoroExec.ownerTid;
     CoroExec.captured = 1;
     long s = 0;
     if (op == 0) s = execIoReadLineRaw(int(h));
     else s = execIoReadAllRaw(int(h));
-    int ci = int(c);
-    coroLock();
-    if (ci >= 0 && ci < CoroT.count && CoroT.active[ci] != 0) {
-        CoroT.execResult[ci] = s;
-        CoroT.ready[ci] = 1;   // 跨线程重新 ready（锁内；调度器 resume）
-    }
-    coroUnlock();
+    coroExecMailPush(owner, c, s);   // 写 mailbox（不碰 owner 的 per-thread 表）
     // 无 string 局部 → 函数返回不释放任何串（s 是 long）
 }
 // 协程内异步文件读：park + worker 读 + resume；非协程同步回退。
@@ -829,6 +847,7 @@ string coroFileReadAsync(int io_handle, int op) {
     CoroExec.handle = io_handle;
     CoroExec.op = op;
     CoroExec.coro = cur;
+    CoroExec.ownerTid = pthread_self();   // owner 线程（pump 匹配）
     CoroExec.captured = 0;
     myp_thread_spawn(__myp_fn_addr("coroExecWorker"));
     coroUnlock();
@@ -908,6 +927,8 @@ void __myp_coro_scheduler() {
     }
     // fd 就绪轮询（批量 poll 一次）
     coroPollFds();
+    // 跨线程 exec 结果 pump：属于本线程的结果 → 本线程 CoroT.execResult + ready
+    coroExecPump();
     // 快照语义：遍历槽位，对 active && ready 的 resume 一步（本趟新增的 ready 协程
     // 高槽位不访问——与 C 快照近似；yield 保持 ready 的协程本趟不重入）。
     for (int i = 0; i < CoroT.count; i = i + 1) {
