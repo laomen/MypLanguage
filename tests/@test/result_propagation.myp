@@ -122,3 +122,39 @@ Result<int, string> pipeline(int v) {
     Test.assertEq(m3.getErr(), 1004, "mixed err converted");
     Test.report("test_mixed_pipeline", true);
 }
+
+// —— 类 action 返回 Result：值式传播与顶层函数一致（跨方法短路直达顶层）——
+class Calc {
+    action:
+        Result<int, string> step1(int v) {
+            if (v < 0) return resultErr<int, string>("neg1");
+            return resultOk<int, string>(v + 1);
+        }
+        Result<int, string> step2(int v) {
+            Result<int, string> r = step1(v);
+            return resultAndThen<int, int, string>(r, (int x) => { return resultOk<int, string>(x * 2); });
+        }
+        Result<int, string> step3(int v) {
+            return resultAndThen<int, int, string>(step2(v), (int x) => { return resultOk<int, string>(x - 1); });
+        }
+        // 类 action 内抛异常 → resultTry 捕获转 Result
+        Result<int, string> guarded(int v) {
+            return resultTry<int>(() => { if (v > 10) throw "too_big:" + v; return v; });
+        }
+}
+
+// —— 9) 类 action 链传播：ok 走完 / err 跨方法短路 / 异常桥 / getOr ——
+@test void test_class_actions() {
+    Calc c = new Calc();
+    Result<int, string> ok = c.step3(5);
+    Test.assert(ok.isOk(), "cls ok isOk");
+    Test.assertEq(ok.get(), 11, "cls ok val");
+    Result<int, string> bad = c.step3(-1);
+    Test.assert(bad.isErr(), "cls bad isErr");
+    Test.assertStrEq(bad.getErr(), "neg1", "cls bad msg");
+    Result<int, string> g = c.guarded(11);
+    Test.assert(g.isErr(), "cls guarded isErr");
+    Test.assertStrEq(g.getErr(), "too_big:11", "cls guarded msg");
+    Test.assertEq(c.step3(-1).getOr(99), 99, "cls getOr");
+    Test.report("test_class_actions", true);
+}
