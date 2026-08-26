@@ -54,6 +54,25 @@ IR 确认 `@__myp_static_TL = thread_local global`；pthread_key 探针同理。
 
 > 这是 N×M:1 协程迁移的地基（步骤 0/1）。下一步见 v3.15.78（per-thread 表迁移）。
 
+### v3.15.82 — CoroT SoA→AoS：18 并行数组 → 单 CoroSlot[] struct 数组（缓存布局）
+
+**非破坏性**。续 v3.15.81；协程每槽状态改缓存友好布局：
+
+1. **CoroT 改 AoS**：18 个并行数组（stack/stackSize/fn/result/yieldVal/resumeVal/
+   execResult/active/ready/generation/resultPending/onFreeList/discardResult/
+   cancelRequested/waitTimeout/lastWaitEventId/lastWaitIndex）合并为 `CoroSlot[]`
+   （每槽 96B 连续 struct，2 缓存行）。create 字段写从 16 个分散缓存行 → 1 个连续
+   struct。扩容 `coroGrowSlot`（struct 值拷贝）。
+2. **实测结论（诚实记录）**：AoS 只给 coro_spawn ~1ms（26→25ms）——rdtsc 显示
+   create 从 4060→3818 cycles，字段写散乱仅 ~240 cycles。**create 的 ~3800 cycles
+   是聚合内存延迟**（ctx arena 冷页写 + CoroF.count + 各调用的小分散访问 + 表增长），
+   非单一可修组件。AoS 方向正确（cache 布局、后续优化基础），但 coro_spawn 的真正
+   瓶颈在 create 整体簿记，非字段布局。
+
+验证：runtime 重建 shadow 通过；全量 **327/0 无回归**。基准：coro_switch 53ms
+（MYP 6× Go）、channel_pingpong 3ms（MYP 2× Go）、io_socket 84ms（打平）、
+coro_spawn 25ms。
+
 ### v3.15.81 — runtime build.sh 补 opt -O2（全 runtime 优化）+ coro_spawn 小栈批量分配
 
 **非破坏性**。续 v3.15.80；两个运行时性能改进：
