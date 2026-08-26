@@ -677,28 +677,71 @@ void coroWaitClearFor(int cur) {
 }
 
 // ---- 全局事件等待者注册表（跨线程 notify：需看到其它线程的 CoroW 事件等待者）----
+// 动态扩容（同 CoroT/CoroW：不再写死 1024/64 上限；静默丢弃 → 丢失唤醒）。
 @static class CoroEvW {
     property:
-        int[1024] eid;       // event_id
-        long[1024] owner;    // owner pthread_self()
-        int[1024] slot;      // 协程槽（owner 表内）
-        int[1024] active;
+        int[] eid;       // event_id（扩容见 coroEvWEnsure）
+        long[] owner;    // owner pthread_self()
+        int[] slot;      // 协程槽（owner 表内）
+        int[] active;
         int count = 0;
-        // 跨线程唤醒 mailbox（同 chanWake 模式）
+        int cap = 0;
+        // 跨线程唤醒 mailbox（同 chanWake 模式；扩容见 coroEvWCwEnsure）
         long cwLock = 0;     // 自旋锁字地址（arena）
-        long[64] cwOwner;
-        int[64] cwSlot;
-        int[64] cwActive;
+        long[] cwOwner;
+        int[] cwSlot;
+        int[] cwActive;
         int cwCount = 0;
+        int cwCap = 0;
+}
+// 注册表扩容（初始 64，翻倍；只增不减）
+void coroEvWEnsure(int n) {
+    if (CoroEvW.cap >= n) return;
+    int nc = CoroEvW.cap == 0 ? 64 : CoroEvW.cap * 2;
+    while (nc < n) nc = nc * 2;
+    int old = CoroEvW.cap;
+    CoroEvW.eid = coroGrowInt(CoroEvW.eid, old, nc);
+    CoroEvW.owner = coroGrowLong(CoroEvW.owner, old, nc);
+    CoroEvW.slot = coroGrowInt(CoroEvW.slot, old, nc);
+    CoroEvW.active = coroGrowInt(CoroEvW.active, old, nc);
+    CoroEvW.cap = nc;
+}
+// 唤醒 mailbox 扩容（初始 64，翻倍；须在 cwLock 内调用——pump 并发读旧数组）
+void coroEvWCwEnsure(int n) {
+    if (CoroEvW.cwCap >= n) return;
+    int nc = CoroEvW.cwCap == 0 ? 64 : CoroEvW.cwCap * 2;
+    while (nc < n) nc = nc * 2;
+    int old = CoroEvW.cwCap;
+    CoroEvW.cwOwner = coroGrowLong(CoroEvW.cwOwner, old, nc);
+    CoroEvW.cwSlot = coroGrowInt(CoroEvW.cwSlot, old, nc);
+    CoroEvW.cwActive = coroGrowInt(CoroEvW.cwActive, old, nc);
+    CoroEvW.cwCap = nc;
+}
+// 压缩注册表：drop inactive（唤醒/清除/超时过的记录）——防 count 无限增长
+void coroEvWCompact() {
+    if (CoroEvW.count == 0) return;
+    int w = 0;
+    for (int i = 0; i < CoroEvW.count; i = i + 1) {
+        if (CoroEvW.active[i] != 0) {
+            if (w != i) {
+                CoroEvW.eid[w] = CoroEvW.eid[i];
+                CoroEvW.owner[w] = CoroEvW.owner[i];
+                CoroEvW.slot[w] = CoroEvW.slot[i];
+                CoroEvW.active[w] = 1;
+            }
+            w = w + 1;
+        }
+    }
+    CoroEvW.count = w;
 }
 void coroEvWaitAdd(int eid, long owner, int slot) {
-    if (CoroEvW.count < 1024) {
-        CoroEvW.eid[CoroEvW.count] = eid;
-        CoroEvW.owner[CoroEvW.count] = owner;
-        CoroEvW.slot[CoroEvW.count] = slot;
-        CoroEvW.active[CoroEvW.count] = 1;
-        CoroEvW.count = CoroEvW.count + 1;
-    }
+    coroEvWCompact();                 // 先丢 inactive，再登记（count 有界）
+    coroEvWEnsure(CoroEvW.count + 1); // 永不因满失败
+    CoroEvW.eid[CoroEvW.count] = eid;
+    CoroEvW.owner[CoroEvW.count] = owner;
+    CoroEvW.slot[CoroEvW.count] = slot;
+    CoroEvW.active[CoroEvW.count] = 1;
+    CoroEvW.count = CoroEvW.count + 1;
 }
 void coroEvWaitClearFor(long owner, int slot) {
     for (int i = 0; i < CoroEvW.count; i = i + 1) {
@@ -713,14 +756,13 @@ void coroEvWakePush(long owner, int slot) {
     }
     if (CoroEvW.cwLock != 0) {
         while (__myp_atomic_add_i32_addr(CoroEvW.cwLock, 1) != 0) { }
-    }
-    if (CoroEvW.cwCount < 64) {
+        coroEvWCwEnsure(CoroEvW.cwCount + 1);   // 锁内扩容（防 pump 并发迭代旧数组）
         CoroEvW.cwOwner[CoroEvW.cwCount] = owner;
         CoroEvW.cwSlot[CoroEvW.cwCount] = slot;
         CoroEvW.cwActive[CoroEvW.cwCount] = 1;
         CoroEvW.cwCount = CoroEvW.cwCount + 1;
+        __myp_atomic_store_i32_addr(CoroEvW.cwLock, 0);
     }
-    if (CoroEvW.cwLock != 0) __myp_atomic_store_i32_addr(CoroEvW.cwLock, 0);
 }
 // owner 调度器 pump：属于本线程的唤醒 → 本线程 CoroT.ready，压缩表
 void coroEvWakePump() {
