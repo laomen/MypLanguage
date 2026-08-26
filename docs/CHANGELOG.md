@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.15.110 — 修 await timeout 类型漏校验（应拒绝却接受）（BUG-076）
+
+**非破坏性**（selfhost sema）。`await T2.go timeout "x"`（string 当毫秒数）此前
+静默过 sema；C++ visitAwaitExpr 对 timeout 双重校验（expectNumeric + `await
+ timeout must be numeric (ms)`）。
+
+- **根因**：自举 Await 有语句级（~3975，@coro 方法体实际路径）与表达式级
+  （~5741）两处处理，都只 visit timeout 不校验类型。
+- **修复**：两处都加 `isNumKind` 校验，报 `expected numeric type, got 'X'` +
+  `await timeout must be numeric (ms)`（与 oracle 逐字节一致）。
+- **测试**：负测试 `tests/negative/await_timeout_type.myp`；合法
+  `await T2.go timeout 30` 不受影响。
+- 验证：bootstrap 自举成立；全量回归 **364 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-076。
+
 ### v3.15.109 — 修非数组基址下标漏校验 → opt 崩（BUG-075）
 
 **非破坏性**（selfhost sema）。`5[0]` / `d[0]` / `factory()[0]`（顶层函数返回

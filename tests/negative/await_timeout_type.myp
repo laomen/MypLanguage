@@ -1,0 +1,16 @@
+// EXPECT ERROR: await timeout must be numeric (ms)
+// BUG-076 回归（负测试）：await timeout 须为数字表达式须编译期干净拒绝。
+// 此前自举 Await 处理（语句级 s.timeout() + 表达式级 e.timeout()）只 visit 不
+// 校验类型 → `await T2.go timeout "x"`（string 当毫秒数）静默过 sema。
+// C++ visitAwaitExpr expectNumeric + "await timeout must be numeric (ms)" 双报。
+import env;
+
+class T2 {
+    event:
+        go();
+    action:
+        @coro void test() {
+            await T2.go timeout "x";
+        }
+}
+int main(){return 0;}

@@ -2043,3 +2043,23 @@
   resolvedKind = 元素 kind」的传播模型（BUG-058/062 族）会让 `arrs.get(0)` 的
   基址 kind 是 "int" 而非 "array"。顶层函数基址用 findFuncRetType 判返回类型，
   方法调用基址保守放行（其返回类型机制自带校验）。
+
+## BUG-076（已修复 🟩，v3.15.110）：await timeout 类型漏校验（应拒绝却接受）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.110，selfhost sema.myp）
+- **背景**：`await T2.go timeout "x"`（string 当毫秒数）此前静默过 sema。C++
+  visitAwaitExpr 对 timeout 双重校验（expectNumeric + `await timeout must be
+  numeric (ms)`）。
+- **根因**：自举 Await 有两处处理——**语句级**（sema.myp ~3975，@coro 方法体里
+  的 `await ...` 语句走这条，timeout 在 s.timeout()）与**表达式级**（~5741，
+  e.timeout()）——都只 visit timeout 不校验类型。只改表达式级不生效（语句级
+  才是实际路径）。
+- **修复**：两处都加——visit timeout 后 `isNumKind` 校验，非数字报
+  `expected numeric type, got 'X'` + `await timeout must be numeric (ms)`（与
+  oracle 逐字节一致，位置 7:33 对齐）。
+- **验证**：`await T2.go timeout "x"` 干净拒绝（双消息）；合法
+  `await T2.go timeout 30` 不受影响。
+- **回归**：负测试 `tests/negative/await_timeout_type.myp`；全量 364 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：同一语法（await）在语句级与表达式级有两套 visit 处理，校验须同步
+  两处——只改一处会「看似改了却不生效」（表达式级从未被语句 await 触发）。

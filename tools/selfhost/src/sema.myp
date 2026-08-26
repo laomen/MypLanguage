@@ -3995,7 +3995,16 @@ class Sema {
                         visitExpr(ae);
                     }
                 }
-                if (s.timeout() != null) visitExpr(s.timeout());
+                if (s.timeout() != null) {
+                    string stmk = visitExpr(s.timeout());
+                    // BUG-076：await timeout 须数字（语句级 await，镜像 C++
+                    // visitAwaitExpr——expectNumeric + "await timeout must be
+                    // numeric (ms)"）。
+                    if (Str.len(stmk) != 0 && isNumKind(stmk) == 0) {
+                        diag_.error(s.timeout().line(), s.timeout().col(), "expected numeric type, got '" + exprTypeName(s.timeout(), stmk) + "'");
+                        diag_.error(s.timeout().line(), s.timeout().col(), "await timeout must be numeric (ms)");
+                    }
+                }
             } else if (k == "Nonlocal") {
                 // 无表达式
             } else if (k == "MappingStmt") {
@@ -5761,7 +5770,16 @@ class Sema {
                         else visitExpr(op);
                     }
                 }
-                if (e.timeout() != null) visitExpr(e.timeout());
+                if (e.timeout() != null) {
+                    string tmk = visitExpr(e.timeout());
+                    // BUG-076：await timeout 须数字（镜像 C++ visitAwaitExpr——
+                    // expectNumeric + "await timeout must be numeric (ms)"）。
+                    // await ev timeout "x" 此前静默过（string 当毫秒数）。
+                    if (Str.len(tmk) != 0 && isNumKind(tmk) == 0) {
+                        diag_.error(e.timeout().line(), e.timeout().col(), "expected numeric type, got '" + exprTypeName(e.timeout(), tmk) + "'");
+                        diag_.error(e.timeout().line(), e.timeout().col(), "await timeout must be numeric (ms)");
+                    }
+                }
                 e.setResolvedKind(t);
                 return t;
             }
