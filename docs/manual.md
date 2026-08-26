@@ -1609,6 +1609,21 @@ class Worker {
 }
 ```
 
+**每线程状态用 `@static @thread class`**（v3.15.77）：属性发射为 LLVM
+`thread_local` 全局——每个线程各一份副本，天然无锁（协程每线程表、线程本地
+计数器等）：
+
+```myp
+@static @thread class TL { property: int val = 0; }   // 每线程独立
+
+class Worker {
+    action:
+        @startup void run() {
+            TL.val = 111;   // 只改本线程自己的 TL.val
+        }
+}
+```
+
 - **返回值**：`tryLock`/`tryWait`/`tryReadLock`/`tryWriteLock` 返回 `1`=成功、`0`=失败、
   `-1`=非法句柄；`Once.enter` 返回 `1`=本线程首个（执行初始化）、`0`=已完成。
 - **约束**：句柄无自动回收（同 `Barrier`），显式 `destroy`；`CondVar.wait` 会释放并重新

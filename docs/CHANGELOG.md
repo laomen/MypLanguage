@@ -27,6 +27,34 @@
 
 ## 编译器版本历史
 
+### v3.15.77 — N×M:1 每线程状态地基：pthread 线程 + 编译器 `@static @thread`（LLVM thread_local）
+
+**非破坏性**。续 v3.15.76；N×M:1 协程（每线程独立协程表、@thread 下真并行）的
+两块地基：
+
+1. **`thread.myp` 裸 clone → pthread_create**：裸 clone（无 CLONE_SETTLS）子线程
+   共享父 FS → thread_local/errno/栈金丝雀全共享，无法 per-thread；pthread_create
+   由 glibc 一次性建栈/TLS/信号，子线程拥有独立 TLS。入口地址直接作为 pthread
+   arg（rdi）传 start routine——不再 `Thr.entry` 全局 + 握手（无竞态）；子线程
+   return 即正常结束（glibc 清 TLS），不再 `syscall 60`（那是 exit 整个进程）。
+   ⚠️ 注意：`pthread_create` 的 `thread` 输出参数是**必填**（无条件写），传 NULL
+   会崩（`mov %r14,(%rax)` rax=0）→ 用 arena 8B 槽 `Thr.tidSlot`。
+2. **编译器支持 `@static @thread class`**（LLVM `thread_local` 全局）：
+   - `ast.myp` AstClass 加 `isThread` 标志；`parser.myp` 接受
+     `@static @thread class`；`codegen.myp` `emitStaticClassGlobals` 对 isThread
+     类发射 `thread_local global`——LLVM 自动生成 `%fs` 访问（initial-exec，一条
+     指令，和 C `__thread` 同机制）。
+   - 自举成立（myp_self2==myp_self3 MD5 一致），`build/mypc` 安装新特性。
+
+验证：探针两 `@thread` 实例各写各读 `TL.val` → **A=111/B=222**（per-thread 隔离）；
+IR 确认 `@__myp_static_TL = thread_local global`；pthread_key 探针同理。
+全量 **325/0 无回归**（新增 `tests/thread_local/`：worker 设 TL.val=111 不改主线程
+自己的，mainTL=0）。`test_myp_viz.sh` 对拍：参考（冻结 oracle）报错的新特性文件
+跳过（冻结基线无法对新语法字节级对比）。
+
+> 这是 N×M:1 协程迁移的地基（步骤 0/1）。下一步：`coro.myp` 的 `CoroT/CoroW/`
+> `CoroF` 改 `@static @thread`（每线程表）+ 去全局锁 + exec worker 跨线程投递。
+
 ### v3.15.76 — 协程 M:1 单线程无锁快路径（coro_switch 76→43ms）+ json 字符串构建优化（43→25ms）
 
 **非破坏性**。续 v3.15.75；针对 MYP vs C 运行时剩余两大差距：

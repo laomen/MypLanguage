@@ -551,3 +551,24 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 - **alloc_arr**：96 vs 75ms（1.3×）——分配器差异（MYP arena+空闲链表 vs C malloc）。
 - **file_io 写侧**：26 vs 16ms（1.6×）——每行 `strlen`+`memcpy`+cur_get 仍有余地。
 
+### 6.8 N×M:1 地基（v3.15.77）：pthread 线程 + 编译器 `@static @thread`
+
+- **`thread.myp` 裸 clone → pthread_create**：pthread 线程由 glibc 建真 TLS
+  （裸 clone 共享父 FS，thread_local/errno/金丝雀全共享）。入口经 pthread arg
+  传递（去 Thr.entry 握手）；子线程 return 收尾。⚠️ pthread_create 的 thread
+  输出参数必填（传 NULL 崩）→ arena 8B 槽。
+- **编译器 `@static @thread class`**：isThread 类发射 `thread_local global`
+  （LLVM initial-exec `%fs` 一条指令，同 C `__thread`）。自举成立，build/mypc 安装。
+- 验证：两 @thread 实例各写各读 TL.val → A=111/B=222；IR
+  `@__myp_static_TL = thread_local global`；全量 325/0；新回归 tests/thread_local/。
+
+### 6.9 下一步：coro.myp per-thread 迁移（N×M:1）
+
+- `CoroT/CoroW/CoroF/CoroCap/CoroRetired/CoroArgs/CoroLock` 改 `@static @thread`
+  （每线程表 + 每线程 current）→ 去全局锁（每线程天然无锁，@thread 下真并行）。
+- 最难块：**exec worker 跨线程投递**——async 文件读 worker（独立 pthread）要把
+  execResult/ready 写进**owner 线程**的 per-thread 表（需 owner 表指针 + 每表小锁
+  + futex 唤醒 owner 调度器）；事件/timer/fd 等待同样按 owner 分发。
+- 句柄：每线程表内槽号 → 需加线程维度或限制跨线程 resume。
+- 回归面：30+ coro 测试 + coro_thread/async_file + 事件/wait_any。
+
