@@ -54,6 +54,24 @@ IR 确认 `@__myp_static_TL = thread_local global`；pthread_key 探针同理。
 
 > 这是 N×M:1 协程迁移的地基（步骤 0/1）。下一步见 v3.15.78（per-thread 表迁移）。
 
+### v3.15.79 — 跨线程 channel 修复：owner 追踪 + 唤醒 mailbox（崩→正确）
+
+**非破坏性**。续 v3.15.78；修复跨线程 channel rendezvous 段错误：
+
+1. **waiter 记录加 owner 线程**：`Chan` 加 `recvOwner/sendOwner` 并行数组 +
+   `lastPopOwner`；park 路径（send 满/recv 空）存 `pthread_self()`。
+2. **`chanWakeOne/chanWakeReady` 检测跨线程**：waiter owner ≠ 本线程 → 投递跨线程
+   唤醒 mailbox（`Chan.cwLock` 自旋锁 + `cwOwner/cwSlot`）；owner 调度器每轮
+   `chanWakePump` 泵入自己的 `CoroT.ready` → 本线程 resume。同线程路径不变
+   （内联交接/ready）。
+
+修复前：跨线程 rendezvous（consumer B 线程 park、producer A 线程 send）
+`chanWakeOne` 用当前线程表访问对端槽 → 段错误 139（旧全局表模型靠全局锁"能用"，
+per-thread 下崩）。修复后：C-got 42 正确。
+
+验证：跨线程 channel 探针（B 线程 consumer park、A 线程 producer send）正确收到
+42；新增 `tests/coro_chan_xthread/`（确定性输出）；全量 **326/0 无回归**。
+
 ### v3.15.78 — coro.myp per-thread 迁移（N×M:1：每线程独立协程表，@thread 下真并行）
 
 **非破坏性**。续 v3.15.77 地基；把协程表从进程级全局 + 全局锁改成每线程：
