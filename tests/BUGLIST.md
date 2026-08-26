@@ -34,22 +34,22 @@
 | BUG-020 | 🟩 | 文件级限定 struct 定义 `struct A::B { }` 被拒——顶层 dispatch `current_--` 回退使 parseStruct 限定分支看 `struct` 关键字而非名称 → `expected struct name`（自举支持） | 回归 `tests/@test/manual_ch7_struct.myp` t_nested_qualified |
 | BUG-021 | 🟩 | class 含**泛型类属性**（`Option<int>`/`ArrayList<int>` 等）时，方法内 `this.prop` 在 sema 被解析为泛型实例类 → `class 'X_inst' has no member 'v'`（sema 泛型实例化污染 current_class_name_ 不恢复） | 回归 `tests/@test/this_generic_prop.myp`（泛型属性 + this 读写 + 方法调用，4 断言） |
 | BUG-028 | 🟩 | 类属性带 **ARC 初始化器**（`property: Foo f = new Foo();`）→ fresh new 的 rc=1 在语句末被释放 → 属性槽悬垂（use-after-free；setter 重赋值 → 双释放段错误 139） | 回归 `tests/@test/property_init_arc.myp`（初始化器对象存活 + 多次重赋值读取，3 断言） |
-| BUG-029 | � | 类字段直接转 interface（`View v = <类字段>`）→ 坏胖指针（vtable 丢失）→ 段错误/内存损坏（codegen 只从 var_class_map_ 解析类名，字段查不到 → null vtable） | 回归 `tests/bugs/iface_field_conversion.myp`（裸名+this 形态，2 断言） |
+| BUG-029 | 🟩 | 类字段直接转 interface（`View v = <类字段>`）→ 坏胖指针（vtable 丢失）→ 段错误/内存损坏（codegen 只从 var_class_map_ 解析类名，字段查不到 → null vtable） | 回归 `tests/bugs/iface_field_conversion.myp`（裸名+this 形态，2 断言） |
 | BUG-030 | 🟩 | mapping 事件在目标类构造器内触发 → 派发到未注册的自身实例（`__myp_inst_X` 构造后写入）→ 段错误 139 | 回归 `tests/bugs/mapping_ctor_self.myp`（ctor 内 2 次派发，1 断言） |
 | BUG-031 | 🟩 | 跨线程多 @thread 目标事件无限重投（mapping handler 注册 instance=NULL → routed 副本在目标线程跑**所有**同 event 的 NULL-instance handler → 互相 route 乒乓） | 回归 `tests/bugs/cross_thread_multi_target.myp`（A/B 各收 1 次，2 断言） |
-| BUG-032 | � | `this` 作为值（实参/赋值/返回，如 `Holder.set(this)`）被传 alloca **地址**而非实例值——`set` 把 &栈槽 存进属性，`get()` 当实例读 → 字段错位（49152 / this=0x100000000 → strcmp 段错误）；无 event 类时栈布局碰巧 0 未暴露，含 event 类必现 | 复现 `tests/bugs/b032_event_class_inst_store.myp`（@test 断言 get count==0，已绿）；C++ `generateThisExpr` 修复（load this 值）+ selfhost 本就正确（loadThis 已 load） || BUG-033 | 🟩 | **数组元素 → interface**（`View v = arr[i]`，arr 为**类属性数组**）→ 坏胖指针（vtable 丢失）→ RootView.onTouch 遍历 `call *0x8(vtable)` 段错误 139（BUG-029 只覆盖字段+局部变量数组，类属性数组元素 SubscriptExpr 走 else 分支只存 data） | 回归 `tests/bugs/b033_iface_array_elem.myp`（类属性数组元素 + 局部数组元素，3 断言，双编译器） || BUG-022 | 🟩 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
+| BUG-032 | 🟩 | `this` 作为值（实参/赋值/返回，如 `Holder.set(this)`）被传 alloca **地址**而非实例值——`set` 把 &栈槽 存进属性，`get()` 当实例读 → 字段错位（49152 / this=0x100000000 → strcmp 段错误）；无 event 类时栈布局碰巧 0 未暴露，含 event 类必现 | 复现 `tests/bugs/b032_event_class_inst_store.myp`（@test 断言 get count==0，已绿）；C++ `generateThisExpr` 修复（load this 值）+ selfhost 本就正确（loadThis 已 load） || BUG-033 | 🟩 | **数组元素 → interface**（`View v = arr[i]`，arr 为**类属性数组**）→ 坏胖指针（vtable 丢失）→ RootView.onTouch 遍历 `call *0x8(vtable)` 段错误 139（BUG-029 只覆盖字段+局部变量数组，类属性数组元素 SubscriptExpr 走 else 分支只存 data） | 回归 `tests/bugs/b033_iface_array_elem.myp`（类属性数组元素 + 局部数组元素，3 断言，双编译器） || BUG-022 | 🟩 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
 | BUG-023 | 🟩 | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139 | 回归 `tests/@test/parallel_prop_access.myp`（静态属性数组写+读+Atomic 累加，4 断言） |
 | BUG-024 | 🟩 | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | 回归 `tests/@test/relimport_dedup.myp` |
 | BUG-025 | 🟩 | 多文件编译 `mypc a.myp b.myp` **只合并第一个文件的 imports**——合并循环漏了 imports/structs/bitfields/enums/ffis/macros/type_aliases（只合并 classes/interfaces/mappings/functions）→ 第二个文件的 `import env` 静默丢弃 → `Console` 未定义 | 回归 `tests/test_multifile.sh` |
 | BUG-026 | 🟩 | `mypc --test` + 源码含用户 `int main()` → 用户 main 空块**无 terminator**（`LLVM verify failed: Basic Block in function 'main' does not have terminator!`），且残留占位使测试运行器 main 被改名为 `main.1` → 测试**静默不跑**（exit 0 全假过） | 回归 `tests/test_multifile.sh`（BUG-026 用例） |
 | BUG-027 | 🟩 | `tools/codegen` 代码生成工具**未迁移到 BUG-001 属性私有规则**——模型类（`Expr`/`Field`/`TypeDecl`/`ServiceDecl`/`DslOp`/`Resource` 等 15 类）的 `property:` 被生成器跨类读取 → 301 个编译错误（`cannot access property ... from outside the class`），框架（serde/ffi/autodiff/idl/orm/embed/dsl/infer_ops）整体不可用 | 回归 `tools/codegen/run_tests.sh`（已接入 `tests/run_tests.sh`，全绿） |
-| BUG-046 | � | 类内同名 **static 方法**（签名不同）无重复检测 → codegen 用同一 LLVM 函数生成不同签名 body → `Function::getArg() out of range` 崩溃（static action 注册 `declare("Class.name")` 返回值未检查；properties/actions/functions/events 都有查重唯独 static 漏） | 负测试 `tests/negative/duplicate_static_action.myp`（编译拒绝） |
+| BUG-046 | 🟩 | 类内同名 **static 方法**（签名不同）无重复检测 → codegen 用同一 LLVM 函数生成不同签名 body → `Function::getArg() out of range` 崩溃（static action 注册 `declare("Class.name")` 返回值未检查；properties/actions/functions/events 都有查重唯独 static 漏） | 负测试 `tests/negative/duplicate_static_action.myp`（编译拒绝） |
 
 | BUG-047 | 🟩 | selfhost ARC 调用返回值**双重 retain 泄漏**——BUG-036 误删 Call/genIfaceCall 的 `addFreshTemp` → 方法调用返回每次泄漏 +1（parity arc/arc_m2/weak_cycle 根因） | 回归 parity arc/arc_m2/weak_cycle |
 | BUG-048 | 🟩 | selfhost 闭源分发/链接缺口——无预编译库(.so/.a)发现 / 无 `--shared` 库模式 / 链接成功不打印 "Link OK"（parity closed-lib 根因） | 回归 `tests/test_closed_lib.sh`（closed-lib 12/12） |
 | BUG-049 | 🟩 | selfhost codegen `&&`/`||` 结果槽栈泄漏——短路降级内联 `alloca i1` 循环体内每轮执行 RSP 不恢复 → 无限循环跌破栈底崩溃（rt_thread_test 自旋暴露） | 回归 `bench/freestanding/rt_thread_test.myp`（自旋 `||` 直写，8/8 稳定） |
 | BUG-050 | 🟩 | 两个编译期解析缺口：(1) **裸 const 标识符不折叠**——顶层 `const int CAP=1024` 被两个编译器都解析成零参 const-decl **函数**类型，裸引用 `CAP`（非 `CAP()`）报 `expected numeric type, got 'function'/'() -> int'`；(2) **selfhost 对 `__myp_*` 盲目去前缀**——通用 Identifier callee 路径把真 `__myp_coro_*`/`__myp_destroy_*` 符号去前缀成 `myp_coro_resume`（未定义符号），且去前缀后函数类型解析失败 → 字面量实参 `0` 不提升成 i64 | 回归 裸 const（`CAP*8` 折叠 + `CAP()` 显式调用双编译）+ shadow `rt_coro_test`（IR `call i64 @__myp_coro_resume(i64, i64 0)`）+ 全量 323 |
-| BUG-051 | � | **@static 类属性默认值不生效**——@static 实例全局恒 `zeroinitializer`（C++ codegen.cpp:1549 `ConstantAggregateZero` / selfhost codegen.myp:1509 `zeroinitializer`），属性默认值（`int x = 5;`/`= -1`）只在 `new` 路径应用（generateNewExpr:3560），@static 全局从不 `new` → 非零默认值静默变 0。手册 manual.md:167 写明「默认值在 new 时生效」→ 文档化但坑（手册又推荐 @static 类做类级共享常量）。**v3.15.69 selfhost codegen 已修复**（显式常量初始化器，含常量折叠）；oracle 冻结不改。**运行时 workaround 已回滚**（coroEnsureInit 显式置 current=-1、thread stackSize 显式置 1048576） | 回归 `tests/@test/manual_static_defaults.myp`（int/long 折叠/一元浮点/bool/字符串/int 除法，7 断言） |
+| BUG-051 | 🟩 | **@static 类属性默认值不生效**——@static 实例全局恒 `zeroinitializer`（C++ codegen.cpp:1549 `ConstantAggregateZero` / selfhost codegen.myp:1509 `zeroinitializer`），属性默认值（`int x = 5;`/`= -1`）只在 `new` 路径应用（generateNewExpr:3560），@static 全局从不 `new` → 非零默认值静默变 0。手册 manual.md:167 写明「默认值在 new 时生效」→ 文档化但坑（手册又推荐 @static 类做类级共享常量）。**v3.15.69 selfhost codegen 已修复**（显式常量初始化器，含常量折叠）；oracle 冻结不改。**运行时 workaround 已回滚**（coroEnsureInit 显式置 current=-1、thread stackSize 显式置 1048576） | 回归 `tests/@test/manual_static_defaults.myp`（int/long 折叠/一元浮点/bool/字符串/int 除法，7 断言） |
 | BUG-052 | 🟩 | 解析器**错误恢复死循环 OOM**（selfhost，v3.15.85）：`parseEnumDecl` 变体循环 / `parseMatchStmt` 臂循环 `consume`/`parseIdentifier` 失败都**不 advance** → 非法枚举（MYP 枚举须分号 `enum E { V0; V1; }`，逗号 `V0, V1` 即触发）或非法 match 臂（`E => {...}` 缺 `.`/变体名）卡死 → 每次迭代 `perr` 追加 Diag → 无界内存分配（实测 ~18GB，OOM 崩溃系统）。与 2026-08 LSP 爆炸同类缺陷的漏网点（当时只修 parseBlock/parseMapping） | 负测试 `tests/negative/enum_comma_separator.myp`、`tests/negative/match_missing_dot.myp`（7.5MB 有界报错） |
 | BUG-053 | 🟩 | `exprLlvmType` 对 `+` Binary **指数爆炸**（selfhost codegen，v3.15.87）：`+` 分支为判字符串拼接调 `exprLlvmType(lhs/rhs)`，底部 `llt/rlt` 又算一次 → 左深链 `0+1+1+...` 每层 2 次递归、逐层翻倍 → 深度 24 编译 6.2s、深度 28 >20s（原 10,000 加号 >120s 超时不可编译）。内存低（7-24MB），纯时间爆炸 | torture `tests/torture/generated/execute/plus_bomb_0.myp`（10,000 加号 + 100 i++，现 10.8s） |
 | BUG-054 | 🟩 | **不同 struct 类型赋值/初始化静默过 sema**（selfhost sema，v3.15.87）：`typesCompat` 只比 kind "struct"，`A a; B b; a = b;` 或链式字段 `root.inner...inner = root.inner`（L4=L1）被放行 → LLVM opt 报 `defined with type %B but expected %A` 崩溃（非干净诊断）。**附带隐患**：Member 表达式 `resolvedClass` 是**容器**类型名（`root.inner`→L0 而非 L1），直接比 resolvedClass 会误拒合法 `L2 y = a.b.c;` | 负测试 `tests/negative/struct_assign_mismatch.myp`（`A a; B b; a = b;` → `cannot assign value of type 'B' to variable of type 'A'`） |
@@ -1741,3 +1741,28 @@
   是持续漏网点——凡按对象形态分派的解析路径，都要枚举 Call/Subscript/Member/New；
   ② 测试先枚举"对象形态 × 成员形态 × 返回类型"矩阵（Identifier/Call × field/
   method × 数组/slice/类）。
+
+## BUG-064（已修复 🟩，v3.15.97）：interface 转换从链式结果/struct 字段漏具体类名 → null vtable 段错误
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.97，selfhost codegen.myp）
+- **背景**：review BUGLIST 找"相似未修复"——发现表里 4 个非 🟩（029/032/046/051）
+  其实详情都是已修复（表标记过时 U+FFFD，已修）；但进一步按 interface 转换族
+  （BUG-029/033/034）探针验证发现真缺口：
+  - ✅ `Shape s = new Circle()` / 局部变量 / `this.field` / `arr[i]`（已修）
+  - ❌ `Shape s = factory();`（顶层函数返回）→ 段错误
+  - ❌ `Shape s = b.make();`（方法返回）→ 段错误
+  - ❌ `Shape s = cs.get(0);`（集合 get 泛型方法返回）→ 段错误
+  - ❌ `Shape s = h.c;`（struct 变量 .字段）→ SIGTRAP
+- **根因**：codegen `upcastClsName`（接口变量分支解析具体类名建 vtable）只处理
+  New/Identifier/this.field/Subscript，漏 Call（函数/方法/集合 get 返回）与
+  struct 变量 .字段 → `clsName` 空 → 只存实例不存 vtable → 派发 `call *0x(vtable)`
+  段错误。
+- **修复**（upcastClsName 加两分支）：
+  1. `Call`：用 `e.valueClass()/resolvedClass()`（sema BUG-057/062 已设具体类名）。
+  2. `Member` + 对象为 Identifier 且是 struct 变量：`structFieldAstType` 解析字段
+     声明类型。
+- **验证**：S1~S6（new/局部/函数返回/方法返回/集合 get/struct 字段）全通。
+- **回归**：`tests/@test/iface_upcast_chain.myp`（5 测试/6 断言）；全量 353/0。
+- **教训**：① BUGLIST 表状态与详情必须同步（4 个过时标记 U+FFFD 误导排查）；
+  ② interface 转换族与链式访问族同根——具体类名须按源表达式形态传播，upcastClsName
+  的形态枚举（New/Identifier/This.field/Subscript/Call/struct 字段）同样要补全。

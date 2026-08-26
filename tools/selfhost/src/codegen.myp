@@ -624,6 +624,19 @@ class CodeGen {
                 if (Str.len(e.resolvedClass()) != 0) cn = e.resolvedClass();
                 return cn;
             }
+            if (e.kind() == "Call") {
+                // BUG-064：调用结果 → interface（顶层函数/方法/集合 get 返回）。
+                // sema 已在 BUG-057（顶层函数返回）/BUG-062（泛型方法返回替换）
+                // 给 CallExpr 设 valueClass/resolvedClass 具体类名 → 直接用它建
+                // vtable，否则 vtable 槽 null → 派发段错误。
+                string vc = e.valueClass();
+                if (Str.len(vc) == 0) vc = e.resolvedClass();
+                // valueClass 是具体实现类（非接口），无需 resolveBase
+                if (Str.len(vc) != 0 && isInterfaceName(vc) == 0
+                    && isStructName(vc) == 0 && isEnumName(vc) == 0) {
+                    return vc;
+                }
+            }
             if (e.kind() == "Identifier") {
                 string nm = e.name();
                 AstType ivt = varAstType(nm);
@@ -662,6 +675,30 @@ class CodeGen {
                             && isStructName(prt.className()) == 0
                             && isEnumName(prt.className()) == 0) {
                             return classInstName(prt);
+                        }
+                    }
+                }
+            }
+            // BUG-064：struct 变量 .字段 → interface（`Shape s = h.c;`）。对象是
+            // Identifier 且其类型是 struct → 按 struct 字段声明类型解析。
+            if (e.kind() == "Member") {
+                AstExpr obj = e.array();
+                if (obj != null && obj.kind() == "Identifier") {
+                    AstType oat = varAstType(obj.name());
+                    if (oat != null) {
+                        AstType ort = resolveType(oat);
+                        if (ort != null && Str.len(ort.className()) != 0
+                            && isStructName(ort.className()) != 0) {
+                            AstType ft = structFieldAstType(ort.className(), e.memberName());
+                            if (ft != null) {
+                                AstType frt = resolveType(ft);
+                                if (frt != null && Str.len(frt.className()) != 0
+                                    && isInterfaceName(frt.className()) == 0
+                                    && isStructName(frt.className()) == 0
+                                    && isEnumName(frt.className()) == 0) {
+                                    return classInstName(frt);
+                                }
+                            }
                         }
                     }
                 }

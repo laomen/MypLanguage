@@ -27,6 +27,24 @@
 
 ## 编译器版本历史
 
+### v3.15.97 — 修 interface 转换从链式结果/struct 字段漏具体类名（BUG-064）
+
+**非破坏性**（selfhost codegen）。review BUGLIST 找相似未修复：表里 4 个非 🟩
+（029/032/046/051）详情实为已修复（表标记过时 U+FFFD，已修正）；按 interface 转换族
+（BUG-029/033/034）探针发现真缺口——`Shape s = factory()`（顶层函数返回）、
+`b.make()`（方法返回）、`cs.get(0)`（集合 get）、`h.c`（struct 字段）→ interface 全
+段错误（vtable 槽 null）。
+
+- **根因**：codegen `upcastClsName` 只处理 New/Identifier/this.field/Subscript，
+  漏 Call（函数/方法/集合 get 返回）与 struct 变量 .字段 → 具体类名空 → 不存
+  vtable → 派发段错误。
+- **修复**：upcastClsName 加 Call 分支（用 sema BUG-057/062 已设的
+  valueClass/resolvedClass）+ Member 分支（struct 变量字段经 structFieldAstType）。
+- **测试**：`tests/@test/iface_upcast_chain.myp`（5 测试/6 断言：new/局部/函数
+  返回/方法返回/集合 get/struct 字段）。
+- 验证：bootstrap 自举成立；全量回归 **353/0**。BUGLIST 记 BUG-064 + 修 4 个过时
+  状态标记。
+
 ### v3.15.96 — 修调用结果成员后下标 get().field[j]（BUG-063）
 
 **非破坏性**（selfhost sema）。续链式访问族排查（BUG-057~062 后系统探测更多形态）：

@@ -1,0 +1,63 @@
+// iface_upcast_chain: interface 转换从链式结果/字段（vtable 完整）→ @test
+// 自举缺口（BUG-064，BUG-029/033/034 族）：upcastClsName 只处理 New/Identifier/
+// this.field/Subscript，漏了 Call（顶层函数/方法/集合 get 返回）与 struct 变量
+// .字段 → 具体类名解析不到 → vtable 槽 null → 派发段错误。
+// 覆盖：new / 局部变量 / 顶层函数返回 / 方法返回 / 集合 get / struct 字段
+import test;
+import collections;
+
+interface Shape { int area(); }
+class Circle {
+    interface class Shape;
+    action: int area() { return 4; }
+}
+class Box {
+    action:
+        Circle make() { Circle c = new Circle(); return c; }
+}
+Circle factory() { Circle c = new Circle(); return c; }
+struct HolderS { Circle c; }
+
+// —— 1) new / 局部变量（基准，本就该过）——
+@test void test_basic() {
+    Shape s1 = new Circle();
+    Test.assertEq(s1.area(), 4, "new upcast");
+    Circle lc = new Circle();
+    Shape s2 = lc;
+    Test.assertEq(s2.area(), 4, "local upcast");
+    Test.report("test_basic", true);
+}
+
+// —— 2) 顶层函数返回 → interface ——
+@test void test_func_ret() {
+    Shape s = factory();
+    Test.assertEq(s.area(), 4, "func ret upcast");
+    Test.report("test_func_ret", true);
+}
+
+// —— 3) 方法返回 → interface ——
+@test void test_method_ret() {
+    Box b = new Box();
+    Shape s = b.make();
+    Test.assertEq(s.area(), 4, "method ret upcast");
+    Test.report("test_method_ret", true);
+}
+
+// —— 4) 集合 get 返回 → interface（泛型方法返回）——
+@test void test_coll_get() {
+    ArrayList<Circle> cs = new ArrayList<Circle>();
+    Circle lc = new Circle();
+    cs.add(lc);
+    Shape s = cs.get(0);
+    Test.assertEq(s.area(), 4, "coll get upcast");
+    Test.report("test_coll_get", true);
+}
+
+// —— 5) struct 字段 → interface ——
+@test void test_struct_field() {
+    HolderS h;
+    h.c = new Circle();
+    Shape s = h.c;
+    Test.assertEq(s.area(), 4, "struct field upcast");
+    Test.report("test_struct_field", true);
+}
