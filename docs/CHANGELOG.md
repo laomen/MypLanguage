@@ -54,6 +54,28 @@ IR 确认 `@__myp_static_TL = thread_local global`；pthread_key 探针同理。
 
 > 这是 N×M:1 协程迁移的地基（步骤 0/1）。下一步见 v3.15.78（per-thread 表迁移）。
 
+### v3.15.83 — 压测深挖修 3 个跨线程竞态（TimeBuf 共享缓冲挂死 + 通道状态竞态）
+
+**非破坏性**。续 v3.15.82；新增两个压力测试（`tests/stress/coro_churn.myp`
+海量 spawn/destroy 混沌、`xthread_storm.myp` 跨线程 channel+事件风暴）暴露并修复：
+
+1. **`time.myp` TimeBuf 跨线程共享 → 挂死（真根因）**：timespec 缓冲是 `@static`
+   进程级共享。`Time.sleep`（nanosleep）整个调用期间，worker 的 `myp_now_ms`/sleep
+   并发覆写同一 `ts/rem` → 损坏 timespec → EINVAL → `myp_sleep_ms` 的 EINTR 重试
+   循环无限重试 → MAIN 永久卡死（xthread_storm 间歇挂死，忙等则 20/20 通过）。
+   修复：改 `@static @thread` 每线程独立缓冲（v3.15.77 编译器支持）。此前的
+   "极小竞态"注释实为毫秒级窗口，非纳秒级。
+2. **`Chan.lastPopOwner` 进程级单槽竞态**：chanPop* 弹出的 waiter owner 存共享
+   全局，两线程并发 pop 互相覆盖 → 跨线程唤醒路由错线程 mailbox → 对端不醒死锁。
+   修复：改每线程 `ChanPop` stash（pop+读同线程）。
+3. **通道状态无锁 → 跨线程丢失唤醒死锁**：count 检查+缓冲+waiter 注册无锁，两线程
+   并发时互踩 → 丢失唤醒。修复：`Chan.stLock` 状态自旋锁（缓冲/waiter/唤醒路由
+   串行化；park 注册锁内、yield 锁外）；`chanWakeOne` 同线程改 ready=1 由调度器
+   推进（不再锁内内联 resume——持锁跨 ctx_switch 会自死锁）。
+
+验证：stress **8/8**（新增 2 项）、全量 **327/0**；xthread_storm 20/20 稳定
+（此前 ~50% 挂死）。协程/通道基准不受影响。
+
 ### v3.15.82 — CoroT SoA→AoS：18 并行数组 → 单 CoroSlot[] struct 数组（缓存布局）
 
 **非破坏性**。续 v3.15.81；协程每槽状态改缓存友好布局：

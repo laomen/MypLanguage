@@ -1,0 +1,59 @@
+// tests/stress/coro_churn.myp — 协程海量 spawn/destroy 混沌（池驱逐 + 批量分配 +
+// 槽复用 + 代际句柄失效 + 强杀 destroy 路径）
+// 负载：20 波 × 3000 协程 = 6 万 spawn，混合 eager / 1-await / 2-await / 强杀。
+// 每波 3000 并发 > 栈池 1024 → 批量分配 + 驱逐 drop；槽回收 + 代际句柄失效。
+// 验证：每波 Coro.count()==0、结果精确、无崩溃/泄漏。
+import env;
+import coro;
+
+class Work {
+    action:
+        @coro(stack=64) long add(long x) { return x + 1; }
+        @coro(stack=64) long two(long x) { await; return x * 2; }
+        @coro(stack=64) long deep(long x) { await; await; return x + 100; }
+}
+
+class Churn {
+    static:
+        int run() {
+            for (int wave = 0; wave < 20; wave++) {
+                Work w = new Work();
+                long[] hs = new long[3000];
+                int[] kind = new int[3000];
+                for (int i = 0; i < 3000; i++) {
+                    int m = (wave * 5 + i) % 4;
+                    kind[i] = m;
+                    if (m == 0) hs[i] = w.add(long(i));
+                    else if (m == 1) hs[i] = w.two(long(i));
+                    else if (m == 2) hs[i] = w.deep(long(i));
+                    else hs[i] = w.two(long(i) + 500000);   // await → 可强杀
+                }
+                // 强杀 m==3（spawn 未启动即 destroy）
+                for (int i = 0; i < 3000; i++) {
+                    if (kind[i] == 3) Coro.destroy(hs[i]);
+                }
+                // 推进：deep 需 3 步 → 5 次 scheduler 确保全部完成
+                for (int k = 0; k < 5; k++) Coro.scheduler();
+                // 读结果验证
+                for (int i = 0; i < 3000; i++) {
+                    int m = kind[i];
+                    if (m == 3) continue;   // 已 destroy
+                    long r = Coro.result(hs[i]);
+                    if (m == 0 && r != long(i) + 1) return 1;
+                    if (m == 1 && r != long(i) * 2) return 2;
+                    if (m == 2 && r != long(i) + 100) return 3;
+                }
+                // 已 destroy 的句柄应失效（代际）：status 非 1
+                for (int i = 0; i < 3000; i++) {
+                    if (kind[i] == 3) {
+                        if (Coro.status(hs[i]) == 1) return 4;   // 不应还 ready
+                    }
+                }
+                if (Coro.count() != 0) return 100 + wave;   // 每波归零
+            }
+            Console.writeString("PASS coro_churn\n");
+            return 0;
+        }
+}
+
+int main() { return Churn.run(); }

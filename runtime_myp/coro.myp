@@ -1359,7 +1359,6 @@ long myp_diag_retired_bytes() {
         long[65536] sendW;
         long[65536] sendOwner; // 每 send waiter 的 owner 线程 pthread_self()
         int[256] sendWc;
-        long lastPopOwner = 0; // chanPop* 弹出的 waiter owner（chanWake* 读）
         int wakeDepth = 0;    // 同步交接递归深度守卫（同 C MYP_CHANNEL_WAKE_DEPTH_MAX=64）
         int used = 0;         // 已分配通道数
         // ---- 跨线程唤醒 mailbox（v3.15.79）：waiter owner ≠ 本线程 → 投递，owner
@@ -1369,13 +1368,40 @@ long myp_diag_retired_bytes() {
         long[64] cwSlot;      // 目标协程槽（owner 表内）
         int[64] cwActive;
         int cwCount = 0;
+        // v3.15.83：通道状态锁（保护 buf/count/head/recvW/sendW/waiter；park 注册
+        // 在锁内、yield 在锁外）。跨线程并发 send/recv 无锁 → count 检查+缓冲+waiter
+        // 互踩 → 丢失唤醒死锁（xthread_storm 压测暴露）。
+        long stLock = 0;      // 自旋锁字地址（arena）
+}
+// ⚠️ v3.15.83 修复：chanPop* 弹出 waiter 的 owner 曾存进程级单槽 `Chan.lastPopOwner`
+// （pop 线程写、chanWake* 读，无锁）——两线程并发 chanPopRecv/chanPopSend 会互相
+// 覆盖 owner → 跨线程唤醒路由到错线程 mailbox → 对端永不醒 → 死锁（xthread_storm
+// 压测暴露，2000 次跨线程 rendezvous 挂死）。改为**每线程 stash**（pop+读同线程，
+// 无跨线程竞态）。
+@static @thread class ChanPop {
+    property:
+        long lastOwner = 0;   // 本线程最近一次 pop 的 waiter owner（chanWake* 读）
+}
+// 通道状态自旋锁：保护缓冲 + waiter 列表 + 唤醒路由（chanWake* 均在锁内调用）。
+// 持锁绝不 ctx_switch（park 的 yield 在锁外）；锁序 stLock→cwLock（mailbox），无反向。
+void chanLock() {
+    if (Chan.stLock == 0) {
+        long p = myp_arena_alloc(8);
+        if (p != 0) { __myp_mem_store_i32(p, 0); Chan.stLock = p; }
+    }
+    if (Chan.stLock != 0) {
+        while (__myp_atomic_add_i32_addr(Chan.stLock, 1) != 0) { }
+    }
+}
+void chanUnlock() {
+    if (Chan.stLock != 0) __myp_atomic_store_i32_addr(Chan.stLock, 0);
 }
 
 // pop first（FIFO）；同时记录弹出的 waiter owner（chanWake* 用它判断跨线程）
 long chanPopRecv(int h) {
     if (Chan.recvWc[h] <= 0) return -1;
     long v = Chan.recvW[h * 256];
-    Chan.lastPopOwner = Chan.recvOwner[h * 256];
+    ChanPop.lastOwner = Chan.recvOwner[h * 256];
     for (int i = 1; i < Chan.recvWc[h]; i = i + 1) {
         Chan.recvW[h * 256 + i - 1] = Chan.recvW[h * 256 + i];
         Chan.recvOwner[h * 256 + i - 1] = Chan.recvOwner[h * 256 + i];
@@ -1386,7 +1412,7 @@ long chanPopRecv(int h) {
 long chanPopSend(int h) {
     if (Chan.sendWc[h] <= 0) return -1;
     long v = Chan.sendW[h * 256];
-    Chan.lastPopOwner = Chan.sendOwner[h * 256];
+    ChanPop.lastOwner = Chan.sendOwner[h * 256];
     for (int i = 1; i < Chan.sendWc[h]; i = i + 1) {
         Chan.sendW[h * 256 + i - 1] = Chan.sendW[h * 256 + i];
         Chan.sendOwner[h * 256 + i - 1] = Chan.sendOwner[h * 256 + i];
@@ -1440,25 +1466,21 @@ void chanWakePump() {
     __myp_atomic_store_i32_addr(Chan.cwLock, 0);
 }
 // 唤醒一个对端等待者；isRecv=1 唤醒 recv waiter（由 send 调），0 唤醒 send waiter。
-// 同步交接：调用方是协程 → 内联 resume 对端一步；否则 ready=1 等 scheduler。
-// 跨线程（waiter owner ≠ 本线程）→ 投递唤醒 mailbox，owner 调度器 pump 后 resume。
+// **须在 chanLock 内调用**（send/recv/try/close 持锁）：pop + 路由（同线程 ready=1、
+// 跨线程 mailbox）。v3.15.83 起**不再内联 resume**——持锁跨 ctx_switch 会死锁（被唤醒
+// 协程再碰通道 → 锁自死）；改 ready=1 由调度器下一趟 resume（测试主循环均反复 scheduler，
+// 单线程 rendezvous 每趟推进一步）。
 long chanWakeOne(int h, int isRecv) {
     long sl = isRecv != 0 ? chanPopRecv(h) : chanPopSend(h);
     if (sl < 0) return -1;
-    long owner = Chan.lastPopOwner;
-    int hs = int(sl);
+    long owner = ChanPop.lastOwner;
     if (owner != pthread_self()) {
         chanWakePush(owner, sl);   // 跨线程：不能碰对方 per-thread 表 → mailbox
         return sl;
     }
-    if (hs < 0 || hs >= CoroT.count || CoroT.slots[hs].active == 0) return sl;
-    if (CoroT.current >= 0 && Chan.wakeDepth < 64) {
-        Chan.wakeDepth = Chan.wakeDepth + 1;
-        __myp_coro_resume(coroMakeHandle(hs), 0L);
-        Chan.wakeDepth = Chan.wakeDepth - 1;
-    } else {
-        CoroT.slots[hs].ready = 1;
-    }
+    int hs = int(sl);
+    if (hs >= 0 && hs < CoroT.count && CoroT.slots[hs].active != 0)
+        CoroT.slots[hs].ready = 1;   // 同线程：ready（调度器下一趟 resume）
     return sl;
 }
 // 只 ready（不内联 resume）——close/try 用：内联 resume 可能在关闭通道上跑无界
@@ -1466,7 +1488,7 @@ long chanWakeOne(int h, int isRecv) {
 long chanWakeReady(int h, int isRecv) {
     long sl = isRecv != 0 ? chanPopRecv(h) : chanPopSend(h);
     if (sl < 0) return sl;
-    long owner = Chan.lastPopOwner;
+    long owner = ChanPop.lastOwner;
     if (owner != pthread_self()) {
         chanWakePush(owner, sl);
         return sl;
@@ -1508,18 +1530,21 @@ void myp_channel_destroy(long handle) {
     Chan.sendWc[h] = 0;
 }
 // C: int64_t myp_channel_send(int64_t handle, int64_t val) —— 0 成功；协程满挂起
+// v3.15.83：状态锁串行化缓冲+waiter 操作（跨线程并发安全）；park 注册锁内、yield 锁外。
 int myp_channel_send(long handle, long val) {
     coroEnsureInit();
     int h = int(handle);
     if (h < 0 || h >= 256) return -1;
-    if (Chan.buf[h] == 0 || Chan.closed[h] != 0) return -1;
     for (;;) {
+        chanLock();
+        if (Chan.buf[h] == 0 || Chan.closed[h] != 0) { chanUnlock(); return -1; }
         if (Chan.count[h] < Chan.capacity[h]) {
             int wpos = Chan.head[h] + Chan.count[h];
             if (wpos >= Chan.capacity[h]) wpos = wpos - Chan.capacity[h];
             __myp_mem_store_i64(Chan.buf[h] + long(wpos) * 8, val);
             Chan.count[h] = Chan.count[h] + 1;
-            chanWakeOne(h, 1);   // 唤醒一个 recv waiter
+            chanWakeOne(h, 1);   // 唤醒一个 recv waiter（锁内）
+            chanUnlock();
             return 0;
         }
         int cur = CoroT.current;
@@ -1528,45 +1553,52 @@ int myp_channel_send(long handle, long val) {
                 Chan.sendW[h * 256 + Chan.sendWc[h]] = long(cur);
                 Chan.sendOwner[h * 256 + Chan.sendWc[h]] = pthread_self();
                 Chan.sendWc[h] = Chan.sendWc[h] + 1;
-                CoroT.slots[cur].ready = 0;   // park
+                CoroT.slots[cur].ready = 0;   // park（锁内注册）
             }
-            __myp_coro_yield(val);
+            chanUnlock();
+            __myp_coro_yield(val);   // 锁外挂起
             if (Chan.closed[h] != 0) return -1;
-            // loop：重新校验（多生产者，空位可能被先 resume 者占用）
+            // loop：重新加锁校验（多生产者，空位可能被先 resume 者占用）
         } else {
+            chanUnlock();
             return -1;   // 非协程满缓冲
         }
     }
 }
 // C: int64_t myp_channel_recv(int64_t handle) —— 取出值；协程空挂起，非协程空 -1
+// v3.15.83：状态锁串行化（同 send）。
 long myp_channel_recv(long handle) {
     coroEnsureInit();
     int h = int(handle);
     if (h < 0 || h >= 256) return -1;
-    if (Chan.buf[h] == 0) return -1;
     for (;;) {
+        chanLock();
+        if (Chan.buf[h] == 0) { chanUnlock(); return -1; }
         if (Chan.count[h] > 0) {
             long v = __myp_mem_load_i64(Chan.buf[h] + long(Chan.head[h]) * 8);
             int nh = Chan.head[h] + 1;
             if (nh >= Chan.capacity[h]) nh = 0;
             Chan.head[h] = nh;
             Chan.count[h] = Chan.count[h] - 1;
-            chanWakeOne(h, 0);   // 唤醒一个 send waiter
+            chanWakeOne(h, 0);   // 唤醒一个 send waiter（锁内）
+            chanUnlock();
             return v;
         }
-        if (Chan.closed[h] != 0) return -1;
+        if (Chan.closed[h] != 0) { chanUnlock(); return -1; }
         int cur = CoroT.current;
         if (cur >= 0 && cur < CoroT.count && CoroT.slots[cur].active != 0) {
             if (Chan.recvWc[h] < 256) {
                 Chan.recvW[h * 256 + Chan.recvWc[h]] = long(cur);
                 Chan.recvOwner[h * 256 + Chan.recvWc[h]] = pthread_self();
                 Chan.recvWc[h] = Chan.recvWc[h] + 1;
-                CoroT.slots[cur].ready = 0;   // park
+                CoroT.slots[cur].ready = 0;   // park（锁内注册）
             }
-            __myp_coro_yield(0);
+            chanUnlock();
+            __myp_coro_yield(0);   // 锁外挂起
             if (Chan.closed[h] != 0) return -1;
-            // loop：重新校验（多消费者）
+            // loop：重新加锁校验（多消费者）
         } else {
+            chanUnlock();
             return -1;   // 非协程空缓冲
         }
     }
@@ -1576,12 +1608,14 @@ int myp_channel_try_send(long handle, long val) {
     coroEnsureInit();
     int h = int(handle);
     if (h < 0 || h >= 256 || Chan.buf[h] == 0) return -1;
-    if (Chan.closed[h] != 0 || Chan.count[h] >= Chan.capacity[h]) return -1;
+    chanLock();
+    if (Chan.closed[h] != 0 || Chan.count[h] >= Chan.capacity[h]) { chanUnlock(); return -1; }
     int wpos = Chan.head[h] + Chan.count[h];
     if (wpos >= Chan.capacity[h]) wpos = wpos - Chan.capacity[h];
     __myp_mem_store_i64(Chan.buf[h] + long(wpos) * 8, val);
     Chan.count[h] = Chan.count[h] + 1;
     chanWakeReady(h, 1);
+    chanUnlock();
     return 0;
 }
 // C: int64_t myp_channel_try_recv —— 非阻塞：取出值，-1 空/关闭
@@ -1589,13 +1623,15 @@ long myp_channel_try_recv(long handle) {
     coroEnsureInit();
     int h = int(handle);
     if (h < 0 || h >= 256 || Chan.buf[h] == 0) return -1;
-    if (Chan.count[h] <= 0) return -1;
+    chanLock();
+    if (Chan.count[h] <= 0) { chanUnlock(); return -1; }
     long v = __myp_mem_load_i64(Chan.buf[h] + long(Chan.head[h]) * 8);
     int nh = Chan.head[h] + 1;
     if (nh >= Chan.capacity[h]) nh = 0;
     Chan.head[h] = nh;
     Chan.count[h] = Chan.count[h] - 1;
     chanWakeReady(h, 0);
+    chanUnlock();
     return v;
 }
 // C: int64_t myp_channel_size
@@ -1611,9 +1647,11 @@ void myp_channel_close(long handle) {
     int h = int(handle);
     if (h < 0 || h >= 256) return;
     if (Chan.buf[h] == 0) return;
+    chanLock();
     Chan.closed[h] = 1;
     while (Chan.sendWc[h] > 0) chanWakeReady(h, 0);
     while (Chan.recvWc[h] > 0) chanWakeReady(h, 1);
+    chanUnlock();
 }
 
 // ============================================================

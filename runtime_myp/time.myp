@@ -11,11 +11,16 @@
 //   - 缓冲用 arena 一次性分配 + @static 缓存地址（bump 16+16B，进程内固定，
 //     同 io.myp/region.myp 模式）。⚠️ 非 TLS：多线程并发共享缓冲有极小竞态
 //     （clock_gettime 写-读窗口纳秒级），当前测试全单线程，文档化限制。
+//     ⚠️⚠️ v3.15.83 修复：这**不是**纳秒级小竞态——`Time.sleep`（nanosleep）整个
+//     调用期间 worker 线程的 `myp_now_ms`/sleep 会覆写共享 ts/rem → 损坏 timespec
+//     → EINVAL → myp_sleep_ms 的 EINTR 重试循环无限重试挂死（xthread_storm 压测：
+//     MAIN Time.sleep 卡死；改忙等则 20/20 通过）。改 `@static @thread` 每线程独立
+//     缓冲（v3.15.77 编译器支持）。
 
 // alloc.myp（shadow 同伴模块）——跨模块 FFI
 ffi long myp_arena_alloc(long size);
 
-@static class TimeBuf {
+@static @thread class TimeBuf {
     property:
         long addr = 0;   // timespec 缓冲基址（ts@0 + rem@16，0=未初始化）
 }

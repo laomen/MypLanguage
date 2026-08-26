@@ -1,0 +1,114 @@
+// tests/stress/xthread_storm.myp — 跨线程协程风暴（N×M:1 mailbox 压力）
+// 2 个 @thread（A 消费 / B 生产）：B 线程向共享 channel 发 2000 个值（每次跨线程
+// 唤醒 A 的 parked recv 协程 → Chan.cw* mailbox 泵入）+ 每 50 发 fire 事件（跨线程
+// → CoroEvW 注册表 + mailbox）。A 线程协程 recvAll + waitEvtLoop 被同线程 scheduler
+// 推进。压测跨线程唤醒 mailbox 反复触发：无死锁/丢失/崩溃。
+// 验证：Σrecv == Σsend == 1999000、got==2000、evtGot>=1。
+import env;
+import time;
+import coro;
+import atomic;
+ffi long myp_channel_create(int capacity);
+ffi int myp_channel_send(long handle, long val);
+ffi long myp_channel_recv(long handle);
+
+@static class Shared {
+    property:
+        long ch = 0;
+        int[] cnt;      // [0]=sum [1]=got [2]=evtGot [3]=cDone
+        int pDone = 0;
+}
+class Signal {
+    action:
+        void send() { go(); }
+    event:
+        go();
+}
+class Consumer {
+    action:
+        @coro(stack=64) long recvAll(long n) {
+            long sum = 0;
+            long i = 0;
+            while (i < n) {
+                long v = myp_channel_recv(Shared.ch);   // 空缓冲 → park，跨线程 send 唤醒
+                sum = sum + v;
+                i = i + 1;
+            }
+            return sum;
+        }
+        @coro(stack=64) void waitEvtLoop() {
+            for (;;) {
+                await Signal.go;                         // 跨线程 fire 唤醒
+                Atomic.addInt(Shared.cnt, 2, 1);
+            }
+        }
+        @startup void run() {
+            long h = this.recvAll(2000L);
+            long he = this.waitEvtLoop();
+            int guard = 0;
+            while (Coro.status(h) != 0 && guard < 5000000) {
+                Coro.scheduler();                        // 泵跨线程唤醒 + 推进
+                guard = guard + 1;
+            }
+            if (Coro.status(h) != 0) {
+                Atomic.storeInt(Shared.cnt, 3, 3);       // FAIL: recv 未完成（死锁?）
+                return;
+            }
+            long sum = Coro.result(h);
+            Atomic.storeInt(Shared.cnt, 0, int(sum));
+            Atomic.storeInt(Shared.cnt, 1, 1);           // got 2000
+            if (Coro.isActive(he) != 0) Coro.destroy(he);
+            Atomic.storeInt(Shared.cnt, 3, 1);           // cDone
+        }
+}
+class Producer {
+    action:
+        @coro(stack=64) void sendAll(long n) {
+            long i = 0;
+            while (i < n) {
+                myp_channel_send(Shared.ch, i);      // cap=1：满 → park，消费者 recv 后跨线程唤醒
+                i = i + 1;
+                if ((i % 50) == 0) {
+                    Signal s = new Signal();
+                    s.send();                        // 跨线程 fire
+                }
+                if ((i % 200) == 0) Time.sleep(1);
+            }
+        }
+        @startup void run() {
+            long h = this.sendAll(2000L);
+            int guard = 0;
+            while (Coro.status(h) != 0 && guard < 5000000) {
+                Coro.scheduler();                    // 泵跨线程唤醒（消费者 recv 后本线程 send 协程续跑）
+                guard = guard + 1;
+            }
+            if (Coro.status(h) != 0) { Atomic.storeInt(Shared.cnt, 3, 4); return; }  // FAIL
+            Shared.pDone = 1;
+        }
+}
+class Main {
+    action:
+        @constructor Main() {
+            Shared.cnt = new int[4];
+            Shared.ch = myp_channel_create(1);
+            Consumer c = new Consumer() @thread;
+            Producer p = new Producer() @thread;
+            int spins = 0;
+            while (Atomic.loadInt(Shared.cnt, 3) == 0 && spins < 8000) {
+                Time.sleep(5);
+                spins = spins + 1;
+            }
+            long sum = Atomic.loadInt(Shared.cnt, 0);
+            int got = Atomic.loadInt(Shared.cnt, 1);
+            int evtGot = Atomic.loadInt(Shared.cnt, 2);
+            int cDone = Atomic.loadInt(Shared.cnt, 3);
+            long expect = 2000L * 1999L / 2L;   // 0..1999
+            if (cDone == 1 && sum == expect && got == 1 && evtGot >= 1) {
+                Console.writeString("PASS xthread_storm (sum=" + sum + " evt=" + evtGot + ")\n");
+            } else {
+                Console.writeString("FAIL xthread_storm sum=" + sum + " got=" + got
+                    + " evt=" + evtGot + " cDone=" + cDone + " pDone=" + Shared.pDone + "\n");
+            }
+        }
+}
+int main() { Main m = new Main(); return 0; }
