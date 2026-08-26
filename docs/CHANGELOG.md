@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.108 — 修布尔上下文漏 expectBool 校验（应拒绝却接受）（BUG-074）
+
+**非破坏性**（selfhost sema）。`p && q`（int 操作数）/ `!p` / `p ? a : b` /
+`if (intExpr)` / `while (intExpr)` 此前静默当 bool（非零→true）；C++ oracle 四处
+expectBool 只允许 bool/bit。手册 §三 要求整数判断写 `!= 0`。
+
+- **修复**：①`&&`/`||` 操作数；②`!` 操作数；③三元条件；④if/while 条件——补
+  expectBool（仅 bool/bit），报 `expected boolean expression, got 'X'`（消息用
+  exprTypeName 解析类名）。
+- **验证**：5 处均干净拒绝；合法 `b1 && !b2`（bit）/`if(boolVar)`/`while(b)`
+  不受影响；stdlib/examples/mypview 无 truthy-int 依赖。
+- **测试**：负测试 `tests/negative/bool_context.myp`；全量 **362 通过 / 0 失败**；
+  oracle 对拍 95/0。BUGLIST 记 BUG-074。
+
 ### v3.15.107 — 修 new T[n] 数组大小漏校验 → opt 崩（BUG-073）
 
 **非破坏性**（selfhost sema）。`new int["hi"]`（数组大小非整数）静默过 sema →

@@ -3700,7 +3700,14 @@ class Sema {
                     }
                 }
             } else if (k == "If") {
-                if (s.condition() != null) visitExpr(s.condition());
+                if (s.condition() != null) {
+                    string ifk = visitExpr(s.condition());
+                    // BUG-074：if 条件须 bool/bit（镜像 C++ expectBool）。
+                    // if (intExpr) 此前静默当 bool（非零→true），手册要求写 != 0。
+                    if (Str.len(ifk) != 0 && ifk != "bool" && ifk != "bit") {
+                        diag_.error(s.condition().line(), s.condition().col(), "expected boolean expression, got '" + exprTypeName(s.condition(), ifk) + "'");
+                    }
+                }
                 // §3.3 kernel 上下文内 if 分支 = 发散控制流（aligned barrier 需 uniform）
                 int savedDiv = inGpuDivergent_;
                 if (inGpuFor_ != 0) inGpuDivergent_ = inGpuDivergent_ + 1;
@@ -3708,7 +3715,13 @@ class Sema {
                 if (s.elseBranch() != null) visitStmt(s.elseBranch());
                 inGpuDivergent_ = savedDiv;
             } else if (k == "While") {
-                if (s.condition() != null) visitExpr(s.condition());
+                if (s.condition() != null) {
+                    string whk = visitExpr(s.condition());
+                    // BUG-074：while 条件须 bool/bit（镜像 C++ expectBool）。
+                    if (Str.len(whk) != 0 && whk != "bool" && whk != "bit") {
+                        diag_.error(s.condition().line(), s.condition().col(), "expected boolean expression, got '" + exprTypeName(s.condition(), whk) + "'");
+                    }
+                }
                 loopDepth_ = loopDepth_ + 1;
                 int savedDiv2 = inGpuDivergent_;
                 if (inGpuFor_ != 0) inGpuDivergent_ = inGpuDivergent_ + 1;
@@ -4234,6 +4247,16 @@ class Sema {
                         e.setResolvedKind("bool");
                         return "bool";
                     }
+                    // BUG-074：&&/|| 操作数须 bool/bit（镜像 C++ expectBool at
+                    // visitBinaryOp）。p && q（int）此前静默当 bool（非零→true），
+                    // 手册要求写 p != 0 && q != 0。
+                    if (op == "&&" || op == "||") {
+                        if (Str.len(l) != 0 && l != "bool" && l != "bit") {
+                            diag_.error(e.lhs().line(), e.lhs().col(), "expected boolean expression, got '" + exprTypeName(e.lhs(), l) + "'");
+                        } else if (Str.len(r) != 0 && r != "bool" && r != "bit") {
+                            diag_.error(e.rhs().line(), e.rhs().col(), "expected boolean expression, got '" + exprTypeName(e.rhs(), r) + "'");
+                        }
+                    }
                     e.setResolvedKind("bool");
                     return "bool";
                 }
@@ -4307,6 +4330,13 @@ class Sema {
                 string o = visitExpr(e.operand());
                 string op = e.op();
                 if (op == "!") {
+                    // BUG-074：! 操作数须 bool/bit（镜像 C++ expectBool at
+                    // visitUnaryExpr）。!intExpr 此前静默当 bool（非零→true）。
+                    if (Str.len(o) != 0 && o != "bool" && o != "bit") {
+                        diag_.error(e.operand().line(), e.operand().col(), "expected boolean expression, got '" + exprTypeName(e.operand(), o) + "'");
+                        e.setResolvedKind("void");
+                        return "void";
+                    }
                     string t = o == "bit" ? "bit" : "bool";
                     e.setResolvedKind(t);
                     return t;
@@ -4390,7 +4420,14 @@ class Sema {
                 return l;
             }
             if (k == "Ternary") {
-                if (e.condition() != null) visitExpr(e.condition());
+                string ck = e.condition() != null ? visitExpr(e.condition()) : "void";
+                // BUG-074：三元条件须 bool/bit（镜像 C++ expectBool at
+                // visitTernary）。intCond ? a : b 此前静默当 bool。
+                if (Str.len(ck) != 0 && ck != "bool" && ck != "bit") {
+                    diag_.error(e.condition().line(), e.condition().col(), "expected boolean expression, got '" + exprTypeName(e.condition(), ck) + "'");
+                    e.setResolvedKind("void");
+                    return "void";
+                }
                 string t = e.trueExpr() != null ? visitExpr(e.trueExpr()) : "void";
                 string f = e.falseExpr() != null ? visitExpr(e.falseExpr()) : "void";
                 if (TKind.isNumeric(t) != 0 && TKind.isNumeric(f) != 0) {

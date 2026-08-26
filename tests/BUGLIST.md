@@ -1992,3 +1992,25 @@
   0 FAIL；oracle 对拍 95/0。
 - **教训**：数组大小是整数表达式专有（不含 uint/float）——与下标（expectNumeric
   含 float）不同，别用 isNumKind 一刀切，须逐字段镜像 oracle 的精确集。
+
+## BUG-074（已修复 🟩，v3.15.108）：布尔上下文漏 expectBool 校验（应拒绝却接受）
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.108，selfhost sema.myp）
+- **背景**：续审查发现「应拒绝却接受」族——自举对布尔上下文完全不做
+  `expectBool` 校验，`p && q`（int 操作数）/ `!p`（int）/ `p ? a : b`（int
+  条件）/ `if (intExpr)` / `while (intExpr)` 全部静默当 bool（非零→true）。
+  C++ oracle 四处 expectBool（`&&`/`||` 操作数、`!` 操作数、三元条件、
+  if/while 条件）只允许 bool/bit，其余报 `expected boolean expression, got
+  'X'`。手册 §三 明确要求整数判断写 `!= 0`——本应是编译错误。
+- **根因**：自举 `&&`/`||`（comparison 分支）、Unary `!`、Ternary、If/While 的
+  条件处理都不校验操作数 kind。
+- **修复**：四处补 expectBool（仅 bool/bit）——①`&&`/`||` 操作数；②`!` 操作数；
+  ③三元条件；④if/while 条件。消息用 `exprTypeName`（class/struct 解析类名）。
+- **验证**：`p && q` / `!p` / `p ? 1 : 2` / `if(p)` / `while(p)` 均干净拒绝；合法
+  `b1 && !b2`（bit）、`if (boolVar)`、`while (b)` 不受影响；自举编译器自身只用
+  `while(true)`，stdlib/examples/mypview 无 truthy-int 依赖（全量回归证明）。
+- **回归**：负测试 `tests/negative/bool_context.myp`（EXPECT ERROR expected
+  boolean expression, got 'int'）；全量 362 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：expectNumeric（下标/算术）与 expectBool（&&/! /?: /if/while）是
+  oracle 两个高频校验族；自举此前只镜像了 expectNumeric（binary-op），漏了
+  expectBool 全家。凡「oracle 有 expectBool」的位置逐一比对补齐。

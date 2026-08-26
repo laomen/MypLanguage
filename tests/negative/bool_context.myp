@@ -1,0 +1,16 @@
+// EXPECT ERROR: expected boolean expression, got 'int'
+// BUG-074 回归（负测试）：布尔上下文（&&/|| 操作数、! 操作数、三元条件、
+// if/while 条件）须 bool/bit 表达式须编译期干净拒绝。此前自举全部静默当
+// bool（非零→true）——oracle expectBool 镜像（仅 bool/bit）。手册要求整数
+// 判断写 `!= 0`。非崩溃缺口（静默语义错），但「应拒绝却接受」须对齐 oracle。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            int p = 1;
+            int q = 2;
+            if (p && q) { }
+        }
+}
+int main(){return 0;}
