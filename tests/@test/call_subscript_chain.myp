@@ -1,0 +1,57 @@
+// call_subscript_chain: 调用结果下标 f()[i] → @test
+// 自举缺口（BUG-058，BUG-057 姊妹）：函数/方法返回 T[] 后直接下标，
+// 元素类型没传到 Subscript → sema 报 expected numeric type, got 'array'；
+// 修好后 codegen 又默认 i32（string[]/对象[] load i32 → retain 当 ptr 类型
+// 不匹配）。sema 从返回 AstType 取 element，codegen subscriptElemLt 补 Call 分支。
+// 覆盖：int/double/string 元素 / 方法链 b.get()[i] / f()[i] 参与算术 /
+//       写路径（临时数组）
+import test;
+
+int[] makeInt() { int[] a = new int[3]; a[0] = 7; a[1] = 8; a[2] = 9; return a; }
+double[] makeDbl() { double[] a = new double[2]; a[0] = 1.5; a[1] = 2.5; return a; }
+string[] makeStr() { string[] s = new string[2]; s[0] = "x"; s[1] = "y"; return s; }
+
+class Box {
+    action:
+        int[] get() { int[] a = new int[2]; a[0] = 11; a[1] = 22; return a; }
+}
+
+// —— 1) int 元素：读 + 算术 ——
+@test void test_int() {
+    Test.assertEq(makeInt()[1], 8, "int elem");
+    Test.assertEq(makeInt()[0] + makeInt()[2], 16, "arith on f()[i]");
+    Test.assertEq(makeInt()[2] - makeInt()[0], 2, "sub on f()[i]");
+    Test.report("test_int", true);
+}
+
+// —— 2) double 元素 ——
+@test void test_double() {
+    Test.assertFloatEq(makeDbl()[1], 2.5, 0.0001, "double elem");
+    Test.assertFloatEq(makeDbl()[0] * 2.0, 3.0, 0.0001, "double arith");
+    Test.report("test_double", true);
+}
+
+// —— 3) string 元素（元素是 ptr，曾 load i32 崩）——
+@test void test_string() {
+    Test.assertStrEq(makeStr()[1], "y", "string elem");
+    Test.assertStrEq(makeStr()[0], "x", "string elem0");
+    Test.report("test_string", true);
+}
+
+// —— 4) 方法链 b.get()[i] ——
+@test void test_method_chain() {
+    Box b = new Box();
+    Test.assertEq(b.get()[0], 11, "method chain [0]");
+    Test.assertEq(b.get()[1], 22, "method chain [1]");
+    Test.assertEq(b.get()[0] + b.get()[1], 33, "method chain arith");
+    Test.report("test_method_chain", true);
+}
+
+// —— 5) 写路径：临时数组 f()[i] = v ——
+@test void test_write() {
+    int[] t = makeInt();
+    t[1] = 100;
+    Test.assertEq(t[1], 100, "write via temp");
+    Test.assertEq(t[0], 7, "neighbor intact");
+    Test.report("test_write", true);
+}

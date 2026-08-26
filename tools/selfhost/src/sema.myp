@@ -5178,6 +5178,37 @@ class Sema {
                 } else if (sa != null && sa.kind() == "Call") {
                     AstExpr bytesCallee = sa.callee();
                     if (bytesCallee != null && bytesCallee.kind() == "Identifier" && bytesCallee.name() == "bytesOf") et = "ubyte";
+                    else {
+                        // f()[i]：顶层函数返回 T[] → 元素类型（BUG-058，自举缺口——
+                        // 返回数组的元素类型没传到 Subscript，实测报 expected numeric
+                        // type, got 'array'。对齐 BUG-057 思路，从返回 AstType 取 element）。
+                        AstExpr cal = sa.callee();
+                        if (cal != null && cal.kind() == "Identifier") {
+                            AstType fret = findFuncRetType(cal.name(), sa.args().size());
+                            if (fret != null && fret.element() != null) {
+                                AstType el = fret.element();
+                                et = typeToKind(el);
+                                if (Str.len(el.className()) != 0) e.setResolvedClass(el.className());
+                            }
+                        } else if (cal != null && cal.kind() == "Member") {
+                            // b.get()[i]：方法返回 T[] → 元素类型（用 Member 自身
+                            // resolvedClass，sema 解析成员时已设具体类名）。
+                            string mcls = cal.resolvedClass();
+                            if (Str.len(mcls) == 0) {
+                                AstExpr mobj = cal.array();
+                                if (mobj != null && mobj.kind() == "Identifier") mcls = sym_.lookupClass(mobj.name());
+                                if (Str.len(mcls) == 0 && mobj != null) { mcls = mobj.valueClass(); if (Str.len(mcls) == 0) mcls = mobj.resolvedClass(); }
+                            }
+                            if (Str.len(mcls) != 0) {
+                                AstType mret = findMethodRetAst(resolveBase(mcls), cal.memberName());
+                                if (mret != null && mret.element() != null) {
+                                    AstType el = mret.element();
+                                    et = typeToKind(el);
+                                    if (Str.len(el.className()) != 0) e.setResolvedClass(el.className());
+                                }
+                            }
+                        }
+                    }
                 } else if (sa != null && sa.kind() == "Member") {
                     // obj.prop 数组属性 → 元素类型
                     AstExpr mo2 = sa.array();

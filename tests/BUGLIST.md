@@ -1581,3 +1581,33 @@
   new/普通顶层函数），只三条设了返回类名——排查链式访问问题时先枚举所有调用形态；
   ② 报错信息 `class '<当前类>' has no member` 是"回落当前类"的典型信号，别被误导成
   当前类真的缺成员。
+
+## BUG-058（已修复 🟩，v3.15.91）：调用结果下标 f()[i] 元素类型丢失（BUG-057 姊妹）
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.91，selfhost sema.myp + codegen.myp）
+- **背景**：测试缺口审计发现 `f()[i]`（函数返回 T[] 后直接下标）@test 零覆盖；实测
+  `makeArr()[1]` 报 `expected numeric type, got 'array'`——返回数组的元素类型没传到
+  Subscript。与 BUG-057 同根（调用结果的类型信息没记录）。
+- **复现**：
+  - ❌ `int a = makeArr()[1];`（顶层函数返回 int[]）→ sema 报 "expected numeric type, got 'array'"
+  - ❌ `string s = makeStr()[1];`（string[]）→ 同样
+  - ❌ `int m = b.get()[0];`（方法返回 int[]）→ 同样
+  - ❌ `double d = makeD()[1];`（double[]）→ 同样
+- **根因（两处）**：
+  1. **sema**：Subscript 解析里 `sa.kind() == "Call"` 分支只处理 `bytesOf`→ubyte，
+     其它返回数组的调用不取元素类型 → `et` 停留 "array"。
+  2. **codegen**：`subscriptElemLt(arr)` 对 Call 返回默认 "i32" → `string[]`/对象[]
+     `load i32` 后 `myp_retain(ptr)` 收到 i32 → LLVM 类型不匹配（opt 崩）。
+- **修复**：
+  - sema：Call callee 为 Identifier → `findFuncRetType` 取 element；为 Member →
+    `cal.resolvedClass()`（sema 解析成员时已设具体类名）+ `findMethodRetAst` 取 element。
+    元素是类/struct 时 `e.setResolvedClass(el.className())`。
+  - codegen：`subscriptElemLt` 补 Call 分支——Identifier callee →
+    `findFuncRetAstType`，Member callee → `methodRetAstType`，用 `llvmType(element())`。
+- **验证**：int/double/string 元素、方法链 `b.get()[i]`、`f()[i]` 参与算术、写路径
+  （临时数组）全通。
+- **回归**：`tests/@test/call_subscript_chain.myp`（5 测试/12 断言：int/double/string/
+  方法链/写路径）；全量 343/0。
+- **教训**：① 测试缺口审计先枚举语法形态（`f().member()` 修了、`f()[i]` 还坏——同一
+  类问题的姊妹缺口），再枚举返回类型（int/double/string/对象/struct）；② 修 sema 后
+  必须验证 codegen——sema 报语义错掩盖了 codegen 的默认 i32 类型不匹配，两层都要改。

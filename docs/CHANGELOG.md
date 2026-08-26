@@ -27,6 +27,24 @@
 
 ## 编译器版本历史
 
+### v3.15.91 — 修调用结果下标 f()[i] 元素类型丢失（BUG-058，BUG-057 姊妹）
+
+**非破坏性**（selfhost sema + codegen）。测试缺口审计发现 `f()[i]`（函数/方法返回
+`T[]` 后直接下标）@test 零覆盖，实测 `makeArr()[1]` 报 `expected numeric type, got
+'array'`——返回数组的元素类型没传到 Subscript。
+
+- **根因（两处）**：
+  1. sema：Subscript 解析 `sa.kind()=="Call"` 分支只处理 `bytesOf`→ubyte，其它返回
+     数组的调用不取元素类型 → `et` 停留 "array"。
+  2. codegen：`subscriptElemLt` 对 Call 默认 "i32" → `string[]`/对象[] `load i32`
+     后 `myp_retain(ptr)` 收到 i32 → LLVM 类型不匹配（opt 崩）。
+- **修复**：sema 从返回 AstType 取 element（顶层函数 `findFuncRetType` / 方法
+  `findMethodRetAst`，Member callee 用其 resolvedClass）；codegen `subscriptElemLt`
+  补 Call 分支（`findFuncRetAstType`/`methodRetAstType` + `llvmType(element())`）。
+- **测试**：`tests/@test/call_subscript_chain.myp`（5 测试/12 断言：int/double/string
+  元素、方法链 `b.get()[i]`、`f()[i]` 算术、写路径）。
+- 验证：bootstrap 自举成立；全量回归 **343/0**。BUGLIST 记 BUG-058。
+
 ### v3.15.90 — 修顶层函数调用结果链式成员访问回落当前类（BUG-057）
 
 **非破坏性**（selfhost sema）。排查"泛型链式访问"发现：`rawStep(5).get()`（顶层函数

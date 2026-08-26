@@ -2003,6 +2003,33 @@ class CodeGen {
                 if (Str.len(cls) == 0) cls = "Object";
                 string et = propElemLt(cls, arr.memberName());
                 if (Str.len(et) != 0) return et;
+            } else if (arr.kind() == "Call") {
+                // f()[i]：顶层函数返回 T[] → 元素 LLVM 类型（BUG-058 姊妹；sema 已解析
+                // 元素类型，这里从函数返回 AstType 的 element 转 LLVM 类型。否则默认
+                // i32 → string[]/对象[] load i32 后 retain 当 ptr → LLVM 类型不匹配）。
+                AstExpr cal = arr.callee();
+                if (cal != null && cal.kind() == "Identifier") {
+                    AstType fret = findFuncRetAstType(cal.name(), arr.args().size());
+                    if (fret != null && fret.element() != null) {
+                        string elt = llvmType(fret.element());
+                        if (Str.len(elt) != 0) return elt;
+                    }
+                } else if (cal != null && cal.kind() == "Member") {
+                    // b.get()[i]：方法返回 T[] → 元素 LLVM 类型（用 Member 自身
+                    // resolvedClass，同 B3/接口路径）。
+                    string mcls = cal.resolvedClass();
+                    if (Str.len(mcls) == 0) {
+                        AstExpr mobj = cal.array();
+                        if (mobj != null) { mcls = mobj.valueClass(); if (Str.len(mcls) == 0) mcls = mobj.resolvedClass(); }
+                    }
+                    if (Str.len(mcls) != 0) {
+                        AstType mret = methodRetAstType(mcls, cal.memberName());
+                        if (mret != null && mret.element() != null) {
+                            string elt = llvmType(mret.element());
+                            if (Str.len(elt) != 0) return elt;
+                        }
+                    }
+                }
             }
             return "i32";
         }
