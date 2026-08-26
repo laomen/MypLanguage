@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.98 — 修 interface 转换从链式结果 .字段 漏具体类名（BUG-065）
+
+**非破坏性**（selfhost codegen）。修完 BUG-064 后继续探 interface 转换族：接口参数
+从 call 结果、返回 call 结果原已好；`Shape s = hs.get(0).c;`（集合 get 结果的
+struct 字段 → interface）段错误（vtable 槽 null）。
+
+- **根因**：`upcastClsName` Member 分支只处理对象是 Identifier（struct 变量）与
+  this.field，对象是 Call（`hs.get(0).c`）时不解析字段具体类。
+- **修复**：Member 分支对象加 Call/Subscript/Member/New——valueClass/resolvedClass
+  取返回类型，再按 struct 字段/class 属性解析字段具体类。
+- **测试**：`tests/@test/iface_upcast_chain.myp` 增补 test_coll_get_field /
+  test_iface_param / test_iface_ret（8 测试/10 断言）。
+- 验证：bootstrap 自举成立；全量回归 **353/0**。BUGLIST 记 BUG-065。
+
 ### v3.15.97 — 修 interface 转换从链式结果/struct 字段漏具体类名（BUG-064）
 
 **非破坏性**（selfhost codegen）。review BUGLIST 找相似未修复：表里 4 个非 🟩

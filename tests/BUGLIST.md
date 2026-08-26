@@ -1766,3 +1766,24 @@
 - **教训**：① BUGLIST 表状态与详情必须同步（4 个过时标记 U+FFFD 误导排查）；
   ② interface 转换族与链式访问族同根——具体类名须按源表达式形态传播，upcastClsName
   的形态枚举（New/Identifier/This.field/Subscript/Call/struct 字段）同样要补全。
+
+## BUG-065（已修复 🟩，v3.15.98）：interface 转换从链式结果 .字段 漏具体类名（BUG-064 姊妹）
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.98，selfhost codegen.myp）
+- **背景**：修完 BUG-064（直接 Call 返回 → interface）后继续探 interface 转换族
+  更多上下文：
+  - ✅ 接口参数从 call 结果（`takeShape(factory())`）/ 返回 call 结果作 interface
+    ——原已好（走接口值拷贝路径）。
+  - ❌ `Shape s = hs.get(0).c;`（集合 get 结果的 struct 字段 → interface）→ 段错误。
+- **根因**：codegen `upcastClsName` 的 Member 分支只处理对象是 Identifier（struct
+  变量）与 this.field，对象是 Call（`hs.get(0).c`）时不解析字段具体类 → vtable 槽
+  null → 派发段错误。
+- **修复**：Member 分支对象加 Call/Subscript/Member/New——用 valueClass/
+  resolvedClass 取返回类型，再按 struct 字段（structFieldAstType）/class 属性
+  （propAstType）解析字段具体类。
+- **验证**：`hs.get(0).c` → interface =4；接口参数/返回 call 结果全通。
+- **回归**：`tests/@test/iface_upcast_chain.myp` 增补 test_coll_get_field /
+  test_iface_param / test_iface_ret（8 测试/10 断言）；全量 353/0。
+- **教训**：interface 转换族与链式访问族同根且同形态枚举问题——upcastClsName 的
+  Member 分支与 Subscript 分支一样，都要覆盖"对象是 Identifier vs 链式结果"
+  全形态；连续探针（BUG-064→065）逐步暴露。

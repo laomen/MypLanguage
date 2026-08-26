@@ -701,6 +701,37 @@ class CodeGen {
                             }
                         }
                     }
+                } else if (obj != null && (obj.kind() == "Call" || obj.kind() == "Subscript" || obj.kind() == "Member" || obj.kind() == "New")) {
+                    // BUG-065：链式结果 .字段 → interface（`Shape s = hs.get(0).c;`）。
+                    // 对象是 Call 等 → 用 valueClass/resolvedClass 取返回类型，
+                    // 再按 struct 字段 / class 属性解析字段具体类。
+                    string ocls = obj.valueClass();
+                    if (Str.len(ocls) == 0) ocls = obj.resolvedClass();
+                    if (Str.len(ocls) != 0) {
+                        if (isStructName(ocls) != 0) {
+                            AstType ft = structFieldAstType(ocls, e.memberName());
+                            if (ft != null) {
+                                AstType frt = resolveType(ft);
+                                if (frt != null && Str.len(frt.className()) != 0
+                                    && isInterfaceName(frt.className()) == 0
+                                    && isStructName(frt.className()) == 0
+                                    && isEnumName(frt.className()) == 0) {
+                                    return classInstName(frt);
+                                }
+                            }
+                        } else {
+                            AstType pvt = propAstType(ocls, e.memberName());
+                            if (pvt != null) {
+                                AstType prt = resolveType(pvt);
+                                if (prt != null && Str.len(prt.className()) != 0
+                                    && isInterfaceName(prt.className()) == 0
+                                    && isStructName(prt.className()) == 0
+                                    && isEnumName(prt.className()) == 0) {
+                                    return classInstName(prt);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             // BUG-033：数组元素 → interface（`View v = arr[i]`）。元素类从局部

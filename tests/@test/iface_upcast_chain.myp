@@ -61,3 +61,40 @@ struct HolderS { Circle c; }
     Test.assertEq(s.area(), 4, "struct field upcast");
     Test.report("test_struct_field", true);
 }
+
+// —— 6) 集合 get 结果 .struct字段 → interface（BUG-065，Member 对象是 Call）——
+@test void test_coll_get_field() {
+    ArrayList<HolderS> hs = new ArrayList<HolderS>();
+    HolderS h;
+    h.c = new Circle();
+    hs.add(h);
+    Shape s = hs.get(0).c;
+    Test.assertEq(s.area(), 4, "coll get field upcast");
+    Test.report("test_coll_get_field", true);
+}
+
+// —— 7) interface 参数从 call 结果 ——
+class T2b {
+    action:
+        int takeShape(Shape s) { return s.area(); }
+}
+@test void test_iface_param() {
+    T2b t = new T2b();
+    Test.assertEq(t.takeShape(factory()), 4, "iface param from call");
+    Circle lc = new Circle();
+    Test.assertEq(t.takeShape(lc), 4, "iface param from local");
+    Test.report("test_iface_param", true);
+}
+
+// —— 8) 返回 call 结果作 interface ——
+class T2c {
+    action:
+        Shape makeShapeRet(Circle c) { return c; }
+}
+@test void test_iface_ret() {
+    T2c t = new T2c();
+    Circle lc = new Circle();
+    Shape s = t.makeShapeRet(lc);
+    Test.assertEq(s.area(), 4, "iface ret");
+    Test.report("test_iface_ret", true);
+}
