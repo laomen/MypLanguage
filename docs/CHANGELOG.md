@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.112 — 修 void 参数漏校验 → opt 崩（BUG-078）
+
+**非破坏性**（selfhost sema）。`void take(void v)` 的 void 参数此前静默过 sema →
+ codegen 发 `define internal void @T2_take(ptr %this, void %v)`（LLVM 非法）→
+ **opt 崩**（`void type only allowed for function results`，非干净诊断）。C++
+ sema.cpp 报 `cannot declare parameter of type 'void'`。
+
+- **根因**：自举 `declareParam` 不校验 void 类型；字面 void 的 AstType
+  basicName="void"（parser），typeToKind→"void"。
+- **修复**：`declareParam` 加校验——typeToKind=="void" && basicName=="void" &&
+  className 空 → 报 `cannot declare parameter of type 'void'`（未知类型
+  className 非空不误伤）。
+- **测试**：负测试 `tests/negative/void_param.myp`；合法方法参数不受影响。
+- 验证：bootstrap 自举成立；全量回归 **366 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-078。
+
 ### v3.15.111 — 修 nonlocal 目标非外层变量漏校验 → opt 崩（BUG-077）
 
 **非破坏性**（selfhost sema）。`nonlocal d`（d 是 lambda 参数）此前静默建 cell →

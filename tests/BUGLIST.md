@@ -2084,3 +2084,22 @@
 - **教训**：lambda 捕获/闭包机制（captures/cells）也是「缺失校验 → codegen 崩」
   高发区——nonlocal 目标须是外层变量，自举 `locals` 集合（参数+内部局部+lambda
   名）正好是「非外层」判定集。
+
+## BUG-078（已修复 🟩，v3.15.112）：void 参数漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.112，selfhost sema.myp）
+- **背景**：`void take(void v)` 的 void 参数此前静默过 sema → codegen 发
+  `define internal void @T2_take(ptr %this, void %v)`（LLVM 非法）→ **opt 崩**
+  （"void type only allowed for function results"，非干净诊断）。C++ sema.cpp
+  （方法参数 + 结构体方法）报 `cannot declare parameter of type 'void'`。
+- **根因**：自举 `declareParam`（参数声明）不校验 void 类型；字面 void 的
+  AstType basicName = "void"（parser 2667），typeToKind → "void"。
+- **修复**：`declareParam` 加校验——`typeToKind(pt)=="void" && basicName=="void"
+  && className 空` → 报 `cannot declare parameter of type 'void'`（className 非空
+  的未知类型不误伤）。
+- **验证**：`void v` 参数干净拒绝；合法方法参数不受影响（全量回归证明）。
+- **回归**：负测试 `tests/negative/void_param.myp`；全量 366 通过 / 0 失败；
+  oracle 对拍 95/0。
+- **教训**：parser 对字面 void 的表示是 basicName="void"（非空）——判定字面
+  void 要看 basicName 而非「空」。内建/类型关键字做参数/字段时的校验（sema.cpp
+  的 cannot declare … of type 'void' 系列）逐一比对。

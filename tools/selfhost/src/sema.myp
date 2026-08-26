@@ -3289,6 +3289,16 @@ class Sema {
                 markAllExpr(defaultExpr);
             }
             AstType pt = p.type();
+            // BUG-078：void 参数须拒绝（镜像 C++ sema.cpp "cannot declare
+            // parameter of type 'void'"）。此前 `void take(void v)` 的 void 参数
+            // 静默过 sema → codegen 发 `define internal void @T2_take(ptr %this,
+            // void %v)` → opt 崩（"void type only allowed for function results"，
+            // 非干净诊断）。parser 把字面 void 的 basicName 设为 "void"——据此
+            // 判定（未知类型 className 非空，不误伤）。
+            if (pt != null && typeToKind(pt) == "void"
+                && pt.basicName() == "void" && Str.len(pt.className()) == 0) {
+                diag_.error(pt.line(), pt.col(), "cannot declare parameter of type 'void'");
+            }
             if (pt != null && pt.typeArgs().size() > 0) tryInstantiate(pt.className(), pt.typeArgs());
             if (pt != null && pt.isTuple() != 0 && pt.funcParamTypes().size() != 0) {
                 sym_.declareTuple(p.name(), "tuple", pt.funcParamTypes());

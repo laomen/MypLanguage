@@ -1,0 +1,13 @@
+// EXPECT ERROR: cannot declare parameter of type 'void'
+// BUG-078 回归（负测试）：void 参数须编译期干净拒绝。此前自举对 `void take(void
+// v)` 的 void 参数不校验 → codegen 发 `define internal void @T2_take(ptr %this,
+// void %v)`（LLVM 非法）→ opt 崩（"void type only allowed for function results"，
+// 非干净诊断）。C++ sema.cpp 报 "cannot declare parameter of type 'void'"。
+import env;
+
+class T2 {
+    action:
+        void take(void v) { }
+        @constructor T2() { }
+}
+int main(){return 0;}
