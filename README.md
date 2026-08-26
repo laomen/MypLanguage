@@ -214,6 +214,7 @@ MYPLanguage/
 │   └── fmt/          # 格式化
 ├── include/mylang/   # 头文件
 ├── stdlib/           # 标准库 (.myp，42 模块)
+├── runtime_myp/      # MYP 运行时（runtime 的 MYP 实现，de-gcc 迁移：shadow C runtime → 归档 `libmyp_rt_myp.a`，仅 MYP 链接 `(MYP runtime only)`；进度见 runtime_myp/MIGRATION_STATUS.md，构建注意：改 runtime_myp 须手动重建归档再重连 mypc）
 ├── tools/            # 自举工具链（pm 包管理 / fmt 格式化 / viz 可视化 / selfhost 自举编译器 / codegen 代码生成，MYP 实现）
 ├── examples/         # 示例（含 BNCTDoseEngine 剂量引擎、deeplearning 深度学习框架）
 ├── mypview/          # 通用 UI 框架（零 MOS 依赖，声明式 UIX + MVVM）

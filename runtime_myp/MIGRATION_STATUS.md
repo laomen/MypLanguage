@@ -466,3 +466,61 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   - 剩余 C 边界仅 `myp_printf`（varargs，MYP 程序不调用）与 cuBLAS 钩子（无
     调用方）——由回退路径兜底，无需迁移。
 
+---
+
+## 六、v3.15.73/74 运行时迁移补充（2026-08-26）
+
+### 6.1 ⚠️ io 归档过时导致的"GPU 测试挂起"——构建操作注意（必读）
+
+- **症状**：`import cuda`（43 个 @gpu 内核、大量 File 写）编译"挂起"；实际是
+  **崩溃**（`uncaught exception (object, type 8)`）+ mypc 变**僵尸进程**
+  （`Zl defunct`）+ timeout 卡住 + 残留子进程——表现像挂起。
+- **根因（两层）**：
+  1. build 里 `libmyp_rt_myp.a` 归档是**旧版本**（io 槽泄漏：`myp_io_fclose`
+     不清槽 → `myp_io_fopen` 递增槽 1..63，**64 次后槽耗尽** → FileError 崩溃。
+     纯 io 压力测试：63 次 OK / **64 次崩**，正好句柄表上限）。
+  2. **mypc 二进制链接的是编译时的归档**：重建归档只影响"新编译出的程序"；
+     mypc 自身内部 File/Process 仍用旧 io → 编译 GPU 大文件触发槽耗尽。
+- **关键操作注意**：`myp_rt_myp` 的 **CMake 依赖只依赖 `myp_self`，不覆盖
+  `runtime_myp/*.myp` 源变化** → 改 runtime_myp 后 CMake 认为归档最新、不重跑
+  `build.sh` → 一直用旧 io。**改 runtime_myp 后必须手动**：
+  ```bash
+  MYP_MAKE_ARCHIVE=1 MYP_SKIP_SMOKE=1 bash runtime_myp/build.sh ./build/myp_self
+  cmake --build build --target mypc      # 重连编译器（bootstrap MD5 门禁验证）
+  ```
+- **验证手段**：
+  - io 诊断：`ioDbg(string)` 写 stderr（`__myp_syscall(1,2,ptr,len,0,0,0)`）插进
+    fopen/fclose 打印 slot/handle/清槽后值。当前 `runtime_myp/io.myp` 源码**正确**
+    （handles 复用 1,1,1,1,1、fclose 清槽后 -1）；旧归档 handles 递增 1,2,3,4,5。
+  - 纯 io 压力 `File` 循环 150 次：新归档 OK。
+- **附带修复**：`myp_io_fclose` 压缩成一行（多语句）展开为多行（语义不变）。
+
+### 6.2 @thread 硬失败改用 exit_group（退出码契约修正）
+
+- **症状**：`test_gpu_assert_fail`（`kernel.assert` 失败应退出码 1）在 `@thread`
+  结构下退出码 0 误报（RUN_GPU_TESTS=1 时 FAIL）。
+- **根因**：`@thread` 子线程用 `CLONE_THREAD` + syscall 60（`exit`）**只终止当前
+  线程**；`myp_assert_abort` 的 `exit(1)` 在子线程里只退线程 → main 继续 `return 0`
+  → 进程退出码 0。直接调用（main 线程）则 exit 1 正常。
+- **修**：硬失败改用 **syscall 231（`exit_group`）** 终止整个进程——
+  `runtime_myp/test.myp` `myp_assert_abort` + `runtime_myp/exception.myp` 未捕获
+  异常（`exit(134)`）。无 @thread 场景行为不变（main 线程 exit/exit_group 等价）。
+  验证：GPU 测试套件 61/0；`assert_fail` exit 1。
+- **注意**：@thread **正常**子线程结束仍用 syscall 60（只退自身，生命周期独立），
+  仅**硬失败**（assert/未捕获异常）用 exit_group。
+
+### 6.3 自举 GPU kernel llc 加 `-mcpu=sm_75`（#45 GPU 层协作）
+
+- 自举 `gpuPtxFromLl` 的 llc 此前未指定 `-mcpu` → NVPTX 默认老架构不支持 double
+  原子 → `atomicrmw fadd` 降级成 `atom.global.cas` 循环。高竞争（1M 线程同抢
+  `acc[0]`）CAS 重试风暴 → `Vectors.sum` 1M 元素 **25s**（seed 直加 4ms）。
+- 加 `-mcpu=sm_75`（与 C++ oracle `gpuTargetArch()` 一致）→ 直降
+  `atom.global.add.f64` → sum **3ms**；`gpu_buffer_demo` L1 25455ms → 11ms。
+- 属编译器 GPU 发射侧，与 runtime_myp 迁移配合（#44 状态统一后真 GPU 路径）。
+
+### 6.4 deeplearning json_tool 同步 runtime.addAdd 新签名
+
+- `infer/runtime.myp` `addAdd` 升级 4 参（Add+Relu 融合）后，json_tool 旧 loader
+  少传 doRelu → 7 入口编译失败。修 `model_loader.myp` 传 `doRelu=0`（纯 Add）。
+  记录于 `examples/deeplearning/CHANGELOG.md`（deeplearning 分项目变更独立记）。
+
