@@ -2063,3 +2063,24 @@
   0 失败；oracle 对拍 95/0。
 - **教训**：同一语法（await）在语句级与表达式级有两套 visit 处理，校验须同步
   两处——只改一处会「看似改了却不生效」（表达式级从未被语句 await 触发）。
+
+## BUG-077（已修复 🟩，v3.15.111）：nonlocal 目标非外层变量漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.111，selfhost sema.myp）
+- **背景**：`nonlocal d`（d 是 lambda 参数）此前静默建 cell → codegen 取外层 cell
+  得 ptr 当 i32 → **opt 崩**（"%t54 defined with type 'ptr' but expected 'i32'"）。
+  C++ capture 解析（sema_expr.cpp:3586）报 `nonlocal 'd' does not resolve to an
+  outer variable`。
+- **根因**：自举 lambda 捕获收集（sema.myp ~5837）对 `nonlocal name;` 只收集不
+  校验——lambda 参数/内部局部不是外层变量，仍建 cell。
+- **修复**：nonlocalNames 收集循环加校验——目标在 lambda 的 params/locals（绑定名
+  集合）→ 报 `nonlocal 'X' does not resolve to an outer variable`；否则若
+  `sym_.lookup` 未声明 → 报 `nonlocal: undeclared variable 'X'`（镜像
+  visitNonlocalStmt）。
+- **验证**：`nonlocal d`（参数）干净拒绝；合法 `nonlocal k`（外层变量，
+  manual_ch5 counter()）不受影响。
+- **回归**：负测试 `tests/negative/nonlocal_param.myp`；全量 365 通过 / 0 失败；
+  oracle 对拍 95/0。
+- **教训**：lambda 捕获/闭包机制（captures/cells）也是「缺失校验 → codegen 崩」
+  高发区——nonlocal 目标须是外层变量，自举 `locals` 集合（参数+内部局部+lambda
+  名）正好是「非外层」判定集。

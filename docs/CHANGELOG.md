@@ -27,6 +27,23 @@
 
 ## 编译器版本历史
 
+### v3.15.111 — 修 nonlocal 目标非外层变量漏校验 → opt 崩（BUG-077）
+
+**非破坏性**（selfhost sema）。`nonlocal d`（d 是 lambda 参数）此前静默建 cell →
+ codegen 取外层 cell 得 ptr 当 i32 → **opt 崩**（`'%t54' defined with type 'ptr'
+but expected 'i32'`）。C++ capture 解析报 `nonlocal 'd' does not resolve to an
+outer variable`。
+
+- **根因**：自举 lambda 捕获收集对 `nonlocal name;` 只收集不校验——lambda 参数/
+  内部局部不是外层变量，仍建 cell。
+- **修复**：nonlocalNames 收集循环加校验——目标在 lambda 的 params/locals → 报
+  `nonlocal 'X' does not resolve to an outer variable`；未声明 → 报 `nonlocal:
+  undeclared variable 'X'`（镜像 visitNonlocalStmt）。
+- **测试**：负测试 `tests/negative/nonlocal_param.myp`；合法 `nonlocal k`（外层
+  变量，manual_ch5 counter()）不受影响。
+- 验证：bootstrap 自举成立；全量回归 **365 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-077。
+
 ### v3.15.110 — 修 await timeout 类型漏校验（应拒绝却接受）（BUG-076）
 
 **非破坏性**（selfhost sema）。`await T2.go timeout "x"`（string 当毫秒数）此前

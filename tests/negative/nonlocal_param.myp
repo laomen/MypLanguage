@@ -1,0 +1,19 @@
+// EXPECT ERROR: nonlocal 'd' does not resolve to an outer variable
+// BUG-077 回归（负测试）：nonlocal 目标须为外层变量须编译期干净拒绝。
+// 此前自举 lambda 捕获收集对 `nonlocal name;` 不校验目标是否为外层变量 →
+// `nonlocal d`（d 是 lambda 参数）静默建 cell → codegen 取外层 cell 得 ptr
+// 当 i32 → opt 崩（"%t54 defined with type 'ptr' but expected 'i32'"）。
+// 镜像 C++ capture 解析（"does not resolve to an outer variable"）+
+// visitNonlocalStmt（"nonlocal: undeclared variable 'X'"）。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            (int) -> int f = (int d) => {
+                nonlocal d;
+                return d;
+            };
+        }
+}
+int main(){return 0;}

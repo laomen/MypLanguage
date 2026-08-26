@@ -5839,7 +5839,18 @@ class Sema {
                 ArrayList<string> nonlocalNames = new ArrayList<string>();
                 if (e.bodyStmt() != null) collectStmtNonlocal(e.bodyStmt(), nonlocalNames);
                 for (int i = 0; i < nonlocalNames.size(); i = i + 1) {
-                    if (listHas(captures, nonlocalNames.get(i)) == 0) captures.add(nonlocalNames.get(i));
+                    string nn = nonlocalNames.get(i);
+                    // BUG-077：nonlocal 目标必须是外层变量——lambda 参数/内部局部
+                    // 不是外层 → 此前静默建 cell → codegen 取外层 cell 得 ptr →
+                    // opt 崩（"defined with type 'ptr' but expected 'i32'"）。
+                    // 镜像 C++ capture 解析（sema_expr.cpp:3586 "does not resolve
+                    // to an outer variable"）+ visitNonlocalStmt 未声明检查。
+                    if (listHas(params, nn) != 0 || listHas(locals, nn) != 0) {
+                        diag_.error(e.line(), e.col(), "nonlocal '" + nn + "' does not resolve to an outer variable");
+                    } else if (sym_.lookup(nn) == "") {
+                        diag_.error(e.line(), e.col(), "nonlocal: undeclared variable '" + nn + "'");
+                    }
+                    if (listHas(captures, nn) == 0) captures.add(nn);
                 }
                 AstClass lc = new AstClass();
                 lc.setName(cls);
