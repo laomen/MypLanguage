@@ -34,6 +34,8 @@ ffi int myp_release(string obj);    // alloc.myp（帧表 release；经 __myp_ad
 ffi long myp_thread_spawn(long entryAddr);   // thread.myp（clone 原语；async exec worker）
 ffi void myp_pause();               // 自旋让步（weak.myp/内建）
 ffi long pthread_self();             // libc：exec mailbox 的 owner 线程匹配（pump）
+ffi long malloc(long size);          // libc：协程栈堆分配（C 平价快路径，小栈零 syscall）
+ffi void free(long p);               // libc：栈池淘汰时释放
 ffi long execIoReadLineRaw(int handle);      // io.myp（raw addr，无 string 局部）
 ffi long execIoReadAllRaw(int handle);       // io.myp
 
@@ -275,9 +277,11 @@ int coroPopFree() {
     if (s >= 0 && s < CoroT.count) CoroT.onFreeList[s] = 0;
     return s;
 }
-// ---- 动态栈：大虚拟预留 + 按需分页 + 守护页（Go 式增长，无拷贝/无编译器改动）----
-// 预留量 = 栈增长上限；mmap 惰性（RSS 只算实际使用页）。底部 4KB PROT_NONE 守护页
-// → 真跑飞（超上限）干净 SIGSEGV（替代静默堆破坏，同 Go maxstacksize 语义）。
+// ---- 动态栈：混合分配（Go 式增长，无拷贝/无编译器改动）----
+// 预留量 = 栈增长上限。小栈（<128KB，显式 @coro(stack=N) 小值）走堆 malloc——C runtime
+// 同款（glibc arena 出块零 syscall → spawn 快）；大栈/默认（≥128KB，1MB 动态栈）走
+// mmap 懒提交（RSS 只算实际使用页）+ 底部 4KB PROT_NONE 守护页（真跑飞干净 SIGSEGV，
+// 替代静默堆破坏，同 Go maxstacksize 语义）。阈值同 glibc MMAP_THRESHOLD。
 // 常量（MYP 无顶层 const，内联字面量）：
 //   DEFAULT=1MB(1048576)  MIN=64KB(65536)  MAX=64MB(67108864)  GUARD=4096
 long coroReserveSize(long requested) {
@@ -289,8 +293,9 @@ long coroReserveSize(long requested) {
     if (reserve > 67108864) reserve = 67108864;
     return reserve;
 }
-// mmap reserve+guard，底部一页 PROT_NONE；返回可用栈基址（guard 之上）
+// 小栈：malloc（C 平价，arena 零 syscall）；大栈：mmap reserve+guard（懒提交 + 溢出保护）
 long coroStackAlloc(long reserve) {
+    if (reserve < 131072) return malloc(reserve);   // <128KB → 堆分配
     long total = reserve + 4096;
     long base = __myp_syscall(9, 0, total, 3, 0x4022, -1, 0);  // RW|NORESERVE|ANON|PRIVATE
     if (base == -1 || base == 0) return 0;
@@ -323,9 +328,8 @@ long coroStackTake(long reserve) {
     }
     return coroStackAlloc(reserve);
 }
-// 回池（有界：64 项 / VA 128MB）或 munmap（含守护页）
+// 回池（有界：64 项 / VA 128MB）或释放（小栈 free；大栈 munmap 含守护页）
 void coroStackReturn(long ptr, long reserve) {
-    // DEBUG: __myp_syscall(1,2,"SR",2)
     if (CoroStackPool.count < 64 && CoroStackPool.total + reserve <= 134217728) {
         CoroStackPool.ptrs[CoroStackPool.count] = ptr;
         CoroStackPool.sizes[CoroStackPool.count] = reserve;
@@ -333,7 +337,8 @@ void coroStackReturn(long ptr, long reserve) {
         CoroStackPool.count = CoroStackPool.count + 1;
         return;
     }
-    __myp_syscall(11, ptr - 4096, reserve + 4096, 0, 0, 0, 0);  // munmap 含守护页
+    if (reserve < 131072) { free(ptr); return; }   // 小栈：堆释放
+    __myp_syscall(11, ptr - 4096, reserve + 4096, 0, 0, 0, 0);  // 大栈：munmap 含守护页
 }
 // 退役栈：trampoline 完成时登记（不能就地 munmap，正运行其上）→ 下次 create/
 // scheduler drain 时回池/munmap。列表动态扩容（同 C realloc）——**绝不在 add

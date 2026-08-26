@@ -54,6 +54,27 @@ IR 确认 `@__myp_static_TL = thread_local global`；pthread_key 探针同理。
 
 > 这是 N×M:1 协程迁移的地基（步骤 0/1）。下一步见 v3.15.78（per-thread 表迁移）。
 
+### v3.15.80 — coro_spawn 协程栈混合分配（小栈 malloc 快路径，53→28ms）+ CoroEvW 动态扩容
+
+**非破坏性**。续 v3.15.79；协程 spawn 性能缓解 + 跨线程事件注册表健壮性：
+
+1. **协程栈混合分配**（`runtime_myp/coro.myp`）：小栈（<128KB，如 `@coro(stack=64)`
+   显式小栈）从 mmap+守护页（2 syscall/次）改走堆 `malloc`（C runtime 同款，
+   glibc arena 出块零 syscall）；大栈/默认（≥128KB，1MB 动态栈）保留 mmap 懒提交
+   + 4KB PROT_NONE 守护页（溢出干净 SIGSEGV）。`coroStackReturn` 按尺寸分支
+   free / munmap。
+   基准 `coro_spawn`（20000 @coro spawn+resume）：**53→28ms**（C runtime 20ms 的
+   1.4×，此前 2.65×；Go 3ms 的差距 17.7×→10×）。spawn 阶段 50→25ms（剩余为 glibc
+   对 1.28GB 总量的 mmap 回退 + create 簿记，与 C runtime 同构）。coro_switch 仍
+   MYP 3.7× 快于 Go（85 vs 316ms）。
+2. **CoroEvW 解除写死上限**：事件等待者注册表 `eid/owner/slot/active` 与跨线程唤醒
+   mailbox 从定容 `[1024]`/`[64]` 改动态扩容（复用 `coroGrowInt/coroGrowLong`）——
+   消除静默丢弃（≥容量时丢失跨线程唤醒）；`coroEvWaitAdd` 前 `coroEvWCompact()`
+   压缩 inactive 防 count 无限增长。
+
+验证：runtime 重建 shadow 通过；全量 **327/0 无回归**；4 个协程基准
+（channel_pingpong / io_socket / coro_switch / coro_spawn）verify 与 Go 对拍一致。
+
 ### v3.15.79 — 跨线程 channel 修复：owner 追踪 + 唤醒 mailbox（崩→正确）
 
 **非破坏性**。续 v3.15.78；修复跨线程 channel rendezvous 段错误：
