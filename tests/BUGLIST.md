@@ -2006,9 +2006,10 @@
   条件处理都不校验操作数 kind。
 - **修复**：四处补 expectBool（仅 bool/bit）——①`&&`/`||` 操作数；②`!` 操作数；
   ③三元条件；④if/while 条件。消息用 `exprTypeName`（class/struct 解析类名）。
-- **验证**：`p && q` / `!p` / `p ? 1 : 2` / `if(p)` / `while(p)` 均干净拒绝；合法
-  `b1 && !b2`（bit）、`if (boolVar)`、`while (b)` 不受影响；自举编译器自身只用
-  `while(true)`，stdlib/examples/mypview 无 truthy-int 依赖（全量回归证明）。
+- **验证**：`p && q` / `!p` / `p ? 1 : 2` / `if(p)` / `while(p)` / `for(;int;)`
+  均干净拒绝；合法 `b1 && !b2`（bit）、`if (boolVar)`、`while (b)`、标准
+  `for (int i=0; i<n; i++)` 不受影响；自举编译器自身只用 `while(true)`，
+  stdlib/examples/mypview 无 truthy-int 依赖（全量回归证明）。
 - **回归**：负测试 `tests/negative/bool_context.myp`（EXPECT ERROR expected
   boolean expression, got 'int'）；全量 362 通过 / 0 失败；oracle 对拍 95/0。
 - **教训**：expectNumeric（下标/算术）与 expectBool（&&/! /?: /if/while）是

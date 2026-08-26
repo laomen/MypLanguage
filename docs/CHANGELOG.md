@@ -33,7 +33,7 @@
 `if (intExpr)` / `while (intExpr)` 此前静默当 bool（非零→true）；C++ oracle 四处
 expectBool 只允许 bool/bit。手册 §三 要求整数判断写 `!= 0`。
 
-- **修复**：①`&&`/`||` 操作数；②`!` 操作数；③三元条件；④if/while 条件——补
+- **修复**：①`&&`/`||` 操作数；②`!` 操作数；③三元条件；④if/while/for 条件——补
   expectBool（仅 bool/bit），报 `expected boolean expression, got 'X'`（消息用
   exprTypeName 解析类名）。
 - **验证**：5 处均干净拒绝；合法 `b1 && !b2`（bit）/`if(boolVar)`/`while(b)`

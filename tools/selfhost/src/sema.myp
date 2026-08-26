@@ -3748,7 +3748,14 @@ class Sema {
                 // 字符串仅 GPU 内核禁用（NVPTX 无 string runtime）；@parallel for
                 // 是 CPU 线程池 body（普通 CPU 函数，可安全用字符串/字面量）。
                 if (s.gpu() != 0) inGpuKernel_ = 1;
-                if (s.init() != null) visitStmt(s.init());                if (s.condition() != null) visitExpr(s.condition());
+                if (s.init() != null) visitStmt(s.init());                if (s.condition() != null) {
+                    string fork = visitExpr(s.condition());
+                    // BUG-074：for 条件须 bool/bit（镜像 C++ expectBool at
+                    // visitFor）。for(;intCond;) 此前静默当 bool。
+                    if (Str.len(fork) != 0 && fork != "bool" && fork != "bit") {
+                        diag_.error(s.condition().line(), s.condition().col(), "expected boolean expression, got '" + exprTypeName(s.condition(), fork) + "'");
+                    }
+                }
                 if (s.step() != null) visitExpr(s.step());
                 loopDepth_ = loopDepth_ + 1;
                 if (s.body() != null) visitStmt(s.body());
