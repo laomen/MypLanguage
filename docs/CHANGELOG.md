@@ -27,6 +27,29 @@
 
 ## 编译器版本历史
 
+### v3.15.101 — 修泛型实例方法缺实参类型校验 → opt 崩（BUG-067）
+
+**非破坏性**（selfhost sema）。续 BUG-066 探「oracle 有校验、自举漏」的调用
+路径缺口：`ai.add("str")`（`ArrayList<int>` 的 add，string 实参 vs int 形参）
+静默过 sema → codegen 发射 `i32 getelementptr(ptr @str, ...)`（ptr 当 i32）→
+**opt 崩**（`constant expression type mismatch: got type 'ptr' but expected
+'i32'`，非干净诊断）。
+
+- **根因**：泛型实例方法经 `resolveBase(instCls)` 回落到**模板**类取形参——模板
+  形参占位符 `T` 不在 curGeneric_ 时 `typeToKind(T)` → `"void"` → 实参类型检查的
+  `anyVoidParam` 守卫整段跳过。Member 分支虽早设 `setCallParamTypes`，kind 是
+  占位符（void），检查不生效。
+- **修复**：新增 `substParamKinds`（形参 T → `typeToKind(targs[j])`）+ 
+  `instTypeArgsOfObject`（镜像 BUG-062 三形态：Identifier 变量/裸属性/链式结果），
+  Member 分支 `setCallParamTypes` 用替换后的 kind。**关联类型守卫**：`check(T c,
+  T::Item v)` 参数 2 替换后仍 `assoc`（T::Item 未解析）→ 纳入 `anyVoidParam`
+  守卫跳过，避免误报（manual_ch6_class/assoc_types 回归暴露）。
+- **测试**：负测试 `tests/negative/generic_arg_type_mismatch.myp`；正测试
+  `tests/@test/generic_arg_ok.myp`（1 测试/7 断言，双编译器 7/7）。诊断文本/位置
+  与 oracle 逐字节一致（test_myp_self 对拍 95/0）。
+- 验证：bootstrap 自举成立（2 级 MD5 一致）；全量回归 **132 @test PASS / 0 FAIL**。
+  BUGLIST 记 BUG-067。
+
 ### v3.15.100 — 修类内未限定方法调用缺实参类型校验 → opt 崩（BUG-066）
 
 **非破坏性**（selfhost sema）。「缺失编译期校验 → codegen 崩」族（BUG-007/008/

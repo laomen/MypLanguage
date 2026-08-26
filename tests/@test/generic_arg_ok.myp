@@ -1,0 +1,52 @@
+// BUG-067 正向回归：泛型实例方法合法实参不被误拒（修复后校验生效但只拦错参）。
+// 覆盖：ArrayList<int>/string 元素、链式返回的泛型实例、类属性泛型实例、
+// 数组元素泛型（ArrayList<int[]>）。
+import test;
+import collections;
+
+class T2 {
+    property: ArrayList<int> plist;
+    action:
+        void fill() {
+            plist = new ArrayList<int>();
+            plist.add(10);
+            plist.add(20);
+        }
+        int plistGet(int i) { return plist.get(i); }
+        int plistSize() { return plist.size(); }
+        ArrayList<int> makeList() {
+            ArrayList<int> l = new ArrayList<int>();
+            l.add(1);
+            return l;
+        }
+}
+
+@test void test_generic_arg_ok() {
+    ArrayList<int> ai = new ArrayList<int>();
+    ai.add(5);
+    ai.add(7);
+    Test.assertEq(ai.get(0), 5, "int elem");
+    Test.assertEq(ai.size(), 2, "int size");
+
+    ArrayList<string> as = new ArrayList<string>();
+    as.add("hi");
+    as.add("there");
+    Test.assertStrEq(as.get(1), "there", "string elem");
+
+    ArrayList<int[]> aai = new ArrayList<int[]>();
+    int[] row = new int[2];
+    row[0] = 1; row[1] = 2;
+    aai.add(row);
+    Test.assertEq(aai.get(0)[1], 2, "int[] elem");
+
+    T2 mt = new T2();
+    ArrayList<int> ch = mt.makeList();
+    Test.assertEq(ch.get(0), 1, "chain return");
+
+    T2 t = new T2();
+    t.fill();
+    Test.assertEq(t.plistSize(), 2, "prop size");
+    Test.assertEq(t.plistGet(1), 20, "prop get");
+
+    Test.report("test_generic_arg_ok", true);
+}

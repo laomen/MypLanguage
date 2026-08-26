@@ -493,6 +493,50 @@ class Sema {
             }
             return typeToKind(rt);
         }
+        // BUG-067：泛型方法实参 kind 替换（T → 实例类型参数）。模板形参占位符
+        // 不在 curGeneric_ 时 typeToKind 解析为 "void" → 实参类型检查被
+        // anyVoidParam 守卫跳过 → ai.add("str") 静默过 sema → codegen ptr 当
+        // i32 → opt 崩。镜像 substRetAst 的替换：形参类型 T 换成 targs[j] 的 kind
+        // （int/string/class/struct/interface）。
+        ArrayList<string> substParamKinds(string base, ArrayList<AstParam> params, ArrayList<AstType> targs) {
+            ArrayList<string> tp = findClassTypeParams(base);
+            ArrayList<string> out = new ArrayList<string>();
+            for (int i = 0; i < params.size(); i = i + 1) {
+                AstType pt = params.get(i).type();
+                string k = "int";
+                if (pt == null) { out.add("int"); continue; }
+                k = typeToKind(pt);
+                string rn = pt.className();
+                if (Str.len(rn) == 0) rn = pt.basicName();
+                for (int j = 0; j < tp.size(); j = j + 1) {
+                    if (tp.get(j) == rn && j < targs.size()) {
+                        k = typeToKind(targs.get(j));
+                        break;
+                    }
+                }
+                out.add(k);
+            }
+            return out;
+        }
+        // BUG-067：Member 对象 → 泛型实例 typeArgs（镜像 BUG-062 的三种形态：
+        // Identifier 变量 / 裸属性 / 链式结果 valueClass·resolvedClass）。
+        ArrayList<AstType> instTypeArgsOfObject(AstExpr mo) {
+            if (mo == null) return null;
+            if (mo.kind() == "Identifier") {
+                string icls = sym_.lookupClass(mo.name());
+                if (Str.len(icls) != 0) {
+                    ArrayList<AstType> ta = findInstTypeArgs(icls);
+                    if (ta != null) return ta;
+                }
+                AstType pta = currentClassMemberAstType(mo.name());
+                if (pta != null && pta.typeArgs().size() > 0) return pta.typeArgs();
+                return null;
+            }
+            string vcn = mo.valueClass();
+            if (Str.len(vcn) == 0) vcn = mo.resolvedClass();
+            if (Str.len(vcn) != 0) return findInstTypeArgs(vcn);
+            return null;
+        }
         // 类方法是否 @coro（调用返回协程句柄 long）
         int isMethodCoro(string cls, string meth) {
             int mi = methodSigIdx_.get(cls + "." + meth, -1);   // O(1)
@@ -4806,7 +4850,20 @@ class Sema {
                             int normFailed = 0;
                             if (anyMps != null) {
                                 if (normalizeCallArgs(e, anyMps) == 0) { normFailed = 1; ret = "void"; }
-                                else e.setCallParamTypes(paramKinds(anyMps));
+                                else {
+                                    ArrayList<string> pks = paramKinds(anyMps);
+                                    // BUG-067：泛型实例方法实参类型替换（T → 实例类型参数）。
+                                    // 模板形参占位符 typeToKind → "void" → anyVoidParam 守卫
+                                    // 跳过检查 → ai.add("str")（ArrayList<int>）静默过 sema →
+                                    // codegen ptr 当 i32 → opt 崩。用实例 typeArgs 替换形参
+                                    // kind 使检查真正生效（合法调用 ai.add(5) 不受影响）。
+                                    ArrayList<AstType> moTargs = instTypeArgsOfObject(mo);
+                                    if (moTargs != null && moTargs.size() > 0) {
+                                        ArrayList<string> subPks = substParamKinds(base3, anyMps, moTargs);
+                                        if (subPks != null) pks = subPks;
+                                    }
+                                    e.setCallParamTypes(pks);
+                                }
                             }
                             string fr = findMethodRet(base3, callee.memberName(), e.args().size());
                             if (Str.len(fr) == 0) fr = findIfaceMethodRet(base3, callee.memberName());
@@ -4958,11 +5015,14 @@ class Sema {
                 }
                 if (e.callParamTypes() != null) {
                     ArrayList<string> cpts = e.callParamTypes();
-                    // 任一形参 kind 未解析（void，如泛型占位符未替换）→ 跳过检查，
-                    // 避免对合法泛型方法调用误报。
+                    // 任一形参 kind 未解析（void——泛型占位符未替换；assoc——关联
+                    // 类型 T::Item 未解析到具体实例类型）→ 跳过检查，避免对合法
+                    // 泛型方法调用误报。BUG-067 替换后 T→具体 kind，但关联类型仍
+                    // 是 assoc（如 check(T c, T::Item v)）——须同样跳过，否则
+                    // 合法调用被误拒。
                     int anyVoidParam = 0;
                     for (int i = 0; i < cpts.size(); i = i + 1) {
-                        if (cpts.get(i) == "void") { anyVoidParam = 1; break; }
+                        if (cpts.get(i) == "void" || cpts.get(i) == "assoc") { anyVoidParam = 1; break; }
                     }
                     if (anyVoidParam == 0) {
                         for (int i = 0; i < e.args().size() && i < cpts.size(); i = i + 1) {

@@ -1815,3 +1815,41 @@
 - **教训**：这类「oracle 有校验、自举漏」的缺口集中在**调用路径**（方法/函数实参）
   与**赋值路径**（变量/返回/元素写）——赋值族已全，调用族此次补齐类内未限定
   路径；后续审查应重点比对 oracle `typesCompatible` 出现的每个调用点。
+
+## BUG-067（已修复 🟩，v3.15.101）：泛型实例方法缺实参类型校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.101，selfhost sema.myp）
+- **背景**：修完 BUG-066（类内未限定方法调用）后继续探「oracle 有校验、自举漏」
+  的调用路径缺口——泛型实例方法实参：
+  - ❌ `ai.add("str")`（`ArrayList<int>` 的 add，string 实参 vs int 形参）静默过
+    sema → codegen 发射 `i32 getelementptr(ptr @str, ...)`（ptr 当 i32）→ **opt
+    崩**（`constant expression type mismatch: got type 'ptr' but expected 'i32'`，
+    非干净诊断）。C++ oracle 干净拒绝 `argument 1: expected 'int', got 'string'`。
+- **根因**：泛型实例方法经 `resolveBase(instCls)` 回落到**模板**类取形参——模板
+  形参占位符 `T` 不在 curGeneric_ 时 `typeToKind(T)` → `"void"` → 实参类型检查的
+  `anyVoidParam` 守卫**整段跳过**。Member 分支虽早设了 `setCallParamTypes`，但
+  kind 是模板占位符（void），检查不生效。类内未限定路径（BUG-066 修的）同理。
+- **修复**：
+  1. 新增 `substParamKinds(base, params, targs)`（镜像 `substRetAst` 替换：形参
+     `T` → `typeToKind(targs[j])`，int/string/class/struct/interface）。
+  2. 新增 `instTypeArgsOfObject(mo)`（镜像 BUG-062 三形态：Identifier 变量 /
+     裸属性 `currentClassMemberAstType` / 链式结果 valueClass·resolvedClass →
+     `findInstTypeArgs`）。
+  3. Member 分支 `setCallParamTypes` 处：若对象是泛型实例，用替换后的 kind。
+  4. **关联类型守卫**：`check(T c, T::Item v)` 的参数 2 替换后仍是 `assoc`
+     （T::Item 未解析到具体实例的关联类型）——若整段检查跑起来会误报
+     `expected 'assoc', got 'byte'`（manual_ch6_class/assoc_types 回归暴露）。
+     把 `"assoc"` 也纳入 `anyVoidParam` 守卫跳过（修复前参数 1 的 T→void 本就
+     整段跳过，行为不回归）。
+- **验证**：`ai.add("str")` / 链式 `makeList().add("str")` / 属性 `plist.add("str")`
+  / 类元素 `ac.add(42)` 均干净拒绝（诊断文本/位置与 oracle 逐字节一致）；
+  合法调用 `ai.add(5)`、`as.add("hi")`、`aai.add(row)`（int[] 元素）不受影响。
+  注：类形参诊断文本 selfhost 用 "class"、oracle 用类名 "Circle"——**既有分歧**
+  （非泛型 `takeCircle(42)` 同样），非本次引入。
+- **回归**：负测试 `tests/negative/generic_arg_type_mismatch.myp`（EXPECT ERROR
+  argument 1: expected 'int', got 'string'）；正测试 `tests/@test/generic_arg_ok.myp`
+  （ArrayList<int>/string/int[] 元素 + 链式返回 + 属性泛型，1 测试/7 断言，
+  双编译器 7/7）；全量 132 @test PASS / 0 FAIL；oracle 对拍 95/0。
+- **教训**：泛型实例方法（`ArrayList<int>` 等）的实参校验必须用**替换后的形参
+  kind**——模板占位符 kind 是 void/assoc，触发守卫跳过形同虚设。凡泛型方法返回
+  替换（BUG-062 `substRetAst`）存在的地方，实参校验同样需要替换，二者须同步。
