@@ -27,6 +27,23 @@
 
 ## 编译器版本历史
 
+### v3.15.105 — 修显式转换 int(x) 非数字操作数漏校验 → opt 崩（BUG-071）
+
+**非破坏性**（selfhost sema + parser）。`int(f)`（class 操作数）/`int(s)`
+（string 操作数）静默过 sema → codegen 把对象/字符串指针当 i32 → **opt 崩**
+（`%t9 defined with type 'ptr' but expected 'i32'`）；C++ `visitConvert` 校验
+源/目标须数字或 bool（含 bit/bitvector/char）。
+
+- **根因**：自举 Convert 处理完全不校验，只 setResolvedKind(target) 直接返回。
+- **修复**：①sema 加 Convert 校验——源/目标 kind 须数字或 bool/bit/bitvector/
+  char，否则报 `cannot convert 'X' to 'Y' (conversion operand and target must
+  be numeric or bool)`；②parser 两处 Convert 节点（通用 + bitvector<N>）补
+  `setPos`（此前 line/col=0，报错位置 0:0）。
+- **测试**：负测试 `tests/negative/convert_nonnumeric.myp`；合法转换（数字/
+  bool/bit/bitvector 互转）全过；bitvector 目录测试不受影响。
+- 验证：bootstrap 自举成立（2 级 MD5 一致）；全量回归 **132 @test PASS / 0 FAIL**；
+  oracle 对拍 95/0。BUGLIST 记 BUG-071。
+
 ### v3.15.104 — 修 bitcast 非数字操作数/源类型不匹配漏校验 → opt 崩（BUG-070）
 
 **非破坏性**（selfhost sema）。内建 `bitcast<T,U>` 校验缺口：

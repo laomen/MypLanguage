@@ -1,0 +1,21 @@
+// EXPECT ERROR: cannot convert 'string' to 'int' (conversion operand and target must be numeric or bool)
+// BUG-071 回归（负测试）：显式转换 int(x) 的非数字操作数须编译期干净拒绝。
+// 此前自举 Convert 处理（sema.myp k=="Convert"）完全无校验——`int(f)`（class
+// 操作数）/`int(s)`（string 操作数）静默过 sema → codegen 把对象/字符串指针
+// 当 i32 用 → opt 崩（"%t9 defined with type 'ptr' but expected 'i32'"，非干净
+// 诊断）。C++ visitConvert 校验源/目标须数字或 bool（含 bit/bitvector/char）。
+// 顺带修复：Convert 节点 parser 不设位置（line=0 col=0）→ 补 setPos。
+// 注：string→int 属 parseInt（§6.2），不走 T(x)。
+import env;
+
+class Foo {
+    action:
+}
+class T2 {
+    action:
+        @constructor T2() {
+            Foo f = new Foo();
+            int a = int(f);
+        }
+}
+int main(){return 0;}

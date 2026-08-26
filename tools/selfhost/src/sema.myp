@@ -4318,7 +4318,24 @@ class Sema {
                 // C++ 总是先 visit operand（设置其类型），再返回目标类型。
                 string o = visitExpr(e.operand());
                 string to = e.toKind();
-                if (Str.len(to) != 0) { e.setResolvedKind(to); return to; }
+                if (Str.len(to) != 0) {
+                    // BUG-071：镜像 C++ visitConvert 校验——显式转换源/目标须
+                    // 数字或 bool（含 bit/bitvector/char）；string/class/struct/
+                    // array 等非数字 → 干净拒绝（此前静默过 sema → codegen 把
+                    // ptr 当 i32 → opt 崩 "defined with type 'ptr' but expected
+                    // 'i32'"）。string 不入 T(x)（那是 parseInt，§6.2）。bool 可
+                    // 入转换链（int(b)/double(b) 显式 cast）；bitvector<N> 互转
+                    // uint/int/byte（位保持）也合法。
+                    int srcOk = (isNumKind(o) != 0 || o == "bool" || o == "bit" || o == "bitvector") ? 1 : 0;
+                    int dstOk = (isNumKind(to) != 0 || to == "bool" || to == "bit" || to == "bitvector") ? 1 : 0;
+                    if (srcOk == 0 || dstOk == 0) {
+                        diag_.error(e.line(), e.col(), "cannot convert '" + o + "' to '" + to + "' (conversion operand and target must be numeric or bool)");
+                        e.setResolvedKind("void");
+                        return "void";
+                    }
+                    e.setResolvedKind(to);
+                    return to;
+                }
                 e.setResolvedKind(o);
                 return o;
             }

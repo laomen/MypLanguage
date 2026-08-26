@@ -1930,3 +1930,31 @@
 - **教训**：内建（bitcast 等）的编译期校验也是「oracle 有、自举漏」高发区——凡
   oracle 有 error 分支的自举内建都要逐段比对，尤其「宽度 0 = 非数字」这类
   `!= 0 &&` 守卫会让非法输入绕过整段校验。
+
+## BUG-071（已修复 🟩，v3.15.105）：显式转换 int(x) 非数字操作数漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.105，selfhost sema.myp + parser.myp）
+- **背景**：续「缺失编译期校验 → codegen 崩」族，覆盖显式转换 `int(x)`/`long(x)`
+  等（内置类型名当函数调用，manual §三-3）：
+  - ❌ `int(f)`（class 操作数）/ `int(s)`（string 操作数）静默过 sema → codegen
+    把对象/字符串指针当 i32 用 → **opt 崩**（`%t9 defined with type 'ptr' but
+    expected 'i32'`，非干净诊断）。
+  - C++ `visitConvert` 校验源/目标须数字或 bool（含 bit/bitvector/char）。
+- **根因**：自举 Convert 处理（sema.myp `k=="Convert"`）完全不校验，只
+  setResolvedKind(target) 直接返回；string 不入 T(x)（那是 parseInt §6.2）。
+- **修复**：
+  1. sema：Convert 校验——源/目标 kind 须数字或 bool/bit/bitvector/char，否则报
+     `cannot convert 'X' to 'Y' (conversion operand and target must be numeric
+     or bool)`（文本与当前 src/ 一致；build-cpu 冻结种子是旧文本）。位保持的
+     bitvector 互转（uint(bv)/int(bv)/byte(bv)）合法。
+  2. parser：Convert 节点（通用 + bitvector<N> 两分支）补 `setPos`（此前
+     line/col=0，报错位置落到 0:0）。
+- **验证**：`int(Foo)` / `int(string)` 干净拒绝，位置与 oracle 逐字节一致
+  （7:21）；合法转换 `double(int)`/`int(double)`/`float(int)`/`byte(long)`/
+  `int(bitfield)`/`long(char)`/`bool(int)`/`int(bool)` 全过；bitvector 目录测试
+  不受影响。
+- **回归**：负测试 `tests/negative/convert_nonnumeric.myp`（EXPECT ERROR cannot
+  convert 'string' to 'int'）；全量 132 @test PASS / 0 FAIL；oracle 对拍 95/0。
+- **教训**：显式类型转换（ConvertExpr）是另一个「oracle 有 error 分支、自举裸
+  return」的缺口——与 bitcast（BUG-070）同族。含 bit/bitvector 的转换规则要照
+  C++ visitConvert 逐分支镜像，不能只做「数字 vs 非数字」二分（会误伤 bitvector）。

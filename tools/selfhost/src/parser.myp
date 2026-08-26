@@ -1923,6 +1923,8 @@ class Parser {
             }
             // bitvector<N>(x) —— 带宽度目标的显式转换（先于通用类型转换）
             if (k == "bitvector" && peekNextKind() == "<") {
+                int bvpl = peekLine();
+                int bvpc = peekCol();
                 advance();  // bitvector
                 consume("<", "expected '<' after bitvector");
                 int bw = 0;
@@ -1938,6 +1940,7 @@ class Parser {
                     c.setKind("Convert");
                     c.setToKind("bitvector");
                     c.setBw(bw);
+                    c.setPos(bvpl, bvpc);
                     c.setOperand(parseExpr());
                     consume(")", "expected ')' after conversion operand");
                     return c;
@@ -1953,6 +1956,7 @@ class Parser {
                 AstExpr c = new AstExpr();
                 c.setKind("Convert");
                 c.setToKind(canonTypeName(k));
+                c.setPos(peekLine(), peekCol());
                 advance();
                 consume("(", "expected '(' after conversion type");
                 c.setOperand(parseExpr());
