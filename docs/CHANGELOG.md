@@ -27,6 +27,25 @@
 
 ## 编译器版本历史
 
+### v3.15.121 — 修 throw 类型/裸重抛上下文漏校验 → opt 崩（BUG-087）
+
+**非破坏性**（selfhost sema）。`throw 5`（非 string/类/接口表达式）此前自举
+静默接受 → codegen 生成 `myp_throw_object(integer)` 非法 IR → **opt-21 崩**
+（`integer constant must have integer type`）；catch 外裸 `throw;`（重抛）静默
+接受 → 运行时未定义。C++ visitThrowStmt 镜像：非 string/类 → `throw requires
+a string or class instance, got 'X'`；`throw;` 在 catch 外 → `'throw;' rethrow
+is only valid inside a catch block`；void 表达式仅已报错时静默（级联恢复）。
+
+- **修复**：①新增 `inCatchDepth_`（catch 块访问前 +1/后 -1，镜像 oracle
+  in_catch_depth_）；②Throw 处理补类型/上下文校验——`throw;` 且
+  inCatchDepth_==0 报错；非 string/class/interface 表达式报错（void 用
+  errorCount() 判级联）。
+- **测试**：负测试 `tests/negative/throw_type.myp` +
+  `tests/negative/throw_rethrow_outside.myp`；`throw "msg"`/`throw e`/catch 内
+  裸重抛（嵌套 try 传播）不受影响。
+- 验证：bootstrap 自举成立；全量回归 **377 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-087。
+
 ### v3.15.120 — 修 for-in 迭代不可迭代对象漏校验 → opt 崩（BUG-086）
 
 **非破坏性**（selfhost sema）。`for (int x in 5)` / `for (char c in strVar)`

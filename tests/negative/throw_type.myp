@@ -1,0 +1,17 @@
+// EXPECT ERROR: throw requires a string or class instance, got 'byte'
+// BUG-087 回归（负测试）：throw 表达式须 string/类/接口实例，非数值。
+// 此前自举 Throw 处理只映射 throw_type、从不校验类型 → `throw 5` 静默接受 →
+// codegen 生成 myp_throw_object(integer) 非法 IR → opt-21 "integer constant
+// must have integer type" 崩。C++ visitThrowStmt 报
+// "throw requires a string or class instance, got 'byte'"。
+// 合法：throw "msg" / throw e（类实例）/ catch 内 throw;（见 throw_rethrow_ok
+// 正向侧）。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            throw 5;
+        }
+}
+int main(){return 0;}

@@ -2274,3 +2274,28 @@
 - **教训**：ForIn 是独立语句处理，容易漏「不可迭代」校验（fallback 直接访问
   body 而不报错）——镜像 C++ 的 iterKind 判定（定长数组/slice/集合/其余）。
   动态数组是专门消息，别混进 "cannot iterate over type"。
+
+## BUG-087（已修复 🟩，v3.15.121）：throw 类型/裸重抛上下文漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.121，selfhost sema.myp）
+- **背景**：①`throw 5`（非 string/类/接口表达式）此前自举静默接受 → codegen
+  生成 `myp_throw_object(integer)` 非法 IR → **opt-21 崩**（"integer constant
+  must have integer type"）；②catch 外裸 `throw;`（重抛）静默接受 → 运行时
+  行为未定义。C++ visitThrowStmt 镜像：非 string/类 → `throw requires a
+  string or class instance, got 'X'`；`throw;` 在 in_catch_depth_==0 时 →
+  `'throw;' rethrow is only valid inside a catch block`；void 表达式仅在已报错
+  时静默（级联恢复）。
+- **根因**：自举 Throw 处理只映射 throw_type（rethrow/string/类名）、**从不报错**；
+  且无 catch 深度计数（oracle 有 in_catch_depth_，catch 块前后 ++/--）。
+- **修复**：①新增 `inCatchDepth_` 字段（构造器初始化 0），Try 处理在访问每个
+  catch 块前 +1、后 -1；②Throw 处理补两类校验——`throw;` 且 inCatchDepth_==0
+  → 报错；非 string/class/interface 表达式 → 报错（void 用 errorCount() 判
+  级联恢复，与 oracle diag_.hasErrors() 一致）。
+- **验证**：`throw 5`（'byte'，文本与 oracle 逐字节一致）/catch 外 `throw;`
+  干净拒绝；`throw "msg"`/`throw e`（类实例）/catch 内裸重抛（嵌套 try 传播
+  "outer caught: inner"）均不受影响。
+- **回归**：负测试 `tests/negative/throw_type.myp` + `tests/negative/throw_rethrow_outside.myp`；
+  全量 377 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：语句处理若「只设标志不报错」就是校验盲点——Throw 之前只填
+  throw_type 给 codegen，从未做 oracle 有的类型/上下文校验。裸重抛的 catch
+  上下文用深度计数（++/--）而非布尔，支持嵌套 catch。

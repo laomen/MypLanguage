@@ -374,6 +374,7 @@ class Sema {
             inGpuFor_ = 0;
             inGpuKernel_ = 0;
             inMain_ = 0;
+            inCatchDepth_ = 0;
             currentRet_ = "";
             loopDepth_ = 0;
             inCoro_ = 0;
@@ -3998,8 +3999,14 @@ class Sema {
                     diag_.error(iterable.line(), iterable.col(), "cannot iterate over type '" + exprTypeName(iterable, iterable.resolvedKind()) + "'");
                 } else if (s.body() != null) visitStmt(s.body());
             } else if (k == "Throw") {
-                // C++ visitThrowStmt：确定 throw_type（rethrow/string/类名）。
+                // C++ visitThrowStmt：`throw;` 裸重抛仅 catch 内合法；表达式须
+                // string/类/接口，否则报错。此前静默接受 `throw 5` → 生成
+                // myp_throw_object(integer) 非法 IR → opt-21 "integer constant
+                // must have integer type" 崩（BUG-087）。
                 if (s.expr() == null) {
+                    if (inCatchDepth_ == 0) {
+                        diag_.error(s.line(), s.col(), "'throw;' rethrow is only valid inside a catch block");
+                    }
                     s.setThrowType("rethrow");
                 } else {
                     string t = visitExpr(s.expr());
@@ -4017,7 +4024,16 @@ class Sema {
                         }
                         if (Str.len(cn) != 0) s.setThrowType(cn);
                         else s.setThrowType("class");
-                    } else s.setThrowType("");
+                    } else if (t == "void") {
+                        // 级联恢复：仅当被抛表达式自身解析失败（已报错）时静默
+                        if (diag_.errorCount() == 0) {
+                            diag_.error(s.line(), s.col(), "throw requires a string or class instance, got 'void'");
+                        }
+                        s.setThrowType("");
+                    } else {
+                        diag_.error(s.line(), s.col(), "throw requires a string or class instance, got '" + exprTypeName(s.expr(), t) + "'");
+                        s.setThrowType("");
+                    }
                 }
             } else if (k == "Match") {
                 if (s.subject() != null) visitExpr(s.subject());
@@ -4119,7 +4135,12 @@ class Sema {
                         else if (inStructName(cty) != 0) sym_.declareClass(ct.varName(), "struct", cty);
                         else sym_.declare(ct.varName(), cty);
                     }
-                    if (ct.block() != null) visitStmt(ct.block());
+                    // BUG-087：catch 块内 `throw;` 裸重抛合法（inCatchDepth_ > 0）
+                    if (ct.block() != null) {
+                        inCatchDepth_ = inCatchDepth_ + 1;
+                        visitStmt(ct.block());
+                        inCatchDepth_ = inCatchDepth_ - 1;
+                    }
                     sym_.leaveScope();
                 }
                 if (s.finallyBlock() != null) visitStmt(s.finallyBlock());
@@ -6948,6 +6969,7 @@ class Sema {
         int inGpuKernel_;
         int inGpuDivergent_;
         int inMain_;
+        int inCatchDepth_;
         int autoMain_;
         string currentRet_;
         int loopDepth_;

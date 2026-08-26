@@ -1,0 +1,15 @@
+// EXPECT ERROR: 'throw;' rethrow is only valid inside a catch block
+// BUG-087 回归（负测试）：裸 `throw;`（重抛当前异常）仅 catch 块内合法。
+// 此前自举 Throw 处理对无表达式 throw 一律设 throw_type=rethrow、不查上下文 →
+// catch 外裸 throw; 静默接受 → 运行时行为未定义。C++ visitThrowStmt 在
+// in_catch_depth_ == 0 时报错。合法：catch (string e) { throw; }（见
+// tests/@test/manual_ch10_myp.myp 异常用例）。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            throw;
+        }
+}
+int main(){return 0;}
