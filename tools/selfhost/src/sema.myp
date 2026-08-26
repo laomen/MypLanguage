@@ -5357,6 +5357,41 @@ class Sema {
             if (k == "Subscript") {
                 string o = e.array() != null ? visitExpr(e.array()) : "void";
                 if (e.index() != null) visitExpr(e.index());
+                AstExpr sa = e.array();
+                // BUG-075：非数组基址下标（5[0]/d[0]/obj[0]/factory()[0] 返回
+                // class）此前静默当数组解析 → codegen 对非指针做 GEP → opt 崩
+                // （"integer constant must have integer type" / "'%t16' defined
+                // with type 'i32' but expected 'ptr'"）。镜像 C++ visitSubscript：
+                // 仅 array/slice/string/bitvector 可下标（string→char、
+                // bitvector→bit）。
+                // 注意：方法调用基址（ArrayList<int[]>.get(0)）的 resolvedKind 是
+                // 元素 kind（"int"，自举元素传播模型怪癖）——不能按 kind 判；
+                // 顶层函数调用基址按 findFuncRetType 返回类型判；其余
+                // Identifier/Member/字面量/转换按 resolvedKind 严格判。
+                if (sa != null && sa.kind() == "Call") {
+                    AstExpr scal = sa.callee();
+                    if (scal != null && scal.kind() == "Identifier") {
+                        AstType sfret = findFuncRetType(scal.name(), sa.args().size());
+                        if (sfret != null) {
+                            string sk = typeToKind(sfret);
+                            int ok1 = (sk == "array" || sk == "slice" || sk == "string") ? 1 : 0;
+                            int ok2 = sfret.element() != null ? 1 : 0;
+                            int ok3 = (sfret.className() == "slice" && sfret.typeArgs().size() > 0) ? 1 : 0;
+                            if (ok1 == 0 && ok2 == 0 && ok3 == 0) {
+                                diag_.error(sa.line(), sa.col(), "cannot index non-array type '" + exprTypeName(sa, sk) + "'");
+                                e.setResolvedKind("void");
+                                return "void";
+                            }
+                        }
+                    }
+                } else if (sa == null || sa.kind() != "Subscript") {
+                    if (Str.len(o) != 0 && o != "void" && o != "array" && o != "slice"
+                        && o != "string" && o != "bitvector") {
+                        diag_.error(sa.line(), sa.col(), "cannot index non-array type '" + exprTypeName(sa, o) + "'");
+                        e.setResolvedKind("void");
+                        return "void";
+                    }
+                }
                 // BUG-072：下标类型须数字（镜像 C++ expectNumeric）。a["str"] 此前
                 // 静默过 sema → codegen 把 string 指针当 i64 索引 → opt 崩
                 // （invalid cast opcode for cast from 'ptr' to 'i64'）。
@@ -5373,7 +5408,6 @@ class Sema {
                 string et = "array";
                 if (o == "bitvector") et = "bit";
                 // 数组/切片变量 → 元素类型；string 下标 → char
-                AstExpr sa = e.array();
                 if (sa != null && sa.kind() == "Identifier") {
                     SymbolEntry en = sym_.lookupEntry(sa.name());
                     if (en != null && Str.len(en.elementType()) != 0) {

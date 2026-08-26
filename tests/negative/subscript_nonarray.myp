@@ -1,0 +1,17 @@
+// EXPECT ERROR: cannot index non-array type 'byte'
+// BUG-075 回归（负测试）：非数组基址下标（5[0]/d[0]/factory()[0] 返回 class）
+// 须编译期干净拒绝。此前自举 Subscript 把任意基址当数组解析（缺 C++
+// visitSubscript 的 "cannot index non-array type" 检查）→ 若赋值类型恰好
+// 匹配（int[] z = 5[0]），codegen 对非指针做 GEP → opt 崩（"integer constant
+// must have integer type" / "'%t16' defined with type 'i32' but expected
+// 'ptr'"）。仅 array/slice/string/bitvector 可下标（string→char、
+// bitvector→bit）。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            int[] z = 5[0];
+        }
+}
+int main(){return 0;}

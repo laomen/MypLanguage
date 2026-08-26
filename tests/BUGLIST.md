@@ -2015,3 +2015,31 @@
 - **教训**：expectNumeric（下标/算术）与 expectBool（&&/! /?: /if/while）是
   oracle 两个高频校验族；自举此前只镜像了 expectNumeric（binary-op），漏了
   expectBool 全家。凡「oracle 有 expectBool」的位置逐一比对补齐。
+
+## BUG-075（已修复 🟩，v3.15.109）：非数组基址下标漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.109，selfhost sema.myp）
+- **背景**：`5[0]` / `d[0]`（double 变量）/ `factory()[0]`（顶层函数返回 class）
+  等非数组基址此前被自举 Subscript **静默当数组解析**（缺 C++ visitSubscript 的
+  "cannot index non-array type" 检查）→ 若赋值类型恰好匹配（`int[] z = 5[0]` /
+  `int[] z = factory()[0]`），codegen 对非指针做 GEP → **opt 崩**（"integer
+  constant must have integer type" / "'%t16' defined with type 'i32' but expected
+  'ptr'"）。仅 array/slice/string/bitvector 可下标（string→char、bitvector→bit）。
+- **根因**：自举 Subscript 只查 index 类型（BUG-072），不查基址类型；基址 kind
+  非数组时落到 `et = "array"` 默认继续。
+- **修复**：按基址形态检查——①Call 且 callee 是 Identifier（顶层函数/内建）：
+  用 `findFuncRetType` 判返回 array/slice/string（镜像元素解析 BUG-058 的取法）；
+  ②其余（Identifier/Member/字面量/转换/New）按 resolvedKind 严格判；③方法调用
+  基址（`arrs.get(0)[0]`）的 resolvedKind 是**元素 kind**（自举元素传播模型怪癖，
+  ArrayList<int[]> 的 get → "int"）——保守放行，其元素类型由 BUG-058/062 机制
+  决定。报 `cannot index non-array type 'X'`。
+- **验证**：`5[0]`（byte）/`d[0]`（double）/`factory()[0]`（Circle）均干净拒绝，
+  `5[0]` 文本与 oracle 逐字节一致（连 'byte' 都对）；合法 `arrs.get(0)[0]`、
+  `makeInt()[i]`（顶层函数返 int[]）、`makeS()[i]`（返 slice）、`makeStr()[i]`
+  （返 string）不受影响。
+- **回归**：负测试 `tests/negative/subscript_nonarray.myp`（EXPECT ERROR cannot
+  index non-array type 'byte'）；全量 363 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：下标基址校验不能只按 resolvedKind 一刀切——自举「Call/Subscript 基址
+  resolvedKind = 元素 kind」的传播模型（BUG-058/062 族）会让 `arrs.get(0)` 的
+  基址 kind 是 "int" 而非 "array"。顶层函数基址用 findFuncRetType 判返回类型，
+  方法调用基址保守放行（其返回类型机制自带校验）。

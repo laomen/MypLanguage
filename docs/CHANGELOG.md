@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.109 — 修非数组基址下标漏校验 → opt 崩（BUG-075）
+
+**非破坏性**（selfhost sema）。`5[0]` / `d[0]` / `factory()[0]`（顶层函数返回
+class）等非数组基址此前被静默当数组解析 → 赋值类型匹配时 codegen 对非指针做
+GEP → **opt 崩**（`integer constant must have integer type` / `'%t16' defined
+with type 'i32' but expected 'ptr'`）。C++ visitSubscript 仅允许
+array/slice/string/bitvector 下标。
+
+- **修复**：按基址形态检查——①顶层函数/内建 Call 用 `findFuncRetType` 判返回
+  array/slice/string；②其余按 resolvedKind 严格判；③方法调用基址
+  （`arrs.get(0)[0]`）resolvedKind 是元素 kind（传播模型怪癖）保守放行。
+- **测试**：负测试 `tests/negative/subscript_nonarray.myp`；合法顶层函数返回
+  array/slice/string 下标 + 链式 `arrs.get(0)[0]` 不受影响。
+- 验证：bootstrap 自举成立；全量回归 **363 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-075。
+
 ### v3.15.108 — 修布尔上下文漏 expectBool 校验（应拒绝却接受）（BUG-074）
 
 **非破坏性**（selfhost sema）。`p && q`（int 操作数）/ `!p` / `p ? a : b` /
