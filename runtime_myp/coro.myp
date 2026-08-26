@@ -47,9 +47,10 @@ ffi long execIoReadAllRaw(int handle);       // io.myp
 // 会走 coro API，避免 coro→ev 与 ev→coro 反转）。
 @static class CoroLock {
     property:
-        long mutex = 0;  // 自旋锁字地址（mmap 直分配，勿用 arena）
-        long owner = 0;  // 持锁线程 gettid
-        int depth = 0;   // 递归深度
+        long mutex = 0;      // 自旋锁字地址（mmap 直分配，勿用 arena）
+        long owner = 0;      // 持锁线程 gettid
+        int depth = 0;       // 递归深度
+        int multiThread = 0; // 1=@thread 已出现 → 全局锁需 gettid 身份；0=M:1 单线程
 }
 void coroLockInit() {
     if (CoroLock.mutex == 0) {
@@ -60,9 +61,17 @@ void coroLockInit() {
         }
     }
 }
+// M:1 单线程快路径：纯深度记账（无 syscall、无原子、无互斥）。协程表进程级
+// 全局，单线程独占访问本无需锁——深度仅用于嵌套 API（set_result/channel 等）的
+// 配平记账。@thread 出现（myp_thread_spawn → coroMarkMultiThread）后走下方
+// 多线程全局递归锁。
 void coroLock() {
     coroLockInit();
     if (CoroLock.mutex == 0) return;
+    if (CoroLock.multiThread == 0) {
+        CoroLock.depth = CoroLock.depth + 1;
+        return;
+    }
     long my = __myp_syscall(186, 0, 0, 0, 0, 0, 0);  // gettid
     if (CoroLock.owner == my) { CoroLock.depth = CoroLock.depth + 1; return; }
     while (__myp_atomic_add_i32_addr(CoroLock.mutex, 1) != 0) { }
@@ -74,7 +83,19 @@ void coroUnlock() {
     if (CoroLock.depth > 1) { CoroLock.depth = CoroLock.depth - 1; return; }
     CoroLock.depth = 0;
     CoroLock.owner = 0;
-    __myp_atomic_store_i32_addr(CoroLock.mutex, 0);
+    if (CoroLock.multiThread != 0) __myp_atomic_store_i32_addr(CoroLock.mutex, 0);
+}
+// 标记进入多线程模式（唯一调用点：thread.myp myp_thread_spawn，clone 前）。
+// 若翻转时正持锁（depth>0 且 owner==0=单线程快路径窗口，如 async_file 在锁窗口
+// 内 spawn worker）→ 无缝转换：补 owner=gettid + mutex=1（供其他线程自旋）——
+// 当前窗口以多线程语义继续，无需释放重取；窗口外（depth==0）仅置标志。
+void coroMarkMultiThread() {
+    if (CoroLock.multiThread != 0) return;
+    if (CoroLock.depth > 0 && CoroLock.owner == 0) {
+        CoroLock.owner = __myp_syscall(186, 0, 0, 0, 0, 0, 0);
+        __myp_atomic_store_i32_addr(CoroLock.mutex, 1);
+    }
+    CoroLock.multiThread = 1;
 }
 
 // ---- 协程表（进程级 @static；C 为 TLS）----

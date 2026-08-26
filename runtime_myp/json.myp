@@ -113,8 +113,7 @@ string jsonStrDup(string s) {
 string jsonSub(string s, int a, int b) {
     int n = b - a;
     string r = myp_alloc(n + 1);
-    for (int i = 0; i < n; i = i + 1)
-        __myp_mem_store_i8(__myp_str_ptr(r) + i, __myp_charcode(s, a + i));
+    if (n > 0) __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(s) + a, n);
     __myp_mem_store_i8(__myp_str_ptr(r) + n, 0);
     return r;
 }
@@ -151,6 +150,22 @@ int jsonMatchKw(string kw) {
 // ---- 递归下降解析（返回 slot；失败 -1）----
 int jsonParseString() {
     jsonAdvance();   // 消费 '"'
+    int start = JsonCtx.pos;
+    // 无转义快路径：扫描闭合引号，无 '\' → 单次 memcpy 提取（避免逐字符拼接）
+    int i = JsonCtx.pos;
+    while (i < JsonCtx.len) {
+        int c = __myp_charcode(JsonCtx.src, i);
+        if (c == 34) {   // '"' 结束
+            int s = jsonNewNode(4);
+            JsonTab.str_val[s] = jsonSub(JsonCtx.src, start, i);
+            JsonCtx.pos = i + 1;
+            return s;
+        }
+        if (c == 92) break;   // '\' → 有转义，走逐字符慢路径
+        i = i + 1;
+    }
+    // 转义路径：逐字符构建（保持原逻辑）
+    JsonCtx.pos = start;
     string val = "";
     while (JsonCtx.pos < JsonCtx.len) {
         int c = jsonPeek();

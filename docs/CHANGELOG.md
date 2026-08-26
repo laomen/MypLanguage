@@ -27,6 +27,30 @@
 
 ## 编译器版本历史
 
+### v3.15.76 — 协程 M:1 单线程无锁快路径（coro_switch 76→43ms）+ json 字符串构建优化（43→25ms）
+
+**非破坏性**。续 v3.15.75；针对 MYP vs C 运行时剩余两大差距：
+
+1. **协程 M:1 单线程快路径**（`runtime_myp/coro.myp`）：M:1 模型下协程表进程级
+   全局、单线程独占访问，本无需锁。原 `__myp_coro_resume` 每次调 `coroLock()`
+   都无条件 `gettid` 系统调用（probe 实测 1M 次 gettid = 34ms，恰是 coro 差距
+   主体）。改为：
+   - `CoroLock.multiThread` 标志——单线程（`multiThread==0`）走**纯深度记账**
+     （无 syscall/原子/互斥）；`@thread` 出现（`myp_thread_spawn` 唯一入口，
+     clone 前 `coroMarkMultiThread()`）后才切全局递归锁（gettid 身份）。
+   - `coroMarkMultiThread` 处理锁窗口内 spawn 的边界（async_file 在持锁窗口内
+     spawn worker）→ 无缝补 owner=gettid + mutex=1，无需释放重取。
+2. **json 字符串构建优化**（`runtime_myp/json.myp`）：
+   - `jsonSub` 逐字节循环改 `__myp_memcpy` 单次拷贝。
+   - `jsonParseString` 无转义快路径：扫描闭合引号无 `\\` → 单次 memcpy 提取
+     （避免逐字符 `val + __myp_chr(c)` 拼接）；有转义才走原逐字符路径。
+
+实测（`bench/rt_myp_bench.myp`，-O2，verify 一致）：
+coro_switch 76→43ms（vs C 35ms，2.2×→1.2×）、json 43→25ms（vs C 8ms，
+5.4×→3.1×）；其余负载（strcat/alloc/hashmap/file_io/regex）持平。
+全量测试 **324/0 无回归**（含多线程 coro_thread/async_file）；json 转义
+（串内引号/换行/反斜杠/数组内转义）专项验证通过；bootstrap MD5 门禁通过。
+
 ### v3.15.75 — MYP 运行时 io 优化（readLine 复用缓冲 + select 快路径，file_io 90→39ms）
 
 **非破坏性**。续 v3.15.74；针对 MYP vs C 运行时 file_io 差距（90 vs 27ms）优化

@@ -32,10 +32,13 @@ void myp_thread_child_entry(long entryAddr) {
     __myp_syscall(60, 0);                 // 入口若返回则退出本线程
 }
 
+ffi void coroMarkMultiThread();   // coro.myp：@thread 出现 → 协程表转全局锁模式
+
 // C 侧无同名函数——MYP 新建原语。mmap 栈 + clone；子线程跑 entry 后 exit 自身。
 // ⚠️ 曾因 @static 属性默认值不生效（--shared，v3.15.69 已修复）→ stackSize
 // `= 1048576` 读出 0 被钳到 65536，须显式设置；现默认值由初始化器生效，已回滚。
 long myp_thread_spawn(long entryAddr) {
+    coroMarkMultiThread();    // 多线程模式开启（clone 前；M:1 快路径仅单线程安全）
     Thr.entry = entryAddr;
     Thr.done_read = 0;          // 握手清零（父设子读）
     long size = Thr.stackSize;

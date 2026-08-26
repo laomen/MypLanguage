@@ -533,10 +533,21 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 - 实测 file_io 90→39ms（MYP-only，接近 C runtime 27ms，差距 3.3×→1.4×）；
   全量 324/0 无回归。
 
-### 6.6 待优化方向（MYP vs C 仍落后项）
+### 6.6 协程 M:1 无锁快路径 + json 字符串构建优化（v3.15.76）
 
-- **json**：MYP 版 44ms vs C bridge 8ms（5.5×）——json.myp 纯 MYP 解析较慢。
-- **file_io 写侧**：26 vs 16ms——每行 `strlen`+`memcpy`+cur_get 仍有余地。
-- **coro_switch**：76 vs 35ms（2.2×）——MYP coro 实现 vs C asm。
-- **alloc_arr**：96 vs 75ms（1.3×）——分配器差异。
+- **协程 M:1 单线程快路径**：原 `coroLock()` 每次 `gettid` 系统调用（1M 次
+  resume = 34ms，恰为 coro_switch 76 vs C 35ms 差距主体）。改 `CoroLock.multiThread`
+  标志：单线程（无 `@thread`）走纯深度记账（无 syscall/原子/互斥）；
+  `myp_thread_spawn`（唯一线程入口）clone 前调 `coroMarkMultiThread()` 切全局锁。
+  `coroMarkMultiThread` 处理持锁窗口内 spawn 的边界（async_file）→ 补 owner+mutex
+  无缝转换。实测 coro_switch 76→43ms（1.2× C）。
+- **json 字符串构建**：`jsonSub` 逐字节改 `__myp_memcpy`；`jsonParseString` 无转义
+  快路径单次 memcpy 提取。实测 json 43→25ms（3.1× C）。全量 324/0 无回归。
+
+### 6.7 待优化方向（MYP vs C 仍落后项）
+
+- **json**：MYP 版 25ms vs C bridge 8ms（3.1×）——节点表 6 并行数组逐节点越界检查
+  + 路径解析仍有余地（后续可考虑序列化直通/减少 bounds 检查）。
+- **alloc_arr**：96 vs 75ms（1.3×）——分配器差异（MYP arena+空闲链表 vs C malloc）。
+- **file_io 写侧**：26 vs 16ms（1.6×）——每行 `strlen`+`memcpy`+cur_get 仍有余地。
 
