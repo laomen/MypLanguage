@@ -9,6 +9,7 @@ cd "$(dirname "$0")/.."
 # 编译器（myp_self/myp_self2）编译（全特性）；$1 可覆盖。
 SELF="${1:-./build/myp_self}"
 LLC="${LLC:-llc-21}"
+OPT="${OPT:-opt-21}"
 OUT="${OUT:-/tmp/rt_myp_out}"
 CRT=/usr/lib/x86_64-linux-gnu
 DL=/lib64/ld-linux-x86-64.so.2
@@ -22,7 +23,15 @@ for m in runtime_myp/*.myp; do
     # 走的 C runtime）。
     # 每个模块用独立 /tmp/rt_myp_<base>.o（共用同一路径会被后编译的模块覆盖）。
     "$SELF" "$m" --emit-llvm --shared -o "/tmp/rt_myp_${base}" >/dev/null 2>&1
-    "$LLC" "/tmp/rt_myp_${base}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_myp_${base}.o"
+    # opt -O2（同 mypc 管线）：runtime 模块此前**不跑 opt** → 全部运行时函数是未
+    # 优化 IR（alloca/store 风暴，coro.myp 9996 行→829 行）→ spawn/io 等整体被拖慢。
+    # v3.12.44 起 opt -O2 跨 setjmp/longjmp（try/catch）安全。MYP_RT_NO_OPT=1 跳过。
+    if [ "${MYP_RT_NO_OPT:-0}" != "1" ]; then
+        "$OPT" "/tmp/rt_myp_${base}.ll" -O2 -mcpu=generic -o "/tmp/rt_myp_${base}.opt.ll" >/dev/null 2>&1
+        "$LLC" "/tmp/rt_myp_${base}.opt.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_myp_${base}.o"
+    else
+        "$LLC" "/tmp/rt_myp_${base}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_myp_${base}.o"
+    fi
     RT_OBJS="$RT_OBJS /tmp/rt_myp_${base}.o"
 done
 

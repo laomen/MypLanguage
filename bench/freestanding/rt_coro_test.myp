@@ -87,7 +87,7 @@ class CoroTest {
             // 栈池：destroy churn 后回池（先创建触发退役 drain）
             long hp = w.run(1);
             Coro.result(hp);
-            if (myp_diag_stack_pool_capacity() != 64L) return 19;
+            if (myp_diag_stack_pool_capacity() != 1024L) return 19;
             return 0;
         }
 }

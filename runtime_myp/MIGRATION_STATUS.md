@@ -590,10 +590,11 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 - **句柄线程维度（通用化）**：exec/channel/event 已各自用 mailbox 处理跨线程唤醒；
   未来若有通用跨线程 resume API 需求，可统一为"协程记 owner 线程 + 通用唤醒
   mailbox"（当前按需实现，无通用抽象）。
-- **spawn 性能缓解（v3.15.80）**：小栈（<128KB）改堆 malloc（C runtime 同款），
-  大栈/默认保留 mmap+守护页。coro_spawn 53→28ms（C runtime 20ms 的 1.4×）。
-  剩余差距根源：glibc 对 1.28GB 总量的 64KB 分块走 mmap 回退（~1 syscall/块），
-  C runtime 同构；进一步需 Go 式批量栈分配（一次 mmap 整批切分），待办。
+- **spawn 性能缓解（v3.15.80/81）**：v3.15.80 小栈（<128KB）改堆 malloc；v3.15.81
+  runtime build.sh 补 opt -O2（全 runtime 优化，coro_switch 83→51ms） + 小栈批量
+  分配（一次 mmap 64 个切分，池 1024）。coro_spawn 53→23ms（C runtime 20ms 的
+  1.15×）。剩余差距根源：create 簿记 ~0.9µs/次（TLS/数组访问，MYP 模型固有），
+  非分配——Go 3ms 是整体 spawn 机制更轻（2KB 池化栈 + 无 ctx 初始化）。
 - **并行已验证**（2026-08-26）：每线程 3000 万次内存操作协程，单 worker 15ms、
   双 worker 也 15ms（串行应 30ms）——真并行。
 - **测量坑**：紧自旋饿死 worker（假性偏慢）；`Time.nowMs()` 被 LLVM CSE 合并

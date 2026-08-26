@@ -34,8 +34,6 @@ ffi int myp_release(string obj);    // alloc.myp（帧表 release；经 __myp_ad
 ffi long myp_thread_spawn(long entryAddr);   // thread.myp（clone 原语；async exec worker）
 ffi void myp_pause();               // 自旋让步（weak.myp/内建）
 ffi long pthread_self();             // libc：exec mailbox 的 owner 线程匹配（pump）
-ffi long malloc(long size);          // libc：协程栈堆分配（C 平价快路径，小栈零 syscall）
-ffi void free(long p);               // libc：栈池淘汰时释放
 ffi long execIoReadLineRaw(int handle);      // io.myp（raw addr，无 string 局部）
 ffi long execIoReadAllRaw(int handle);       // io.myp
 
@@ -277,11 +275,11 @@ int coroPopFree() {
     if (s >= 0 && s < CoroT.count) CoroT.onFreeList[s] = 0;
     return s;
 }
-// ---- 动态栈：混合分配（Go 式增长，无拷贝/无编译器改动）----
-// 预留量 = 栈增长上限。小栈（<128KB，显式 @coro(stack=N) 小值）走堆 malloc——C runtime
-// 同款（glibc arena 出块零 syscall → spawn 快）；大栈/默认（≥128KB，1MB 动态栈）走
-// mmap 懒提交（RSS 只算实际使用页）+ 底部 4KB PROT_NONE 守护页（真跑飞干净 SIGSEGV，
-// 替代静默堆破坏，同 Go maxstacksize 语义）。阈值同 glibc MMAP_THRESHOLD。
+// ---- 动态栈：批量 + 守护混合（Go 式增长，无拷贝/无编译器改动）----
+// 预留量 = 栈增长上限。小栈（<128KB，显式 @coro(stack=N) 小值）批量分配：一次 mmap
+// BATCH 个栈切分（零 syscall/栈 → spawn 快，Go 同构）；大栈/默认（≥128KB，1MB 动态
+// 栈）走 mmap 懒提交（RSS 只算实际使用页）+ 底部 4KB PROT_NONE 守护页（真跑飞干净
+// SIGSEGV，替代静默堆破坏，同 Go maxstacksize 语义）。阈值同 glibc MMAP_THRESHOLD。
 // 常量（MYP 无顶层 const，内联字面量）：
 //   DEFAULT=1MB(1048576)  MIN=64KB(65536)  MAX=64MB(67108864)  GUARD=4096
 long coroReserveSize(long requested) {
@@ -293,22 +291,47 @@ long coroReserveSize(long requested) {
     if (reserve > 67108864) reserve = 67108864;
     return reserve;
 }
-// 小栈：malloc（C 平价，arena 零 syscall）；大栈：mmap reserve+guard（懒提交 + 溢出保护）
+// 小栈：批量 mmap（BATCH 切分，零 syscall/栈）；大栈：mmap reserve+guard（懒提交+溢出保护）
 long coroStackAlloc(long reserve) {
-    if (reserve < 131072) return malloc(reserve);   // <128KB → 堆分配
+    if (reserve < 131072) return coroStackBatchAlloc(reserve);
     long total = reserve + 4096;
     long base = __myp_syscall(9, 0, total, 3, 0x4022, -1, 0);  // RW|NORESERVE|ANON|PRIVATE
     if (base == -1 || base == 0) return 0;
     __myp_syscall(10, base, 4096, 0, 0, 0, 0);   // mprotect 低 4KB PROT_NONE
     return base + 4096;
 }
-// ---- 栈池（C 平价：复用预留，避免 spawn/destroy churn）----
+// ---- 栈池（C 平价：复用预留 + 批量切分，避免 spawn/destroy churn）----
 @static @thread class CoroStackPool {
     property:
-        long[64] ptrs;     // 可用栈基址
-        long[64] sizes;    // 可用尺寸（预留）
-        long total = 0;    // 池内 VA 总字节
+        long[1024] ptrs;     // 可用栈基址（64→1024：容纳批量切分余量 + 大栈）
+        long[1024] sizes;    // 可用尺寸（预留）
+        long total = 0;      // 池内 VA 总字节
         int count = 0;
+        long batchVa = 0;    // 批量分配累计 VA（安全阀，>4GB 退化逐块 mmap）
+}
+// 小栈批量分配：一次 mmap BATCH 个栈（无守护，同 malloc 决策），切分入池——冷启动
+// 20000 栈从 ~20000 syscall（glibc 对 1.28GB 总量逐块 mmap 回退）降到 ~313 次。
+// 批量区从不整块 munmap（VA 懒提交、RSS 只算实际使用；进程退出 OS 回收）。安全阀
+// 4GB 后退化逐块 mmap（极端并发，淘汰即 drop）。
+long coroStackBatchAlloc(long reserve) {
+    long total = 64 * reserve;
+    if (CoroStackPool.batchVa + total <= 4294967296) {
+        long base = __myp_syscall(9, 0, total, 3, 0x4022, -1, 0);
+        if (base == -1 || base == 0) return 0;
+        CoroStackPool.batchVa = CoroStackPool.batchVa + total;
+        for (int i = 1; i < 64; i = i + 1) {   // 栈 0 返回调用方，余下 63 个入池
+            if (CoroStackPool.count < 1024) {
+                CoroStackPool.ptrs[CoroStackPool.count] = base + long(i) * reserve;
+                CoroStackPool.sizes[CoroStackPool.count] = reserve;
+                CoroStackPool.total = CoroStackPool.total + reserve;
+                CoroStackPool.count = CoroStackPool.count + 1;
+            }
+        }
+        return base;
+    }
+    long b = __myp_syscall(9, 0, reserve, 3, 0x4022, -1, 0);   // 安全阀：逐块
+    if (b == -1 || b == 0) return 0;
+    return b;
 }
 long coroStackTake(long reserve) {
     int best = -1;
@@ -328,16 +351,16 @@ long coroStackTake(long reserve) {
     }
     return coroStackAlloc(reserve);
 }
-// 回池（有界：64 项 / VA 128MB）或释放（小栈 free；大栈 munmap 含守护页）
+// 回池（有界：1024 项 / VA 128MB）或释放（大栈 munmap 含守护页；小栈批量区 drop）
 void coroStackReturn(long ptr, long reserve) {
-    if (CoroStackPool.count < 64 && CoroStackPool.total + reserve <= 134217728) {
+    if (CoroStackPool.count < 1024 && CoroStackPool.total + reserve <= 134217728) {
         CoroStackPool.ptrs[CoroStackPool.count] = ptr;
         CoroStackPool.sizes[CoroStackPool.count] = reserve;
         CoroStackPool.total = CoroStackPool.total + reserve;
         CoroStackPool.count = CoroStackPool.count + 1;
         return;
     }
-    if (reserve < 131072) { free(ptr); return; }   // 小栈：堆释放
+    if (reserve < 131072) return;   // 小栈（批量区）：drop（VA 懒提交，进程退出回收）
     __myp_syscall(11, ptr - 4096, reserve + 4096, 0, 0, 0, 0);  // 大栈：munmap 含守护页
 }
 // 退役栈：trampoline 完成时登记（不能就地 munmap，正运行其上）→ 下次 create/
@@ -1307,7 +1330,7 @@ long myp_diag_coro_slot_capacity() { return CoroCap.coro; }
 long myp_diag_coro_free_slots() { return CoroT.freeCount; }
 // 栈池：真实统计（预留复用池；C 平价语义）
 long myp_diag_stack_pool_count() { return CoroStackPool.count; }
-long myp_diag_stack_pool_capacity() { return 64; }
+long myp_diag_stack_pool_capacity() { return 1024; }
 long myp_diag_stack_pool_bytes() { return CoroStackPool.total; }
 long myp_diag_stack_pool_max_bytes() { return 134217728; }
 long myp_diag_retired_count() { return CoroRetired.count; }

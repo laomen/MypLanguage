@@ -54,6 +54,26 @@ IR 确认 `@__myp_static_TL = thread_local global`；pthread_key 探针同理。
 
 > 这是 N×M:1 协程迁移的地基（步骤 0/1）。下一步见 v3.15.78（per-thread 表迁移）。
 
+### v3.15.81 — runtime build.sh 补 opt -O2（全 runtime 优化）+ coro_spawn 小栈批量分配
+
+**非破坏性**。续 v3.15.80；两个运行时性能改进：
+
+1. **runtime_myp/build.sh 补 opt -O2**（同 mypc 管线）：runtime 模块此前**不跑 opt**，
+   全部运行时函数是未优化 IR（alloca/store 风暴，coro.myp 9996→829 行）→ 拖慢
+   spawn/io/json 等所有走 runtime 的路径。build.sh 现对每模块 `opt -O2 -mcpu=generic`
+   （v3.12.44 起 opt 跨 setjmp/longjmp 安全；`MYP_RT_NO_OPT=1` 跳过）。
+   基准（run_compare_go.sh，全 verify 与 Go 对拍）：
+   - coro_switch 83→51ms（MYP **6.24×** 快于 Go，此前 3.7×）
+   - channel_pingpong 6→3ms（打平 Go）
+   - io_socket 91→83ms、coro_spawn 26→23ms；主套件多数基准亦小幅提升
+2. **协程小栈批量分配**（coro.myp）：<128KB 小栈从逐块分配改一次 mmap 64 个切分入池
+   （冷启动 20000 栈 ~20000 syscall → ~313 次）；栈池 64→1024 项容纳批量余量 + 大栈。
+   批量区整批不复用外 munmap（VA 懒提交，4GB 安全阀），大栈/默认保留 mmap+守护页
+   （溢出 SIGSEGV）。淘汰：小栈 drop、大栈 munmap。
+   `myp_diag_stack_pool_capacity` 64→1024（rt_coro_test 同步）。
+
+验证：runtime 重建 shadow 通过；全量 **327/0 无回归**。
+
 ### v3.15.80 — coro_spawn 协程栈混合分配（小栈 malloc 快路径，53→28ms）+ CoroEvW 动态扩容
 
 **非破坏性**。续 v3.15.79；协程 spawn 性能缓解 + 跨线程事件注册表健壮性：
