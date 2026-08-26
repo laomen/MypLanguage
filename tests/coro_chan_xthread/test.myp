@@ -1,0 +1,67 @@
+// coro_chan_xthread: 跨线程 channel rendezvous（v3.15.79 修复）
+// consumer 在 B 线程 park 空缓冲 recv，producer 在 A 线程 send → chanWakeOne 检测
+// owner≠本线程 → 跨线程唤醒 mailbox → owner 调度器 pump 后 resume → C-got 42。
+import env;
+import time;
+import coro;
+ffi long myp_channel_create(int capacity);
+ffi int myp_channel_send(long handle, long val);
+ffi long myp_channel_recv(long handle);
+
+@static class Shared {
+    property:
+        long ch = 0;
+        int pDone = 0;
+        int cDone = 0;
+}
+
+class Producer {
+    action:
+        @coro void prod() {
+            Time.sleep(100);   // 先让 consumer park 在空缓冲 recv
+            Console.writeString("P-send\n");
+            int r = myp_channel_send(Shared.ch, 42);
+            Console.writeString("P-sent " + r + "\n");
+            Shared.pDone = 1;
+        }
+        @startup void run() {
+            long h = this.prod();
+            Coro.scheduler();
+        }
+}
+class Consumer {
+    action:
+        @coro void cons() {
+            Console.writeString("C-recv\n");
+            long v = myp_channel_recv(Shared.ch);
+            Console.writeString("C-got " + v + "\n");
+            Shared.cDone = 1;
+        }
+        @startup void run() {
+            long h = this.cons();
+            // park 后循环调度直到收到（跨线程唤醒经本线程 pump resume）
+            int n = 0;
+            while (Shared.cDone == 0 && n < 100) {
+                Coro.scheduler();
+                n = n + 1;
+                Time.sleep(10);
+            }
+        }
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            Shared.ch = myp_channel_create(1);
+            Consumer c = new Consumer() @thread;
+            Producer p = new Producer() @thread;
+            int spins = 0;
+            while (Shared.pDone == 0 || Shared.cDone == 0) {
+                Time.sleep(10);
+                spins = spins + 1;
+                if (spins > 300) break;
+            }
+            Console.writeString("OK pDone=" + Shared.pDone + " cDone=" + Shared.cDone + "\n");
+        }
+}
+int main() { Main m = new Main(); return 0; }

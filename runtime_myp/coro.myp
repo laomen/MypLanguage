@@ -929,6 +929,8 @@ void __myp_coro_scheduler() {
     coroPollFds();
     // 跨线程 exec 结果 pump：属于本线程的结果 → 本线程 CoroT.execResult + ready
     coroExecPump();
+    // 跨线程 channel 唤醒 pump：属于本线程的唤醒 → 本线程 CoroT.ready
+    chanWakePump();
     // 快照语义：遍历槽位，对 active && ready 的 resume 一步（本趟新增的 ready 协程
     // 高槽位不访问——与 C 快照近似；yield 保持 ready 的协程本趟不重入）。
     for (int i = 0; i < CoroT.count; i = i + 1) {
@@ -1189,36 +1191,103 @@ long myp_diag_retired_bytes() {
         int[256] count;
         int[256] closed;
         long[65536] recvW;    // 256 chan × 256 recv waiter（FIFO，扁平 [h*256+i]）
+        long[65536] recvOwner; // 每 recv waiter 的 owner 线程 pthread_self()
         int[256] recvWc;
         long[65536] sendW;
+        long[65536] sendOwner; // 每 send waiter 的 owner 线程 pthread_self()
         int[256] sendWc;
+        long lastPopOwner = 0; // chanPop* 弹出的 waiter owner（chanWake* 读）
         int wakeDepth = 0;    // 同步交接递归深度守卫（同 C MYP_CHANNEL_WAKE_DEPTH_MAX=64）
         int used = 0;         // 已分配通道数
+        // ---- 跨线程唤醒 mailbox（v3.15.79）：waiter owner ≠ 本线程 → 投递，owner
+        //      调度器 pump 后在自己的 per-thread 表里 ready（不跨线程内联 resume）----
+        long cwLock = 0;      // 自旋锁字地址（arena）
+        long[64] cwOwner;     // 目标线程 pthread_self()
+        long[64] cwSlot;      // 目标协程槽（owner 表内）
+        int[64] cwActive;
+        int cwCount = 0;
 }
 
-// pop first（FIFO）
+// pop first（FIFO）；同时记录弹出的 waiter owner（chanWake* 用它判断跨线程）
 long chanPopRecv(int h) {
     if (Chan.recvWc[h] <= 0) return -1;
     long v = Chan.recvW[h * 256];
-    for (int i = 1; i < Chan.recvWc[h]; i = i + 1)
+    Chan.lastPopOwner = Chan.recvOwner[h * 256];
+    for (int i = 1; i < Chan.recvWc[h]; i = i + 1) {
         Chan.recvW[h * 256 + i - 1] = Chan.recvW[h * 256 + i];
+        Chan.recvOwner[h * 256 + i - 1] = Chan.recvOwner[h * 256 + i];
+    }
     Chan.recvWc[h] = Chan.recvWc[h] - 1;
     return v;
 }
 long chanPopSend(int h) {
     if (Chan.sendWc[h] <= 0) return -1;
     long v = Chan.sendW[h * 256];
-    for (int i = 1; i < Chan.sendWc[h]; i = i + 1)
+    Chan.lastPopOwner = Chan.sendOwner[h * 256];
+    for (int i = 1; i < Chan.sendWc[h]; i = i + 1) {
         Chan.sendW[h * 256 + i - 1] = Chan.sendW[h * 256 + i];
+        Chan.sendOwner[h * 256 + i - 1] = Chan.sendOwner[h * 256 + i];
+    }
     Chan.sendWc[h] = Chan.sendWc[h] - 1;
     return v;
 }
+// 跨线程唤醒 mailbox：chanWake* 发现 waiter owner ≠ 本线程 → 投递（owner 调度器 pump）
+void chanWakePush(long owner, long slot) {
+    if (Chan.cwLock == 0) {
+        long p = myp_arena_alloc(8);
+        if (p != 0) { __myp_mem_store_i32(p, 0); Chan.cwLock = p; }
+    }
+    if (Chan.cwLock != 0) {
+        while (__myp_atomic_add_i32_addr(Chan.cwLock, 1) != 0) { }
+    }
+    if (Chan.cwCount < 64) {
+        Chan.cwOwner[Chan.cwCount] = owner;
+        Chan.cwSlot[Chan.cwCount] = slot;
+        Chan.cwActive[Chan.cwCount] = 1;
+        Chan.cwCount = Chan.cwCount + 1;
+    }
+    if (Chan.cwLock != 0) __myp_atomic_store_i32_addr(Chan.cwLock, 0);
+}
+// owner 调度器 pump：属于本线程的唤醒 → 本线程 CoroT.ready（本线程 resume），压缩表
+void chanWakePump() {
+    if (Chan.cwCount == 0) return;
+    long me = pthread_self();
+    if (Chan.cwLock == 0) return;
+    while (__myp_atomic_add_i32_addr(Chan.cwLock, 1) != 0) { }
+    for (int i = 0; i < Chan.cwCount; i = i + 1) {
+        if (Chan.cwActive[i] != 0 && Chan.cwOwner[i] == me) {
+            Chan.cwActive[i] = 0;
+            int hs = int(Chan.cwSlot[i]);
+            if (hs >= 0 && hs < CoroT.count && CoroT.active[hs] != 0)
+                CoroT.ready[hs] = 1;
+        }
+    }
+    int w = 0;
+    for (int i = 0; i < Chan.cwCount; i = i + 1) {
+        if (Chan.cwActive[i] != 0) {
+            if (w != i) {
+                Chan.cwOwner[w] = Chan.cwOwner[i];
+                Chan.cwSlot[w] = Chan.cwSlot[i];
+                Chan.cwActive[w] = 1;
+            }
+            w = w + 1;
+        }
+    }
+    Chan.cwCount = w;
+    __myp_atomic_store_i32_addr(Chan.cwLock, 0);
+}
 // 唤醒一个对端等待者；isRecv=1 唤醒 recv waiter（由 send 调），0 唤醒 send waiter。
 // 同步交接：调用方是协程 → 内联 resume 对端一步；否则 ready=1 等 scheduler。
+// 跨线程（waiter owner ≠ 本线程）→ 投递唤醒 mailbox，owner 调度器 pump 后 resume。
 long chanWakeOne(int h, int isRecv) {
     long sl = isRecv != 0 ? chanPopRecv(h) : chanPopSend(h);
     if (sl < 0) return -1;
+    long owner = Chan.lastPopOwner;
     int hs = int(sl);
+    if (owner != pthread_self()) {
+        chanWakePush(owner, sl);   // 跨线程：不能碰对方 per-thread 表 → mailbox
+        return sl;
+    }
     if (hs < 0 || hs >= CoroT.count || CoroT.active[hs] == 0) return sl;
     if (CoroT.current >= 0 && Chan.wakeDepth < 64) {
         Chan.wakeDepth = Chan.wakeDepth + 1;
@@ -1230,10 +1299,16 @@ long chanWakeOne(int h, int isRecv) {
     return sl;
 }
 // 只 ready（不内联 resume）——close/try 用：内联 resume 可能在关闭通道上跑无界
-// 循环挂起调用者。
+// 循环挂起调用者。跨线程同 mailbox。
 long chanWakeReady(int h, int isRecv) {
     long sl = isRecv != 0 ? chanPopRecv(h) : chanPopSend(h);
-    if (sl >= 0 && int(sl) < CoroT.count && CoroT.active[int(sl)] != 0)
+    if (sl < 0) return sl;
+    long owner = Chan.lastPopOwner;
+    if (owner != pthread_self()) {
+        chanWakePush(owner, sl);
+        return sl;
+    }
+    if (int(sl) < CoroT.count && CoroT.active[int(sl)] != 0)
         CoroT.ready[int(sl)] = 1;
     return sl;
 }
@@ -1288,6 +1363,7 @@ int myp_channel_send(long handle, long val) {
         if (cur >= 0 && cur < CoroT.count && CoroT.active[cur] != 0) {
             if (Chan.sendWc[h] < 256) {
                 Chan.sendW[h * 256 + Chan.sendWc[h]] = long(cur);
+                Chan.sendOwner[h * 256 + Chan.sendWc[h]] = pthread_self();
                 Chan.sendWc[h] = Chan.sendWc[h] + 1;
                 CoroT.ready[cur] = 0;   // park
             }
@@ -1320,6 +1396,7 @@ long myp_channel_recv(long handle) {
         if (cur >= 0 && cur < CoroT.count && CoroT.active[cur] != 0) {
             if (Chan.recvWc[h] < 256) {
                 Chan.recvW[h * 256 + Chan.recvWc[h]] = long(cur);
+                Chan.recvOwner[h * 256 + Chan.recvWc[h]] = pthread_self();
                 Chan.recvWc[h] = Chan.recvWc[h] + 1;
                 CoroT.ready[cur] = 0;   // park
             }

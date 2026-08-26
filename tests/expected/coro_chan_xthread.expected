@@ -1,0 +1,5 @@
+C-recv
+P-send
+P-sent 0
+C-got 42
+OK pDone=1 cDone=1
