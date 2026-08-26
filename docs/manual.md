@@ -1714,7 +1714,7 @@ Vectors.abs(data, n);            // data[i] = |data[i]|
 Vectors.floor(data, n);          // data[i] = floor(data[i])
 Vectors.ceil(data, n);           // data[i] = ceil(data[i])
 
-// Vectors — 归约（sum/mean/variance/norm 用 GPU 原子累加）
+// Vectors — 归约（sum/mean/variance/stddev/norm/normSquared/dot/dotF 用 GPU 原子累加；min/max/argmax 用 GPU 块归约）
 double s = Vectors.sum(a, n);        // Σ a[i]
 double m = Vectors.mean(a, n);       // 均值
 double v = Vectors.variance(a, n);   // 方差（单遍）
@@ -1722,9 +1722,9 @@ double sd = Vectors.stddev(a, n);    // 标准差
 double ns = Vectors.normSquared(a, n);// Σ a[i]^2
 double no = Vectors.norm(a, n);      // sqrt(Σ a[i]^2)
 Vectors.normalize(data, n);          // data[i] /= ||data||
-double mn = Vectors.min(a, n);       // 最小值（CPU）
-double mx = Vectors.max(a, n);       // 最大值（CPU）
-double d = Vectors.dot(a, b, n);     // 内积（CPU）
+double mn = Vectors.min(a, n);       // 最小值（GPU 块归约）
+double mx = Vectors.max(a, n);       // 最大值（GPU 块归约）
+double d = Vectors.dot(a, b, n);     // 内积（GPU 原子归约）
 
 // Matrix — 矩阵元素级运算（扁平行主序 double[]，大小 rows*cols）
 Matrix.add(a, b, c, rows, cols);     // c = a + b（GPU）
@@ -1742,7 +1742,10 @@ Matrix.transpose(a, t, rows, cols);  // t = a^T（CPU）
 - 每个迭代必须**无数据依赖**
 - 不支持 `break` / `continue`
 - GPU 路径的数学函数需要 `libdevice.10.bc`
-- `min`/`max`/`dot`/`transpose` 当前用 CPU 实现（正确但非 GPU 加速）
+- `sum`/`mean`/`variance`/`stddev`/`norm`/`normSquared`/`dot`/`dotF` 用 **GPU 原子归约**
+  （`Atomic.addDouble` → `atom.add.f64`，编译器 kernel llc 加 `-mcpu=sm_75` 直降，避免
+  CAS 竞争风暴）；`min`/`max`/`argmax` 用 **GPU 块归约**（每块局部极值 + CPU 扫描块表）；
+  仅 `transpose` 用 CPU 实现
 - **内核只捕获局部变量**：与 `@parallel for` 相同，不能直接访问 class/static
   属性数组（LLVM verify 失败），须用局部数组（见上方示例 `double[] data = ...`）
 
@@ -3154,9 +3157,11 @@ MYP 的编译器本体正用 MYP 语言**完全重写**（T5 自举项目，`too
   → stage3 再自编，两代产物行为一致即自举成立。已实测
   `self2 → self3 → self4` 字节全同（md5 `52c81186…`）。
 - **GPU**：已实现——`@gpu for`（及 `@gpu tile/scatter/reduce/scan`）生成 NVPTX
-  kernel（独立 .ll 模块 → `llc -mtriple=nvptx64-nvidia-cuda` → PTX → 嵌入字符串
-  全局），host 端 GPU/CPU 双路径发射（`MYP_GPU=1` 真机 launch，失败自动回退 CPU
-  串行、结果一致）；`kernel.*` 上下文、向量类型（float4/double2/int4）均支持。
+  kernel（独立 .ll 模块 → `llc -mtriple=nvptx64-nvidia-cuda -mcpu=sm_75` → PTX →
+  嵌入字符串全局；`-mcpu=sm_75` 与 C++ oracle 对齐，double 原子 `atomicrmw fadd`
+  直降 `atom.add.f64`，避免默认老架构降级 `atom.cas` 竞争风暴），host 端 GPU/CPU
+  双路径发射（`MYP_GPU=1` 真机 launch，失败自动回退 CPU 串行、结果一致）；
+  `kernel.*` 上下文、向量类型（float4/double2/int4）均支持。
   仅 C 运行时 `runtime.c` 视作生成程序的 "libc" 保留 C。
 - **进度**（`tools/selfhost/roadmap.md`）：前端 F0–F4、后端 G1–G4、自举验证 H1
   全部完成；P 阶段已闭合（P2 生成代码性能与 mypc 持平——opt 加 `-mtriple` 启用

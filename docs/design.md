@@ -2012,6 +2012,10 @@ GPU 编程分**四层**（`import gpu;` 门面是用户唯一入口）：
 `mean/variance/stddev/norm/normSquared/normalize`，float 变体 `*F`）+ 矩阵
 （`Matrix.matmul/matmulF` → `Gpu.gemm/gemmF`）。
 
+> 归约实现：`sum/mean/variance/stddev/norm/normSquared/dot/dotF` 用 **GPU 原子归约**
+> （`Atomic.addDouble` → `atom.add.f64`，kernel llc `-mcpu=sm_75` 直降）；`max/min/argmax`
+> 用 **GPU 块归约**（每块局部极值 + CPU 扫描块表）；仅 `transpose` 用 CPU。
+
 **L2 显式显存（`GpuBuffer` double / `GpuBufferF` float）**：构造即「分配设备内存 + 一次
 H2D」；`copyToHost/copyFromHost`（元素偏移 srcOff/dstOff/len）、异步版带 `GpuStream`；
 `free()` 显式释放（无 finalizer，设备内存须手动释放，重复调用安全）；`valid()==0` 表示
@@ -2411,6 +2415,7 @@ MYPLanguage/
 │   ├── sema/                  # sema.cpp + symbol_table.cpp + type.cpp
 │   ├── codegen/               # codegen.cpp + myp_passes.cpp + codegen_fixes.h
 │   ├── runtime/               # runtime.c（事件/线程/协程/arena/GPU）+ runtime_gpu.c
+├── runtime_myp/              # MYP 运行时（runtime 的 MYP 实现，de-gcc 迁移：shadow C runtime → 归档 libmyp_rt_myp.a，仅 MYP 链接 (MYP runtime only)；进度/构建注意见 runtime_myp/MIGRATION_STATUS.md）
 │   ├── eval/                  # @eval 解释器（eval.cpp）
 │   ├── macro/                 # 宏展开（macro_expand.cpp）
 │   ├── fmt/                   # 格式化器
@@ -2588,7 +2593,7 @@ Runtime  → print/println + 基本运行时
   - **F0–F4 前端**：`mypc --frontend-dump {tokens,ast,sema}` Oracle 契约（`format.md`）+ `token.myp`/`lexer.myp`/`ast.myp`/`parser.myp`/`sema.myp`——token/AST 对拍 **448/448** 字节一致、sema 正语料 548/565。
   - **G1–G2 codegen**：`ir_emit.myp`/`codegen.myp`（LLVM IR 文本发射）——hello 级运行对拍；控制流/数组/字符串/短路/intrinsic/`slice<T>`/定长数组/lambda(按值捕获)/元组/默认命名参数均已对拍。
   - **G3 类/ARC/异常/泛型 codegen**：已完成——@static/实例/构造器/属性默认值/成员访问/泛型单态化/ARC/function 段/异常全链路/mapping/@startup/协程/@parallel for/@test 均已对拍落地。
-  - **GPU（已实现）**：`@gpu for`/`@gpu tile`（`__shared__` smem）/`@gpu scatter`/`@gpu reduce`/`@gpu scan` 均发射 **NVPTX kernel**（`nvptx64-nvidia-cuda` → `llc` → PTX 嵌入 `myp_gpu_load_kernel` 启动），GPU/CPU 双路径；CUDA intrinsics（`__myp_cuda_*`/`__myp_gpu_*`）已注册并映射到 `myp_gpu_*` 运行时；链接接入 `runtime_gpu.c`（dlopen 胶水）。
+  - **GPU（已实现）**：`@gpu for`/`@gpu tile`（`__shared__` smem）/`@gpu scatter`/`@gpu reduce`/`@gpu scan` 均发射 **NVPTX kernel**（`nvptx64-nvidia-cuda` → `llc -mcpu=sm_75` → PTX 嵌入 `myp_gpu_load_kernel` 启动），GPU/CPU 双路径；`-mcpu=sm_75` 与 C++ oracle `gpuTargetArch()` 对齐——默认老架构不支持 double 原子，`atomicrmw fadd` 会降级成 `atom.cas` 循环（高竞争重试风暴，`Vectors.sum` 1M 元素 25s），加 sm_75 后直降 `atom.add.f64`（3ms，与 seed 持平）；CUDA intrinsics（`__myp_cuda_*`/`__myp_gpu_*`）已注册并映射到 `myp_gpu_*` 运行时；链接接入 `runtime_gpu.c`（dlopen 胶水）。
   - **P2/P3 完全自举**：`myp_self run/fmt` 已去委托（不再调 mypc）；仅用 `myp_self` 重建编译器与全部 MYP 工具（self2→self3→self4 **不动点字节全同**，md5 一致）；opt 加 `-mtriple` 启用 TTI 向量化对齐（matmul 2.43x→1.00，多数基准持平）。
   - **范围**：GPU 已入自举范围；C 运行时 `runtime.c` 视作 libc 保留 C（外部）。链接仍经 LLVM 后端（opt/llc/gcc）。
   - **收口（已闭合）**：G3 剩余（mapping/@startup/协程/ARC/@parallel for/@test）、G4 驱动/链接（run/fmt 原生化、link 接 llc/opt/gcc）、性能基线（≤10x）、文档收口 均已完成；仅剩 P4 已知项（`-O2`×异常展开、`--emit-llvm` i0 类型瑕疵、nqueens/alphabeta 基准源，见 `tools/selfhost/roadmap.md` P4 表）。
