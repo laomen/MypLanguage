@@ -576,10 +576,16 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 
 ### 6.10 待办/已知（N×M:1 收尾）
 
-- **跨线程 channel/事件**：进程级 `Chan`/事件跨线程语义尚未专门验证（现有测试
-  单线程）；若需跨线程 channel rendezvous resume 对端，需 owner 表指针或 mailbox。
-- **句柄线程维度**：每线程表内槽号；跨线程 resume 目前靠 mailbox/事件路由间接，
-  无直接跨线程 resume API。
+- **跨线程 channel：确证崩（139，2026-08-26 实测）**——stdlib 注明"channel 属于
+  创建它的线程（TLS）"，线程亲和是设计内限制。跨线程 rendezvous（A 线程 producer
+  send 唤醒 B 线程 park 的 consumer）走 `chanWakeOne` 内联 resume 对端协程，用
+  当前线程表访问对端槽 → 段错误/状态损坏。旧全局表模型靠全局锁"能用"，per-thread
+  下崩。**完整修复 = 句柄线程维度 + 跨线程唤醒 mailbox**（每条协程记 owner 线程 +
+  唤醒投递），是独立工程。
+- **事件**：事件经 owner 线程调度器 `myp_event_process_all` → notify（同线程），
+  per-thread 安全；跨线程 fire 走进程级事件队列 + 线程路由（未专门压力验证）。
+- **句柄线程维度**：每线程表内槽号；跨线程 resume 目前靠 exec mailbox/事件路由
+  间接，无直接跨线程 resume API（跨线程 channel 修复的前置）。
 - **并行已验证**（2026-08-26）：每线程 3000 万次内存操作协程，单 worker 15ms、
   双 worker 也 15ms（串行应 30ms）——真并行。
 - **测量坑**：紧自旋饿死 worker（假性偏慢）；`Time.nowMs()` 被 LLVM CSE 合并
