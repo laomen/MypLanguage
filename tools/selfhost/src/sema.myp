@@ -5256,16 +5256,24 @@ class Sema {
                         }
                     }
                 } else if (sa != null && sa.kind() == "Member") {
-                    // obj.prop 数组属性 → 元素类型
+                    // obj.prop 数组属性 → 元素类型（obj 可为 Identifier 或链式结果
+                    // Call/Subscript/Member/New——BUG-063，ps.get(0).data[1]）。
                     AstExpr mo2 = sa.array();
+                    string cn2 = "";
                     if (mo2 != null && mo2.kind() == "Identifier") {
-                        string cn2 = sym_.lookupClass(mo2.name());
+                        cn2 = sym_.lookupClass(mo2.name());
                         if (Str.len(cn2) == 0 && mo2.name() == "this" && inClass_ != 0) cn2 = currentClass_;
                         if (Str.len(cn2) == 0 && inClass_ != 0) {
                             AstType pt = currentClassMemberAstType(mo2.name());
                             if (pt != null && Str.len(pt.className()) != 0) cn2 = pt.className();
                         }
                         if (Str.len(cn2) == 0) cn2 = mo2.name();
+                    } else if (mo2 != null && (mo2.kind() == "Call" || mo2.kind() == "Subscript" || mo2.kind() == "Member" || mo2.kind() == "New")) {
+                        // BUG-063：get().field[j]——对象是链式结果 → 用 valueClass/resolvedClass
+                        cn2 = mo2.valueClass();
+                        if (Str.len(cn2) == 0) cn2 = mo2.resolvedClass();
+                    }
+                    if (Str.len(cn2) != 0) {
                         int ci2 = findClass(cn2);
                         if (ci2 >= 0) {
                             AstType pt2 = findPropTypeAst(ci2, sa.memberName());
@@ -5276,6 +5284,13 @@ class Sema {
                                 et = typeToKind(elt);
                                 // F4：数组元素是类/struct → 记 resolvedClass，供链式 .name 解析
                                 if (Str.len(elt.className()) != 0) e.setResolvedClass(elt.className());
+                            } else if (pt2 != null && pt2.className() == "slice" && pt2.typeArgs().size() > 0) {
+                                AstType elt = pt2.typeArgs().get(0);
+                                et = typeToKind(elt);
+                                if (Str.len(elt.className()) != 0) e.setResolvedClass(elt.className());
+                                if (et == "slice" && elt.typeArgs().size() > 0) {
+                                    e.setSliceElem(typeToKind(elt.typeArgs().get(0)));
+                                }
                             }
                         } else {
                             // F4：struct 变量 .数组字段 下标（ba.data[0]）→ 元素类型
@@ -5286,6 +5301,13 @@ class Sema {
                                     AstType elt2 = sp2.element();
                                     et = typeToKind(elt2);
                                     if (Str.len(elt2.className()) != 0) e.setResolvedClass(elt2.className());
+                                } else if (sp2 != null && sp2.className() == "slice" && sp2.typeArgs().size() > 0) {
+                                    AstType elt2 = sp2.typeArgs().get(0);
+                                    et = typeToKind(elt2);
+                                    if (Str.len(elt2.className()) != 0) e.setResolvedClass(elt2.className());
+                                    if (et == "slice" && elt2.typeArgs().size() > 0) {
+                                        e.setSliceElem(typeToKind(elt2.typeArgs().get(0)));
+                                    }
                                 }
                             }
                         }

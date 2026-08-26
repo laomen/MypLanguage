@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.96 — 修调用结果成员后下标 get().field[j]（BUG-063）
+
+**非破坏性**（selfhost sema）。续链式访问族排查（BUG-057~062 后系统探测更多形态）：
+多级方法链/元素类方法/三级集合链/构造链原本就过；`ps.get(0).data[1]`（调用结果
+`.struct数组字段` 再下标）与 `bs.get(0).arr()[1]`（调用结果 `.方法返回数组` 再下标）
+报 `with value of type 'array'`。
+
+- **根因**：sema Subscript 的 Member 分支只处理对象是 `Identifier`，对象是 `Call`
+  （`ps.get(0).data`）时不解析字段元素类型 → `et` 停留 "array"；slice 字段同样漏。
+- **修复**：Member 分支对象加 `Call/Subscript/Member/New` 情况——用
+  `valueClass()/resolvedClass()` 取类名，再查 class 属性/struct 字段元素（数组
+  element + slice typeArgs + 嵌套 slice 深层元素）。
+- **测试**：`tests/@test/collections_chain.myp` 增补 test_member_subscript /
+  test_method_subscript（7 测试/20 断言）。
+- 验证：bootstrap 自举成立；全量回归 **352/0**。BUGLIST 记 BUG-063。
+
 ### v3.15.95 — 修泛型集合方法返回链式访问（BUG-062）
 
 **非破坏性**（selfhost sema）。用户问"collections 有没有此问题"（链式访问族）。

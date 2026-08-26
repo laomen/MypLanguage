@@ -1719,3 +1719,25 @@
 - **教训**：① 泛型方法返回替换要**保留完整 typeArgs**（AstType 级），拍平字符串
   会丢实例类型；② 链式访问族根因统一——调用结果的类型/元素信息各路径未完整传递，
   collections 泛型方法返回 T 是最典型的漏网点。
+
+## BUG-063（已修复 🟩，v3.15.96）：调用结果成员后下标 get().field[j] 未解析
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.96，selfhost sema.myp）
+- **背景**：续链式访问族排查（BUG-057~062 之后），系统探测更多形态：
+  - ✅ 多级方法链 c.makeB().makeA().val() / 元素类方法 arr[i].method() /
+    三级集合链 cube.get(0).get(0).get(1) / 构造链 new().method()——原已好。
+  - ❌ `ps.get(0).data[1]`（调用结果 .struct数组字段 再下标）→ "with value of
+    type 'array'"；`bs.get(0).arr()[1]`（调用结果 .方法返回数组 再下标）同坏。
+- **根因**：sema Subscript 的 Member 分支只处理对象是 `Identifier`（`mo2.kind()==
+  "Identifier"` → sym_.lookupClass），对象是 `Call`（`ps.get(0).data`）时不解析
+  字段元素类型 → `et` 停留 "array"。slice 字段同样漏。
+- **修复**：Member 分支对象加 `Call/Subscript/Member/New` 情况——用
+  `mo2.valueClass()/resolvedClass()` 取类名，再查 class 属性/struct 字段元素
+  （数组 element + slice typeArgs + 嵌套 slice 深层元素，对齐既有分支）。
+- **验证**：`ps.get(0).data[1]=4`、`bs.get(0).arr()[1]=6`、写路径、算术全通。
+- **回归**：`tests/@test/collections_chain.myp` 增补 test_member_subscript /
+  test_method_subscript（7 测试/20 断言）；全量 352/0。
+- **教训**：① 链式访问族的"对象是 Identifier vs 链式结果（Call 等）"分支不对称
+  是持续漏网点——凡按对象形态分派的解析路径，都要枚举 Call/Subscript/Member/New；
+  ② 测试先枚举"对象形态 × 成员形态 × 返回类型"矩阵（Identifier/Call × field/
+  method × 数组/slice/类）。
