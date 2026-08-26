@@ -562,13 +562,26 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 - 验证：两 @thread 实例各写各读 TL.val → A=111/B=222；IR
   `@__myp_static_TL = thread_local global`；全量 325/0；新回归 tests/thread_local/。
 
-### 6.9 下一步：coro.myp per-thread 迁移（N×M:1）
+### 6.9 coro.myp per-thread 迁移（v3.15.78，N×M:1 完成主体）
 
-- `CoroT/CoroW/CoroF/CoroCap/CoroRetired/CoroArgs/CoroLock` 改 `@static @thread`
-  （每线程表 + 每线程 current）→ 去全局锁（每线程天然无锁，@thread 下真并行）。
-- 最难块：**exec worker 跨线程投递**——async 文件读 worker（独立 pthread）要把
-  execResult/ready 写进**owner 线程**的 per-thread 表（需 owner 表指针 + 每表小锁
-  + futex 唤醒 owner 调度器）；事件/timer/fd 等待同样按 owner 分发。
-- 句柄：每线程表内槽号 → 需加线程维度或限制跨线程 resume。
-- 回归面：30+ coro 测试 + coro_thread/async_file + 事件/wait_any。
+- `CoroT/CoroW/CoroF/CoroCap/CoroPoll/CoroArgs/CoroRetired/CoroInit/CoroStackPool`
+  改 `@static @thread`（每线程表 + 每线程 current）→ 去全局锁（no-op），
+  `@thread` 下协程真并行（不再全局串行）。
+- **exec worker 跨线程投递 = mailbox**（C runtime 同款）：worker 往进程级
+  `CoroExec` mailbox 写（owner `pthread_self()` + 自旋锁），owner 调度器每轮
+  `coroExecPump` 泵入本线程 `CoroT.execResult` + ready。worker 不碰 owner 表。
+- 事件/timer/fd 唤醒：调度器在 owner 线程跑 `myp_event_process_all` → notify
+  （同线程，per-thread 安全）。channel 保持进程级 `Chan`。
+- 全量 325/0；coro_thread/async_file/async_sleep 过。
+
+### 6.10 待办/已知（N×M:1 收尾）
+
+- **跨线程 channel/事件**：进程级 `Chan`/事件跨线程语义尚未专门验证（现有测试
+  单线程）；若需跨线程 channel rendezvous resume 对端，需 owner 表指针或 mailbox。
+- **句柄线程维度**：每线程表内槽号；跨线程 resume 目前靠 mailbox/事件路由间接，
+  无直接跨线程 resume API。
+- **既有行为**：两 @thread 实例同时创建并全量运行（无 await）协程偏慢（旧版本
+  同样），未修复。
+- **并行基准**：无现成 wall-clock 基准（MYP nowMs 被 LLVM CSE 干扰，需 guard 计数
+  代理）；并行性由架构保证（每线程表无锁），未量化。
 

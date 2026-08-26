@@ -52,8 +52,27 @@ IR 确认 `@__myp_static_TL = thread_local global`；pthread_key 探针同理。
 自己的，mainTL=0）。`test_myp_viz.sh` 对拍：参考（冻结 oracle）报错的新特性文件
 跳过（冻结基线无法对新语法字节级对比）。
 
-> 这是 N×M:1 协程迁移的地基（步骤 0/1）。下一步：`coro.myp` 的 `CoroT/CoroW/`
-> `CoroF` 改 `@static @thread`（每线程表）+ 去全局锁 + exec worker 跨线程投递。
+> 这是 N×M:1 协程迁移的地基（步骤 0/1）。下一步见 v3.15.78（per-thread 表迁移）。
+
+### v3.15.78 — coro.myp per-thread 迁移（N×M:1：每线程独立协程表，@thread 下真并行）
+
+**非破坏性**。续 v3.15.77 地基；把协程表从进程级全局 + 全局锁改成每线程：
+
+1. **表类改 `@static @thread`**：`CoroT/CoroW/CoroF/CoroCap/CoroPoll/CoroArgs/`
+   `CoroRetired/CoroInit/CoroStackPool` 全部 per-thread（LLVM thread_local）。
+2. **全局锁消失**：`coroLock/coroUnlock/coroMarkMultiThread` 变 no-op（40+ 调用点
+   保留）——每线程表同一线程独占访问，无需互斥。`@thread` 实例的协程不再全局
+   串行（旧模型 resume 持全局锁跨整个协程步）。
+3. **exec worker 跨线程投递改 mailbox**（C runtime 同款模式）：worker 只往进程级
+   `CoroExec` mailbox 写（带 owner `pthread_self()` + 自旋锁），owner 调度器每轮
+   `coroExecPump` 把属于本线程的结果写进本线程 `CoroT.execResult` + `ready`——
+   worker 从不碰 owner 的 per-thread 表。
+
+验证：全量 **325/0 无回归**；coro_thread（多线程协程）/async_file（跨线程 exec）/async_sleep
+全过；per-thread 隔离探针 A=111/B=222。
+
+> 已知（既有行为，非本次引入）：两 @thread 实例同时创建并全量运行（无 await）
+> 协程偏慢——旧全局锁版本同样，未在本版本修复。
 
 ### v3.15.76 — 协程 M:1 单线程无锁快路径（coro_switch 76→43ms）+ json 字符串构建优化（43→25ms）
 
