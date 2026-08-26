@@ -2163,3 +2163,25 @@
   oracle 对拍 95/0。
 - **教训**：异常机制（catch 变量类型）也是「应拒绝却接受」高发区——catch 类型
   只能 string/类/接口，其余是错误。
+
+## BUG-082（已修复 🟩，v3.15.116）：const 属性赋值漏校验（应拒绝却接受）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.116，selfhost sema.myp）
+- **背景**：`const int cap = 100; cap = 200;`（const 属性赋值）此前自举静默改写
+  （常量可变，语义错误）。C++ 报 `cannot assign to const property 'X'`。
+- **根因**：自举 Assign 处理不检查赋值目标是否 const 属性（属性 const 标志
+  prop.isConst 由 parser 353 行设置，但 sema 从不查询）。
+- **修复**：新增 `classPropIsConst`（查 classProps_ 的 prop.isConst）+ `assignTargetConst`（裸名 / this.prop / 同类实例.prop 三形态）+ Assign 处理在类型检查前报
+  `cannot assign to const property 'X'`。
+- **防回归（重要）**：首版 assignTargetConst 的 obj.prop 分支未守卫
+  `findClass(currentClass_)>=0`——struct 方法内 currentClass_ 是 struct 名（不在
+  classIdx_）→ `classProps_.get(-1)` 越界 → **编译器段错误**（operators.myp 的
+  r.x_ = ... 触发，exit 139）。重构：提前算 ci 并全局守卫，struct 字段赋值不受
+  影响。
+- **验证**：裸名/this.prop 的 const 属性赋值干净拒绝；合法非 const 属性赋值、
+  struct 字段赋值（r.x_ = ...）不受影响。
+- **回归**：负测试 `tests/negative/const_prop_assign.myp`；全量 370 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：新增校验引用类索引（classProps_/classIdx_）时必须守卫索引有效性——
+  struct 方法里 currentClass_ 不是类，findClass 返回 -1 会导致 OOB 段错误；
+  这在「自举编译器自身崩溃」上尤其隐蔽（stderr 段错误消息不进管道）。

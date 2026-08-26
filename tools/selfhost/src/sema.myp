@@ -3400,6 +3400,48 @@ class Sema {
             }
             return "";
         }
+        // BUG-082：类属性是否 const（镜像 C++ "cannot assign to const property"）
+        int classPropIsConst(int ci, string name) {
+            ArrayList<AstProp> ps = classProps_.get(ci);
+            for (int i = 0; i < ps.size(); i = i + 1) {
+                if (ps.get(i).name() == name) return ps.get(i).isConst() != 0 ? 1 : 0;
+            }
+            return 0;
+        }
+        // BUG-082：赋值目标是否 const 属性（裸名 / this.prop / 同类实例.prop）。
+        // 此前 `cap = 200`（const int cap）静默改写 → 常量可变（应拒绝）。
+        // 注意：所有分支必须守卫 findClass(currentClass_)>=0——struct 方法内
+        // currentClass_ 是 struct 名（不在 classIdx_），否则 classProps_.get(-1)
+        // 越界段错误（operators.myp 的 r.x_ = ... 触发）。
+        int assignTargetConst(AstExpr lt) {
+            if (lt == null) return 0;
+            int ci = -1;
+            if (inClass_ != 0) ci = findClass(currentClass_);
+            if (ci < 0) return 0;
+            if (lt.kind() == "Identifier") {
+                return classPropIsConst(ci, lt.name());
+            }
+            if (lt.kind() == "Member") {
+                AstExpr mobj = lt.array();
+                if (mobj == null) return 0;
+                string propName = lt.memberName();
+                if (mobj.kind() == "This") return classPropIsConst(ci, propName);
+                // 同类另一实例 obj.prop（resolveBase 归一）
+                if (mobj.kind() == "Identifier") {
+                    string cls = sym_.lookupClass(mobj.name());
+                    if (Str.len(cls) != 0 && resolveBase(cls) == resolveBase(currentClass_))
+                        return classPropIsConst(ci, propName);
+                }
+            }
+            return 0;
+        }
+        // 赋值目标属性名（诊断用）
+        string assignTargetPropName(AstExpr lt) {
+            if (lt == null) return "";
+            if (lt.kind() == "Identifier") return lt.name();
+            if (lt.kind() == "Member") return lt.memberName();
+            return "";
+        }
         AstType findPropTypeAst(int ci, string name) {
             ArrayList<AstProp> ps = classProps_.get(ci);
             for (int i = 0; i < ps.size(); i = i + 1) {
@@ -4503,6 +4545,15 @@ class Sema {
                 }
                 string l = visitExpr(e.lhs());
                 string r = e.rhs() != null ? visitExpr(e.rhs()) : "void";
+                // BUG-082：const 属性赋值须拒绝（镜像 C++ "cannot assign to const
+                // property 'X'"）。此前 `cap = 200`（const int cap = 100）静默改写
+                // → 常量可变，语义错误（应拒绝）。裸名/this.prop/同类实例.prop。
+                if (assignTargetConst(e.lhs()) != 0) {
+                    AstExpr clt = e.lhs();
+                    diag_.error(clt.line(), clt.col(), "cannot assign to const property '" + assignTargetPropName(clt) + "'");
+                    e.setResolvedKind("void");
+                    return "void";
+                }
                 int badAssign = (l != "void" && r != "void" && typesCompat(l, r) == 0) ? 1 : 0;
                 // BUG-054：struct 赋值须比较具体 struct 名（typesCompat 只比
                 // kind "struct"，不同 struct 互赋静默过 sema → LLVM opt 报错）。

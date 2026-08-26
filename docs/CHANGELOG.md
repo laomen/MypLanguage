@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.15.116 — 修 const 属性赋值漏校验（应拒绝却接受）（BUG-082）
+
+**非破坏性**（selfhost sema）。`const int cap = 100; cap = 200;` 此前自举静默
+改写（常量可变）；C++ 报 `cannot assign to const property 'X'`。
+
+- **修复**：`classPropIsConst` + `assignTargetConst`（裸名/this.prop/同类实例
+  .prop 三形态）+ Assign 处理报错。
+- **防回归**：首版 obj.prop 分支未守卫 findClass(currentClass_)>=0 → struct 方法
+  内 classProps_.get(-1) 越界 → **编译器段错误**（operators.myp 的 r.x_ 触发，
+  exit 139）。重构提前算 ci 全局守卫。
+- **测试**：负测试 `tests/negative/const_prop_assign.myp`；合法非 const 属性 +
+  struct 字段赋值不受影响。
+- 验证：bootstrap 自举成立；全量回归 **370 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-082。
+
 ### v3.15.115 — 修 catch 类型漏校验（应拒绝却接受）（BUG-081）
 
 **非破坏性**（selfhost sema）。`catch (int e)`（int 非类/接口）此前自举静默

@@ -1,0 +1,15 @@
+// EXPECT ERROR: cannot assign to const property 'cap'
+// BUG-082 回归（负测试）：const 属性赋值须编译期干净拒绝。此前自举 Assign 处理
+// 不检查属性 const 标志 → `cap = 200`（const int cap = 100）静默改写（常量可变，
+// 语义错误）。C++ 报 "cannot assign to const property 'X'"。覆盖裸名 / this.prop
+// / 同类实例.prop。
+import env;
+
+class T2 {
+    property: const int cap = 100;
+    action:
+        @constructor T2() {
+            cap = 200;
+        }
+}
+int main(){return 0;}
