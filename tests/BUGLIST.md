@@ -2123,3 +2123,26 @@
 - **教训**：特殊类型（bitvector）的运算符路径常提前 return 绕过通用校验——凡
   oracle 对某类型组合有专有 error 分支（bitvector 比较/移位/位运算），自举对应
   分支都要补。
+
+## BUG-080（已修复 🟩，v3.15.114）：解构目标类型不匹配漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.114，selfhost sema.myp）
+- **背景**：`(int a, string b) = t`（t 是 (int,int) 元组变量）此前静默过 sema →
+  codegen string 槽存 int → **opt 崩**（"'%t11' defined with type 'i32' but
+  expected 'ptr'" 在 myp_retain 处，非干净诊断）。C++ destructure walk 报
+  `destructure: variable 'b' declared as 'string' but element is 'int'`。
+- **根因**：自举解构只在「元组字面量赋值形态」校验类型（dv.kind()==Tuple &&
+  !isDecl）；标识符元组变量（dv.kind()==Identifier）与调用返回元组、声明式解构
+  都不校验。
+- **修复**：新增 `destructureTupleElems(dv)`（元组字面量/元组变量/Call 返回元组
+  三形态取元素 kind）+ `checkDestructureTypes`（递归 walk，声明式报 "declared as
+  ... but element is ..."，赋值式报 "cannot assign ..."）+ `hasNestedDestructure`
+  守卫（嵌套解构的扁平 kind 无法表示子 tuple，保持旧行为——tuple.myp 嵌套
+  解构回归）。
+- **验证**：`(int a,string b) = t` 干净拒绝（消息与 oracle 逐字节一致）；合法
+  声明式 `(int v,bool ov) = checked(5)` / 赋值式 `(a,b) = (10,20)` 不受影响；
+  嵌套解构 `((int p,int q),int z) = getNested()` 不受影响。
+- **回归**：负测试 `tests/negative/destructure_type.myp`；全量 368 通过 / 0 失败；
+  oracle 对拍 95/0。
+- **教训**：解构校验要覆盖 rhs 全形态（字面量/变量/调用返回），不能只查字面量
+  分支；嵌套解构需结构化 kind 表示，扁平列表会误判——保守守卫跳过嵌套。

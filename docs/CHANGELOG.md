@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.114 — 修解构目标类型不匹配漏校验 → opt 崩（BUG-080）
+
+**非破坏性**（selfhost sema）。`(int a, string b) = t`（t 是 (int,int) 元组变量）
+此前静默过 sema → codegen string 槽存 int → **opt 崩**（`'%t11' defined with
+type 'i32' but expected 'ptr'` 在 myp_retain 处）。C++ destructure walk 报
+`destructure: variable 'b' declared as 'string' but element is 'int'`。
+
+- **根因**：自举解构只在「元组字面量赋值形态」校验类型；标识符元组变量/调用
+  返回元组/声明式解构都不校验。
+- **修复**：新增 `destructureTupleElems`（三形态取元素 kind）+ `checkDestructureTypes`
+  （递归 walk）+ `hasNestedDestructure` 守卫（嵌套保持旧行为）。
+- **测试**：负测试 `tests/negative/destructure_type.myp`；合法声明式/赋值式解构 +
+  嵌套解构不受影响。
+- 验证：bootstrap 自举成立；全量回归 **368 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-080。
+
 ### v3.15.113 — 修 bitvector 移位量漏校验 → opt 崩（BUG-079）
 
 **非破坏性**（selfhost sema）。`bitvector<8> v8; v8 << "x"`（string 移位量）

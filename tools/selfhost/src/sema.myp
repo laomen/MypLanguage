@@ -2310,6 +2310,70 @@ class Sema {
             for (int i = 0; i < t.elements().size(); i = i + 1) n = n + countDestructureTargets(t.elements().get(i));
             return n;
         }
+        // BUG-080：解构 rhs → 元组元素 kind 列表（无则 null）。覆盖元组字面量 /
+        // 元组变量（Identifier） / 调用返回元组（Call）三形态。
+        ArrayList<string> destructureTupleElems(AstExpr dv) {
+            if (dv == null) return null;
+            if (dv.kind() == "Tuple") {
+                ArrayList<string> out = new ArrayList<string>();
+                for (int i = 0; i < dv.elements().size(); i = i + 1) out.add(dv.elements().get(i).resolvedKind());
+                return out;
+            }
+            if (dv.kind() == "Identifier") {
+                SymbolEntry te = sym_.lookupEntry(dv.name());
+                if (te != null && te.type() == "tuple" && te.tupleTypes().size() != 0) return te.tupleTypes();
+                return null;
+            }
+            if (dv.kind() == "Call") {
+                AstExpr tcl = dv.callee();
+                if (tcl != null && tcl.kind() == "Identifier") {
+                    AstType trt = findFuncRetType(tcl.name(), dv.args().size());
+                    if (trt != null && trt.isTuple() != 0) {
+                        ArrayList<string> out = new ArrayList<string>();
+                        for (int i = 0; i < trt.funcParamTypes().size(); i = i + 1) out.add(typeToKind(trt.funcParamTypes().get(i)));
+                        return out;
+                    }
+                }
+                return null;
+            }
+            return null;
+        }
+        // BUG-080：target 是否含嵌套解构（子元素又是容器）——嵌套时扁平 kind
+        // 列表无法表示子 tuple 结构，跳过类型校验（保持旧行为）。
+        int hasNestedDestructure(AstDestructureTarget t) {
+            if (t.elements().size() == 0) return 0;
+            for (int i = 0; i < t.elements().size(); i = i + 1) {
+                if (t.elements().get(i).elements().size() != 0) return 1;
+            }
+            return 0;
+        }
+        // BUG-080：解构 target 叶子逐个校验类型（镜像 C++ destructure walk）。
+        // idx 是可变下标（ArrayList<int> 作指针），消耗元组槽位；`_` 忽略符跳过
+        // 不校验。声明式报 "variable 'X' declared as 'T' but element is 'E'"；
+        // 赋值式报 "cannot assign 'E' to 'X' of type 'T'"。
+        void checkDestructureTypes(AstDestructureTarget t, ArrayList<string> elems, ArrayList<int> idx, int isDecl) {
+            if (t.elements().size() != 0) {
+                for (int i = 0; i < t.elements().size(); i = i + 1) checkDestructureTypes(t.elements().get(i), elems, idx, isDecl);
+                return;
+            }
+            if (idx.get(0) >= elems.size()) return;
+            string ek = elems.get(idx.get(0));
+            idx.set(0, idx.get(0) + 1);
+            if (t.name() == "_") return;
+            if (isDecl != 0) {
+                if (t.hasType() != 0 && t.type() != null) {
+                    string tk = typeToKind(t.type());
+                    if (Str.len(tk) != 0 && tk != "void" && typesCompat(tk, ek) == 0) {
+                        diag_.error(t.line(), t.col(), "destructure: variable '" + t.name() + "' declared as '" + tk + "' but element is '" + ek + "'");
+                    }
+                }
+            } else {
+                SymbolEntry ex = sym_.lookupEntry(t.name());
+                if (ex != null && typesCompat(ex.type(), ek) == 0) {
+                    diag_.error(t.line(), t.col(), "destructure: cannot assign '" + ek + "' to '" + t.name() + "' of type '" + ex.type() + "'");
+                }
+            }
+        }
         int findClass(string name) {
             int ci = classIdx_.get(name, -1);   // O(1)（P6 规模修复）
             return ci;
@@ -3949,21 +4013,20 @@ class Sema {
             } else if (k == "Destructure") {
                 AstExpr dv = s.value();
                 if (dv != null) visitExpr(dv);
-                if (dv != null && dv.kind() == "Tuple" && s.isDecl() == 0) {
-                    int tupleN = dv.elements().size();
-                    int targetN = s.target().elements().size();
-                    int checkN = tupleN < targetN ? tupleN : targetN;
-                    for (int di = 0; di < checkN; di = di + 1) {
-                        AstDestructureTarget dt = s.target().elements().get(di);
-                        AstExpr de = dv.elements().get(di);
-                        SymbolEntry existing = sym_.lookupEntry(dt.name());
-                        if (dt.name() != "_" && existing != null
-                            && typesCompat(existing.type(), de.resolvedKind()) == 0) {
-                            diag_.error(dt.line(), dt.col(), "destructure: cannot assign '"
-                                + de.resolvedKind() + "' to '" + dt.name() + "' of type '"
-                                + existing.type() + "'");
-                        }
-                    }
+                // BUG-080：解构类型校验覆盖所有 rhs 形态（元组字面量/元组变量/
+                // 调用返回元组）——此前只查元组字面量赋值形态 →
+                // `(int a, string b) = t`（t 是 (int,int) 元组变量）静默过 →
+                // codegen string 槽存 int → opt 崩（"'%t11' defined with type
+                // 'i32' but expected 'ptr'"）。镜像 C++ destructure walk。
+                ArrayList<string> te2 = destructureTupleElems(dv);
+                // BUG-080：仅平坦 target（无嵌套解构）做类型校验——嵌套解构的
+                // 元素是子 tuple（扁平 kind 列表无法表示），保持旧行为（tuple
+                // 字面量顶层赋值校验已由本 walk 覆盖）。嵌套 test 回归（tuple.myp
+                // 25 行 ((int p,int q),int z)）不受影响。
+                if (te2 != null && hasNestedDestructure(s.target()) == 0) {
+                    ArrayList<int> didx = new ArrayList<int>();
+                    didx.add(0);
+                    checkDestructureTypes(s.target(), te2, didx, s.isDecl());
                 }
                 // arity 检查（C++ destructure：tuple 元素数 vs 顶层绑定数）
                 if (dv != null && dv.kind() == "Call") {

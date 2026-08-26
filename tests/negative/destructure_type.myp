@@ -1,0 +1,16 @@
+// EXPECT ERROR: destructure: variable 'b' declared as 'string' but element is 'int'
+// BUG-080 回归（负测试）：解构目标类型与元组元素类型不匹配须编译期干净拒绝。
+// 此前自举解构只在「元组字面量赋值形态」校验类型 → `(int a, string b) = t`
+// （t 是 (int,int) 元组变量）静默过 sema → codegen string 槽存 int → opt 崩
+// （"'%t11' defined with type 'i32' but expected 'ptr'" 在 myp_retain 处）。
+// 镜像 C++ destructure walk（声明式 "declared as ... but element is ..."）。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            (int, int) t = (1, 2);
+            (int a, string b) = t;
+        }
+}
+int main(){return 0;}
