@@ -1958,3 +1958,37 @@
 - **教训**：显式类型转换（ConvertExpr）是另一个「oracle 有 error 分支、自举裸
   return」的缺口——与 bitcast（BUG-070）同族。含 bit/bitvector 的转换规则要照
   C++ visitConvert 逐分支镜像，不能只做「数字 vs 非数字」二分（会误伤 bitvector）。
+
+## BUG-072（已修复 🟩，v3.15.106）：数组/字符串下标类型漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.106，selfhost sema.myp）
+- **背景**：续「缺失编译期校验 → codegen 崩」族：`a["str"]`（string 下标）静默
+  过 sema → codegen 把 string 指针当 i64 索引 → **opt 崩**（`invalid cast opcode
+  for cast from 'ptr' to 'i64'`，非干净诊断）。C++ `expectNumeric` 镜像（允许
+  byte/short/int/long/ubyte/ushort/uint/ulong/char/float/double）。
+- **根因**：自举 Subscript 处理不校验 index 类型（只解析元素类型）。
+- **修复**：Subscript 分支访问 index 后校验 `isNumKind(indexKind)`，非数字报
+  `expected numeric type, got 'X'`（文本/位置与 oracle 逐字节一致）。
+- **验证**：`a["str"]` 干净拒绝（4:41 与 oracle 一致）；合法 `a[n]`/`a[1L]`/
+  `s[1]`（string 下标 char）不受影响。
+- **回归**：负测试 `tests/negative/subscript_type.myp`；全量 132 @test PASS /
+  0 FAIL；oracle 对拍 95/0。
+- **教训**：`isNumKind`（与 oracle expectNumeric 同集）可用于下标/算术/位运算
+  多处；凡「oracle 有 expectNumeric/expectBool」的位置都要逐一比对自举。
+
+## BUG-073（已修复 🟩，v3.15.107）：new T[n] 数组大小漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.107，selfhost sema.myp）
+- **背景**：`new int["hi"]`（数组大小非整数）静默过 sema → codegen 把 string
+  指针当 i64 大小 → **opt 崩**（`constant expression type mismatch: got type
+  'ptr' but expected 'i64'`，非干净诊断）。C++ `visitNewArrayExpr` 镜像（仅
+  int/long/short/byte）。
+- **根因**：自举 NewArray 处理不校验维度类型。
+- **修复**：NewArray 分支逐维度校验 `dk ∈ {int,long,short,byte}`，否则报
+  `array size must be an integer expression`（文本/位置与 oracle 逐字节一致）。
+- **验证**：`new int["hi"]` 干净拒绝（4:27 与 oracle 一致）；合法 `new int[5]`/
+  `new int[5L]` 不受影响。
+- **回归**：负测试 `tests/negative/array_size_type.myp`；全量 132 @test PASS /
+  0 FAIL；oracle 对拍 95/0。
+- **教训**：数组大小是整数表达式专有（不含 uint/float）——与下标（expectNumeric
+  含 float）不同，别用 isNumKind 一刀切，须逐字段镜像 oracle 的精确集。

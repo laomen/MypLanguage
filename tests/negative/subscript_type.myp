@@ -1,0 +1,17 @@
+// EXPECT ERROR: expected numeric type, got 'string'
+// BUG-072 回归（负测试）：数组/字符串下标类型须为数字须编译期干净拒绝。
+// 此前自举 Subscript 处理不校验 index 类型 → `a["str"]` 静默过 sema → codegen
+// 把 string 指针当 i64 索引 → opt 崩（"invalid cast opcode for cast from 'ptr'
+// to 'i64'"，非干净诊断）。C++ expectNumeric 镜像（允许 byte/short/int/long/
+// ubyte/ushort/uint/ulong/char/float/double）。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            int[] a = new int[3];
+            a[0] = 1;
+            int x = a["str"];
+        }
+}
+int main(){return 0;}

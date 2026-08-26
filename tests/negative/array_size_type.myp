@@ -1,0 +1,15 @@
+// EXPECT ERROR: array size must be an integer expression
+// BUG-073 回归（负测试）：new T[n] 的数组大小须整数表达式须编译期干净拒绝。
+// 此前自举 NewArray 处理不校验维度类型 → `new int["hi"]` 静默过 sema → codegen
+// 把 string 指针当 i64 大小 → opt 崩（"constant expression type mismatch: got
+// type 'ptr' but expected 'i64'"，非干净诊断）。C++ visitNewArrayExpr 镜像
+// （仅 int/long/short/byte）。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            int[] b = new int["hi"];
+        }
+}
+int main(){return 0;}

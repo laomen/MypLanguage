@@ -27,6 +27,35 @@
 
 ## 编译器版本历史
 
+### v3.15.107 — 修 new T[n] 数组大小漏校验 → opt 崩（BUG-073）
+
+**非破坏性**（selfhost sema）。`new int["hi"]`（数组大小非整数）静默过 sema →
+codegen 把 string 指针当 i64 大小 → **opt 崩**（`constant expression type
+mismatch: got type 'ptr' but expected 'i64'`）。
+
+- **根因**：自举 NewArray 处理不校验维度类型。
+- **修复**：逐维度校验 `dk ∈ {int,long,short,byte}`（C++ visitNewArrayExpr
+  镜像，不含 uint/float），否则报 `array size must be an integer expression`。
+- **测试**：负测试 `tests/negative/array_size_type.myp`；合法 `new int[5]`/
+  `new int[5L]` 不受影响。
+- 验证：bootstrap 自举成立；全量回归 **132 @test PASS / 0 FAIL**；oracle 对拍
+  95/0。BUGLIST 记 BUG-073。
+
+### v3.15.106 — 修数组/字符串下标类型漏校验 → opt 崩（BUG-072）
+
+**非破坏性**（selfhost sema）。`a["str"]`（string 下标）静默过 sema → codegen
+把 string 指针当 i64 索引 → **opt 崩**（`invalid cast opcode for cast from
+'ptr' to 'i64'`）。
+
+- **根因**：自举 Subscript 处理不校验 index 类型。
+- **修复**：Subscript 分支访问 index 后校验 `isNumKind(indexKind)`（C++
+  expectNumeric 镜像，允许 byte/short/int/long/ubyte/ushort/uint/ulong/char/
+  float/double），非数字报 `expected numeric type, got 'X'`。
+- **测试**：负测试 `tests/negative/subscript_type.myp`；合法 `a[n]`/`a[1L]`/
+  `s[1]`（string 下标 char）不受影响。
+- 验证：bootstrap 自举成立；全量回归 **132 @test PASS / 0 FAIL**；oracle 对拍
+  95/0。BUGLIST 记 BUG-072。
+
 ### v3.15.105 — 修显式转换 int(x) 非数字操作数漏校验 → opt 崩（BUG-071）
 
 **非破坏性**（selfhost sema + parser）。`int(f)`（class 操作数）/`int(s)`
