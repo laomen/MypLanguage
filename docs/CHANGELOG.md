@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.118 — 修 checkedAdd/checkedMul 实参类型漏校验 → opt 崩（BUG-084）
+
+**非破坏性**（selfhost sema）。`checkedAdd(1.5, 2.5)`（浮点实参）此前静默过
+sema → codegen 发非法内在签名 → **opt 崩**（`invalid intrinsic signature`）。
+C++ visitCheckedOp 校验实参为有符号整数（byte/short/int/long）。
+
+- **根因**：自举 isNoVisitIntr 分支把 checkedAdd/checkedMul 直接设 ret="tuple"
+  且不访问实参——实参类型无从校验。
+- **修复**：checkedAdd/checkedMul 分支访问 2 实参并校验 byte/short/int/long，
+  报 `checkedAdd expects signed integer arguments (int/long/byte/short)`；实参数
+  !=2 报 `takes exactly two signed integer arguments`。
+- **测试**：负测试 `tests/negative/checked_op_type.myp`；合法 checkedAdd/Mul
+  不受影响。
+- 验证：bootstrap 自举成立；全量回归 **372 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-084。
+
 ### v3.15.117 — 修 @async 非 @coro 上下文调用漏校验（应拒绝却接受）（BUG-083）
 
 **非破坏性**（selfhost sema）。`@async` 方法/函数在非 @coro 上下文直接调用此前

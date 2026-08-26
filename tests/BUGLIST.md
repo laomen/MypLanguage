@@ -2207,3 +2207,24 @@
 - **教训**：@async 是「注解有、sema 不查」类缺口——凡 C++ 有 isAsyncCallee/
   has_async 查询、自举 AstAction 有 async() 但从不使用的，都要镜像（跟
   @coro 的 coroNames_ 同构）。类内裸调用（未限定）也要覆盖三条调用路径。
+
+## BUG-084（已修复 🟩，v3.15.118）：checkedAdd/checkedMul 实参类型漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.118，selfhost sema.myp）
+- **背景**：`checkedAdd(1.5, 2.5)`（浮点实参）此前静默过 sema → codegen 发非法
+  内在签名 → **opt 崩**（"invalid intrinsic signature"，非干净诊断）。C++
+  visitCheckedOp 校验实参为有符号整数（byte/short/int/long）。
+- **根因**：自举 isNoVisitIntr 分支把 checkedAdd/checkedMul 直接设 ret="tuple"
+  且**不访问实参**（拦截名单内建默认不 visit）——实参类型无从校验。
+- **修复**：checkedAdd/checkedMul 分支改为访问 2 个实参并校验
+  byte/short/int/long，否则报 `checkedAdd expects signed integer arguments
+  (int/long/byte/short)`（C++ 文本镜像）；实参数 !=2 报 `takes exactly two
+  signed integer arguments`。setArgsVisited(1) 防尾部二次访问。
+- **验证**：`checkedAdd(1.5,2.5)` 双实参均干净拒绝；合法
+  `checkedAdd(2147483647,1)`（溢出 ov=true）、`checkedMul(100000L,200000L)`
+  不受影响（2/2 断言）。
+- **回归**：负测试 `tests/negative/checked_op_type.myp`；全量 372 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：isNoVisitIntr（拦截名单内建不访问实参）是校验盲区——凡内建需要
+  校验实参类型的，不能走「不 visit」捷径；checked 溢出族（visitCheckedOp）
+  是典型。

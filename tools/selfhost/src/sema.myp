@@ -4918,7 +4918,25 @@ class Sema {
                             callee.setResolvedKind("int");
                             string ir = intrRet(fn);
                             if (Str.len(ir) != 0) ret = ir;
-                            else if (fn == "checkedAdd" || fn == "checkedMul" || fn == "parseIntOpt") ret = "tuple";
+                            else if (fn == "checkedAdd" || fn == "checkedMul") {
+                                // BUG-084：checkedAdd/checkedMul 实参须有符号整数
+                                // （镜像 C++ visitCheckedOp）。checkedAdd(1.5,2.5)
+                                // 此前静默过 → codegen 发非法内在签名 → opt 崩
+                                // （"invalid intrinsic signature"）。
+                                ret = "tuple";
+                                if (e.args().size() != 2) {
+                                    diag_.error(e.line(), e.col(), fn + " takes exactly two signed integer arguments");
+                                } else {
+                                    for (int cai = 0; cai < e.args().size(); cai = cai + 1) {
+                                        string cak = visitExpr(e.args().get(cai));
+                                        if (cak != "byte" && cak != "short" && cak != "int" && cak != "long") {
+                                            diag_.error(e.args().get(cai).line(), e.args().get(cai).col(), fn + " expects signed integer arguments (int/long/byte/short)");
+                                        }
+                                    }
+                                }
+                                e.setArgsVisited(1);
+                            }
+                            else if (fn == "parseIntOpt") ret = "tuple";
                             else if (fn == "parseInt") ret = "int";
                             else if (fn == "parseLong") ret = "long";
                             else if (fn == "parseUint") ret = "uint";

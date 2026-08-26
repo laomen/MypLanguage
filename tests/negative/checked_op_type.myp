@@ -1,0 +1,15 @@
+// EXPECT ERROR: checkedAdd expects signed integer arguments (int/long/byte/short)
+// BUG-084 回归（负测试）：checkedAdd/checkedMul 实参须为有符号整数须编译期干净
+// 拒绝。此前自举 isNoVisitIntr 分支把 checkedAdd/checkedMul 直接设 tuple 不访问
+// 实参 → `checkedAdd(1.5, 2.5)`（浮点实参）静默过 sema → codegen 发非法内在
+// 签名 → opt 崩（"invalid intrinsic signature"）。C++ visitCheckedOp 校验实参为
+// byte/short/int/long。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            (int v, bool ov) = checkedAdd(1.5, 2.5);
+        }
+}
+int main(){return 0;}
