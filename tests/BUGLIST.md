@@ -2299,3 +2299,30 @@
 - **教训**：语句处理若「只设标志不报错」就是校验盲点——Throw 之前只填
   throw_type 给 codegen，从未做 oracle 有的类型/上下文校验。裸重抛的 catch
   上下文用深度计数（++/--）而非布尔，支持嵌套 catch。
+
+## BUG-088（已修复 🟩，v3.15.122）：non-void 函数缺 return 漏校验（应拒绝却接受）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.122，selfhost sema.myp）
+- **背景**：`int ret(){ int x=1; }`（non-void 函数体不保证终止）与
+  `int bare(){ return; }`（裸 return 无值）此前自举静默接受 → codegen 发
+  `ret void` 于 i32 函数 → 运行时未定义（返回垃圾值）。C++ 镜像：①
+  checkMissingReturn + stmtGuaranteesTermination → `missing return statement
+  (function expects 'X')`（空体 FFI 桩豁免）；②visitReturnStmt 裸 return →
+  `missing return value (function expects 'X')`。
+- **根因**：自举 Return 处理只查有值分支的类型兼容，无值分支（裸 return）不
+  查；函数/方法体访问完后从不做「是否可能落空到末尾」分析（oracle 在 action/
+  function/static action/top-level/struct 方法 5 处体末尾调 checkMissingReturn）。
+- **修复**：①移植 stmtGuaranteesTermination（Return/Throw 终止；Block 看末
+  语句；If 须 else 且双分支终止；Match 须全臂终止；Try 的 try 或 finally 终止；
+  while(true)/while(非0字面量)/for(;;) 恒终止）；②新增 checkMissingReturn
+  （non-void + 不保证终止 + 非空体 → 报错），接到 5 处方法体访问点（顶层函数/
+  类 action/类 func/static action/struct 方法，仅非泛型 visitStmt 路径）；
+  ③Return 处理补无值分支校验（裸 return 于 non-void → missing return value）。
+- **验证**：缺 return/裸 return 干净拒绝（文本与 oracle 一致）；末尾 return/
+  if+else 双 return/while(true)/for(;;)/空体 FFI 桩均不受影响；bootstrap
+  自举成立（自举源码无 false positive）。
+- **回归**：负测试 `tests/negative/missing_return.myp` +
+  `tests/negative/bare_return.myp`；全量 377 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：函数体访问完是校验末尾 return 的天然钩子——oracle 在 5 处体末尾
+  调 checkMissingReturn，自举此前完全没有「终止性分析」概念。空体 FFI 桩豁免
+  是关键（extern 声明函数无 body return 合法）。

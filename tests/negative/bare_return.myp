@@ -1,0 +1,16 @@
+// EXPECT ERROR: missing return value (function expects 'int')
+// BUG-088 回归（负测试）：non-void 函数内裸 `return;`（无表达式）→ 编译期拒。
+// 此前自举静默接受（Return 处理只查有值分支）→ codegen ret void 于非 void
+// 函数 → 运行时未定义。C++ visitReturnStmt 报 "missing return value (function
+// expects 'X')"。合法：void 函数裸 return; / non-void return <expr>;。
+import env;
+
+int bare() { int x = 1; return; }
+
+class T2 {
+    action:
+        @constructor T2() {
+            int b = bare();
+        }
+}
+int main(){return 0;}

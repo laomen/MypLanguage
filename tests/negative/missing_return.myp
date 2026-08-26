@@ -1,0 +1,18 @@
+// EXPECT ERROR: missing return statement (function expects 'int')
+// BUG-088 回归（负测试）：non-void 函数体不保证终止 → 编译期拒。
+// 此前自举静默接受 `int ret(){ int x=1; }` → codegen 发 ret void 于 i32 函数 →
+// 运行时未定义（返回垃圾值）。C++ checkMissingReturn + stmtGuaranteesTermination
+// 报 "missing return statement (function expects 'X')"；空体 FFI 桩（extern
+// 声明函数）豁免。
+// 合法：末尾 return / if+else 双分支都 return / while(true) / for(;;) / 空体桩。
+import env;
+
+int ret() { int x = 1; }
+
+class T2 {
+    action:
+        @constructor T2() {
+            int r = ret();
+        }
+}
+int main(){return 0;}

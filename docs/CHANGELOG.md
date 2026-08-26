@@ -27,6 +27,24 @@
 
 ## 编译器版本历史
 
+### v3.15.122 — 修 non-void 函数缺 return 漏校验（BUG-088）
+
+**非破坏性**（selfhost sema）。`int ret(){ int x=1; }`（non-void 函数体不保证
+终止）与 `int bare(){ return; }`（裸 return 无值）此前自举静默接受 → codegen 发
+`ret void` 于 i32 函数 → 运行时未定义。C++ 镜像：`missing return statement`
+（checkMissingReturn + stmtGuaranteesTermination，空体 FFI 桩豁免）与
+`missing return value`（visitReturnStmt 裸 return）。
+
+- **修复**：①移植 stmtGuaranteesTermination（Return/Throw/Block 末语句/If 双
+  分支/Match 全臂/Try 的 try 或 finally/while(true|非0字面量)/for(;;)）；
+  ②checkMissingReturn 接 5 处方法体访问点（顶层函数/类 action/类 func/static
+  action/struct 方法，仅非泛型 visitStmt 路径）；③Return 补无值分支校验。
+- **测试**：负测试 `tests/negative/missing_return.myp` +
+  `tests/negative/bare_return.myp`；末尾 return/if+else 双 return/while(true)/
+  for(;;)/空体 FFI 桩均不受影响。
+- 验证：bootstrap 自举成立（自举源码无 false positive）；全量回归
+  **377 通过 / 0 失败**；oracle 对拍 95/0。BUGLIST 记 BUG-088。
+
 ### v3.15.121 — 修 throw 类型/裸重抛上下文漏校验 → opt 崩（BUG-087）
 
 **非破坏性**（selfhost sema）。`throw 5`（非 string/类/接口表达式）此前自举

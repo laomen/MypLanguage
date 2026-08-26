@@ -2057,7 +2057,12 @@ class Sema {
                     declareParam(f.params().get(j), topFCheck);
                 }
                 if (f.typeParams().size() != 0 || f.isMacro() != 0) markAllStmt(f.body());
-                else visitStmt(f.body());
+                else {
+                    visitStmt(f.body());
+                    // BUG-088：顶层 non-void 函数缺 return → 拒（镜像 C++
+                    // checkMissingReturn；空体 FFI 桩豁免）
+                    checkMissingReturn(f.line(), f.col(), f.body());
+                }
                 sym_.leaveScope();
                 curGeneric_.clear();
             }
@@ -2244,7 +2249,11 @@ class Sema {
                         declareParam(a.params().get(j), 1);
                     }
                     if (a.typeParams().size() != 0) markAllStmt(a.body());
-                    else visitStmt(a.body());
+                    else {
+                        visitStmt(a.body());
+                        // BUG-088：类 action non-void 缺 return → 拒
+                        checkMissingReturn(a.line(), a.col(), a.body());
+                    }
                     lambdaSelfName_ = "";
                     lambdaSelfClass_ = "";
                     sym_.leaveScope();
@@ -2265,7 +2274,11 @@ class Sema {
                         declareParam(f.params().get(j), 1);
                     }
                     if (f.typeParams().size() != 0) markAllStmt(f.body());
-                    else visitStmt(f.body());
+                    else {
+                        visitStmt(f.body());
+                        // BUG-088：类内函数 non-void 缺 return → 拒
+                        checkMissingReturn(f.line(), f.col(), f.body());
+                    }
                     sym_.leaveScope();
                     while (curGeneric_.size() > gbase3) curGeneric_.remove(curGeneric_.size() - 1);
                 }
@@ -2284,7 +2297,11 @@ class Sema {
                         declareParam(a.params().get(j), 1);
                     }
                     if (a.typeParams().size() != 0) markAllStmt(a.body());
-                    else visitStmt(a.body());
+                    else {
+                        visitStmt(a.body());
+                        // BUG-088：@static action non-void 缺 return → 拒
+                        checkMissingReturn(a.line(), a.col(), a.body());
+                    }
                     sym_.leaveScope();
                     while (curGeneric_.size() > gbase2) curGeneric_.remove(curGeneric_.size() - 1);
                 }
@@ -2309,7 +2326,11 @@ class Sema {
                         declareParam(f.params().get(j), 0);
                     }
                     if (f.typeParams().size() != 0) markAllStmt(f.body());
-                    else visitStmt(f.body());
+                    else {
+                        visitStmt(f.body());
+                        // BUG-088：struct 方法 non-void 缺 return → 拒
+                        checkMissingReturn(f.line(), f.col(), f.body());
+                    }
                     sym_.leaveScope();
                 }
                 inStruct_ = 0;
@@ -2404,6 +2425,62 @@ class Sema {
                     diag_.error(t.line(), t.col(), "destructure: cannot assign '" + ek + "' to '" + t.name() + "' of type '" + ex.type() + "'");
                 }
             }
+        }
+        // BUG-088：non-void 函数/方法体是否保证终止（不落空到末尾）——镜像 C++
+        // stmtGuaranteesTermination。Return/Throw 必然终止；Block 看末语句；If
+        // 须两分支都终止；Match 须全臂终止；Try 的 try 块或 finally 终止即可；
+        // while(true)/while(非0字面量)/for(;;) 恒不落入。
+        int stmtGuaranteesTermination(AstStmt s) {
+            if (s == null) return 0;
+            string k = s.kind();
+            if (k == "Return" || k == "Throw") return 1;
+            if (k == "Block") {
+                ArrayList<AstStmt> stmts = s.bodyStmts();
+                if (stmts == null || stmts.size() == 0) return 0;
+                return stmtGuaranteesTermination(stmts.get(stmts.size() - 1));
+            }
+            if (k == "If") {
+                if (s.elseBranch() == null) return 0;
+                int t = s.then() != null && stmtGuaranteesTermination(s.then()) != 0 ? 1 : 0;
+                return (t != 0 && stmtGuaranteesTermination(s.elseBranch()) != 0) ? 1 : 0;
+            }
+            if (k == "Match") {
+                ArrayList<AstMatchArm> arms = s.arms();
+                if (arms == null || arms.size() == 0) return 0;
+                for (int i = 0; i < arms.size(); i = i + 1) {
+                    AstMatchArm arm = arms.get(i);
+                    if (arm.body() == null || stmtGuaranteesTermination(arm.body()) == 0) return 0;
+                }
+                return 1;
+            }
+            if (k == "Try") {
+                if (s.tryBlock() != null && stmtGuaranteesTermination(s.tryBlock()) != 0) return 1;
+                if (s.finallyBlock() != null && stmtGuaranteesTermination(s.finallyBlock()) != 0) return 1;
+                return 0;
+            }
+            if (k == "While") {
+                AstExpr cond = s.condition();
+                if (cond != null) {
+                    if (cond.kindName() == "Bool" && cond.integerValue() != 0) return 1;
+                    if (cond.kindName() == "Integer" && cond.integerValue() != 0) return 1;
+                }
+                return 0;
+            }
+            if (k == "For") {
+                // for(;;)（无 condition）恒不落入
+                return s.condition() == null ? 1 : 0;
+            }
+            return 0;
+        }
+        // BUG-088：non-void 函数体不保证终止且非空 → 缺 return（镜像 C++
+        // checkMissingReturn）。空体（FFI/extern 桩，如 Coro.*/运行时函数）豁免。
+        // 此前自举静默接受 `int ret(){ int x=1; }` → codegen 发 ret void 于 i32
+        // 函数 → 运行时未定义（oracle 编译期拒 "missing return statement"）。
+        void checkMissingReturn(int line, int col, AstStmt body) {
+            if (Str.len(currentRet_) == 0 || currentRet_ == "void") return;
+            if (stmtGuaranteesTermination(body) != 0) return;
+            if (body != null && body.kind() == "Block" && body.bodyStmts().size() == 0) return;
+            diag_.error(line, col, "missing return statement (function expects '" + currentRet_ + "')");
         }
         int findClass(string name) {
             int ci = classIdx_.get(name, -1);   // O(1)（P6 规模修复）
@@ -3936,6 +4013,13 @@ class Sema {
                         && Str.len(rt) != 0 && rt != "void" && typesCompat(currentRet_, rt) == 0) {
                         diag_.error(s.line(), s.col(), "cannot return value of type '" + rt
                             + "' from function returning '" + currentRet_ + "'");
+                    }
+                } else {
+                    // BUG-088：裸 `return;` 在 non-void 函数须拒（镜像 C++
+                    // visitReturnStmt "missing return value (function expects
+                    // 'X')"）。此前静默过 → codegen ret void 于非 void 函数。
+                    if (Str.len(currentRet_) != 0 && currentRet_ != "void") {
+                        diag_.error(s.line(), s.col(), "missing return value (function expects '" + currentRet_ + "')");
                     }
                 }
             } else if (k == "ForIn") {
