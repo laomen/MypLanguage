@@ -1,67 +1,42 @@
-// runtime_myp/thread.myp — 线程创建 MYP 化（不保留 C：clone syscall 直建线程）。
-// clone=56 + CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM；
-// 子线程在新栈（mmap 1MB）跑共享入口（@static Thr.entry，父设子读——**父栈局部在
-// 子线程新栈不可见**，子分支只依赖 RAX(=0) 判定 + 共享全局）。
-//
-// ⚠️ 设计限制（当前）：
-//   - **无 CLONE_SETTLS** → 子线程共享父 TLS（MYP @static 全局本就共享，符合当前
-//     "非 TLS" 模型）；C TLS 变量（myp_io_cur 等）未为子线程建立——子线程勿调依赖
-//     C TLS 的代码。MYP 状态（@static 全局）共享但**非线程安全**（arena bump 无锁，
-//     子线程勿并发分配）。
-//   - 子线程经 syscall 60 退出自身；父无 join API（靠共享标志/未来 futex）。
-//   - 这是 @thread / @parallel for / 协程线程边界（包 F）的**地基原语**；C runtime
-//     的 myp_thread_*（事件循环语义）后续再逐个影。
+// runtime_myp/thread.myp — 线程创建：pthread_create（glibc 建真 TLS，N×M:1 地基）。
+// v3.15.77 起从裸 clone 改 pthread_create：
+//   - 裸 clone（无 CLONE_SETTLS）子线程共享父 FS → thread_local/errno/栈金丝雀全
+//     共享，无法 per-thread；pthread_create 由 glibc 一次性建栈/TLS/信号，子线程
+//     拥有独立 TLS（N×M:1 协程表 per-thread 的前提）。
+//   - 入口地址直接作为 pthread arg（rdi）传给 start routine——不再 Thr.entry 全局
+//     + 握手（无竞态，天然 capture）。
+//   - 子线程从 start routine return → glibc 收尾（清 TLS）；不再 syscall 60
+//     （那是 exit 整个进程）。
+//   - pthread 符号经 ffi 调 libpthread（-lpthread 已在 link.myp 链接，零新增 gcc）。
+//   - @thread 实例走 C runtime myp_thread_create（本就 pthread）；此处把 MYP 侧
+//     myp_thread_spawn（coro exec worker / event 循环 / pool worker）也统一到
+//     pthread。
 
-ffi void myp_pause();
+ffi int pthread_create(long tid, long attr, long start, long arg);
+ffi long myp_arena_alloc(long size);
 
 @static class Thr {
     property:
-        long entry = 0;       // 子线程入口地址（父设置，子读取）
-        long done_read = 0;   // 握手：子已 capture entry（父覆盖 entry 前的屏障）
-        long stackSize = 1048576;
-}
-
-// 子线程入口 helper：普通函数（有完整栈帧）——**子分支不能声明局部**（子 RSP=新栈
-// 顶、无 prologue 帧，codegen 的 `0x28(%rsp)` 正偏移在栈顶之上越界 → 段错误），
-// 故 child branch 只把 entry 经实参（rdi 寄存器）传进 helper，由 helper 建帧后再
-// 用。entry 先被 helper 参数 capture，再置 done_read=1 → 父覆盖 Thr.entry 时子已
-// 持有（确定性握手，无竞态）。
-void myp_thread_child_entry(long entryAddr) {
-    Thr.done_read = 1;                    // 已 capture（entryAddr 在本函数参数/帧内）
-    __myp_indirect_void(entryAddr);       // 跑用户入口
-    __myp_syscall(60, 0);                 // 入口若返回则退出本线程
+        long tidSlot = 0;   // pthread_t 输出槽（arena 8B；值忽略——pthread_create
+                            // 的 thread 参数是必填输出，无条件写，不能传 NULL）
 }
 
 ffi void coroMarkMultiThread();   // coro.myp：@thread 出现 → 协程表转全局锁模式
 
-// C 侧无同名函数——MYP 新建原语。mmap 栈 + clone；子线程跑 entry 后 exit 自身。
-// ⚠️ 曾因 @static 属性默认值不生效（--shared，v3.15.69 已修复）→ stackSize
-// `= 1048576` 读出 0 被钳到 65536，须显式设置；现默认值由初始化器生效，已回滚。
+// pthread start routine：arg = 用户入口地址。本函数是普通函数（有完整栈帧），
+// 由 glibc 以标准 SysV 调用约定调用（栈/对齐/TLS 均已就绪）。返回 0 → 线程正常
+// 结束（glibc 清 TLS）。不再 syscall 60（那是 exit 整个进程）。
+long myp_thread_child_entry(long arg) {
+    __myp_indirect_void(arg);     // 跑用户入口
+    return 0;
+}
+
+// C 侧无同名函数——MYP 新建原语（shadow C myp_thread_spawn 语义；父线程创建，
+// 子线程跑 entry）。失败返回 -1（pthread_create 错误码）。
 long myp_thread_spawn(long entryAddr) {
-    coroMarkMultiThread();    // 多线程模式开启（clone 前；M:1 快路径仅单线程安全）
-    Thr.entry = entryAddr;
-    Thr.done_read = 0;          // 握手清零（父设子读）
-    long size = Thr.stackSize;
-    if (size < 65536) size = 65536;
-    long stack = __myp_syscall(9, 0, size, 3, 0x22, -1, 0);   // mmap 匿名 RW
-    if (stack == -1 || stack == 0) return -1;
-    long top = stack + size;
-    top = top - (top % 16);   // 栈顶 16 对齐（ABI 调用点要求）
-    // CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM
-    long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000;
-    if (__myp_syscall(56, flags, top, 0, 0, 0, 0) == 0) {
-        // 子线程分支：只依赖 RAX(0) + 共享全局（父栈局部在新栈不可见）。
-        // 不声明局部（无 frame，正偏移栈写越界）→ 直接调 helper，实参经 rdi。
-        myp_thread_child_entry(Thr.entry);
-        __myp_syscall(60, 0); // 退出本线程
-    }
-    // 父分支：确定性握手——等子已 capture entry（done_read=1）才返回，之后
-    // 下一 spawn 覆盖 Thr.entry 时子已持有自己的 entry（无竞态）。
-    long guard = 0;
-    while (Thr.done_read == 0) {
-        guard = guard + 1;
-        if (guard > 100000000) return -2;
-        myp_pause();
-    }
+    coroMarkMultiThread();        // 多线程模式开启（@thread 出现；M:1 快路径失效）
+    if (Thr.tidSlot == 0) Thr.tidSlot = myp_arena_alloc(8);
+    long r = pthread_create(Thr.tidSlot, 0, __myp_fn_addr("myp_thread_child_entry"), entryAddr);
+    if (r != 0) return -1;
     return 0;
 }
