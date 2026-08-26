@@ -663,14 +663,91 @@ int coroWaitAdd(int kind, int eventId, int fd, int fdEvents, long handle,
     CoroW.execResult[i] = 0;
     CoroW.waitIndex[i] = waitIndex;
     CoroW.count = CoroW.count + 1;
+    if (kind == 0) coroEvWaitAdd(eventId, pthread_self(), int(handle));
     return 0;
 }
-// 唤醒后清除某协程的其余等待记录（wait_any/any_of 只许一个 spec 唤醒）
+// 唤醒后清除某协程的其余等待记录（wait_any/any_of 只许一个 spec 唤醒）；
+// 同时清全局事件等待者注册表（本线程 owner，防误清其它线程同号槽）。
 void coroWaitClearFor(int cur) {
     for (int i = 0; i < CoroW.count; i = i + 1) {
         if (CoroW.active[i] != 0 && CoroW.handle[i] == long(cur))
             CoroW.active[i] = 0;
     }
+    coroEvWaitClearFor(pthread_self(), cur);
+}
+
+// ---- 全局事件等待者注册表（跨线程 notify：需看到其它线程的 CoroW 事件等待者）----
+@static class CoroEvW {
+    property:
+        int[1024] eid;       // event_id
+        long[1024] owner;    // owner pthread_self()
+        int[1024] slot;      // 协程槽（owner 表内）
+        int[1024] active;
+        int count = 0;
+        // 跨线程唤醒 mailbox（同 chanWake 模式）
+        long cwLock = 0;     // 自旋锁字地址（arena）
+        long[64] cwOwner;
+        int[64] cwSlot;
+        int[64] cwActive;
+        int cwCount = 0;
+}
+void coroEvWaitAdd(int eid, long owner, int slot) {
+    if (CoroEvW.count < 1024) {
+        CoroEvW.eid[CoroEvW.count] = eid;
+        CoroEvW.owner[CoroEvW.count] = owner;
+        CoroEvW.slot[CoroEvW.count] = slot;
+        CoroEvW.active[CoroEvW.count] = 1;
+        CoroEvW.count = CoroEvW.count + 1;
+    }
+}
+void coroEvWaitClearFor(long owner, int slot) {
+    for (int i = 0; i < CoroEvW.count; i = i + 1) {
+        if (CoroEvW.active[i] != 0 && CoroEvW.owner[i] == owner && CoroEvW.slot[i] == slot)
+            CoroEvW.active[i] = 0;
+    }
+}
+void coroEvWakePush(long owner, int slot) {
+    if (CoroEvW.cwLock == 0) {
+        long p = myp_arena_alloc(8);
+        if (p != 0) { __myp_mem_store_i32(p, 0); CoroEvW.cwLock = p; }
+    }
+    if (CoroEvW.cwLock != 0) {
+        while (__myp_atomic_add_i32_addr(CoroEvW.cwLock, 1) != 0) { }
+    }
+    if (CoroEvW.cwCount < 64) {
+        CoroEvW.cwOwner[CoroEvW.cwCount] = owner;
+        CoroEvW.cwSlot[CoroEvW.cwCount] = slot;
+        CoroEvW.cwActive[CoroEvW.cwCount] = 1;
+        CoroEvW.cwCount = CoroEvW.cwCount + 1;
+    }
+    if (CoroEvW.cwLock != 0) __myp_atomic_store_i32_addr(CoroEvW.cwLock, 0);
+}
+// owner 调度器 pump：属于本线程的唤醒 → 本线程 CoroT.ready，压缩表
+void coroEvWakePump() {
+    if (CoroEvW.cwCount == 0 || CoroEvW.cwLock == 0) return;
+    long me = pthread_self();
+    while (__myp_atomic_add_i32_addr(CoroEvW.cwLock, 1) != 0) { }
+    for (int i = 0; i < CoroEvW.cwCount; i = i + 1) {
+        if (CoroEvW.cwActive[i] != 0 && CoroEvW.cwOwner[i] == me) {
+            CoroEvW.cwActive[i] = 0;
+            int hs = CoroEvW.cwSlot[i];
+            if (hs >= 0 && hs < CoroT.count && CoroT.active[hs] != 0)
+                CoroT.ready[hs] = 1;
+        }
+    }
+    int w = 0;
+    for (int i = 0; i < CoroEvW.cwCount; i = i + 1) {
+        if (CoroEvW.cwActive[i] != 0) {
+            if (w != i) {
+                CoroEvW.cwOwner[w] = CoroEvW.cwOwner[i];
+                CoroEvW.cwSlot[w] = CoroEvW.cwSlot[i];
+                CoroEvW.cwActive[w] = 1;
+            }
+            w = w + 1;
+        }
+    }
+    CoroEvW.cwCount = w;
+    __myp_atomic_store_i32_addr(CoroEvW.cwLock, 0);
 }
 // ---- Phase B：fd poll（syscall 7；pollfd 8B = {fd i32@0, events i32@4}，revents
 // 读回 +4 高 16 位）----
@@ -923,6 +1000,7 @@ void __myp_coro_scheduler() {
                     CoroT.ready[hs] = 1;
                 }
             }
+            if (CoroW.kind[i] == 0) coroEvWaitClearFor(pthread_self(), hs);   // 事件等待超时 → 清注册表
         }
     }
     // fd 就绪轮询（批量 poll 一次）
@@ -931,6 +1009,8 @@ void __myp_coro_scheduler() {
     coroExecPump();
     // 跨线程 channel 唤醒 pump：属于本线程的唤醒 → 本线程 CoroT.ready
     chanWakePump();
+    // 跨线程 event 唤醒 pump：属于本线程的唤醒 → 本线程 CoroT.ready
+    coroEvWakePump();
     // 快照语义：遍历槽位，对 active && ready 的 resume 一步（本趟新增的 ready 协程
     // 高槽位不访问——与 C 快照近似；yield 保持 ready 的协程本趟不重入）。
     for (int i = 0; i < CoroT.count; i = i + 1) {
@@ -1142,8 +1222,9 @@ long __myp_coro_wait_fd(long fd, long want_read, long want_write, long timeout_m
 
 // ---- 事件唤醒（C myp_event_dispatch 调用；非 static 使 MYP 版可 shadow）----
 // C: void __myp_coro_event_notify(int event_id) —— 重新 ready 等待该事件的协程。
+// 本线程 CoroW 等待者直接 ready；全局注册表里的其它线程等待者 → 跨线程唤醒
+// mailbox（owner 调度器 pump 后 resume）。
 void __myp_coro_event_notify(long event_id) {
-    coroLock();
     for (int i = 0; i < CoroW.count; i = i + 1) {
         if (CoroW.active[i] != 0 && CoroW.eventId[i] == int(event_id)) {
             long h = CoroW.handle[i];
@@ -1157,7 +1238,20 @@ void __myp_coro_event_notify(long event_id) {
             }
         }
     }
-    coroUnlock();
+    // 全局注册表：同线程（防漏）直接 ready；跨线程 → mailbox
+    long me = pthread_self();
+    for (int i = 0; i < CoroEvW.count; i = i + 1) {
+        if (CoroEvW.active[i] != 0 && CoroEvW.eid[i] == int(event_id)) {
+            CoroEvW.active[i] = 0;
+            if (CoroEvW.owner[i] == me) {
+                int hs = CoroEvW.slot[i];
+                if (hs >= 0 && hs < CoroT.count && CoroT.active[hs] != 0)
+                    CoroT.ready[hs] = 1;
+            } else {
+                coroEvWakePush(CoroEvW.owner[i], CoroEvW.slot[i]);
+            }
+        }
+    }
 }
 
 // ---- M9：协程资源诊断（包 B 依赖包 D 的部分）----

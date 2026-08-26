@@ -1,0 +1,67 @@
+// coro_evt_xthread: 跨线程事件 notify（v3.15.79 修复）
+// Waiter 协程在 A 线程 await Signal.go park；Producer 在 B 线程 s.send() fire →
+// B 事件循环 process_all → notify 经全局事件等待者注册表发现跨线程等待者 →
+// 跨线程唤醒 mailbox → A 调度器 pump 后 resume → W-got。
+import env;
+import time;
+import coro;
+
+@static class Shared {
+    property:
+        int wDone = 0;
+        int fDone = 0;
+}
+
+class Signal {
+    action:
+        void send() { go(); }   // fire go 事件（裸名 → fire_Signal_go）
+    event:
+        go();
+}
+
+class Waiter {
+    action:
+        @coro void run() {
+            Console.writeString("W-waiting\n");
+            await Signal.go;
+            Console.writeString("W-got\n");
+            Shared.wDone = 1;
+        }
+        @startup void run2() {
+            long h = this.run();
+            int n = 0;
+            while (Shared.wDone == 0 && n < 200) {
+                Coro.scheduler();
+                n = n + 1;
+                Time.sleep(10);
+            }
+        }
+}
+
+class Producer {
+    action:
+        @startup void run() {
+            Time.sleep(100);   // 让 waiter park
+            Console.writeString("P-fire\n");
+            Signal s = new Signal();
+            s.send();
+            Console.writeString("P-fired\n");
+            Shared.fDone = 1;
+        }
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            Waiter w = new Waiter() @thread;
+            Producer p = new Producer() @thread;
+            int spins = 0;
+            while (Shared.wDone == 0 || Shared.fDone == 0) {
+                Time.sleep(10);
+                spins = spins + 1;
+                if (spins > 300) break;
+            }
+            Console.writeString("OK wDone=" + Shared.wDone + " fDone=" + Shared.fDone + "\n");
+        }
+}
+int main() { Main m = new Main(); return 0; }
