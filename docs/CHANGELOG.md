@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.123 — 修 for-in 变量类型不匹配漏校验（BUG-089）
+
+**非破坏性**（selfhost sema）。`for (string s in int[2] arr)`（显式循环变量
+类型与元素类型不匹配）此前自举静默接受 → 循环变量按 string 声明、迭代给 int →
+codegen 存 int 入 string 槽 → 垃圾/opt 崩。C++ visitForInStmt 的
+typesCompatible 校验镜像：`for-in variable type 'X' does not match element
+type 'Y'`。
+
+- **修复**：ForIn 声明循环变量前补校验——class 元素剥 "class:" 前缀比类名
+  （同名 或 接口变量←元素类，inInterface 保守放行）；非 class 元素比 kind
+  （同 kind 或 Int↔Long 或 bit↔bool）。
+- **测试**：负测试 `tests/negative/forin_var_type.myp`；匹配/Int↔Long/范围
+  for-in/同名类/接口变量均不受影响。
+- 验证：bootstrap 自举成立；全量回归 **379 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-089。
+
 ### v3.15.122 — 修 non-void 函数缺 return 漏校验（BUG-088）
 
 **非破坏性**（selfhost sema）。`int ret(){ int x=1; }`（non-void 函数体不保证

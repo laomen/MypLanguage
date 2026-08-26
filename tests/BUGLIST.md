@@ -2326,3 +2326,25 @@
 - **教训**：函数体访问完是校验末尾 return 的天然钩子——oracle 在 5 处体末尾
   调 checkMissingReturn，自举此前完全没有「终止性分析」概念。空体 FFI 桩豁免
   是关键（extern 声明函数无 body return 合法）。
+
+## BUG-089（已修复 🟩，v3.15.123）：for-in 变量类型不匹配漏校验（应拒绝却接受）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.123，selfhost sema.myp）
+- **背景**：`for (string s in int[2] arr)`（显式循环变量类型与元素类型不匹配）
+  此前自举静默接受 → 循环变量按 string 声明、迭代给 int → codegen 存 int 入
+  string 槽 → 垃圾/opt 崩。C++ visitForInStmt 镜像：`for-in variable type 'X'
+  does not match element type 'Y'`（typesCompatible 校验：同 kind/class 同名/
+  Int↔Long/接口←类）。
+- **根因**：自举 ForIn 声明循环变量时用显式类型（loopHasType → typeToKind），
+  但从不校验其与 elemType 兼容。
+- **修复**：ForIn 声明前补校验——class 元素（elemType 带 "class:" 前缀）比类名
+  （同名 或 接口变量←元素类，inInterface 保守放行）；非 class 元素比 kind
+  （同 kind 或 Int↔Long 或 bit↔bool，镜像 oracle typesCompatible）。位置在
+  sym_.enterScope() 之后、declare 之前。
+- **验证**：`for (string s in int[2] arr)` 干净拒绝（文本与 oracle 一致）；
+  匹配/Int↔Long/范围 for-in/同名类/接口变量均不受影响；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/forin_var_type.myp`；全量 379 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：for-in 循环变量显式类型是独立校验点（has_type 分支）；class 元素
+  的 elemType 带 "class:" 前缀须剥前缀再比类名，接口←类须保守放行防误伤
+  （inInterface 泛判，不逐类查 implements）。

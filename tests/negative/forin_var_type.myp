@@ -1,0 +1,18 @@
+// EXPECT ERROR: for-in variable type 'string' does not match element type 'int'
+// BUG-089 回归（负测试）：for-in 显式变量类型须与元素类型兼容。
+// 此前自举静默接受 `for (string s in int[2] arr)`（循环变量按 string 声明、
+// 迭代给 int → codegen 存 int 入 string 槽 → 垃圾/opt 崩）。C++
+// visitForInStmt 的 typesCompatible 检查报 "for-in variable type 'X' does
+// not match element type 'Y'"。合法：类型匹配 / Int↔Long / bit↔bool /
+// 接口变量←元素类（interface class 实现）。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            int[2] arr;
+            arr[0] = 1; arr[1] = 2;
+            for (string s in arr) { Console.writeString("x\n"); }
+        }
+}
+int main(){return 0;}

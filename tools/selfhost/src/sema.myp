@@ -4057,6 +4057,30 @@ class Sema {
                 if (elemType != "void") {
                     sym_.enterScope();
                     AstType loopType = s.loopVarType();
+                    // BUG-089：for-in 显式变量类型须与元素类型兼容（镜像 C++
+                    // visitForInStmt "for-in variable type 'X' does not match
+                    // element type 'Y'"）。此前 `for (string s in int[2] arr)`
+                    // 静默接受（循环变量按 string 声明、迭代给 int → codegen
+                    // 存 int 入 string 槽 → 垃圾/opt 崩）。镜像 oracle
+                    // typesCompatible：同 kind（class 同名）/ Int↔Long /
+                    // 接口←类（inInterface 保守放行防误伤）。
+                    if (s.loopHasType() != 0 && loopType != null) {
+                        string vk2 = typeToKind(loopType);
+                        if (Str.startsWith(elemType, "class:") != 0) {
+                            string elemCls = Str.substring(elemType, 6, Str.len(elemType));
+                            string varCls = loopType.className();
+                            int ok2 = 0;
+                            if (Str.len(varCls) != 0 && varCls == elemCls) ok2 = 1;
+                            else if (Str.len(varCls) != 0 && inInterface(varCls) != 0) ok2 = 1;
+                            if (ok2 == 0) {
+                                diag_.error(s.line(), s.col(), "for-in variable type '" + (Str.len(varCls) != 0 ? varCls : vk2) + "' does not match element type '" + elemCls + "'");
+                            }
+                        } else if (vk2 != elemType
+                            && !((vk2 == "int" && elemType == "long") || (vk2 == "long" && elemType == "int"))
+                            && !((vk2 == "bit" && elemType == "bool") || (vk2 == "bool" && elemType == "bit"))) {
+                            diag_.error(s.line(), s.col(), "for-in variable type '" + vk2 + "' does not match element type '" + elemType + "'");
+                        }
+                    }
                     if (Str.startsWith(elemType, "class:") != 0) {
                         sym_.declareClass(s.loopVarName(), "class", Str.substring(elemType, 6, Str.len(elemType)));
                     } else sym_.declare(s.loopVarName(), s.loopHasType() != 0 && loopType != null ? typeToKind(loopType) : elemType);
