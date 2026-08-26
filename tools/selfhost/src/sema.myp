@@ -4701,6 +4701,15 @@ class Sema {
                                     string fr = findFuncRet(fn, e.args().size());
                                     if (Str.len(fr) != 0) {
                                         ret = fr;
+                                        // 链式调用 f().member()：记录返回类名（自举缺口——普通
+                                        // 顶层函数调用只设 kind 不设 valueClass，导致成员访问回落到
+                                        // 当前类 "class 'X' has no member"。对齐泛型显式实参/
+                                        // 类 action/new 路径，用 gsRetValueClass 取类名）。
+                                        if (fr == "class" || fr == "struct" || fr == "interface") {
+                                            AstType fret = findFuncRetType(fn, e.args().size());
+                                            string fvc = gsRetValueClass(fret);
+                                            if (Str.len(fvc) != 0) e.setValueClass(fvc);
+                                        }
                                     } else {
                                         // F4-L：函数类型变量调用 f(21) → 用声明的返回类型
                                         SymbolEntry fve = sym_.lookupEntry(fn);

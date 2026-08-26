@@ -27,6 +27,27 @@
 
 ## 编译器版本历史
 
+### v3.15.90 — 修顶层函数调用结果链式成员访问回落当前类（BUG-057）
+
+**非破坏性**（selfhost sema）。排查"泛型链式访问"发现：`rawStep(5).get()`（顶层函数
+返回 `Result<int,string>` 后取成员）报 `class 'T2' has no member 'get'`——成员查找
+**回落到当前类**；隔离发现不止泛型，`makeErr().message()`（具体类）、struct/interface
+返回的链式访问全受影响。
+
+- **根因**（sema.myp Call 解析）：普通顶层函数调用 `findFuncRet(fn)` 只返回返回
+  **kind**，不把返回类名记到 CallExpr 的 `valueClass`/`resolvedClass`。而 Member 访问
+  （对象为 Call）用 `arr.valueClass()`→`resolvedClass()` 取类名，都空 → 回落到当前类
+  "class 'T2' has no member"。仅泛型显式实参/类 action/`new` 三条路径设了 → 不一致。
+- **修复**：`findFuncRet` 命中且 kind 为 class/struct/interface 时，用
+  `findFuncRetType`（返回 AstType）+ `gsRetValueClass`（取类名/泛型实例名）设
+  `e.setValueClass`。对齐其它三条路径。
+- **测试**：`tests/@test/call_result_chain.myp`（6 测试/12 断言：Result 返回
+  `.get()/.isErr()/.getErr()/.getOr()` / 具体类 `.message()` / struct `.x/.y` /
+  interface `.area()` 接口分发 / 两层链 / lambda 内）。
+- 边界：`strVal().len()` 仍失败是设计使然（MYP 字符串值无 `.len()` 成员，须
+  `Str.len(s)`），非本 bug。
+- 验证：bootstrap 自举成立；全量回归 **342/0**。BUGLIST 记 BUG-057。
+
 ### v3.15.89 — 嵌套泛型实例化 O(N³) 时间爆炸守卫（BUG-056）+ 全嵌套守卫审计
 
 **非破坏性**（selfhost sema 健壮性）。"审查多层嵌套是否都有守护"审计：表达式/语句/

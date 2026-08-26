@@ -1,0 +1,82 @@
+// call_result_chain: 顶层函数调用结果链式成员访问 → @test
+// 自举缺口修复：普通顶层函数调用只设返回 kind 不设 valueClass → 成员访问回落到
+// 当前类 "class 'X' has no member"。对齐泛型显式实参/类 action/new 路径后，
+// 类/struct/interface 返回均可链式访问。
+// 覆盖：Result<T,E> 返回 .get()/.isErr()/.getOr() / 具体类返回 .message() /
+//       struct 返回 .x / interface 返回 .area()（接口分发）/ 两层链 / lambda 内
+import test;
+import result;
+import error;
+
+// —— 返回 Result<int,string>（泛型实例化类型）——
+Result<int, string> rawStep(int v) {
+    if (v < 0) return resultErr<int, string>("neg1");
+    return resultOk<int, string>(v + 1);
+}
+// —— 返回具体类 ParseError ——
+ParseError makeErr(string detail) {
+    ParseError e = new ParseError();
+    e.setDetail(detail);
+    return e;
+}
+// —— 返回 struct ——
+struct Vec { int x; int y; }
+Vec makeVec(int v) {
+    Vec r;
+    r.x = v;
+    r.y = v * 2;
+    return r;
+}
+// —— 返回 interface（接口分发）——
+interface Shape { int area(); }
+class Square {
+    interface class Shape;
+    action: int area() { return 4; }
+}
+Shape makeShape() { Square s = new Square(); return s; }
+// —— 两层链：f() 返回 Result → .get() ——
+int doubleGet(int v) { return rawStep(v).get() * 2; }
+
+// —— 1) Result 返回：链式 .get()/.isErr()/.getOr() ——
+@test void test_result_chain() {
+    Test.assertEq(rawStep(5).get(), 6, "get on call");
+    Test.assert(rawStep(-1).isErr(), "isErr on call");
+    Test.assertStrEq(rawStep(-1).getErr(), "neg1", "getErr on call");
+    Test.assertEq(rawStep(-1).getOr(99), 99, "getOr on call");
+    Test.assertEq(rawStep(5).getOr(99), 6, "getOr ok on call");
+    Test.report("test_result_chain", true);
+}
+
+// —— 2) 具体类返回：.message() ——
+@test void test_class_chain() {
+    Test.assertStrEq(makeErr("boom").message(), "parse error: :0 boom", "class member on call");
+    Test.report("test_class_chain", true);
+}
+
+// —— 3) struct 返回：.x / .y ——
+@test void test_struct_chain() {
+    Test.assertEq(makeVec(3).x, 3, "struct x");
+    Test.assertEq(makeVec(3).y, 6, "struct y");
+    Test.assertEq(makeVec(5).x + makeVec(5).y, 15, "struct chain arith");
+    Test.report("test_struct_chain", true);
+}
+
+// —— 4) interface 返回：接口分发 ——
+@test void test_iface_chain() {
+    Test.assertEq(makeShape().area(), 4, "iface dispatch on call");
+    Test.report("test_iface_chain", true);
+}
+
+// —— 5) 两层链 ——
+@test void test_deep_chain() {
+    Test.assertEq(doubleGet(5), 12, "two-level chain");
+    Test.report("test_deep_chain", true);
+}
+
+// —— 6) lambda 内链式访问（原失败上下文）——
+@test void test_lambda_chain() {
+    Result<int, string> r = resultAndThen<int, int, string>(resultOk<int, string>(4),
+        (int x) => { return resultOk<int, string>(rawStep(x).get() * 3); });
+    Test.assertEq(r.get(), 15, "lambda chained get");
+    Test.report("test_lambda_chain", true);
+}

@@ -55,6 +55,7 @@
 | BUG-054 | 🟩 | **不同 struct 类型赋值/初始化静默过 sema**（selfhost sema，v3.15.87）：`typesCompat` 只比 kind "struct"，`A a; B b; a = b;` 或链式字段 `root.inner...inner = root.inner`（L4=L1）被放行 → LLVM opt 报 `defined with type %B but expected %A` 崩溃（非干净诊断）。**附带隐患**：Member 表达式 `resolvedClass` 是**容器**类型名（`root.inner`→L0 而非 L1），直接比 resolvedClass 会误拒合法 `L2 y = a.b.c;` | 负测试 `tests/negative/struct_assign_mismatch.myp`（`A a; B b; a = b;` → `cannot assign value of type 'B' to variable of type 'A'`） |
 | BUG-055 | 🟩 | **解析器表达式/语句级递归无守卫 → 深嵌套栈溢出**（selfhost parser，v3.15.88）：`recursionDepth_` 只数 `parsePrimary`（括号 300 守卫），而**三元（`1?2:1?2:...`）、`??` 合并、右结合赋值（`a=b=c`）、一元链（`!!!!x`）、嵌套块 `{{{...}}}`、if 链（`if(1) if(1)...`）**的右嵌套递归在 parseExpr/parseAssignment/parseCoalesce/parseUnary/parseBlock/parseStatement 层（parsePrimary 之上）——不被计数 → 50000 层 SIGSEGV 栈溢出 | 负测试 `tests/negative/expr_recursion_deep.myp`（500 层三元 → `expression nested too deeply` 干净拒绝）；torture `deep/*`（48 个，编译不崩溃） |
 | BUG-056 | 🟩 | **嵌套泛型实例化 O(N³) 时间爆炸（DoS）**（selfhost sema，v3.15.89）：`Box<Box<...<int>...>>` 深度 N 时 `SymbolTable.lookup` 线性扫描（entries_ 已 N 项 × 长名比较）+ `instClassName` 递归拼名（每层 O(k²)）→ 总 O(N³)。实测 depth 800 >25s、depth 5000 不可完成；纯解析（不存在的泛型类）0.1s 平坦 → 爆炸全在 sema 实例化 | 守卫：`tryInstantiate` 顶层 `typeArgDepth` 测深，>64 单条 `generic type nested too deeply (N > 64)` 干净拒绝（合法嵌套 ≤4 层）；负测试 `tests/negative/generic_nested_deep.myp`；torture `deep/generic_*`（+8）；正向 `tests/@test/nested_generic.myp`（2/4/10 层正常编译） |
+| BUG-057 | 🟩 | **顶层函数调用结果链式成员访问回落当前类**（selfhost sema，v3.15.90）：普通顶层函数调用 `rawStep(5).get()` 只设返回 kind 不设 CallExpr 的 valueClass/resolvedClass → 成员访问回落到当前类 `class 'X' has no member 'get'`。仅带显式类型实参的泛型调用（`resultOk<int,string>(7).get()`）、类 action（`c.m().get()`）、`new` 路径设了 → 不一致。类/struct/interface 返回均受影响 | 修复：`findFuncRet` 命中且 kind 为 class/struct/interface 时用 `findFuncRetType`+`gsRetValueClass` 设 `e.setValueClass`；回归 `tests/@test/call_result_chain.myp`（6 测试/12 断言，Result/具体类/struct/interface/两层链/lambda） |
 
 ---
 
@@ -1549,3 +1550,34 @@
   **顶层一次测深**（单条干净错误），放递归内部会每层各报一次（65 条重复）+ 底下
   64 层仍做 O(N²) 名构建；③ 区分阶段：纯解析平坦 → 问题在 sema，别误修 parser。
 
+
+## BUG-057（已修复 🟩，v3.15.90）：顶层函数调用结果链式成员访问回落当前类
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.90，selfhost `tools/selfhost/src/sema.myp`）
+- **背景**：排查"泛型链式访问"时发现——`rawStep(5).get()`（顶层函数返回
+  `Result<int,string>` 后直接取成员）报 `class 'T2' has no member 'get'`，成员查找
+  **回落到当前类**。进一步隔离发现**不止泛型**：`makeErr().message()`（返回具体类
+  ParseError）、`strVal().len()`（返回 string）全失败。
+- **复现对比**（同样返回类/struct，唯独这条路径失败）：
+  - ✅ `resultOk<int,string>(7).get()`（泛型显式类型实参）——泛型路径设了 valueClass
+  - ✅ `c.step3(-1).getOr(99)`（类 action）——方法路径设了 resolvedClass
+  - ✅ `new Result<int,string>(9).get()`（new）——new 路径设了
+  - ❌ `rawStep(5).get()`（普通顶层函数）——**只设返回 kind，不设 valueClass**
+- **根因**（sema.myp Call 解析 ~4694）：普通顶层函数调用 `findFuncRet(fn)` 只返回
+  kind（"class"），没把返回类名记到 CallExpr。后续 Member 访问（对象为 Call 时）
+  `cn = arr.valueClass(); if empty cn = arr.resolvedClass();` → 都空 → 回落到当前类
+  "class 'T2' has no member"。
+- **修复**：`findFuncRet` 命中且 kind 为 class/struct/interface 时，用
+  `findFuncRetType(fn, nargs)`（返回 AstType）+ `gsRetValueClass`（取类名/泛型实例名）
+  → `e.setValueClass(fvc)`。对齐泛型显式实参/类 action/new 路径。
+- **验证**：`rawStep(5).get()=6`、`.isErr()/.getErr()/.getOr()`、`makeErr().message()`、
+  `makeVec(3).x`（struct）、`makeShape().area()`（interface 分发）、两层链
+  `doubleGet(5)=12`、lambda 内 `rawStep(x).get()*3` 全通。
+- **回归**：`tests/@test/call_result_chain.myp`（6 测试/12 断言：Result/具体类/
+  struct/interface/两层链/lambda）；全量 342/0。
+- **边界**：`strVal().len()` 仍失败是**设计使然**——MYP 字符串值本无 `.len()` 成员
+  （`"hello".len()`/`s.len()` 均不支持，须 `Str.len(s)`），非本 bug 缺口。
+- **教训**：① 同一"取调用返回类型"语义在 sema 有四条路径（泛型显式实参/类 action/
+  new/普通顶层函数），只三条设了返回类名——排查链式访问问题时先枚举所有调用形态；
+  ② 报错信息 `class '<当前类>' has no member` 是"回落当前类"的典型信号，别被误导成
+  当前类真的缺成员。
