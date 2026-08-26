@@ -135,7 +135,7 @@ class ModelLoader {
                 } else if (type == "add") {
                     int b = tensorId(j.getString(op + ".inputs.1"));
                     int out = tensorId(j.getString(op + ".output"));
-                    rt.addAdd(a, b, out);
+                    rt.addAdd(a, b, out, 0);   // doRelu=0：纯 Add（runtime.addAdd 签名已加 doRelu，图优化 Add+Relu 融合；json_tool 旧 loader 不融合）
                 } else if (type == "matmul") {
                     int b = tensorId(j.getString(op + ".inputs.1"));
                     int out = tensorId(j.getString(op + ".output"));

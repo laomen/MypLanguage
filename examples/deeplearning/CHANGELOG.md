@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-08-26 — json_tool 同步 runtime.addAdd 新签名（修复 7 个入口编译失败）
+
+### 修复：`json_tool/model_loader.myp` 的 `addAdd` 缺 doRelu 参数
+- `infer/runtime.myp` 的 `addAdd(aTid, bTid, outputTid, doRelu)` 已升级为 4 参数
+  （图优化 Add+Relu 融合，`infer/graph.myp:2091` 已传 `nRelu_[ni]`）；但 json_tool
+  的旧 loader 仍传 3 参数 → **7 个 json_tool 入口编译失败**
+  （`missing required argument(s) 'doRelu' — expected 4 arguments, got 3`）。
+- 修复：`rt.addAdd(a, b, out)` → `rt.addAdd(a, b, out, 0)`（doRelu=0 纯 Add，
+  与 json_tool 旧语义一致，不融合 Relu）。
+- 验证：deeplearning 全量编译 **70 入口成功 / 11 库文件（无 main，正常）/ 0 真错误**
+  （infer_tests 26 + train + json_tool + llm + diffusion）。
+
+---
+
 ## 2026-08-20 — GPU 批量推理（qwen2 batch=4 250 tok/s）+ 通用算子库 + distilgpt2 GPU 前向
 
 ### 多序列批量推理（`llm/qwen2_gpu_batch.myp`）
