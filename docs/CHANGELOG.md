@@ -71,8 +71,12 @@ IR 确认 `@__myp_static_TL = thread_local global`；pthread_key 探针同理。
 验证：全量 **325/0 无回归**；coro_thread（多线程协程）/async_file（跨线程 exec）/async_sleep
 全过；per-thread 隔离探针 A=111/B=222。
 
-> 已知（既有行为，非本次引入）：两 @thread 实例同时创建并全量运行（无 await）
-> 协程偏慢——旧全局锁版本同样，未在本版本修复。
+**并行基准**（每线程 3000 万次内存操作协程，wall-clock）：单 worker 15ms、双 worker
+也 **15ms**（若串行应 30ms）——两个 `@thread` 实例的协程真正并行跑在独立核心。
+
+> 测量注意：MYP 紧自旋会饿死 worker 线程（早期探针 2e9 自旋把 CPU 占满 → 假性偏慢）；
+> 等待用 `Time.sleep` 循环；`Time.nowMs()` 会被 LLVM CSE 合并（中间无副作用调用时
+> 测出 0ms），计时需在两次 nowMs 间夹有副作用调用（sleep/协程调用）。
 
 ### v3.15.76 — 协程 M:1 单线程无锁快路径（coro_switch 76→43ms）+ json 字符串构建优化（43→25ms）
 

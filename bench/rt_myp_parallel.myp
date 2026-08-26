@@ -1,0 +1,89 @@
+// bench/rt_myp_parallel.myp — N×M:1 并行基准（v3.15.78）
+// 两个 @thread 实例各跑一个内存操作协程（3000 万次），量主线程 wall-clock。
+// 用法：
+//   Res.mode 改为 0（单 worker）或 1（双 worker）后编译运行：
+//   ./build/mypc bench/rt_myp_parallel.myp --stdlib ./stdlib -o /tmp/par -O2 && /tmp/par
+// 预期（2026-08-26 实测）：单 worker 15ms、双 worker 也 15ms（串行应 30ms）→ 真并行。
+//
+// ⚠️ 测量注意：
+//   - 等待 worker 完成必须用 Time.sleep 循环（紧自旋会占满 CPU 饿死 worker → 假性偏慢）
+//   - Time.nowMs() 会被 LLVM CSE 合并（中间无副作用调用时测出 0ms）——t0/t1 间有
+//     sleep/协程调用（副作用），故本基准计时可靠。
+import env;
+import time;
+import coro;
+
+@static class Res {
+    property:
+        long a = 0;
+        long b = 0;
+        int aDone = 0;
+        int bDone = 0;
+        int mode = 0;   // 0=单worker 1=双worker
+}
+
+class WorkerA {
+    action:
+        @coro void job(long work) {
+            long[] arr = new long[2048];
+            long s = 0;
+            long i = 0;
+            while (i < work) {
+                int idx = int(i % 2048L);
+                arr[idx] = arr[idx] + 1;
+                s = s + arr[idx];
+                i = i + 1;
+            }
+            Res.a = s;
+            Res.aDone = 1;
+        }
+        @startup void run() {
+            long h = this.job(30000000L);
+            Coro.scheduler();
+        }
+}
+class WorkerB {
+    action:
+        @coro void job(long work) {
+            long[] arr = new long[2048];
+            long s = 0;
+            long i = 0;
+            while (i < work) {
+                int idx = int(i % 2048L);
+                arr[idx] = arr[idx] + 1;
+                s = s + arr[idx];
+                i = i + 1;
+            }
+            Res.b = s;
+            Res.bDone = 1;
+        }
+        @startup void run() {
+            long h = this.job(30000000L);
+            Coro.scheduler();
+        }
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            long t0 = Time.nowMs();
+            if (Res.mode != 0) {
+                WorkerA a = new WorkerA() @thread;
+                WorkerB b = new WorkerB() @thread;
+            } else {
+                WorkerA a = new WorkerA() @thread;
+            }
+            int spins = 0;
+            while (Res.aDone == 0 || (Res.mode != 0 && Res.bDone == 0)) {
+                Time.sleep(5);
+                spins = spins + 1;
+                if (spins > 400) break;
+            }
+            long t1 = Time.nowMs();
+            Console.writeString("parallel mode=" + Res.mode + " WALL=" + (t1 - t0) + "ms spins=" + spins + " a=" + Res.a + "\n");
+        }
+}
+int main() {
+    Main m = new Main();
+    return 0;
+}

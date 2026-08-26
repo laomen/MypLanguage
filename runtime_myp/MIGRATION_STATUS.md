@@ -580,8 +580,8 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   单线程）；若需跨线程 channel rendezvous resume 对端，需 owner 表指针或 mailbox。
 - **句柄线程维度**：每线程表内槽号；跨线程 resume 目前靠 mailbox/事件路由间接，
   无直接跨线程 resume API。
-- **既有行为**：两 @thread 实例同时创建并全量运行（无 await）协程偏慢（旧版本
-  同样），未修复。
-- **并行基准**：无现成 wall-clock 基准（MYP nowMs 被 LLVM CSE 干扰，需 guard 计数
-  代理）；并行性由架构保证（每线程表无锁），未量化。
+- **并行已验证**（2026-08-26）：每线程 3000 万次内存操作协程，单 worker 15ms、
+  双 worker 也 15ms（串行应 30ms）——真并行。
+- **测量坑**：紧自旋饿死 worker（假性偏慢）；`Time.nowMs()` 被 LLVM CSE 合并
+  （需副作用调用间隔）；等待用 `Time.sleep` 循环。
 
