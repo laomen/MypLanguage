@@ -1,19 +1,60 @@
 // base64: encode/decode → @test
+// 覆盖：基础向量（1/2/3 字节填充组合）/ 空串 / 0..12 字节回环 / 已知向量 /
+//       无填充（3 字节整组）/ UTF-8 多字节 / 带空格长文本 / 解码剥填充
 
 import test;
 import base64;
+import text;
 
 @test void test_base64() {
-    string e1 = Base64.encode("hello");
-    Test.assertStrEq(e1, "aGVsbG8=", "enc hello");
-    string e2 = Base64.encode("a");
-    Test.assertStrEq(e2, "YQ==", "enc a");
-    string e3 = Base64.encode("ab");
-    Test.assertStrEq(e3, "YWI=", "enc ab");
+    // 1) 基础向量 + 填充组合
+    Test.assertStrEq(Base64.encode("hello"), "aGVsbG8=", "enc hello");
+    Test.assertStrEq(Base64.encode("a"), "YQ==", "enc a");
+    Test.assertStrEq(Base64.encode("ab"), "YWI=", "enc ab");
+    Test.assertStrEq(Base64.encode("abc"), "YWJj", "enc abc(no pad)");
 
-    Test.assertStrEq(Base64.decode(e1), "hello", "dec hello");
-    Test.assertStrEq(Base64.decode(e2), "a", "dec a");
-    Test.assertStrEq(Base64.decode(e3), "ab", "dec ab");
-
+    Test.assertStrEq(Base64.decode("aGVsbG8="), "hello", "dec hello");
+    Test.assertStrEq(Base64.decode("YQ=="), "a", "dec a");
+    Test.assertStrEq(Base64.decode("YWI="), "ab", "dec ab");
+    Test.assertStrEq(Base64.decode("YWJj"), "abc", "dec abc(no pad)");
     Test.report("test_base64", true);
+}
+
+@test void test_empty() {
+    Test.assertStrEq(Base64.encode(""), "", "enc empty");
+    Test.assertStrEq(Base64.decode(""), "", "dec empty");
+    Test.report("test_empty", true);
+}
+
+@test void test_known_vectors() {
+    Test.assertStrEq(Base64.encode("foobar"), "Zm9vYmFy", "foobar");
+    Test.assertStrEq(Base64.encode("MYP"), "TVlQ", "MYP");
+    Test.assertStrEq(Base64.encode("hello world"), "aGVsbG8gd29ybGQ=", "hello world");
+    Test.assertStrEq(Base64.encode("MYP Language"), "TVlQIExhbmd1YWdl", "MYP Language");
+    Test.report("test_known_vectors", true);
+}
+
+@test void test_roundtrip_lengths() {
+    // 0..12 字节逐一 encode→decode 回环（覆盖各填充边界：0/1/2 pad + 跨组）
+    string data = "abcdefghijklm";   // 13 字节
+    for (int n = 0; n <= 13; n = n + 1) {
+        string s = Str.substring(data, 0, n);
+        string dec = Base64.decode(Base64.encode(s));
+        Test.assertStrEq(dec, s, "roundtrip len " + n);
+    }
+    Test.report("test_roundtrip_lengths", true);
+}
+
+@test void test_utf8() {
+    // UTF-8 多字节（6 字节 "你好" → 标准 base64 "5L2g5aW9"）
+    Test.assertStrEq(Base64.encode("你好"), "5L2g5aW9", "enc utf8");
+    Test.assertStrEq(Base64.decode("5L2g5aW9"), "你好", "dec utf8");
+    Test.report("test_utf8", true);
+}
+
+@test void test_special_chars() {
+    // 空格/标点等可打印 ASCII 数据往返
+    string s = "  MYP, base64! 0123456789 +/  ";
+    Test.assertStrEq(Base64.decode(Base64.encode(s)), s, "special roundtrip");
+    Test.report("test_special_chars", true);
 }
