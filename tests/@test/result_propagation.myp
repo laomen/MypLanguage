@@ -1,0 +1,124 @@
+// result_propagation: Result<T,E> 值式错误传播 → @test
+// 覆盖：多级函数链值式传播（错误短路、不 unwind）/ 错误消息沿链完整保留 /
+//       resultMap 不作用于 err / resultAndThen 短路 / resultMapErr 错误类型转换 /
+//       resultTry 桥接深层链中的异常 / 值式错误不中止后续执行 / getOr 兜底
+import test;
+import result;
+import text;
+
+// —— 值式多级解析链：每层返回 Result，任一失败即短路传播（无异常）——
+Result<int, string> step1(int v) {
+    if (v < 0) return resultErr<int, string>("neg1");
+    return resultOk<int, string>(v + 1);
+}
+Result<int, string> step2(int v) {
+    return resultAndThen<int, int, string>(step1(v), (int x) => { return resultOk<int, string>(x * 2); });
+}
+Result<int, string> step3(int v) {
+    return resultAndThen<int, int, string>(step2(v), (int x) => { return resultOk<int, string>(x - 1); });
+}
+
+// —— 链中某层抛异常（非法参数），由 resultTry 在链内捕获转 Result ——
+int rawVal(int v) {
+    if (v > 10) throw "too_big:" + v;
+    return v;
+}
+Result<int, string> pipeline(int v) {
+    // resultTry 捕获 rawVal 的异常转 Result（无链式泛型访问）
+    return resultTry<int>(() => { return rawVal(v); });
+}
+
+// —— 1) 多级链值式传播：ok 走完全链 / err 在底层短路直达顶层 ——
+@test void test_chain() {
+    Result<int, string> ok = step3(5);     // step1=6 → step2=12 → step3=11
+    Test.assert(ok.isOk(), "chain ok isOk");
+    Test.assertEq(ok.get(), 11, "chain ok val");
+    Result<int, string> bad = step3(-1);   // step1 err "neg1" 短路，不经过 step2/3
+    Test.assert(bad.isErr(), "chain bad isErr");
+    Test.assertStrEq(bad.getErr(), "neg1", "chain bad msg");
+    Test.report("test_chain", true);
+}
+
+// —— 2) 值式错误不中止后续执行（无 longjmp，异常机制才有 unwind）——
+@test void test_no_unwind() {
+    int after = 0;
+    Result<int, string> r = step3(-1);     // err
+    after = 1;                             // 错误作为值返回后，代码照常继续
+    Test.assertEq(after, 1, "no unwind");
+    Test.assert(r.isErr(), "still err");
+    Test.report("test_no_unwind", true);
+}
+
+// —— 3) resultMap 不作用于 err：错误原样穿过 map ——
+@test void test_map_pass_through() {
+    Result<int, string> ok = resultOk<int, string>(7);
+    Result<string, string> mo = resultMap<int, string, string>(ok, (int x) => { return "v" + x; });
+    Test.assertStrEq(mo.get(), "v7", "map ok");
+    Result<int, string> bad = resultErr<int, string>("bad");
+    Result<string, string> me = resultMap<int, string, string>(bad, (int x) => { return "v" + x; });
+    Test.assert(me.isErr(), "map err isErr");
+    Test.assertStrEq(me.getErr(), "bad", "map err passthrough");
+    Test.report("test_map_pass_through", true);
+}
+
+// —— 4) resultAndThen 短路：err 时 f 不执行，错误直达 ——
+@test void test_andthen_shortcircuit() {
+    int calls = 0;
+    Result<int, string> bad = resultErr<int, string>("skip");
+    Result<int, string> r = resultAndThen<int, int, string>(bad, (int x) => {
+        calls = calls + 1;
+        return resultOk<int, string>(x);
+    });
+    Test.assertEq(calls, 0, "f not called on err");
+    Test.assert(r.isErr(), "andthen isErr");
+    Test.assertStrEq(r.getErr(), "skip", "andthen msg");
+    Test.report("test_andthen_shortcircuit", true);
+}
+
+// —— 5) resultMapErr 错误类型转换：E(string) → E2(int)，ok 原样穿过 ——
+@test void test_maperr_type_convert() {
+    Result<int, string> bad = resultErr<int, string>("abc");
+    Result<int, int> e2 = resultMapErr<int, string, int>(bad, (string s) => { return Str.len(s); });
+    Test.assert(e2.isErr(), "maperr isErr");
+    Test.assertEq(e2.getErr(), 3, "maperr converted len");
+    Result<int, string> ok = resultOk<int, string>(5);
+    Result<int, int> o2 = resultMapErr<int, string, int>(ok, (string s) => { return 99; });
+    Test.assert(o2.isOk(), "maperr ok isOk");
+    Test.assertEq(o2.get(), 5, "maperr ok val");
+    Test.report("test_maperr_type_convert", true);
+}
+
+// —— 6) resultTry 桥接链中异常：深层抛错被捕获转 Result，错误消息传播到顶 ——
+@test void test_bridge_exception() {
+    Result<int, string> ok = pipeline(5);
+    Test.assert(ok.isOk(), "bridge ok isOk");
+    Test.assertEq(ok.get(), 5, "bridge ok val");
+    Result<int, string> big = pipeline(11);   // rawStep 抛 "too_big:11" → 捕获转 err
+    Test.assert(big.isErr(), "bridge bad isErr");
+    Test.assertStrEq(big.getErr(), "too_big:11", "bridge bad msg");
+    Test.report("test_bridge_exception", true);
+}
+
+// —— 7) getOr 兜底：err 时给默认值，不中断 ——
+@test void test_getor_fallback() {
+    Result<int, string> bad = step3(-1);
+    Test.assertEq(bad.getOr(99), 99, "getOr on err");
+    Result<int, string> ok = step3(5);
+    Test.assertEq(ok.getOr(99), 11, "getOr on ok");
+    Test.report("test_getor_fallback", true);
+}
+
+// —— 8) 混合链：map 变换值 → andThen 继续 → mapErr 转换错误 → getOr 兜底 ——
+@test void test_mixed_pipeline() {
+    // 成功路径：map(+100) → andThen(*2) → get
+    Result<int, string> ok = resultOk<int, string>(3);
+    Result<string, string> r1 = resultMap<int, string, string>(ok, (int x) => { return "n" + x; });
+    Test.assertStrEq(r1.get(), "n3", "mixed map");
+    // 失败路径：map 后 err 保持 → mapErr 转换 → getOr
+    Result<int, string> bad = resultErr<int, string>("boom");
+    Result<string, string> m2 = resultMap<int, string, string>(bad, (int x) => { return "n" + x; });
+    Result<string, int> m3 = resultMapErr<string, string, int>(m2, (string s) => { return 1000 + Str.len(s); });
+    Test.assert(m3.isErr(), "mixed err isErr");
+    Test.assertEq(m3.getErr(), 1004, "mixed err converted");
+    Test.report("test_mixed_pipeline", true);
+}
