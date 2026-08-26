@@ -72,6 +72,18 @@ per-thread 下崩）。修复后：C-got 42 正确。
 验证：跨线程 channel 探针（B 线程 consumer park、A 线程 producer send）正确收到
 42；新增 `tests/coro_chan_xthread/`（确定性输出）；全量 **326/0 无回归**。
 
+3. **跨线程事件 notify 修复**：`CoroEvW` 全局事件等待者注册表（eid/owner/slot/
+   active）+ 跨线程唤醒 mailbox。`coroWaitAdd` 对 kind=0（事件）自动注册；
+   `__myp_coro_event_notify` 扫注册表——同线程防漏直接 ready、跨线程 → mailbox
+   （owner 调度器 `coroEvWakePump` 泵入自己的 `CoroT.ready`）。事件等待截止期
+   超时清注册表防残留。
+   修复前：跨线程 fire（B 线程）只路由到 B 队列，notify 只扫 B 的 CoroW → A 的
+   协程等待者优雅挂起不醒。修复后：W-got 正确（新增 `tests/coro_evt_xthread/`，
+   确定性输出）。
+
+验证：全量 **327/0 无回归**（coro_event / coro_chan_xthread / coro_evt_xthread
+等全过）。
+
 ### v3.15.78 — coro.myp per-thread 迁移（N×M:1：每线程独立协程表，@thread 下真并行）
 
 **非破坏性**。续 v3.15.77 地基；把协程表从进程级全局 + 全局锁改成每线程：

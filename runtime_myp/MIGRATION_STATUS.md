@@ -579,16 +579,15 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 - **跨线程 channel：已修复**（v3.15.79）——waiter 记 owner + 唤醒 mailbox，
   `chanWakePump` 泵入 owner 表。跨线程 rendezvous 从段错误 139 → 正确。
   回归 `tests/coro_chan_xthread/`。
-- **事件（已压力验证 2026-08-26）**：
+- **事件（已压力验证 + 已修复 2026-08-26）**：
   - 同线程：`await Signal.go` 正常（coro_event 通过）。
-  - **跨线程：标准 `s.send()` fire 不唤醒另一线程的协程等待者**——事件路由到
-    fire 线程的队列（sender 非线程关联 → 当前槽），notify 只扫本线程 CoroW →
-    等待者优雅挂起（无崩溃，spins 超时退出）。事件系统有 handler 线程路由
-    （evDispatch/route_to_instance），但**协程等待者（CoroW）无跨线程 notify**。
-  - 修复路径：全局事件等待者注册表（eid→owner线程+slot）+ 跨线程 notify mailbox
-    （同 channel 模式）；需处理等待者生命周期（唤醒/超时/销毁清理，双记账易错）。
+  - 跨线程（v3.15.79）：标准 `s.send()` fire 不唤醒另一线程协程等待者 → 修复为
+    `CoroEvW` 全局事件等待者注册表 + 跨线程唤醒 mailbox（`coroEvWakePump` 泵入
+    owner 表）。W-got 正确。回归 `tests/coro_evt_xthread/`。
+  - 生命周期：coroWaitAdd 对 kind=0 自动注册；notify/超时/coroWaitClearFor 清
+    注册（防残留/误醒）。
 
-- **句柄线程维度（通用化）**：exec/channel 已各自用 mailbox 处理跨线程唤醒；
+- **句柄线程维度（通用化）**：exec/channel/event 已各自用 mailbox 处理跨线程唤醒；
   未来若有通用跨线程 resume API 需求，可统一为"协程记 owner 线程 + 通用唤醒
   mailbox"（当前按需实现，无通用抽象）。
 - **并行已验证**（2026-08-26）：每线程 3000 万次内存操作协程，单 worker 15ms、
