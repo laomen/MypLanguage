@@ -109,7 +109,7 @@ class Main {
             Console.writeLong(reg.data);   // 48879
             Console.writeString("\n");
             // 打包：data<<16 | offset<<8 | opcode<<1 | valid
-            //      = 0xBEEF0000 | 0xAB00 | 0x82 | 1 = 0xBEEFAB83 = 3201556355
+            //      = 0xBEEF0000 | 0xAB00 | 0x82 | 1 = 0xBEEFAB83 = 3203378051
             Console.writeLong(uint(reg.valid) | (uint(reg.opcode) << 1) |
                               (uint(reg.offset) << 8) | (uint(reg.data) << 16));
             Console.writeString("\n");

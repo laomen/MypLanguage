@@ -1,0 +1,89 @@
+// math: 标准库 Math 静态类专项测试 → @test
+// 覆盖：常数 / sqrt·abs·floor·ceil·trunc（double+float 泛型）/ 三角函数与反三角 /
+//       双曲 / exp·log·pow / atan2 / min·max·clamp（int·long·double·string）/
+//       lerp / 角度换算
+import test;
+import math;
+
+// —— 1) 常数 ——
+@test void test_constants() {
+    Test.assertFloatEq(Math.pi(), 3.141592653589793, 1e-12, "pi");
+    Test.assertFloatEq(Math.e(), 2.718281828459045, 1e-12, "e");
+    Test.report("test_constants", true);
+}
+
+// —— 2) 一元实数泛型（double）——
+@test void test_unary() {
+    Test.assertFloatEq(Math.sqrt(16.0), 4.0, 1e-12, "sqrt");
+    Test.assertFloatEq(Math.sqrt(2.0), 1.4142135623730951, 1e-12, "sqrt2");
+    Test.assertFloatEq(Math.abs(-3.5), 3.5, 1e-12, "abs");
+    Test.assertEq(Math.abs(-7), 7, "abs int");
+    Test.assertFloatEq(Math.floor(3.7), 3.0, 1e-12, "floor");
+    Test.assertFloatEq(Math.ceil(3.2), 4.0, 1e-12, "ceil");
+    Test.assertFloatEq(Math.trunc(-3.7), -3.0, 1e-12, "trunc");
+    Test.report("test_unary", true);
+}
+
+// —— 3) 三角函数与反三角 ——
+@test void test_trig() {
+    Test.assertFloatEq(Math.sin(0.0), 0.0, 1e-12, "sin0");
+    Test.assertFloatEq(Math.cos(0.0), 1.0, 1e-12, "cos0");
+    Test.assertFloatEq(Math.tan(0.0), 0.0, 1e-12, "tan0");
+    Test.assertFloatEq(Math.sin(Math.pi() / 2.0), 1.0, 1e-12, "sin pi/2");
+    Test.assertFloatEq(Math.cos(Math.pi()), -1.0, 1e-12, "cos pi");
+    Test.assertFloatEq(Math.asin(1.0), Math.pi() / 2.0, 1e-12, "asin1");
+    Test.assertFloatEq(Math.acos(1.0), 0.0, 1e-12, "acos1");
+    Test.assertFloatEq(Math.atan(1.0), Math.pi() / 4.0, 1e-12, "atan1");
+    Test.assertFloatEq(Math.atan2(1.0, 1.0), Math.pi() / 4.0, 1e-12, "atan2");
+    Test.report("test_trig", true);
+}
+
+// —— 4) 双曲函数 ——
+@test void test_hyperbolic() {
+    Test.assertFloatEq(Math.sinh(0.0), 0.0, 1e-12, "sinh0");
+    Test.assertFloatEq(Math.cosh(0.0), 1.0, 1e-12, "cosh0");
+    Test.assertFloatEq(Math.tanh(0.0), 0.0, 1e-12, "tanh0");
+    Test.assertFloatEq(Math.sinh(1.0), 1.1752011936438014, 1e-9, "sinh1");
+    Test.report("test_hyperbolic", true);
+}
+
+// —— 5) exp / log / pow ——
+@test void test_exp_log_pow() {
+    Test.assertFloatEq(Math.exp(0.0), 1.0, 1e-12, "exp0");
+    Test.assertFloatEq(Math.exp(1.0), Math.e(), 1e-12, "exp1");
+    Test.assertFloatEq(Math.log(Math.e()), 1.0, 1e-12, "log e");
+    Test.assertFloatEq(Math.pow(2.0, 10.0), 1024.0, 1e-9, "pow2^10");
+    Test.assertFloatEq(Math.pow(3.0, 3.0), 27.0, 1e-9, "pow3^3");
+    Test.report("test_exp_log_pow", true);
+}
+
+// —— 6) min / max / clamp（泛型：int/long/double/string）——
+@test void test_order() {
+    Test.assertEq(Math.min(3, 5), 3, "min int");
+    Test.assertEq(Math.max(3, 5), 5, "max int");
+    Test.assertEq(Math.min(3L, 5L), 3L, "min long");
+    Test.assertFloatEq(Math.min(2.5, 1.5), 1.5, 1e-12, "min double");
+    Test.assertStrEq(Math.min("apple", "banana"), "apple", "min string");
+    Test.assertStrEq(Math.max("apple", "banana"), "banana", "max string");
+    Test.assertEq(Math.clamp(50, 0, 10), 10, "clamp high");
+    Test.assertEq(Math.clamp(-5, 0, 10), 0, "clamp low");
+    Test.assertEq(Math.clamp(7, 0, 10), 7, "clamp mid");
+    Test.report("test_order", true);
+}
+
+// —— 7) lerp ——
+@test void test_lerp() {
+    Test.assertFloatEq(Math.lerp(0.0, 10.0, 0.5), 5.0, 1e-12, "lerp mid");
+    Test.assertFloatEq(Math.lerp(0.0, 10.0, 0.0), 0.0, 1e-12, "lerp t0");
+    Test.assertFloatEq(Math.lerp(0.0, 10.0, 1.0), 10.0, 1e-12, "lerp t1");
+    Test.report("test_lerp", true);
+}
+
+// —— 8) 角度换算 ——
+@test void test_angle() {
+    Test.assertFloatEq(Math.degToRad(180.0), Math.pi(), 1e-12, "degToRad 180");
+    Test.assertFloatEq(Math.degToRad(90.0), Math.pi() / 2.0, 1e-12, "degToRad 90");
+    Test.assertFloatEq(Math.radToDeg(Math.pi()), 180.0, 1e-12, "radToDeg pi");
+    Test.assertFloatEq(Math.radToDeg(Math.pi() / 2.0), 90.0, 1e-12, "radToDeg pi/2");
+    Test.report("test_angle", true);
+}

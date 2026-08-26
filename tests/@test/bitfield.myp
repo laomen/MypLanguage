@@ -1,0 +1,129 @@
+// bitfield: 结构体位域打包（v3.12 §三）→ @test
+// 覆盖：零初始化 / 8 位单 bit+reserved 读写 / 打包值 / 相邻字段不串扰 /
+//       16 位 / 32 位 / bitfield 类属性（读改写）/ bitfield 数组
+import test;
+
+// 8 位打包（read bit0、write bit1、reserved bit2..7）
+bitfield Flags {
+    bit read;
+    bit write;
+    bit[6] reserved;
+}
+// 16 位打包
+bitfield ControlWord {
+    bit enabled;
+    bit[3] mode;
+    bit[4] priority;
+    bit[8] code;
+}
+// 32 位打包
+bitfield GpuReg {
+    bit valid;
+    bit[7] opcode;
+    bit[8] offset;
+    bit[16] data;
+}
+
+class RegHolder {
+    property:
+        Flags f;
+    action:
+        void set(int r) {
+            this.f.read = true;
+            this.f.reserved = uint(r);
+        }
+        bit readBit() { return this.f.read; }
+        uint reservedBits() { return this.f.reserved; }
+        int getPacked() { return int(this.f.read) | (int(this.f.reserved) << 1); }
+}
+
+// —— 1) 零初始化 ——
+@test void test_zero() {
+    Flags f0;
+    Test.assert(!f0.read, "zero read false");
+    Test.assertEq(int(f0.reserved), 0, "zero reserved");
+    Test.report("test_zero", true);
+}
+
+// —— 2) 8 位：单 bit + reserved 读写 + 打包 ——
+@test void test_8bit() {
+    Flags f;
+    f.read = true;
+    f.write = false;
+    f.reserved = uint(0x15);          // 010101
+    Test.assert(f.read, "read true");
+    Test.assert(!f.write, "write false");
+    Test.assertEq(int(f.reserved), 21, "reserved 21");
+    // 打包：read(1) | write(0)<<1 | reserved(0x15)<<2 = 0b01010101 = 85
+    Test.assertEq(int(f.read) | (int(f.write) << 1) | (int(f.reserved) << 2), 85, "packed 85");
+    Test.report("test_8bit", true);
+}
+
+// —— 3) 相邻字段不串扰 ——
+@test void test_no_interfere() {
+    Flags f;
+    f.read = true;
+    f.reserved = uint(0x3F);
+    Test.assert(f.read, "read intact after reserved");
+    Test.assertEq(int(f.reserved), 63, "reserved 63");
+    f.read = false;
+    Test.assertEq(int(f.reserved), 63, "reserved intact after read flip");
+    Test.report("test_no_interfere", true);
+}
+
+// —— 4) 16 位 ——
+@test void test_16bit() {
+    ControlWord cw;
+    cw.enabled = true;
+    cw.mode = uint(5);
+    cw.priority = uint(0xA);
+    cw.code = uint(0x7F);
+    Test.assert(cw.enabled, "enabled");
+    Test.assertEq(int(cw.mode), 5, "mode");
+    Test.assertEq(int(cw.priority), 10, "priority");
+    Test.assertEq(int(cw.code), 127, "code");
+    // 打包：enabled(1) | mode<<1 | priority<<4 | code<<8 = 0x7FAB = 32683
+    Test.assertEq(int(cw.enabled) | (int(cw.mode) << 1) | (int(cw.priority) << 4) | (int(cw.code) << 8), 32683, "packed 16");
+    Test.report("test_16bit", true);
+}
+
+// —— 5) 32 位 ——
+@test void test_32bit() {
+    GpuReg reg;
+    reg.valid = true;
+    reg.opcode = uint(0x41);       // 65
+    reg.offset = uint(0xAB);       // 171
+    reg.data = uint(0xBEEF);       // 48879
+    Test.assert(reg.valid, "valid");
+    Test.assertEq(int(reg.opcode), 65, "opcode");
+    Test.assertEq(int(reg.offset), 171, "offset");
+    Test.assertEq(int(reg.data), 48879, "data");
+    // 打包：valid | opcode<<1 | offset<<8 | data<<16 = 0xBEEFAB83 = 3203378051
+    // （>int 范围，须 long 运算避免移位溢出；0xBEEF0000=3203334144 + 0xAB83=43907）
+    Test.assertEq(long(reg.valid) | (long(reg.opcode) << 1) | (long(reg.offset) << 8) | (long(reg.data) << 16), 3203378051L, "packed 32");
+    Test.report("test_32bit", true);
+}
+
+// —— 6) bitfield 类属性（this.f 读改写）——
+@test void test_class_prop() {
+    RegHolder rh = new RegHolder();
+    rh.set(21);
+    Test.assert(rh.readBit(), "readBit true");
+    Test.assertEq(int(rh.reservedBits()), 21, "reservedBits 21");
+    Test.assertEq(rh.getPacked(), 43, "getPacked 43");   // 1 | 21<<1 = 43
+    Test.report("test_class_prop", true);
+}
+
+// —— 7) bitfield 数组 ——
+@test void test_array() {
+    Flags[] fa = new Flags[3];
+    fa[0].read = true;
+    fa[1].reserved = uint(5);
+    fa[2].read = true;
+    fa[2].reserved = uint(0x3F);
+    Test.assert(fa[0].read, "arr0 read");
+    Test.assertEq(int(fa[1].reserved), 5, "arr1 reserved");
+    Test.assert(fa[2].read, "arr2 read");
+    Test.assertEq(int(fa[2].reserved), 63, "arr2 reserved");
+    Test.report("test_array", true);
+}
