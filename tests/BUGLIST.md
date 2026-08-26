@@ -1611,3 +1611,32 @@
 - **教训**：① 测试缺口审计先枚举语法形态（`f().member()` 修了、`f()[i]` 还坏——同一
   类问题的姊妹缺口），再枚举返回类型（int/double/string/对象/struct）；② 修 sema 后
   必须验证 codegen——sema 报语义错掩盖了 codegen 的默认 i32 类型不匹配，两层都要改。
+
+## BUG-059（已修复 🟩，v3.15.92）：调用结果 slice 链式访问（下标/size）未解析
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.92，selfhost sema.myp + codegen.myp）
+- **背景**：续 BUG-058 排查姊妹缺口，`makeSlice()` 返回 `slice<int>` 后：
+  - ❌ `makeSlice()[0]` → "cannot initialize int with array"（元素类型未解析）
+  - ❌ `makeSlice().size()` → "int with void"（.size() 未解析）
+  - ❌ `makeStrSlice()[0]`（slice<string>）→ 同上
+  - ❌ `b.get()[0]`（方法返回 slice）→ 同上
+- **根因（slice 用 typeArgs 存元素，非 element()；且多处只处理 Identifier 数组）**：
+  1. **sema Subscript**：Call 分支从返回 AstType 取 element——但 `slice<T>` 元素在
+     `typeArgs`，`element()` 为 null → 只修了数组没修 slice。Member-callee 分支同理。
+  2. **sema Call-Member-callee**：slice 内建 `.size()/.length()/.data()` 只处理
+     `mo.kind()=="Identifier"`（slice 变量），`mo.kind()=="Call"`（slice 返回调用）
+     漏 → 回落方法查找 → void。
+  3. **codegen**：`subscriptElemLt` Call 分支补 slice(typeArgs) 元素 LLVM 类型；
+     `genCall` slice `.size()/.data()` 只处理 Identifier，Call 返回 slice 漏 →
+     `Object_size(ptr {ptr,i64})` 类型不匹配。
+- **修复**：sema 两处 Call 分支（Identifier/Member callee）补 slice(typeArgs) 元素 +
+  Call-Member-callee 补 slice 返回调用的 size/length/data；codegen subscriptElemLt
+  补 slice 元素 LLVM 类型 + genCall 补 slice 返回调用的 size/data extractvalue
+  （`exprLlvmType(obj)=="{ ptr, i64 }"` 判定）。
+- **验证**：slice<int>/<string> 返回下标、size/length、方法返回 slice 下标+size、
+  slice 下标参与算术全通。
+- **回归**：`tests/@test/slice_call_chain.myp`（4 测试/11 断言）；全量 344/0。
+- **教训**：① slice 与数组的类型表示不同（slice 元素在 typeArgs、数组在 element），
+  凡"取元素类型"处两条都要覆盖；② 链式访问族（BUG-057/058/059）根因相同——调用
+  结果的类型信息（成员类/数组元素/slice 元素）没在 sema/codegen 各路径完整传递，
+  审计要按"语法形态 × 返回类型"矩阵枚举。

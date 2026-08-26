@@ -27,6 +27,27 @@
 
 ## 编译器版本历史
 
+### v3.15.92 — 修调用结果 slice 链式访问（下标/size 未解析）（BUG-059）
+
+**非破坏性**（selfhost sema + codegen）。续 BUG-058 排查姊妹缺口：`makeSlice()`
+返回 `slice<int>` 后 `makeSlice()[0]` 报 "int with array"、`makeSlice().size()` 报
+"int with void"、`makeStrSlice()[0]`、`b.get()[0]`（方法返回 slice）全坏。
+
+- **根因（slice 用 typeArgs 存元素，非 element()；多处只处理 Identifier）**：
+  1. sema Subscript 的 Call 分支从返回 AstType 取 `element()`——slice 元素在
+     `typeArgs` → 只修了数组没修 slice；Member-callee 分支同理。
+  2. sema Call-Member-callee：slice 内建 `.size()/.length()/.data()` 只处理 slice
+     变量（Identifier），slice 返回调用（Call）漏 → void。
+  3. codegen：`subscriptElemLt` Call 分支补 slice 元素 LLVM 类型；`genCall` slice
+     `.size()/.data()` 只处理 Identifier → Call 返回 slice 生成 `Object_size(ptr
+     {ptr,i64})` 类型不匹配。
+- **修复**：sema 两处 Call 分支（Identifier/Member callee）补 slice(typeArgs) 元素 +
+  Call-Member-callee 补 slice 返回调用的 size/length/data；codegen 对应两处补
+  slice 元素 LLVM 类型 + slice 返回调用的 size/data extractvalue。
+- **测试**：`tests/@test/slice_call_chain.myp`（4 测试/11 断言：slice<int>/<string>
+  返回下标、size/length、方法返回 slice 下标+size、下标算术）。
+- 验证：bootstrap 自举成立；全量回归 **344/0**。BUGLIST 记 BUG-059。
+
 ### v3.15.91 — 修调用结果下标 f()[i] 元素类型丢失（BUG-058，BUG-057 姊妹）
 
 **非破坏性**（selfhost sema + codegen）。测试缺口审计发现 `f()[i]`（函数/方法返回

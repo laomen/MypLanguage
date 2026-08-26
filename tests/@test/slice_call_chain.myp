@@ -1,0 +1,47 @@
+// slice_call_chain: 调用结果 slice 链式访问 → @test
+// 自举缺口（BUG-059，BUG-058 姊妹）：slice<T> 元素存 typeArgs（非 element），
+// 函数/方法返回 slice 后直接下标/取 size 未解析 → sema 报 array/void。
+// 修复：sema Subscript Call 分支补 slice(typeArgs) 元素；Call-Member-callee 补
+// slice 返回调用的 size/length/data；codegen subscriptElemLt 补 slice 元素 LLVM
+// 类型 + genCall 补 slice 返回调用的 size/data extractvalue。
+// 覆盖：slice<int>/<string> 返回下标 / size / length / 方法返回 slice / 算术
+import test;
+
+slice<int> makeIntSlice() { slice<int> s = new slice<int>(3); s[0] = 9; s[1] = 8; return s; }
+slice<string> makeStrSlice() { slice<string> s = new slice<string>(2); s[0] = "hi"; s[1] = "yo"; return s; }
+class Box {
+    action:
+        slice<int> get() { slice<int> s = new slice<int>(2); s[0] = 5; s[1] = 6; return s; }
+}
+
+// —— 1) slice<int> 返回：下标 + 算术 ——
+@test void test_int_slice() {
+    Test.assertEq(makeIntSlice()[0], 9, "slice[0]");
+    Test.assertEq(makeIntSlice()[1], 8, "slice[1]");
+    Test.assertEq(makeIntSlice()[0] + makeIntSlice()[1], 17, "slice arith");
+    Test.report("test_int_slice", true);
+}
+
+// —— 2) slice<string> 返回：下标 ——
+@test void test_str_slice() {
+    Test.assertStrEq(makeStrSlice()[0], "hi", "str slice[0]");
+    Test.assertStrEq(makeStrSlice()[1], "yo", "str slice[1]");
+    Test.report("test_str_slice", true);
+}
+
+// —— 3) slice 返回：size / length ——
+@test void test_size() {
+    Test.assertEq(makeIntSlice().size(), 3, "size");
+    Test.assertEq(makeIntSlice().length(), 3, "length");
+    Test.assertEq(makeStrSlice().size(), 2, "str size");
+    Test.report("test_size", true);
+}
+
+// —— 4) 方法返回 slice：下标 + size ——
+@test void test_method_slice() {
+    Box b = new Box();
+    Test.assertEq(b.get()[0], 5, "method slice[0]");
+    Test.assertEq(b.get()[1], 6, "method slice[1]");
+    Test.assertEq(b.get().size(), 2, "method slice size");
+    Test.report("test_method_slice", true);
+}

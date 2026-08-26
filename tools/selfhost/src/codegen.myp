@@ -2013,6 +2013,10 @@ class CodeGen {
                     if (fret != null && fret.element() != null) {
                         string elt = llvmType(fret.element());
                         if (Str.len(elt) != 0) return elt;
+                    } else if (fret != null && fret.className() == "slice" && fret.typeArgs().size() > 0) {
+                        // slice<T> 返回：元素在 typeArgs（非 element）
+                        string elt = llvmType(fret.typeArgs().get(0));
+                        if (Str.len(elt) != 0) return elt;
                     }
                 } else if (cal != null && cal.kind() == "Member") {
                     // b.get()[i]：方法返回 T[] → 元素 LLVM 类型（用 Member 自身
@@ -2026,6 +2030,10 @@ class CodeGen {
                         AstType mret = methodRetAstType(mcls, cal.memberName());
                         if (mret != null && mret.element() != null) {
                             string elt = llvmType(mret.element());
+                            if (Str.len(elt) != 0) return elt;
+                        } else if (mret != null && mret.className() == "slice" && mret.typeArgs().size() > 0) {
+                            // b.get()[i]：方法返回 slice<T> → 元素在 typeArgs
+                            string elt = llvmType(mret.typeArgs().get(0));
                             if (Str.len(elt) != 0) return elt;
                         }
                     }
@@ -10341,6 +10349,22 @@ class CodeGen {
                     string mname = callee.memberName();
                     // slice.size() / length() / data()
                     if (obj != null && obj.kind() == "Identifier" && isSliceVar(obj.name()) != 0) {
+                        if (mname == "size" || mname == "length") {
+                            string sv = genExpr(obj);
+                            string len = newTmp();
+                            sb_.append("  " + len + " = extractvalue { ptr, i64 } " + sv + ", 1\n");
+                            string t = newTmp();
+                            sb_.append("  " + t + " = trunc i64 " + len + " to i32\n");
+                            return t;
+                        }
+                        if (mname == "data") {
+                            string sv = genExpr(obj);
+                            string data = newTmp();
+                            sb_.append("  " + data + " = extractvalue { ptr, i64 } " + sv + ", 0\n");
+                            return data;
+                        }
+                    } else if (obj != null && obj.kind() == "Call" && exprLlvmType(obj) == "{ ptr, i64 }") {
+                        // makeSlice().size()/.data()：slice 返回调用结果的内建成员（BUG-059）
                         if (mname == "size" || mname == "length") {
                             string sv = genExpr(obj);
                             string len = newTmp();

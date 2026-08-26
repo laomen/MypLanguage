@@ -4755,6 +4755,10 @@ class Sema {
                                 if (callee.memberName() == "size" || callee.memberName() == "length") ret = "int";
                                 else if (callee.memberName() == "data") ret = "array";
                             }
+                        } else if (mo != null && mo.kind() == "Call" && mo.resolvedKind() == "slice") {
+                            // makeSlice().size()：slice 返回调用结果的内建成员（BUG-059）
+                            if (callee.memberName() == "size" || callee.memberName() == "length") ret = "int";
+                            else if (callee.memberName() == "data") ret = "array";
                         }
                         string cn = "";
                         if (mo != null && mo.kind() == "Identifier") {
@@ -5189,6 +5193,11 @@ class Sema {
                                 AstType el = fret.element();
                                 et = typeToKind(el);
                                 if (Str.len(el.className()) != 0) e.setResolvedClass(el.className());
+                            } else if (fret != null && fret.className() == "slice" && fret.typeArgs().size() > 0) {
+                                // slice<T> 返回：元素在 typeArgs（非 element）
+                                AstType el = fret.typeArgs().get(0);
+                                et = typeToKind(el);
+                                if (Str.len(el.className()) != 0) e.setResolvedClass(el.className());
                             }
                         } else if (cal != null && cal.kind() == "Member") {
                             // b.get()[i]：方法返回 T[] → 元素类型（用 Member 自身
@@ -5203,6 +5212,11 @@ class Sema {
                                 AstType mret = findMethodRetAst(resolveBase(mcls), cal.memberName());
                                 if (mret != null && mret.element() != null) {
                                     AstType el = mret.element();
+                                    et = typeToKind(el);
+                                    if (Str.len(el.className()) != 0) e.setResolvedClass(el.className());
+                                } else if (mret != null && mret.className() == "slice" && mret.typeArgs().size() > 0) {
+                                    // b.get()[i]：方法返回 slice<T> → 元素在 typeArgs
+                                    AstType el = mret.typeArgs().get(0);
                                     et = typeToKind(el);
                                     if (Str.len(el.className()) != 0) e.setResolvedClass(el.className());
                                 }
