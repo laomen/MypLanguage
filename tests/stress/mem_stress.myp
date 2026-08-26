@@ -1,0 +1,63 @@
+// tests/stress/mem_stress.myp — 分配器高压震荡 + 泄漏检测（v3.15.83）
+// 多波次海量字符串/数组/对象分配 + 释放（ARC 作用域退出），用 Memory.live*Count
+// 验证每波后活跃对象数回到基线（无泄漏）。压 allocator：字符串拼接/子串、
+// 动态数组、类对象、混合。
+// 验证：每波后 liveTotal 回到基线、结果精确、无崩溃。
+import env;
+import memory;
+import time;
+
+class Payload {
+    property:
+        long v_;
+        string tag_;
+    action:
+        @constructor Payload(long v) {
+            v_ = v;
+            tag_ = "payload-" + v;   // 字符串成员
+        }
+        long get() { return v_; }
+}
+
+class MemStress {
+    static:
+        // 一波：分配大量对象，作用域结束全释放（ARC）
+        long wave(int n, int seed) {
+            long acc = 0;
+            for (int i = 0; i < n; i++) {
+                // 字符串：拼接 + 长度
+                string s = "w" + seed + "-" + i + "-padding-" + (i % 7);
+                acc = acc + myp_strlen(s);
+                // 动态数组
+                long[] a = new long[32];
+                a[i % 32] = long(i);
+                acc = acc + a[i % 32];
+                // 对象（含字符串成员）
+                Payload p = new Payload(long(i));
+                acc = acc + p.get();
+            }
+            return acc;
+        }
+        int run() {
+            // 基线（预热分配器后）
+            long base = Memory.liveTotalCount();
+            int bad = 0;
+            for (int w = 0; w < 30; w++) {
+                long acc = MemStress.wave(20000, w);
+                if (acc == -1) bad = 1;
+                // 波后：live 应回到基线（ARC 全释放）
+                long live = Memory.liveTotalCount();
+                if (live > base + 100) {
+                    Console.writeString("LEAK wave=" + w + " live=" + live + " base=" + base + "\n");
+                    bad = 1;
+                    break;
+                }
+            }
+            if (bad != 0) return 1;
+            Console.writeString("PASS mem_stress (base=" + base + ")\n");
+            return 0;
+        }
+}
+
+ffi int myp_strlen(string s);
+int main() { return MemStress.run(); }

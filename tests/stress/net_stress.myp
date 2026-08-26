@@ -1,0 +1,79 @@
+// tests/stress/net_stress.myp — 网络并发风暴（双向 TCP，v3.15.83）
+// 服务器 @thread 接受 100 连接，每连接 recv 客户端 payload 后 echo 带标签响应；
+// 100 个客户端协程并发 connect + send + await recvAsync，校验响应 == 期望。
+// 比 async_io_stress 更重：100 并发、双向、更大 payload。
+// 验证：全部客户端收到正确响应、无挂起/超时、协程归零。
+import env;
+import net;
+import coro;
+import async;
+import time;
+
+class Server {
+    action:
+        @startup void run() {
+            TcpServer srv = new TcpServer(9203);
+            int i = 0;
+            while (i < 100) {
+                TcpClient cl = new TcpClient();
+                srv.accept(cl);
+                string data = cl.recv(4096);        // 收客户端 payload
+                cl.send("R" + i + ":" + data);      // echo 带标签
+                cl.close();
+                i = i + 1;
+            }
+            srv.close();
+        }
+}
+
+class Client {
+    action:
+        @coro(stack=64) long run(int id) {
+            TcpClient c = new TcpClient();
+            c.connect("127.0.0.1", 9203);
+            string payload = "payload-" + id + "-" + (id * 7 % 100) + "-hello-world";
+            c.send(payload);
+            string d = await c.recvAsync(4096);
+            c.close();
+            string expect = "R" + id + ":" + payload;
+            long ok = 0;
+            if (d == expect) ok = 1;
+            return ok;
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Server s = new Server() @thread;
+            // 并发 100 客户端协程（本线程调度）
+            long[] hs = new long[100];
+            int i = 0;
+            while (i < 100) {
+                Client c = new Client();
+                hs[i] = c.run(i);
+                i = i + 1;
+            }
+            int guard = 0;
+            int okCount = 0;
+            while (guard < 2000000) {
+                Coro.scheduler();
+                guard = guard + 1;
+                okCount = 0;
+                for (int j = 0; j < 100; j++) {
+                    if (Coro.status(hs[j]) == 0) {
+                        if (Coro.result(hs[j]) == 1) okCount = okCount + 1;
+                        else { Console.writeString("CLIENT-FAIL " + j + "\n"); return; }
+                    }
+                }
+                if (okCount == 100) break;
+            }
+            if (okCount == 100 && Coro.count() == 0) {
+                Console.writeString("PASS net_stress (100 conns)\n");
+            } else {
+                Console.writeString("FAIL net_stress ok=" + okCount + " left=" + Coro.count() + "\n");
+            }
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

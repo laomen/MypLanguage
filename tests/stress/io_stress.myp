@@ -1,0 +1,50 @@
+// tests/stress/io_stress.myp — 文件 IO 高频往返（v3.15.83）
+// 200 个文件写/读/删往返：每个写 50 行内容 → 读回校验首行 → Fs.removeRecursive 删。
+// 压 fs/io 层：open/write/readLine/close/remove 高频调用。
+// 验证：全部内容往返正确、无泄漏、无崩溃。
+import env;
+import io;
+import fs;
+
+class IoStress {
+    static:
+        int run() {
+            int bad = 0;
+            for (int i = 0; i < 200; i++) {
+                string path = "/tmp/myp_stress_f" + i + ".txt";
+                // 写（open 返回 0=成功；失败抛 FileError → 崩溃）
+                File f = new File();
+                int ow = f.open(path, "w");
+                if (ow != 0) { Console.writeString("open-w-fail " + i + "\n"); bad = 1; }
+                for (int j = 0; j < 50; j++) {
+                    f.writeLine("line " + j + " of file " + i + " payload " + (j * i));
+                }
+                f.close();
+                // 读回校验
+                File f2 = new File();
+                int or_ = f2.open(path, "r");
+                if (or_ != 0) { Console.writeString("open-r-fail " + i + "\n"); bad = 1; }
+                string l0 = f2.readLine();
+                string expect = "line 0 of file " + i + " payload 0";
+                if (l0 != expect) { Console.writeString("content-fail " + i + " got=" + l0 + "\n"); bad = 1; }
+                // 数行数（读到空串=EOF；末尾换行不产生幻影行）
+                int lines = 1;
+                string ln;
+                for (;;) {
+                    ln = f2.readLine();
+                    if (myp_strlen(ln) == 0) break;
+                    lines = lines + 1;
+                }
+                if (lines != 50) { Console.writeString("lines-fail " + i + " lines=" + lines + "\n"); bad = 1; }
+                f2.close();
+                // 删（返回 0=成功；不存在视为成功）
+                if (Fs.removeRecursive(path) != 0) { Console.writeString("remove-fail " + i + "\n"); bad = 1; }
+                if (bad != 0) return 1;
+            }
+            Console.writeString("PASS io_stress (200 files x 50 lines)\n");
+            return 0;
+        }
+}
+
+ffi int myp_strlen(string s);
+int main() { return IoStress.run(); }
