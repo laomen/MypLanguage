@@ -1,0 +1,16 @@
+// EXPECT ERROR: catch type 'int' is not a class or interface
+// BUG-081 回归（负测试）：catch 类型须 string/类/接口须编译期干净拒绝。
+// 此前自举 Try 处理对 catch 类型不校验 → `catch (int e)` 静默接受（catch 变量
+// 未用不崩，但「应拒绝却接受」须对齐 oracle）。C++ visitTryStmt 报
+// "catch type 'X' is not a class or interface"。合法：catch (e) 兜底 /
+// catch (string s) / catch (ParseError e) / catch (Error e) 接口。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            try { int x = 5; }
+            catch (int e) { }
+        }
+}
+int main(){return 0;}

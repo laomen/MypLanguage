@@ -3998,6 +3998,16 @@ class Sema {
                     if (Str.len(ct.varName()) != 0) {
                         string cty = ct.type();
                         if (Str.len(cty) == 0) cty = "string";
+                        // BUG-081：catch 类型须 string/类/接口/struct（镜像 C++
+                        // visitTryStmt "catch type 'X' is not a class or
+                        // interface"）。catch (int e) 此前静默接受（catch 变量
+                        // 未用不崩，但「应拒绝却接受」须对齐 oracle；struct 为
+                        // 自举超集保留）。
+                        if (Str.len(cty) != 0 && cty != "string"
+                            && findClass(cty) < 0 && inInterface(cty) == 0
+                            && inStructName(cty) == 0) {
+                            diag_.error(s.line(), s.col(), "catch type '" + cty + "' is not a class or interface");
+                        }
                         // F4：catch 绑定若是类/接口/struct 名 → declareClass（kind +
                         // 类名），否则 Identifier 会 dump 成类名、Member 无法解析。
                         if (findClass(cty) >= 0) sym_.declareClass(ct.varName(), "class", cty);

@@ -27,6 +27,19 @@
 
 ## 编译器版本历史
 
+### v3.15.115 — 修 catch 类型漏校验（应拒绝却接受）（BUG-081）
+
+**非破坏性**（selfhost sema）。`catch (int e)`（int 非类/接口）此前自举静默
+接受；C++ visitTryStmt 报 `catch type 'X' is not a class or interface`。
+
+- **根因**：自举 Try 处理声明 catch 变量时不校验类型。
+- **修复**：Try 处理加校验——catch 类型非空且非 string/类/接口/struct（自举
+  超集保留）→ 报 `catch type 'X' is not a class or interface`。
+- **测试**：负测试 `tests/negative/catch_type.myp`；合法 catch（兜底/string/
+  类/接口）不受影响。
+- 验证：bootstrap 自举成立；全量回归 **369 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-081。
+
 ### v3.15.114 — 修解构目标类型不匹配漏校验 → opt 崩（BUG-080）
 
 **非破坏性**（selfhost sema）。`(int a, string b) = t`（t 是 (int,int) 元组变量）

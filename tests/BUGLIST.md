@@ -2146,3 +2146,20 @@
   oracle 对拍 95/0。
 - **教训**：解构校验要覆盖 rhs 全形态（字面量/变量/调用返回），不能只查字面量
   分支；嵌套解构需结构化 kind 表示，扁平列表会误判——保守守卫跳过嵌套。
+
+## BUG-081（已修复 🟩，v3.15.115）：catch 类型漏校验（应拒绝却接受）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.115，selfhost sema.myp）
+- **背景**：`catch (int e)`（int 非类/接口）此前自举静默接受（catch 变量未用
+  不崩，但「应拒绝却接受」须对齐 oracle）。C++ visitTryStmt 报 `catch type 'X'
+  is not a class or interface`。
+- **根因**：自举 Try 处理声明 catch 变量时不校验类型（empty/string 走兜底，
+  其余按类型声明）。
+- **修复**：Try 处理加校验——catch 类型非空且非 string/类/接口/struct（自举
+  超集保留）→ 报 `catch type 'X' is not a class or interface`。
+- **验证**：`catch (int e)` 干净拒绝；合法 `catch (e)` 兜底 / `catch (string s)`
+  / `catch (ParseError e)` / `catch (Error e)` 接口不受影响。
+- **回归**：负测试 `tests/negative/catch_type.myp`；全量 369 通过 / 0 失败；
+  oracle 对拍 95/0。
+- **教训**：异常机制（catch 变量类型）也是「应拒绝却接受」高发区——catch 类型
+  只能 string/类/接口，其余是错误。
