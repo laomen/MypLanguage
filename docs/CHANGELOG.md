@@ -27,6 +27,25 @@
 
 ## 编译器版本历史
 
+### v3.15.75 — MYP 运行时 io 优化（readLine 复用缓冲 + select 快路径，file_io 90→39ms）
+
+**非破坏性**。续 v3.15.74；针对 MYP vs C 运行时 file_io 差距（90 vs 27ms）优化
+`runtime_myp/io.myp`：
+
+1. **readLine 复用行拼接缓冲**（`IoBuf.scratch` 表 + `ioScratchEnsure`）：
+   此前每次 `readLine` `myp_arena_alloc(4096)` + `reclaim`——file_io 200k 行 = 200k
+   次 4KB arena 分配/归还；改为每句柄惰性分配一次、进程级复用。
+2. **`ioReadLineInto` 的 base 地址提循环外**：fill 惰性分配一次、base 不变，
+   不再每字节重读 `IoBuf.base` 表。
+3. **`myp_io_select` 连续同句柄快路径**：`if (myp_io_cur_get() == handle) return;`
+   ——连续 `hasNext`+`readLine`/`write` 同句柄时跳过自旋锁 + 查表（每行 2 次
+   select）。
+
+实测（`bench/rt_myp_bench.myp` file_io，200k 行写+读，-O2，verify 一致）：
+写 42→26ms、读 47→13ms，**file_io 90→39ms**（MYP-only）；与 C runtime 27ms 的
+差距从 3.3× 缩到 1.4×。其他负载（strcat/alloc/hashmap/json/regex/coro）持平。
+全量测试 **324/0 无回归**；bootstrap MD5 门禁通过。
+
 ### v3.15.74 — 自举 GPU 原子加直降 atom.add.f64（sm_75）+ @thread 硬失败 exit_group
 
 **非破坏性**。续 v3.15.73；真 GPU（RTX 2070 SUPER）验证发现并修复两个问题：

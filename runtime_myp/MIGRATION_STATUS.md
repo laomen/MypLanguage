@@ -524,3 +524,19 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   少传 doRelu → 7 入口编译失败。修 `model_loader.myp` 传 `doRelu=0`（纯 Add）。
   记录于 `examples/deeplearning/CHANGELOG.md`（deeplearning 分项目变更独立记）。
 
+### 6.5 io 优化（v3.15.75，file_io 90→39ms）
+
+- **readLine 复用行拼接缓冲**：`IoBuf.scratch` 表 + `ioScratchEnsure`——此前每次
+  `readLine` 分配/归还 4KB arena（file_io 200k 行 = 200k 次）；改每句柄复用。
+- **`ioReadLineInto` base 提循环外**：fill 惰性分配一次，不再每字节重读 base 表。
+- **`myp_io_select` 连续同句柄快路径**：`cur_get()==handle` 跳过自旋锁+查表。
+- 实测 file_io 90→39ms（MYP-only，接近 C runtime 27ms，差距 3.3×→1.4×）；
+  全量 324/0 无回归。
+
+### 6.6 待优化方向（MYP vs C 仍落后项）
+
+- **json**：MYP 版 44ms vs C bridge 8ms（5.5×）——json.myp 纯 MYP 解析较慢。
+- **file_io 写侧**：26 vs 16ms——每行 `strlen`+`memcpy`+cur_get 仍有余地。
+- **coro_switch**：76 vs 35ms（2.2×）——MYP coro 实现 vs C asm。
+- **alloc_arr**：96 vs 75ms（1.3×）——分配器差异。
+

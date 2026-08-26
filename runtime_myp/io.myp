@@ -125,6 +125,7 @@ void ioUnlock() {
         long len = 0;    // long[64]: 读缓冲内有效字节数
         long wbase = 0;  // long[64]: 每句柄写缓冲地址（arena 4096B，0=未分配）
         long wpos = 0;   // long[64]: 写缓冲内待冲刷字节数
+        long scratch = 0;// long[64]: 每句柄行拼接复用缓冲（arena 4096B，0=未分配）
 }
 void ioBufInit() {
     if (IoBuf.base == 0) {
@@ -133,12 +134,14 @@ void ioBufInit() {
         IoBuf.len = myp_arena_alloc(64 * 8);
         IoBuf.wbase = myp_arena_alloc(64 * 8);
         IoBuf.wpos = myp_arena_alloc(64 * 8);
+        IoBuf.scratch = myp_arena_alloc(64 * 8);
         for (int i = 0; i < 64; i = i + 1) {
             __myp_mem_store_i64(IoBuf.base + long(i) * 8, 0);
             __myp_mem_store_i64(IoBuf.pos + long(i) * 8, 0);
             __myp_mem_store_i64(IoBuf.len + long(i) * 8, 0);
             __myp_mem_store_i64(IoBuf.wbase + long(i) * 8, 0);
             __myp_mem_store_i64(IoBuf.wpos + long(i) * 8, 0);
+            __myp_mem_store_i64(IoBuf.scratch + long(i) * 8, 0);
         }
     }
 }
@@ -149,6 +152,17 @@ long ioBufEnsure(int handle) {
     if (b == 0) {
         b = myp_arena_alloc(4096);
         if (b != 0) __myp_mem_store_i64(IoBuf.base + long(handle) * 8, b);
+    }
+    return b;
+}
+// 确保句柄行拼接复用缓冲（惰性分配 4096B，进程级复用；readLine 不再每次
+// myp_arena_alloc(4096)+reclaim——file_io 200k 行省 200k 次 4KB 分配）。
+long ioScratchEnsure(int handle) {
+    ioBufInit();
+    long b = __myp_mem_load_i64(IoBuf.scratch + long(handle) * 8);
+    if (b == 0) {
+        b = myp_arena_alloc(4096);
+        if (b != 0) __myp_mem_store_i64(IoBuf.scratch + long(handle) * 8, b);
     }
     return b;
 }
@@ -228,6 +242,7 @@ long ioReadLineInto(int handle, long fd, long scratch, long cap) {
     ioBufInit();
     long pos = __myp_mem_load_i64(IoBuf.pos + long(handle) * 8);
     long blen = __myp_mem_load_i64(IoBuf.len + long(handle) * 8);
+    long b = ioBufEnsure(handle);   // fill 惰性分配一次，base 地址不变，循环外取
     long n = 0;
     for (;;) {
         if (pos >= blen) {
@@ -235,7 +250,6 @@ long ioReadLineInto(int handle, long fd, long scratch, long cap) {
             pos = __myp_mem_load_i64(IoBuf.pos + long(handle) * 8);
             blen = __myp_mem_load_i64(IoBuf.len + long(handle) * 8);
         }
-        long b = __myp_mem_load_i64(IoBuf.base + long(handle) * 8);
         int c = __myp_mem_load_i8(b + pos);
         pos = pos + 1;
         if (c == 10) break;          // \n 不包含
@@ -356,6 +370,8 @@ int myp_io_current_handle() { return myp_io_cur_get(); }
 // C: void myp_io_select(int32_t handle) —— 切换当前活动文件
 void myp_io_select(int handle) {
     if (handle < 1 || handle >= 64) return;
+    // 快路径：已是当前句柄则跳过（连续 readLine/write 同句柄省自旋锁+查表）
+    if (myp_io_cur_get() == handle) return;
     ioLock();
     long t = Io.table;
     long ok = 0;
@@ -400,7 +416,7 @@ string ioReadLineHandle(int handle) {
     ioFlush(handle, fd);   // 读前冲刷写缓冲（r+/w+ 切换正确性；无 wpos 零开销）
     long pend = __myp_mem_load_i64(t + handle * 16 + 8);
     __myp_mem_store_i64(t + handle * 16 + 8, -1);
-    long buf = myp_arena_alloc(4096);
+    long buf = ioScratchEnsure(handle);   // 复用行拼接缓冲（不每次 4KB 分配）
     long n = 0;
     if (pend >= 0 && pend != 10) { __myp_mem_store_i8(buf, int(pend)); n = 1; }
     n = n + ioReadLineInto(handle, fd, buf + n, 4096 - n);   // 缓冲读（耗尽才批量 syscall）
@@ -408,7 +424,6 @@ string ioReadLineHandle(int handle) {
     long dp = __myp_str_ptr(s);
     __myp_memcpy(dp, buf, n);
     __myp_mem_store_i8(dp + n, 0);
-    myp_arena_reclaim_raw(buf);
     return s;
 }
 // 指定句柄读全文件（从当前位置到 EOF，字节级；lseek 取大小后分块读）
