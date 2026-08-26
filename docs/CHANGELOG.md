@@ -27,6 +27,26 @@
 
 ## 编译器版本历史
 
+### v3.15.95 — 修泛型集合方法返回链式访问（BUG-062）
+
+**非破坏性**（selfhost sema）。用户问"collections 有没有此问题"（链式访问族）。
+探针发现三个坏形态：`ArrayList<int[]>.get(i)[j]`、`ArrayList<slice<int>>.get(i)[j]`
+（元素类型未传播，报 'array'）；`ArrayList<ArrayList<int>>.get(0).get(1)`（分派到
+未实例化模板 `@ArrayList_get` 返回 ptr → opt 崩）。
+
+- **根因（泛型方法返回 T 的替换不完整）**：
+  1. 下标 Call-Member 分支取原始返回 `T`（无 element/typeArgs）→ 元素取不到。
+  2. Call 泛型方法返回替换用 `substRet`（`SymbolEntry.instArgs` **拍平字符串**，
+     只存 className 丢 typeArgs）→ 返回替换成基类名 → 链式 `.get()` 分派错。
+- **修复**：下标分支用 `findInstTypeArgs`+`substituteType` 替换类型参数取元素；
+  泛型方法返回替换优先用 `findInstTypeArgs(实例类名)`+`substRetAst`（完整 AstType
+  实参）。
+- **设计确认**：`HashMap<K,V>` 是整型键（`%` 哈希），字符串键用
+  `StrHashMap<string,V>`（DJB2）。
+- **测试**：`tests/@test/collections_chain.myp`（5 测试/14 断言：struct/map/数组
+  元素/slice 元素/嵌套集合链）。
+- 验证：bootstrap 自举成立；全量回归 **352/0**。BUGLIST 记 BUG-062。
+
 ### v3.15.94 — 修调用结果嵌套 slice 双下标 make2d()[i][j]（BUG-061）
 
 **非破坏性**（selfhost sema）。用户追问 2D 数据访问：MYP 的 2D 是**嵌套 slice**

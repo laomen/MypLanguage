@@ -1,0 +1,73 @@
+// collections_chain: 泛型集合方法返回的链式访问 → @test
+// 自举缺口（BUG-062，BUG-057~061 族）：泛型方法返回 T（类型参数）时，
+// 元素/类型信息没传播 → ArrayList<int[]>.get(i)[j] 报 'array'、
+// ArrayList<ArrayList<int>>.get(0).get(1) 分派到未实例化模板。
+// 修复：下标 Call-Member 分支泛型返回替换（findInstTypeArgs+substituteType）；
+// Call 泛型方法返回替换用完整 AstType 实参（原 instArgs 拍平字符串丢 typeArgs）。
+// 覆盖：ArrayList<struct> / StrHashMap<string,struct> / ArrayList<int[]>[j] /
+//       ArrayList<slice<int>>[j] / ArrayList<ArrayList<int>>.get().get() / 算术
+import test;
+import collections;
+
+struct Point { int x; int y; }
+
+// —— 1) ArrayList<struct> → get(i).field ——
+@test void test_struct() {
+    ArrayList<Point> pts = new ArrayList<Point>();
+    Point p;
+    p.x = 3; p.y = 4;
+    pts.add(p);
+    Test.assertEq(pts.get(0).x, 3, "get().x");
+    Test.assertEq(pts.get(0).y, 4, "get().y");
+    Test.assertEq(pts.get(0).x + pts.get(0).y, 7, "chain arith");
+    Test.report("test_struct", true);
+}
+
+// —— 2) StrHashMap<string, struct> → get().field ——
+@test void test_map_struct() {
+    StrHashMap<Point> hm = new StrHashMap<Point>();
+    Point p;
+    p.x = 5; p.y = 6;
+    Point zero;
+    zero.x = 0; zero.y = 0;
+    hm.put("a", p);
+    Test.assertEq(hm.get("a", zero).x, 5, "map get().x");
+    Test.assertEq(hm.get("a", zero).y, 6, "map get().y");
+    Test.assertEq(hm.get("miss", zero).x, 0, "map missing default");
+    Test.report("test_map_struct", true);
+}
+
+// —— 3) ArrayList<int[]> → get(i)[j]（数组元素链）——
+@test void test_array_elem() {
+    ArrayList<int[]> arrs = new ArrayList<int[]>();
+    int[] arr = new int[2];
+    arr[0] = 7; arr[1] = 8;
+    arrs.add(arr);
+    Test.assertEq(arrs.get(0)[0], 7, "array[0]");
+    Test.assertEq(arrs.get(0)[1], 8, "array[1]");
+    Test.assertEq(arrs.get(0)[0] + arrs.get(0)[1], 15, "array arith");
+    Test.report("test_array_elem", true);
+}
+
+// —— 4) ArrayList<slice<int>> → get(i)[j]（slice 元素链）——
+@test void test_slice_elem() {
+    ArrayList<slice<int>> sls = new ArrayList<slice<int>>();
+    slice<int> sl = new slice<int>(2);
+    sl[0] = 11; sl[1] = 22;
+    sls.add(sl);
+    Test.assertEq(sls.get(0)[0], 11, "slice[0]");
+    Test.assertEq(sls.get(0)[1], 22, "slice[1]");
+    Test.report("test_slice_elem", true);
+}
+
+// —— 5) ArrayList<ArrayList<int>> → get().get()（嵌套集合链）——
+@test void test_nested() {
+    ArrayList<ArrayList<int>> mat = new ArrayList<ArrayList<int>>();
+    ArrayList<int> row = new ArrayList<int>();
+    row.add(5); row.add(6);
+    mat.add(row);
+    Test.assertEq(mat.get(0).get(0), 5, "mat[0][0]");
+    Test.assertEq(mat.get(0).get(1), 6, "mat[0][1]");
+    Test.assertEq(mat.get(0).get(1) * 3, 18, "nested arith");
+    Test.report("test_nested", true);
+}

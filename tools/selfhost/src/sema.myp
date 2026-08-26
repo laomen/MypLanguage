@@ -4847,7 +4847,19 @@ class Sema {
                                     if (mrt != null) {
                                         string sub = "";
                                         if (men != null && men.instArgs().size() > 0) {
-                                            sub = substRet(base3, mrt, men);
+                                            // BUG-062：men.instArgs 是拍平字符串（丢
+                                            // typeArgs）→ 用 findInstTypeArgs 取完整
+                                            // AstType 实参 + substRetAst，否则
+                                            // ArrayList<ArrayList<int>>.get() 返回替换成
+                                            // "ArrayList" 而非 "ArrayList_int_inst" →
+                                            // 链式 .get() 分派到模板而非实例化方法。
+                                            string instCls = "";
+                                            if (mo != null && mo.kind() == "Identifier") instCls = sym_.lookupClass(mo.name());
+                                            if (Str.len(instCls) != 0) {
+                                                ArrayList<AstType> targs = findInstTypeArgs(instCls);
+                                                if (targs != null) sub = substRetAst(base3, mrt, targs);
+                                            }
+                                            if (Str.len(sub) == 0) sub = substRet(base3, mrt, men);
                                         } else if (mo != null && mo.kind() == "Identifier") {
                                             // F4-G2b：类作用域已弹出（双 pass），裸属性
                                             // 实例的 typeArgs 从当前类成员表回退解析。
@@ -5215,6 +5227,17 @@ class Sema {
                             }
                             if (Str.len(mcls) != 0) {
                                 AstType mret = findMethodRetAst(resolveBase(mcls), cal.memberName());
+                                // BUG-062：泛型方法返回 T（类型参数，无 element/typeArgs）
+                                // → 用实例类型参数替换后取元素（如 ArrayList<int[]>.get()
+                                // 返回 int[] → 元素 int；ArrayList<slice<int>> → slice<int>）。
+                                if (mret != null && mret.element() == null && mret.typeArgs().size() == 0) {
+                                    ArrayList<AstType> targs = findInstTypeArgs(mcls);
+                                    ArrayList<string> tps = findClassTypeParams(resolveBase(mcls));
+                                    if (targs != null && tps.size() > 0) {
+                                        AstType sub = substituteType(mret, tps, targs);
+                                        if (sub != null) mret = sub;
+                                    }
+                                }
                                 if (mret != null && mret.element() != null) {
                                     AstType el = mret.element();
                                     et = typeToKind(el);

@@ -1688,3 +1688,34 @@
   调用结果链式访问族（BUG-057/058/059/061）同一根因——类型信息（成员类/数组元素/
   slice 元素/深层 slice 元素）在各路径未完整传递；③ 二级下标靠 `setSliceElem`
   记录深层元素，凡返回 `slice<slice<T>>` 的调用路径都要补。
+
+## BUG-062（已修复 🟩，v3.15.95）：泛型集合方法返回链式访问（元素/实例类型未传播）
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.95，selfhost sema.myp）
+- **背景**：用户问"collections 有没有此问题"（链式访问族 BUG-057~061）。探针验证
+  collections 链式访问：
+  - ✅ `ArrayList<struct>.get(i).field`（原已好）
+  - ❌ `ArrayList<int[]>.get(i)[j]` → "with value of type 'array'"（数组元素未传播）
+  - ❌ `ArrayList<slice<int>>.get(i)[j]` → 同上（slice 元素未传播）
+  - ❌ `ArrayList<ArrayList<int>>.get(0).get(1)` → 分派到**未实例化模板** `@ArrayList_get`
+    （返回 ptr 而非 int）→ opt 崩
+- **根因（泛型方法返回 T 的替换不完整）**：
+  1. 下标 Call-Member 分支用 `findMethodRetAst` 取原始返回 `T`（无 element/typeArgs）
+     → 元素取不到。
+  2. Call 泛型方法返回替换用 `substRet`（`SymbolEntry.instArgs` **拍平字符串**，
+     只存 className 丢 typeArgs）→ `ArrayList<ArrayList<int>>.get()` 返回替换成
+     "ArrayList" 而非 "ArrayList_int_inst" → 链式 `.get()` 分派错。
+- **修复（sema.myp 两处）**：
+  1. 下标 Call-Member 分支：`mret` 无 element/typeArgs 时用
+     `findInstTypeArgs(mcls)` + `findClassTypeParams` + `substituteType` 替换
+     类型参数取元素。
+  2. Call 泛型方法返回替换路径 1：优先用 `findInstTypeArgs(实例类名)` +
+     `substRetAst`（完整 AstType 实参），拍平字符串仅作兜底。
+- **设计确认**：`HashMap<K,V>` 是**整型键**（`%` 哈希）；字符串键用
+  `StrHashMap<string,V>`（DJB2）——`HashMap<string,...>` 不支持（`%` 对字符串
+  指针 srem 崩，opt 报错不清）。map.myp 注释已说明。
+- **验证**：A~E 全通（struct/map/数组元素/slice 元素/嵌套集合链）。
+- **回归**：`tests/@test/collections_chain.myp`（5 测试/14 断言）；全量 352/0。
+- **教训**：① 泛型方法返回替换要**保留完整 typeArgs**（AstType 级），拍平字符串
+  会丢实例类型；② 链式访问族根因统一——调用结果的类型/元素信息各路径未完整传递，
+  collections 泛型方法返回 T 是最典型的漏网点。
