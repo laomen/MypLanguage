@@ -20,7 +20,7 @@ MYPCC="${MYPCC:-./build/mypc}"
 TIMEOUT_COMPILE=120
 TIMEOUT_RUN=240
 
-TESTS="coro_flood coro_switch_storm channel_stress parallel_stress async_io_stress cross_thread_arc coro_churn xthread_storm exit_robust mem_stress net_stress io_stress timer_stress exception_stress json_stress waitany_stress"
+TESTS="coro_flood coro_switch_storm channel_stress parallel_stress async_io_stress cross_thread_arc coro_churn xthread_storm exit_robust mem_stress net_stress io_stress timer_stress exception_stress json_stress waitany_stress generic_boom"
 
 # 对生成程序启用 sanitizer（codegen 插桩 + runtime 链接）
 SAN_ENV=""
@@ -39,6 +39,19 @@ fi
 PASS=0; FAIL=0; FAILED=""
 for t in $TESTS; do
     f="$STRESS_DIR/$t.myp"
+    # 支持 .sh 压测（编译器压测如 generic_boom：生成+编译+计时+去重检测）
+    if [ ! -f "$f" ] && [ -f "$STRESS_DIR/$t.sh" ]; then
+        printf "  %-22s " "$t"
+        out=$(myp_timeout $TIMEOUT_RUN bash "$STRESS_DIR/$t.sh" 2>&1)
+        rc=$?
+        if [ $rc -eq 0 ] && echo "$out" | grep -q "^PASS "; then
+            echo "PASS"; PASS=$((PASS+1))
+        else
+            echo "FAIL (exit=$rc)"; echo "$out" | tail -5
+            FAIL=$((FAIL+1)); FAILED="$FAILED $t(runtime)"
+        fi
+        continue
+    fi
     [ -f "$f" ] || { echo "  [SKIP] $t (无 $f)"; continue; }
     printf "  %-22s " "$t"
     if ! env $SAN_ENV "$MYPCC" -O2 "$f" -o "/tmp/stress_$t" >/tmp/stress_${t}.compile 2>&1; then

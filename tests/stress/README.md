@@ -39,6 +39,7 @@ ASAN=1 bash tests/stress/run_stress.sh         # AddressSanitizer 查内存错�
 | `exception_stress` | **异常高压 throw/catch + ARC 泄漏检测** | 10 万次 boom（try 分配对象 + 条件 throw + catch） | 抛必捕、live 无增长（v3.15.84 修 catch 字符串泄漏：每抛漏 1 串） |
 | `json_stress` | **JSON 解析高压**（嵌套对象/数组） | 300 动态构造文档 + 字段校验 | 全部字段精确、无崩溃 |
 | `waitany_stress` | **多路复用等待高压**（Coro.waitAny 事件广播 + 超时） | 300 协程等事件 0 + 100 协程超时（20ms） | 事件唤醒全返回 0、超时全 -1、协程归零 |
+| `generic_boom` | **泛型爆炸（编译器压测）**：同一泛型函数/类被上百种实参类型调用 | N=10..200 个不同类型 → N 个单态实例 | 编译时间增长曲线（10→200 类型 0.04→0.34s）、峰值内存 61→70MB、**重复实例 0**（按名去重正常） |
 
 ## 建议流程
 
