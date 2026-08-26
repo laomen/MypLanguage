@@ -1666,3 +1666,25 @@
   oracle 与自举一致）——`catch (e) Str.len(e)` 报 undefined 是设计，非 bug；
   ② phi 前**不允许任何非 phi 指令**（LLVM 块首规则），凡 merge 块需先算好在各
   前驱块内完成的转换值。
+
+## BUG-061（已修复 🟩，v3.15.94）：调用结果嵌套 slice 双下标 make2d()[i][j] 未解析
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.94，selfhost sema.myp）
+- **背景**：用户追问"之前测试的 2D 数据访问"——BUG-058 时 `make2d()` 定义（`new
+  int[2][]`）报错搁置。MYP 的 2D 是**嵌套 slice**（`slice<slice<int>>`），非
+  `int[][]`。探针暴露 `make2d(4)[2][3]`（函数返回 2D + 链式双下标）报
+  `expected numeric type, got 'array'`。
+- **根因**：sema Subscript 的 Call 分支处理 `slice<slice<int>>` 返回时，元素类型
+  （typeArgs[0]=`slice<int>`）解析成 "slice"，但**没记 `setSliceElem`（深层元素 int）**
+  → 二级下标 `(make2d(4)[2])[3]` 走 `sa.kind()=="Subscript"` 分支取 `sa.sliceElem()`
+  为空 → `et` 停留 "array"。变量版（nested_slice）走了 `en.elementElem()` 路径正常，
+  调用结果版漏。
+- **修复**：sema Call 分支（Identifier + Member callee 两处）在元素为 slice 且
+  `el.typeArgs().size()>0` 时 `e.setSliceElem(typeToKind(el.typeArgs().get(0)))`
+  ——记深层元素供二级下标。
+- **验证**：`make2d(4)[2][3]=11`、算术、单下标取行、方法返回 2D、变量对照全通。
+- **回归**：`tests/@test/slice_2d_chain.myp`（5 测试/12 断言）；全量 351/0。
+- **教训**：① MYP 2D = 嵌套 slice，不是 `int[][]`（`new int[2][]` 不存在）；②
+  调用结果链式访问族（BUG-057/058/059/061）同一根因——类型信息（成员类/数组元素/
+  slice 元素/深层 slice 元素）在各路径未完整传递；③ 二级下标靠 `setSliceElem`
+  记录深层元素，凡返回 `slice<slice<T>>` 的调用路径都要补。

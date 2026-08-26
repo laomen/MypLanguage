@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.94 — 修调用结果嵌套 slice 双下标 make2d()[i][j]（BUG-061）
+
+**非破坏性**（selfhost sema）。用户追问 2D 数据访问：MYP 的 2D 是**嵌套 slice**
+（`slice<slice<int>>`），非 `int[][]`。`make2d(4)[2][3]`（函数返回 2D + 链式双下标）
+报 `expected numeric type, got 'array'`。
+
+- **根因**：sema Subscript 的 Call 分支解析 `slice<slice<int>>` 返回时元素类型
+  （`slice<int>`）→ "slice"，但没记 `setSliceElem`（深层元素 int）→ 二级下标
+  `(make2d(4)[2])[3]` 取 `sa.sliceElem()` 为空 → 停留 "array"。变量版走
+  `en.elementElem()` 正常，调用结果版漏。
+- **修复**：sema Call 分支（Identifier + Member callee 两处）在元素为 slice 且
+  `el.typeArgs().size()>0` 时 `e.setSliceElem(深层元素)`。
+- **测试**：`tests/@test/slice_2d_chain.myp`（5 测试/12 断言：链式双下标/算术/
+  单下标取行/方法返回 2D/变量对照）。
+- 验证：bootstrap 自举成立；全量回归 **351/0**。BUGLIST 记 BUG-061。
+
 ### v3.15.93 — 修表达式 try 类型检查缺失 + catch 值转换块位错（BUG-060）
 
 **非破坏性**（selfhost sema + codegen）。补表达式 try（`var n = try expr catch (e)

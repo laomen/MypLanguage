@@ -5198,6 +5198,11 @@ class Sema {
                                 AstType el = fret.typeArgs().get(0);
                                 et = typeToKind(el);
                                 if (Str.len(el.className()) != 0) e.setResolvedClass(el.className());
+                                // 嵌套 slice（2D）：slice<slice<T>> → 记深层元素，
+                                // 供二级下标 [i][j] 解析（BUG-061，make2d()[i][j]）。
+                                if (et == "slice" && el.typeArgs().size() > 0) {
+                                    e.setSliceElem(typeToKind(el.typeArgs().get(0)));
+                                }
                             }
                         } else if (cal != null && cal.kind() == "Member") {
                             // b.get()[i]：方法返回 T[] → 元素类型（用 Member 自身
@@ -5219,6 +5224,10 @@ class Sema {
                                     AstType el = mret.typeArgs().get(0);
                                     et = typeToKind(el);
                                     if (Str.len(el.className()) != 0) e.setResolvedClass(el.className());
+                                    // 嵌套 slice（2D）：b.get()[i][j]
+                                    if (et == "slice" && el.typeArgs().size() > 0) {
+                                        e.setSliceElem(typeToKind(el.typeArgs().get(0)));
+                                    }
                                 }
                             }
                         }
