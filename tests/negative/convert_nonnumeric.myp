@@ -8,14 +8,11 @@
 // 注：string→int 属 parseInt（§6.2），不走 T(x)。
 import env;
 
-class Foo {
-    action:
-}
 class T2 {
     action:
         @constructor T2() {
-            Foo f = new Foo();
-            int a = int(f);
+            string s = "hi";
+            int a = int(s);
         }
 }
 int main(){return 0;}
