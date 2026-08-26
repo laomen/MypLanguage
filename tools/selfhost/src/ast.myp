@@ -486,6 +486,7 @@ class AstClass {
             name_ = "";
             derive_ = "";
             isStatic_ = 0;
+            isThread_ = 0;
             isGenericInst_ = 0;
             lambda_ = "";
             iface_ = "";
@@ -515,8 +516,10 @@ class AstClass {
         void setName(string v) { name_ = v; }
         void setPos(int l, int c) { line_ = l; col_ = c; }
         void setIsStatic(int v) { isStatic_ = v; }
+        void setIsThread(int v) { isThread_ = v; }
         void setDerive(string v) { derive_ = v; }
         int isStatic() { return isStatic_; }
+        int isThread() { return isThread_; }
         void setIsGenericInst(int v) { isGenericInst_ = v; }
         void setLambda(string v) { lambda_ = v; }
         void setIface(string v) { iface_ = v; }
@@ -557,6 +560,7 @@ class AstClass {
         int line_;
         int col_;
         int isStatic_;
+        int isThread_;    // @static @thread class：属性发射为 thread_local 全局（per-thread）
         string derive_;   // @derive(X)：类级派生宏名（@derive(Json) → toJson/fromJson）
         int isGenericInst_;
         string lambda_;

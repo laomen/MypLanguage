@@ -77,6 +77,11 @@ class Parser {
                         advance(); advance(); advance();
                         AstClass c = parseClass();
                         if (c != null) { c.setIsStatic(1); tu.classes().add(c); }
+                    } else if (n1 == "static" && n2 == "@" && peekNext3Val() == "thread") {
+                        // @static @thread class —— 属性发射为 thread_local 全局（per-thread）
+                        advance(); advance(); advance(); advance(); advance(); // @ static @ thread class
+                        AstClass c = parseClass();
+                        if (c != null) { c.setIsStatic(1); c.setIsThread(1); tu.classes().add(c); }
                     } else if (n1 == "identifier" && peekNextVal() == "derive") {
                         // @derive(X) class — 类级派生注解（@derive(Json) → toJson/fromJson）
                         advance(); advance(); // @ derive

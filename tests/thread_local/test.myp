@@ -1,0 +1,41 @@
+// thread_local: @static @thread class —— 属性是 per-thread 的 LLVM thread_local 全局
+// 验证：worker(@thread 实例) 设 TL.val=111，主线程自己的 TL.val 必须仍是 0。
+import env;
+import time;
+
+@static @thread class TL {
+    property:
+        int val = 0;
+        int inited = 0;
+}
+
+@static class Shared {
+    property:
+        int done = 0;   // 进程级全局（跨线程握手）
+}
+
+class Worker {
+    action:
+        @startup void run() {
+            TL.val = 111;          // 改的是 worker 线程自己的 TL.val
+            Shared.done = 1;
+        }
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            Worker w = new Worker() @thread;
+            long guard = 0;
+            while (Shared.done == 0) {
+                guard = guard + 1;
+                if (guard > 100000000) break;
+                Time.sleep(1);
+            }
+            Console.writeString("mainTL=" + TL.val + " workerDone=" + Shared.done + "\n");
+        }
+}
+int main() {
+    Main m = new Main();
+    return 0;
+}

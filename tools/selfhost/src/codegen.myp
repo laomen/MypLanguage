@@ -1523,7 +1523,9 @@ class CodeGen {
                     if (constIsZero(cv) == 0) hasNonZero = 1;
                 }
                 if (hasNonZero == 0) {
-                    stringGlobals_.append("@__myp_static_" + c.name() + " = global %" + c.name() + " zeroinitializer\n");
+                    string tlk = "";
+                    if (c.isThread() != 0) tlk = "thread_local ";
+                    stringGlobals_.append("@__myp_static_" + c.name() + " = " + tlk + "global %" + c.name() + " zeroinitializer\n");
                     continue;
                 }
                 string init = "{ ";
@@ -1533,7 +1535,9 @@ class CodeGen {
                     init = init + staticConstElem(ft, cvs.get(pi));
                 }
                 init = init + " }";
-                stringGlobals_.append("@__myp_static_" + c.name() + " = global %" + c.name() + " " + init + "\n");
+                string tlk2 = "";
+                if (c.isThread() != 0) tlk2 = "thread_local ";
+                stringGlobals_.append("@__myp_static_" + c.name() + " = " + tlk2 + "global %" + c.name() + " " + init + "\n");
             }
         }
 

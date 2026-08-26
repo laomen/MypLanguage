@@ -36,12 +36,17 @@ fi
 ok "tools/viz/main.myp 编译"
 
 # ---- 2) 全语料对拍（跳过 tests/negative 语法错误文件）----
+# 冻结 oracle 参考不认识的新特性文件（参考端报错）→ 跳过对拍：冻结基线无法对
+# 新语法字节级对比（如 @static @thread class，v3.15.77 新增）。共享语料仍全检。
 CMP_OK=0
 CMP_FAIL=0
 for f in $(find stdlib examples tools tests -name "*.myp" \
     -not -path "*/build*" -not -path "*/negative/*" 2>/dev/null); do
     a=$("$TMP/myp_viz2" "$f" 2>&1)
     b=$("$MYP_VIZ" "$f" 2>&1)
+    if echo "$b" | grep -q "error"; then
+        continue
+    fi
     if [ "$a" == "$b" ]; then
         CMP_OK=$((CMP_OK+1))
     else
