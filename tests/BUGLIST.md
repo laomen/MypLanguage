@@ -1787,3 +1787,31 @@
 - **教训**：interface 转换族与链式访问族同根且同形态枚举问题——upcastClsName 的
   Member 分支与 Subscript 分支一样，都要覆盖"对象是 Identifier vs 链式结果"
   全形态；连续探针（BUG-064→065）逐步暴露。
+
+## BUG-066（已修复 🟩，v3.15.100）：类内未限定方法调用缺实参类型校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.100，selfhost sema.myp）
+- **背景**：「缺失编译期校验 → codegen 崩」族（BUG-007/008/016/046/050/054 模式）
+  续查。探测类型不匹配时发现：基本赋值 / 返回 / 数组元素写/读校验全面，但
+  **类内未限定方法调用实参**漏检。
+  - ❌ `takeInt("hello")`（string 实参 vs int 形参）静默过 sema → codegen 发射
+    `i32 getelementptr(ptr @str, ...)`（ptr 当 i32）→ **opt 崩**
+    （`constant expression type mismatch: got type 'ptr' but expected 'i32'`，
+    非干净诊断）。C++ oracle 干净拒绝 `argument 1: expected 'int', got 'string'`。
+- **根因**：Identifier-callee 的 `inClass_ != 0` 未限定方法调用路径（sema.myp
+  ~4724）只设 ret/resolvedClass + fillDefaultArgs，**漏 `normalizeCallArgs` +
+  `setCallParamTypes`** → 后续实参类型检查（`callParamTypes()` 非空才跑）被跳过。
+  而 Member 分支（`obj.method()`，~4793）早已有该检查 → 仅类内裸名调用漏网。
+  Member-callee 的 `else if inClass_` 回退路径（~4896）同样漏。
+- **修复**：两条路径镜像 Member 分支补 `normalizeCallArgs` + `setCallParamTypes`。
+  **事件守卫**：事件（`event:` 段）在 `methods_` 里以 **0 参数**注册（mapping 触发
+  用裸名 `emit(v)`，实参另处处理）——若不加 `isEvent(cls, name)` 守卫会误报
+  "call takes no arguments, but 1 given"（C++ oracle 接受裸名事件触发）。
+- **验证**：`takeInt("hello")` / `takeStr(7)` 均干净拒绝，诊断文本/位置与 oracle
+  逐字节一致（test_myp_self 对拍 95/0）；`where_mapping`（裸名 `emit(5)` 事件
+  触发）不受影响。
+- **回归**：`tests/negative/arg_type_mismatch.myp`（负测试，EXPECT ERROR
+  argument 1: expected 'int', got 'string'）；全量 131 @test PASS / 0 FAIL。
+- **教训**：这类「oracle 有校验、自举漏」的缺口集中在**调用路径**（方法/函数实参）
+  与**赋值路径**（变量/返回/元素写）——赋值族已全，调用族此次补齐类内未限定
+  路径；后续审查应重点比对 oracle `typesCompatible` 出现的每个调用点。

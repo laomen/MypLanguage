@@ -27,6 +27,30 @@
 
 ## 编译器版本历史
 
+### v3.15.100 — 修类内未限定方法调用缺实参类型校验 → opt 崩（BUG-066）
+
+**非破坏性**（selfhost sema）。「缺失编译期校验 → codegen 崩」族（BUG-007/008/
+016/046/050/054 模式）续查：赋值/返回/数组元素读写校验已全面，但**类内未限定
+方法调用实参**漏检——`takeInt("hello")`（string 实参 vs int 形参）静默过 sema →
+codegen 发射 `i32 getelementptr(ptr @str, ...)`（ptr 当 i32）→ **opt 崩**
+（`constant expression type mismatch: got type 'ptr' but expected 'i32'`，
+非干净诊断）。C++ oracle 干净拒绝 `argument 1: expected 'int', got 'string'`。
+
+- **根因**：Identifier-callee 的 `inClass_ != 0` 未限定方法调用路径只设
+  ret/resolvedClass + fillDefaultArgs，**漏 `normalizeCallArgs` +
+  `setCallParamTypes`** → 后续实参类型检查（`callParamTypes()` 非空才跑）被跳过。
+  Member 分支（`obj.method()`）早有该检查 → 仅类内裸名调用漏网。
+  Member-callee 的 `else if inClass_` 回退路径同样漏。
+- **修复**：两条路径镜像 Member 分支补校验。**事件守卫**：事件（`event:` 段）
+  在 `methods_` 里以 **0 参数**注册（mapping 触发用裸名 `emit(v)`，实参另处
+  处理）——须 `isEvent(cls, name)` 守卫跳过，否则误报 "call takes no
+  arguments, but 1 given"（C++ oracle 接受裸名事件触发）。
+- **测试**：负测试 `tests/negative/arg_type_mismatch.myp`（EXPECT ERROR
+  argument 1: expected 'int', got 'string'）；`where_mapping`（裸名事件触发）
+  不受影响。诊断文本/位置与 oracle 逐字节一致（test_myp_self 对拍 95/0）。
+- 验证：bootstrap 自举成立（2 级 MD5 一致）；全量回归 131 @test PASS / 0 FAIL。
+  BUGLIST 记 BUG-066。
+
 ### v3.15.99 — 重构 interface upcast 具体类名解析为统一辅助函数
 
 **非破坏性**（selfhost codegen 重构，无行为变化）。`upcastClsName`（BUG-029/033/

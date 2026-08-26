@@ -4723,6 +4723,20 @@ class Sema {
                                             // 链式调用 (m()).member：记录返回类名
                                             string rcl2 = findMethodRetClass(currentClass_, fn);
                                             if (Str.len(rcl2) != 0) e.setResolvedClass(rcl2);
+                                            // BUG-066：类内未限定方法调用（takeInt(...)）
+                                            // 缺 normalizeCallArgs + setCallParamTypes → 实参
+                                            // 类型不匹配漏过 sema → codegen 把 ptr 当 i32 →
+                                            // opt 崩。镜像 Member 分支（obj.method()）校验。
+                                            // 注意：事件（event: 段）在 methods_ 里以 0 参数
+                                            // 注册（mapping 触发用裸名 emit(v)，实参另处处理），
+                                            // 须 isEvent 守卫跳过，否则误报 "takes no arguments"。
+                                            ArrayList<AstParam> mpsA = findMethodParams(currentClass_, fn);
+                                            int normFailedA = 0;
+                                            if (isEvent(currentClass_, fn) == 0 && mpsA != null) {
+                                                if (normalizeCallArgs(e, mpsA) == 0) { normFailedA = 1; ret = "void"; }
+                                                else e.setCallParamTypes(paramKinds(mpsA));
+                                            }
+                                            if (normFailedA == 0 && mpsA != null) fillDefaultArgs(e, mpsA);
                                         } else {
                                             // C++：'X' is not callable（位置 = Call range = ')'）
                                             string cr = callee.resolvedKind();
@@ -4907,8 +4921,16 @@ class Sema {
                                     string rcl = findMethodRetClass(currentClass_, callee.memberName());
                                     if (Str.len(rcl) != 0) e.setResolvedClass(rcl);
                                 }
-                                ArrayList<AstParam> mps = findMethodParams(currentClass_, callee.memberName());
-                                if (mps != null) fillDefaultArgs(e, mps);
+                                // BUG-066：Member-callee 未限定回退路径同样补实参校验
+                                // （与上方 cn!=0 的 Member 分支一致，避免漏校验 → opt 崩）。
+                                // 事件同 Path A 需 isEvent 守卫（methods_ 里事件为 0 参数）。
+                                ArrayList<AstParam> mpsB = findMethodParams(currentClass_, callee.memberName());
+                                int normFailedB = 0;
+                                if (isEvent(currentClass_, callee.memberName()) == 0 && mpsB != null) {
+                                    if (normalizeCallArgs(e, mpsB) == 0) { normFailedB = 1; ret = "void"; }
+                                    else e.setCallParamTypes(paramKinds(mpsB));
+                                }
+                                if (normFailedB == 0 && mpsB != null) fillDefaultArgs(e, mpsB);
                             }
                         }
                     } else {

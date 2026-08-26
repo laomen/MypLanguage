@@ -98,3 +98,27 @@ class T2c {
     Test.assertEq(s.area(), 4, "iface ret");
     Test.report("test_iface_ret", true);
 }
+
+// —— 9) interface 上下文（setter 实参/接口数组元素写/方法实参）+ 链式结果 ——
+class HolderI {
+    property: Shape s;
+    action:
+        void set(Shape v) { s = v; }
+        Shape get() { return s; }
+}
+@test void test_iface_contexts() {
+    HolderI hi = new HolderI();
+    ArrayList<Circle> cs = new ArrayList<Circle>();
+    Circle lc = new Circle();
+    cs.add(lc);
+    // setter 实参 = call 结果 / 集合 get
+    hi.set(factory());
+    Test.assertEq(hi.get().area(), 4, "setter from call");
+    hi.set(cs.get(0));
+    Test.assertEq(hi.get().area(), 4, "setter from coll get");
+    // 接口数组元素写 = call 结果
+    Shape[] arr = new Shape[2];
+    arr[0] = factory();
+    Test.assertEq(arr[0].area(), 4, "iface array elem");
+    Test.report("test_iface_contexts", true);
+}

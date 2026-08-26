@@ -1,0 +1,16 @@
+// EXPECT ERROR: argument 1: expected 'int', got 'string'
+// BUG-066 回归（负测试）：类内未限定方法调用（takeInt(...)）实参类型不匹配
+// 须编译期干净拒绝。此前自举缺 normalizeCallArgs+setCallParamTypes（C++ oracle
+// 有）→ `takeInt("hello")`（string 实参 vs int 形参）静默过 sema → codegen 发射
+// `i32 getelementptr(ptr @str, ...)`（ptr 当 i32）→ opt 崩
+// （"constant expression type mismatch: got type 'ptr' but expected 'i32'"，
+// 非干净诊断）。
+class T {
+    action:
+        void takeInt(int v) { }
+        void takeStr(string v) { }
+        @constructor T() {
+            takeInt("hello");
+        }
+}
+int main(){return 0;}
