@@ -2228,3 +2228,27 @@
 - **教训**：isNoVisitIntr（拦截名单内建不访问实参）是校验盲区——凡内建需要
   校验实参类型的，不能走「不 visit」捷径；checked 溢出族（visitCheckedOp）
   是典型。
+
+## BUG-085（已修复 🟩，v3.15.119）：重复变量声明漏校验（应拒绝却接受）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.119，selfhost sema.myp）
+- **背景**：`int x = 5; int x = 7;`（同作用域重复声明）此前自举静默 last-wins
+  shadow（编译运行 x=7）。C++ visitVarDecl 的 lookup 沿作用域链判重复——MYP 无
+  shadow 规则（连嵌套 shadow 也拒）。
+- **根因**：自举 VarDecl 不查重复；且**循环变量不弹作用域**（符号表 last-wins），
+  顺序 `for (int i){} for (int i){}` 与循环后 `int i` 复用全靠 shadow。
+- **修复**：①VarDecl 加重复检查——`sym_.lookup(name)` 非空 → 报 `duplicate
+  variable 'X'`（`_` 忽略符可重复，tuple_ignore）；②For 处理包
+  enterScope/leaveScope（镜像 oracle 循环变量作用域弹出）——修复后顺序循环/
+  循环后复用不误报，且嵌套 shadow 正确拒。
+- **防回归（重要）**：首版无 for 作用域，自举源码本身有顺序同名循环变量
+  （codegen.myp hasVar 两个 `for (int i)`）→ bootstrap 崩（duplicate variable
+  'i'）；曾用 inForInit_ 豁免（partial），后改为**正确 for 作用域**根治。
+- **验证**：同作用域重复 / 嵌套 shadow 干净拒绝（文本与 oracle 逐字节一致）；
+  顺序 for 循环变量、循环后复用、`_` 忽略符、@parallel for 循环后复用均不受
+  影响。
+- **回归**：负测试 `tests/negative/duplicate_var.myp`；全量 373 通过 / 0 失败；
+  oracle 对拍 95/0。
+- **教训**：重复变量检查与「循环变量作用域」强耦合——必须先让 for 弹作用域
+  再查重复，否则自举源码自身的顺序同名循环变量会误报。用豁免（inForInit_）
+  是 partial 且漏 `for (int i){} int i` 复用；正确解是作用域。

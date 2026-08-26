@@ -3643,6 +3643,15 @@ class Sema {
             } else if (k == "VarDecl") {
                 for (int i = 0; i < s.decls().size(); i = i + 1) {
                     AstVar v = s.decls().get(i);
+                    // BUG-085：重复变量声明须拒绝（镜像 C++ visitVarDecl "duplicate
+                    // variable 'X'"）。oracle 的 lookup 沿作用域链判——连嵌套
+                    // shadow 也拒（MYP 无 shadow 规则）。此前自举静默 last-wins。
+                    // `_` 忽略符可重复（解构 tuple_ignore）。循环变量由 For 处理
+                    // 的 enterScope/leaveScope 弹出，顺序/循环后复用不冲突。
+                    if (v.name() != "_" && Str.len(v.name()) != 0 && sym_.lookup(v.name()) != "") {
+                        diag_.error(v.nameLine(), v.nameCol(), "duplicate variable '" + v.name() + "'");
+                        continue;
+                    }
                     AstType vt3 = v.type();
                     if (v.thread() != 0) threadVars_.add(v.name());
                     if (vt3 != null && vt3.typeArgs().size() > 0) {
@@ -3875,6 +3884,11 @@ class Sema {
                 inGpuDivergent_ = savedDiv2;
                 loopDepth_ = loopDepth_ - 1;
             } else if (k == "For") {
+                // BUG-085：循环变量作用域——oracle 的 for-init 变量在循环结束弹出，
+                // 顺序 `for (int i){} for (int i){}` 与循环后 `int i` 复用不冲突；
+                // 自举此前不弹（符号表 last-wins shadow）→ 重复检查会误报。镜像
+                // oracle：整个 for（init/cond/step/body）包一层作用域。
+                sym_.enterScope();
                 // block(...) 仅限 @gpu for；@gpu for 的 block 大小校验（C++）
                 if (s.block() != 0 && s.gpu() == 0) {
                     diag_.error(s.line(), s.col(), "'block(...)' is only valid on '@gpu for'");
@@ -3908,6 +3922,7 @@ class Sema {
                 loopDepth_ = loopDepth_ - 1;
                 inGpuFor_ = savedForGpu;
                 inGpuKernel_ = savedForKernel;
+                sym_.leaveScope();
             } else if (k == "Break" || k == "Continue") {
                 if (loopDepth_ == 0) {
                     diag_.error(s.line(), s.col(), "break/continue outside loop");

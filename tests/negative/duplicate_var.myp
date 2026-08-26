@@ -1,0 +1,16 @@
+// EXPECT ERROR: duplicate variable 'x'
+// BUG-085 回归（负测试）：同作用域重复变量声明须编译期拒绝。此前自举静默
+// last-wins shadow（`int x = 5; int x = 7;` 编译运行 x=7）。C++ visitVarDecl 的
+// lookup 沿作用域链判重复——MYP 无 shadow 规则（连嵌套 shadow 也拒）。
+// 修复同时给 for 循环包 enterScope/leaveScope（镜像 oracle 循环变量作用域弹出），
+// 顺序 `for (int i){} for (int i){}` 与循环后 `int i` 复用不误报。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            int x = 5;
+            int x = 7;
+        }
+}
+int main(){return 0;}

@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.119 — 修重复变量声明漏校验 + for 循环变量作用域（BUG-085）
+
+**非破坏性**（selfhost sema）。`int x = 5; int x = 7;`（同作用域重复声明）此前
+自举静默 last-wins shadow；C++ visitVarDecl 的 lookup 沿作用域链判重复（MYP 无
+shadow 规则）。
+
+- **修复**：①VarDecl 加重复检查（`_` 忽略符可重复）；②For 处理包
+  enterScope/leaveScope——循环变量作用域弹出（镜像 oracle），顺序/循环后复用
+  不误报、嵌套 shadow 正确拒。
+- **防回归**：首版无 for 作用域，自举源码自身有顺序同名循环变量 → bootstrap 崩；
+  正确解是 for 作用域（inForInit_ 豁免是 partial）。
+- **测试**：负测试 `tests/negative/duplicate_var.myp`；顺序循环/循环后复用/_
+  忽略符/@parallel for 均不受影响。
+- 验证：bootstrap 自举成立；全量回归 **373 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-085。
+
 ### v3.15.118 — 修 checkedAdd/checkedMul 实参类型漏校验 → opt 崩（BUG-084）
 
 **非破坏性**（selfhost sema）。`checkedAdd(1.5, 2.5)`（浮点实参）此前静默过
