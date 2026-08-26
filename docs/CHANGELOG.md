@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.99 — 重构 interface upcast 具体类名解析为统一辅助函数
+
+**非破坏性**（selfhost codegen 重构，无行为变化）。`upcastClsName`（BUG-029/033/
+034/064/065 累积）长成 ~150 行多分支、每分支重复「取类型→resolve→判类→
+classInstName」。按「源表达式形态 × 具体类名解析」抽成统一助手：
+
+- `isConcreteClassKind(cn)`：统一判定非接口/struct/枚举。
+- `exprAstTypeOf(e)`：按形态递归取声明/返回 AstType——Identifier（局部/参数/
+  当前类字段裸名）、Member（this.field / struct 变量字段 / 链式结果 .字段，
+  对象递归 + sema valueClass）、Subscript（数组/slice 元素，数组表达式递归）。
+- `upcastClsName(e)`：统一入口——① 表达式自带 valueClass/resolvedClass（sema
+  已设，覆盖 Call 返回/New/链式结果）；② New 类名；③ exprAstTypeOf 解析。
+- 结果：~150 行 → ~85 行，形态枚举收敛一处；后续新增形态只需改 exprAstTypeOf。
+- 验证：bootstrap 自举成立；全量回归 **353/0**（含 iface_upcast_chain 8 测试、
+  collections/链式/2D 全回归）。
+
 ### v3.15.98 — 修 interface 转换从链式结果 .字段 漏具体类名（BUG-065）
 
 **非破坏性**（selfhost codegen）。修完 BUG-064 后继续探 interface 转换族：接口参数

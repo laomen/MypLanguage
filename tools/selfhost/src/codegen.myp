@@ -617,171 +617,92 @@ class CodeGen {
 
         // BUG-029 镜像：接口 fat pointer 的具体类名解析（New / Identifier，含
         // 当前类属性字段兜底——此前只查局部/参数，类字段转接口 → null vtable）。
+        // 具体类判定：非接口/struct/枚举 = 具体实现类（interface upcast 用）。
+        int isConcreteClassKind(string cn) {
+            if (isInterfaceName(cn) != 0) return 0;
+            if (isStructName(cn) != 0) return 0;
+            if (isEnumName(cn) != 0) return 0;
+            return 1;
+        }
+
+        // 源表达式 → 声明/返回 AstType（统一按形态递归；无法解析返回 null）。
+        // 覆盖 Identifier（局部/参数/当前类字段裸名）、Member（this.field /
+        // struct 变量字段 / 链式结果 .字段，对象递归 + sema valueClass）、
+        // Subscript（数组/slice 元素，数组表达式递归）。Call/New 不带 AstType
+        // → 由 upcastClsName 走 valueClass/className 路径。
+        AstType exprAstTypeOf(AstExpr e) {
+            if (e == null) return null;
+            string k = e.kind();
+            if (k == "Identifier") {
+                AstType t = varAstType(e.name());
+                if (t != null) return t;
+                if (Str.len(curClass_) != 0 && tu_ != null) {
+                    AstType pt = propAstType(curClass_, e.name());
+                    if (pt != null) return pt;
+                }
+                return null;
+            }
+            if (k == "Member") {
+                AstExpr obj = e.array();
+                // this.field → 当前类属性
+                if (obj != null && obj.kind() == "This") {
+                    if (Str.len(curClass_) != 0 && tu_ != null) return propAstType(curClass_, e.memberName());
+                    return null;
+                }
+                // 链式结果对象（Call/Subscript/Member/New）→ 用 sema 已解析类名
+                string ocn = "";
+                if (obj != null) {
+                    ocn = obj.valueClass();
+                    if (Str.len(ocn) == 0) ocn = obj.resolvedClass();
+                }
+                // 否则递归对象取类型
+                if (Str.len(ocn) == 0) {
+                    AstType ot = exprAstTypeOf(obj);
+                    if (ot != null) {
+                        AstType ort = resolveType(ot);
+                        if (ort != null) ocn = ort.className();
+                    }
+                }
+                if (Str.len(ocn) == 0) return null;
+                if (isStructName(ocn) != 0) return structFieldAstType(ocn, e.memberName());
+                return propAstType(ocn, e.memberName());
+            }
+            if (k == "Subscript") {
+                AstType at = exprAstTypeOf(e.array());
+                if (at == null) return null;
+                AstType art = resolveType(at);
+                if (art == null) return null;
+                if (art.element() != null) return art.element();
+                if (art.className() == "slice" && art.typeArgs().size() > 0) return art.typeArgs().get(0);
+                return null;
+            }
+            return null;
+        }
+
+        // 统一：源表达式 → 具体实现类名（interface 转换建 vtable）。
+        // 取代多分支各自枚举：① 表达式自带 valueClass/resolvedClass（sema 已设，
+        // 覆盖 Call 返回/New/链式结果）；② New 类名；③ 按形态从声明 AstType 解析。
         string upcastClsName(AstExpr e) {
             if (e == null) return "";
+            // A) 表达式自带具体类名
+            string vc = e.valueClass();
+            if (Str.len(vc) == 0) vc = e.resolvedClass();
+            if (Str.len(vc) != 0 && isConcreteClassKind(vc) != 0) return vc;
+            // B) New 直接取类名
             if (e.kind() == "New") {
                 string cn = e.className();
                 if (Str.len(e.resolvedClass()) != 0) cn = e.resolvedClass();
-                return cn;
+                if (Str.len(cn) != 0 && isConcreteClassKind(cn) != 0) return cn;
             }
-            if (e.kind() == "Call") {
-                // BUG-064：调用结果 → interface（顶层函数/方法/集合 get 返回）。
-                // sema 已在 BUG-057（顶层函数返回）/BUG-062（泛型方法返回替换）
-                // 给 CallExpr 设 valueClass/resolvedClass 具体类名 → 直接用它建
-                // vtable，否则 vtable 槽 null → 派发段错误。
-                string vc = e.valueClass();
-                if (Str.len(vc) == 0) vc = e.resolvedClass();
-                // valueClass 是具体实现类（非接口），无需 resolveBase
-                if (Str.len(vc) != 0 && isInterfaceName(vc) == 0
-                    && isStructName(vc) == 0 && isEnumName(vc) == 0) {
-                    return vc;
-                }
-            }
-            if (e.kind() == "Identifier") {
-                string nm = e.name();
-                AstType ivt = varAstType(nm);
-                if (ivt != null) {
-                    AstType irt = resolveType(ivt);
-                    if (irt != null && Str.len(irt.className()) != 0
-                        && isInterfaceName(irt.className()) == 0
-                        && isStructName(irt.className()) == 0
-                        && isEnumName(irt.className()) == 0) {
-                        return classInstName(irt);
-                    }
-                }
-                // BUG-029：当前类属性字段（裸名）→ 按属性声明类型解析
-                if (Str.len(curClass_) != 0 && tu_ != null) {
-                    AstType pvt = propAstType(curClass_, nm);
-                    if (pvt != null) {
-                        AstType prt = resolveType(pvt);
-                        if (prt != null && Str.len(prt.className()) != 0
-                            && isInterfaceName(prt.className()) == 0
-                            && isStructName(prt.className()) == 0
-                            && isEnumName(prt.className()) == 0) {
-                            return classInstName(prt);
-                        }
-                    }
-                }
-            }
-            // BUG-029：this.字段（Member + This 对象）→ 按属性声明类型解析
-            if (e.kind() == "Member" && Str.len(curClass_) != 0 && tu_ != null) {
-                AstExpr obj = e.array();
-                if (obj != null && obj.kind() == "This") {
-                    AstType pvt = propAstType(curClass_, e.memberName());
-                    if (pvt != null) {
-                        AstType prt = resolveType(pvt);
-                        if (prt != null && Str.len(prt.className()) != 0
-                            && isInterfaceName(prt.className()) == 0
-                            && isStructName(prt.className()) == 0
-                            && isEnumName(prt.className()) == 0) {
-                            return classInstName(prt);
-                        }
-                    }
-                }
-            }
-            // BUG-064：struct 变量 .字段 → interface（`Shape s = h.c;`）。对象是
-            // Identifier 且其类型是 struct → 按 struct 字段声明类型解析。
-            if (e.kind() == "Member") {
-                AstExpr obj = e.array();
-                if (obj != null && obj.kind() == "Identifier") {
-                    AstType oat = varAstType(obj.name());
-                    if (oat != null) {
-                        AstType ort = resolveType(oat);
-                        if (ort != null && Str.len(ort.className()) != 0
-                            && isStructName(ort.className()) != 0) {
-                            AstType ft = structFieldAstType(ort.className(), e.memberName());
-                            if (ft != null) {
-                                AstType frt = resolveType(ft);
-                                if (frt != null && Str.len(frt.className()) != 0
-                                    && isInterfaceName(frt.className()) == 0
-                                    && isStructName(frt.className()) == 0
-                                    && isEnumName(frt.className()) == 0) {
-                                    return classInstName(frt);
-                                }
-                            }
-                        }
-                    }
-                } else if (obj != null && (obj.kind() == "Call" || obj.kind() == "Subscript" || obj.kind() == "Member" || obj.kind() == "New")) {
-                    // BUG-065：链式结果 .字段 → interface（`Shape s = hs.get(0).c;`）。
-                    // 对象是 Call 等 → 用 valueClass/resolvedClass 取返回类型，
-                    // 再按 struct 字段 / class 属性解析字段具体类。
-                    string ocls = obj.valueClass();
-                    if (Str.len(ocls) == 0) ocls = obj.resolvedClass();
-                    if (Str.len(ocls) != 0) {
-                        if (isStructName(ocls) != 0) {
-                            AstType ft = structFieldAstType(ocls, e.memberName());
-                            if (ft != null) {
-                                AstType frt = resolveType(ft);
-                                if (frt != null && Str.len(frt.className()) != 0
-                                    && isInterfaceName(frt.className()) == 0
-                                    && isStructName(frt.className()) == 0
-                                    && isEnumName(frt.className()) == 0) {
-                                    return classInstName(frt);
-                                }
-                            }
-                        } else {
-                            AstType pvt = propAstType(ocls, e.memberName());
-                            if (pvt != null) {
-                                AstType prt = resolveType(pvt);
-                                if (prt != null && Str.len(prt.className()) != 0
-                                    && isInterfaceName(prt.className()) == 0
-                                    && isStructName(prt.className()) == 0
-                                    && isEnumName(prt.className()) == 0) {
-                                    return classInstName(prt);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // BUG-033：数组元素 → interface（`View v = arr[i]`）。元素类从局部
-            // 变量数组类型（localAstTypes_）或类属性数组类型（propAstType）解析，
-            // 含泛型 mangling。与 C++ 接口变量分支 (a2) 一致。
-            if (e.kind() == "Subscript") {
-                AstExpr arr = e.array();
-                string arrName = "";
-                if (arr != null && arr.kind() == "Identifier") {
-                    arrName = arr.name();
-                } else if (arr != null && arr.kind() == "Member") {
-                    AstExpr sobj = arr.array();
-                    if (sobj != null && sobj.kind() == "This") arrName = arr.memberName();
-                }
-                if (Str.len(arrName) != 0) {
-                    // 局部变量数组：varAstType → element 类
-                    AstType lat = varAstType(arrName);
-                    if (lat != null) {
-                        AstType lrt = resolveType(lat);
-                        if (lrt != null && lrt.element() != null) {
-                            AstType let = resolveType(lrt.element());
-                            if (let != null && Str.len(let.className()) != 0
-                                && isInterfaceName(let.className()) == 0
-                                && isStructName(let.className()) == 0
-                                && isEnumName(let.className()) == 0) {
-                                return classInstName(let);
-                            }
-                        }
-                    }
-                    // 类属性数组：propAstType → element 类
-                    if (Str.len(curClass_) != 0 && tu_ != null) {
-                        AstType pvt = propAstType(curClass_, arrName);
-                        if (pvt != null) {
-                            AstType prt = resolveType(pvt);
-                            if (prt != null && prt.element() != null) {
-                                AstType pet = resolveType(prt.element());
-                                if (pet != null && Str.len(pet.className()) != 0
-                                    && isInterfaceName(pet.className()) == 0
-                                    && isStructName(pet.className()) == 0
-                                    && isEnumName(pet.className()) == 0) {
-                                    return classInstName(pet);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // C) 按形态从声明 AstType 解析
+            AstType t = exprAstTypeOf(e);
+            if (t == null) return "";
+            AstType rt = resolveType(t);
+            if (rt == null) return "";
+            string cn2 = rt.className();
+            if (Str.len(cn2) != 0 && isConcreteClassKind(cn2) != 0) return classInstName(rt);
             return "";
         }
-
         // 具体类实例 ptr → 接口 fat pointer（无法识别具体类则直通原值）。
         string upcastIface(AstExpr argE, string ifaceName, string argV) {
             string clsName = upcastClsName(argE);
