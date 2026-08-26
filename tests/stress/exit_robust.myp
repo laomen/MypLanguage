@@ -1,0 +1,52 @@
+// tests/stress/exit_robust.myp — 快速进程退出健壮性（v3.15.83）
+// main 在 @thread worker 深工作中直接返回（不 join、不等）→ 验证退出无崩溃/UAF。
+// selfhost myp_free_all 是 reset-only（不 munmap）→ atexit 不释放 worker 在用内存。
+// 验证：干净退出（exit 0 + PASS；崩溃/段错误 → run_stress 判失败）。
+import env;
+import time;
+import coro;
+ffi long myp_channel_create(int capacity);
+ffi int myp_channel_send(long handle, long val);
+ffi long myp_channel_recv(long handle);
+@static class S {
+    property:
+        long ch = 0;
+}
+class W {
+    action:
+        @coro(stack=64) void sendLoop(long n) {
+            long i = 0;
+            while (i < n) {
+                myp_channel_send(S.ch, i);
+                i = i + 1;
+            }
+        }
+        @coro(stack=64) void recvLoop(long n) {
+            long i = 0;
+            while (i < n) {
+                long v = myp_channel_recv(S.ch);
+                i = i + 1;
+            }
+        }
+        @startup void run() {
+            long h1 = this.sendLoop(100000L);
+            long h2 = this.recvLoop(100000L);
+            int guard = 0;
+            while (guard < 10000000) {
+                Coro.scheduler();
+                guard = guard + 1;
+            }
+        }
+}
+class M {
+    action:
+        @constructor M() {
+            S.ch = myp_channel_create(8);
+            W a = new W() @thread;
+            W b = new W() @thread;
+            Time.sleep(10);   // 让 worker 进入深工作（channel 满/空 → 协程 park + 跨线程唤醒）
+            Console.writeString("PASS exit_robust\n");
+            // 直接返回 → 进程退出（worker 仍在跑，验证退出清理安全）
+        }
+}
+int main() { M m = new M(); return 0; }
