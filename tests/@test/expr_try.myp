@@ -1,0 +1,55 @@
+// expr_try: 表达式 try（§五-3，try expr catch (e) default）→ @test
+// 语义：成功→try 值，失败→catch 值（类型须兼容）。catch 变量是占位符，
+// 不在 catch 表达式中绑定（C++ oracle 与自举一致）。
+// 覆盖：成功给值 / 失败给默认值 / 参与算术 / 数字提升兼容 / 作实参 / 嵌套
+import test;
+
+int risky(int v) {
+    if (v < 0) throw "neg:" + v;
+    return v * 2;
+}
+
+// —— 1) 成功 → try 值；失败 → 默认值 ——
+@test void test_value() {
+    int a = try risky(5) catch (e) -1;
+    Test.assertEq(a, 10, "success val");
+    int b = try risky(-3) catch (e) -1;
+    Test.assertEq(b, -1, "fail default");
+    Test.report("test_value", true);
+}
+
+// —— 2) 参与算术（作为子表达式）——
+@test void test_arithmetic() {
+    int c = 100 + try risky(3) catch (e) 0;
+    Test.assertEq(c, 106, "arith success");
+    int d = 100 + try risky(-1) catch (e) 0;
+    Test.assertEq(d, 100, "arith fail");
+    int e = try risky(5) catch (x) 0 * 2;
+    Test.assertEq(e, 10, "prec mult");
+    Test.report("test_arithmetic", true);
+}
+
+// —— 3) 数字提升兼容（try int / catch long，类型兼容应通过）——
+@test void test_promote() {
+    long v = try risky(5) catch (e) -1L;
+    Test.assertEq(v, 10, "promote int/long");
+    Test.report("test_promote", true);
+}
+
+// —— 4) 作实参 ——
+int addOne(int x) { return x + 1; }
+@test void test_arg() {
+    int r = addOne(try risky(4) catch (e) 0);
+    Test.assertEq(r, 9, "as arg");
+    Test.report("test_arg", true);
+}
+
+// —— 5) 嵌套表达式 try ——
+int inner(int v) { return try risky(v) catch (e) -1; }
+@test void test_nested() {
+    int a = try inner(3) catch (e) -100;
+    Test.assertEq(a, 6, "nested ok");
+    int b = try inner(-5) catch (e) -100;
+    Test.assertEq(b, -1, "nested inner default");
+    Test.report("test_nested", true);
+}

@@ -1,0 +1,13 @@
+// EXPECT ERROR: try/catch expressions have incompatible types
+// BUG-060 回归（负测试）：表达式 try 的 try 值与 catch 值类型不兼容须编译期拒绝。
+// 此前自举缺 typesCompat 检查（C++ oracle 有）→ `int a = try risky(5) catch (e)
+// "oops";`（int vs string）静默过 sema → codegen PHI i32/ptr 类型不匹配 → opt 崩
+// （非干净诊断）。
+class T {
+    action:
+        @constructor T() {
+            int a = try risky(5) catch (e) "oops";
+        }
+}
+int risky(int v) { return v; }
+int main(){return 0;}

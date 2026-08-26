@@ -5648,7 +5648,15 @@ class Sema {
             }
             if (k == "TryExpr") {
                 string t = e.tryExpr() != null ? visitExpr(e.tryExpr()) : "void";
-                if (e.catchExpr() != null) visitExpr(e.catchExpr());
+                string f = e.catchExpr() != null ? visitExpr(e.catchExpr()) : "void";
+                // BUG-060：表达式 try 类型兼容检查（对齐 C++ visitTryExpr）——否则
+                // try 给 int、catch 给 string 静默过 sema → codegen PHI i32/ptr 类型
+                // 不匹配 → opt 崩（非干净诊断）。
+                if (typesCompat(t, f) == 0) {
+                    diag_.error(e.line(), e.col(), "try/catch expressions have incompatible types: '" + t + "' and '" + f + "'");
+                    e.setResolvedKind(t);
+                    return t;
+                }
                 e.setResolvedKind(t);
                 return t;
             }

@@ -1640,3 +1640,29 @@
   凡"取元素类型"处两条都要覆盖；② 链式访问族（BUG-057/058/059）根因相同——调用
   结果的类型信息（成员类/数组元素/slice 元素）没在 sema/codegen 各路径完整传递，
   审计要按"语法形态 × 返回类型"矩阵枚举。
+
+## BUG-060（已修复 🟩，v3.15.93）：表达式 try 类型检查缺失 + catch 值转换块位错
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.93，selfhost sema.myp + codegen.myp）
+- **背景**：补表达式 try（`var n = try expr catch (e) default;`）@test 时暴露两处：
+  - **060a**：`int a = try risky(5) catch (e) "oops";`（int vs string）自举静默过
+    sema（C++ visitTryExpr 有 typesCompatible 检查）→ codegen PHI i32/ptr 类型
+    不匹配 → opt 崩（非干净诊断）。
+  - **060b**：`long v = try risky(5) catch (e) -1L;`（int try / long catch，数字提升
+    合法）→ opt verify "input module is broken"——genTryExpr 把 catch 值转换
+    （convertValue/trunc）放在 `openBlock(merge)` **之后**，trunc 落进 merge 块、
+    phi 前 → 违反「phi 必须在块首」+「指令支配」两条规则。
+- **根因**：060a——自举 TryExpr 分支只有 `visitExpr(tryExpr)/visitExpr(catchExpr)`，
+  无 `typesCompat` 检查；060b——转换指令发射位置错（须在 catch 块、`emitBr(merge)` 前）。
+- **修复**：
+  - sema：TryExpr 加 `typesCompat(t,f)==0` → 报 `try/catch expressions have
+    incompatible types: 'X' and 'Y'` 干净拒绝。
+  - codegen：genTryExpr 把 `if (t2 != t1) v2 = convertValue(v2,t2,t1);` 移到
+    `openBlock(mergeB)` 之前（catch 块内）。
+- **验证**：int vs string → 干净报错；int/long 提升 → v=10 正常。
+- **回归**：正 `tests/@test/expr_try.myp`（5 测试/9 断言：成功/失败默认值/算术/
+  提升/实参/嵌套）；负 `tests/negative/expr_try_type_mismatch.myp`；全量 346/0。
+- **教训**：① 表达式 try 的 catch 变量是**占位符**，不在 catch 表达式中绑定（C++
+  oracle 与自举一致）——`catch (e) Str.len(e)` 报 undefined 是设计，非 bug；
+  ② phi 前**不允许任何非 phi 指令**（LLVM 块首规则），凡 merge 块需先算好在各
+  前驱块内完成的转换值。

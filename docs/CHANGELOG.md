@@ -27,6 +27,25 @@
 
 ## 编译器版本历史
 
+### v3.15.93 — 修表达式 try 类型检查缺失 + catch 值转换块位错（BUG-060）
+
+**非破坏性**（selfhost sema + codegen）。补表达式 try（`var n = try expr catch (e)
+default;`）@test 时暴露两处：
+
+- **060a**：`int a = try risky(5) catch (e) "oops";`（int vs string）自举静默过 sema
+  （C++ visitTryExpr 有 typesCompatible 检查）→ codegen PHI i32/ptr 类型不匹配 → opt
+  崩。修复：sema TryExpr 加 `typesCompat` 检查，报 `try/catch expressions have
+  incompatible types` 干净拒绝。
+- **060b**：`long v = try risky(5) catch (e) -1L;`（int/long 数字提升合法）→ opt
+  verify "input module is broken"。根因：genTryExpr 把 catch 值转换
+  （convertValue/trunc）放在 `openBlock(merge)` 之后 → trunc 落进 merge 块、phi 前
+  → 违反「phi 必须在块首」+「指令支配」。修复：转换移到 catch 块、`emitBr(merge)` 前。
+- **测试**：正 `tests/@test/expr_try.myp`（5 测试/9 断言：成功值/失败默认值/算术/
+  数字提升/作实参/嵌套）；负 `tests/negative/expr_try_type_mismatch.myp`。
+- 注：表达式 try 的 catch 变量是**占位符**，不在 catch 表达式绑定（C++ oracle 与
+  自举一致）。
+- 验证：bootstrap 自举成立；全量回归 **346/0**。BUGLIST 记 BUG-060。
+
 ### v3.15.92 — 修调用结果 slice 链式访问（下标/size 未解析）（BUG-059）
 
 **非破坏性**（selfhost sema + codegen）。续 BUG-058 排查姊妹缺口：`makeSlice()`

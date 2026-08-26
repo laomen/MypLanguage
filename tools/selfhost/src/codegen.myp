@@ -10616,10 +10616,13 @@ class CodeGen {
             }
             string v2 = genExpr(e.catchExpr());
             string t2 = exprLlvmType(e.catchExpr());
-            if (terminated_ == 0) emitBr(mergeB);
-            // merge：phi 汇合
-            openBlock(mergeB);
+            // BUG-060b：catch 值到 try 类型的转换必须在 catch 块内（emitBr 之前）
+            // ——否则 trunc 落进 merge 块、phi 前 → 违反「phi 必须在块首」+
+            // 「指令支配」→ opt verify "input module is broken"（long 案例暴露）。
             if (t2 != t1) v2 = convertValue(v2, t2, t1);
+            if (terminated_ == 0) emitBr(mergeB);
+            // merge：phi 汇合（phi 必须是 merge 块第一条指令）
+            openBlock(mergeB);
             string phi = newTmp();
             sb_.append("  " + phi + " = phi " + t1 + " [ " + v1 + ", %" + tryB + " ], [ " + v2 + ", %" + catchB + " ]\n");
             sb_.append("  call void @myp_exception_pop()\n");
