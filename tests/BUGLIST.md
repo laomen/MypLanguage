@@ -1853,3 +1853,54 @@
 - **教训**：泛型实例方法（`ArrayList<int>` 等）的实参校验必须用**替换后的形参
   kind**——模板占位符 kind 是 void/assoc，触发守卫跳过形同虚设。凡泛型方法返回
   替换（BUG-062 `substRetAst`）存在的地方，实参校验同样需要替换，二者须同步。
+
+## BUG-068（已修复 🟩，v3.15.102）：接口变量方法缺实参类型校验（静默错参）
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.102，selfhost sema.myp）
+- **背景**：续 BUG-066/067 的「oracle 有校验、自举漏」调用路径审查——接口变量：
+  - ❌ `IBox ib = new IntBox(); ib.put("str");`（`put(int)` 的 string 实参）自举
+    编译+运行通过（静默错参，ptr 截断成 i32）。C++ oracle 干净拒绝
+    `argument 1: expected 'int', got 'string'`。
+- **根因**：接口方法注册在 `interfaceMethods_`（**不在** `methods_`/`methodSigIdx_`）
+  → Member 分支 `findMethodParams(base3, member)` 返回 null → `callParamTypes` 不设
+  → 实参检查（非空才跑）被跳过。
+- **修复**：新增 `findIfaceMethodParams(ifc, meth)`（镜像 `findIfaceMethodRet`）；
+  Member 分支 `anyMps` 解析后 `if (anyMps == null) anyMps = findIfaceMethodParams(
+  base3, memberName)`——接口签名即规范形参，走同一 normalizeCallArgs +
+  setCallParamTypes 校验路径。
+- **验证**：`ib.put("str")` 干净拒绝（文本/位置与 oracle 逐字节一致）；合法
+  `ib.put(7)`、多实现类（IntBox/Circle）分派不受影响。
+- **回归**：负测试 `tests/negative/iface_arg_type_mismatch.myp`（EXPECT ERROR
+  argument 1: expected 'int', got 'string'）；全量 132 @test PASS / 0 FAIL；
+  oracle 对拍 95/0。
+- **教训**：凡「方法签名存在但不在 methodSigIdx_ 主索引」的调用路径（接口方法、
+  事件已用 isEvent 守卫）都要补 callParamTypes——校验依赖 callParamTypes 非空。
+
+## BUG-069（已修复 🟩，v3.15.103）：泛型 static 调用缺实参校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.103，selfhost sema.myp）
+- **背景**：续探调用路径实参校验——泛型 static（`@static class` 的泛型 static 方法）：
+  - ❌ `List.foldInt<int>(arr, 0)`（漏 fn 实参）静默过 sema → 运行时行为错；
+  - ❌ `List.foldInt<int>(arr, "str", ...)`（string 实参 vs int 形参）静默过 sema
+    → codegen 实参类型错（ptr 当 i32）→ **opt 崩**（`constant expression type
+    mismatch: got type 'ptr' but expected 'i32'`，非干净诊断）。
+  - C++ oracle 三处全拒（`missing required argument 'f'` / `expected 3 arguments,
+    got 2` / `argument 2: expected 'int', got 'string'`）。
+- **根因**：`resolveGenericStaticCall`（自举）只校验**类型实参**个数/推导，完全不
+  校验**值实参**数量与类型；C++ 同名函数对替换后的实例签名逐参 typesCompatible。
+- **修复**：`resolveGenericStaticCall` 末尾加实参校验——`normalizeCallArgs` 管
+  数量/默认/命名（失败 ret=void）；随后逐参用 `substituteType(param.type, tps,
+  concrete)` 得替换后 kind，与实参 resolvedKind 比（lambda 实参 → "function"，
+  void/assoc 跳过）。
+- **验证**：缺参/错参均干净拒绝；合法 `foldInt<int>(arr,0,(int a,int b)=>a+b)`
+  （=6）与 `map<int,string>`（=v5）不受影响。
+- **回归**：负测试 `tests/negative/generic_static_arg_mismatch.myp`（EXPECT
+  ERROR argument 2: expected 'int', got 'string'）；全量 132 @test PASS / 0 FAIL；
+  oracle 对拍 95/0。
+- **已知限制（非本次）**：函数类型形参的**签名**比较（`(int) -> int` vs
+  `(string) -> int`）自举在**所有路径**都不做（kind 都是 "function"，typesCompat
+  恒放行）——oracle 报 `expected '(int) -> int', got '(string) -> int'`。非崩溃
+  缺口（静默错参），涉及函数签名结构化比较，另立特性待办。
+- **教训**：泛型 static 调用是 `resolveGenericStaticCall` 独立路径，容易漏「值
+  实参校验」——与实例方法（Member 分支）不同，须在 resolve 内补齐。凡泛型替换
+  （substituteType/substRetAst）出现处，实参校验都要用替换后签名。

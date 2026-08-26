@@ -1,0 +1,28 @@
+// EXPECT ERROR: argument 2: expected 'int', got 'string'
+// BUG-069 回归（负测试）：泛型 static 方法调用实参须编译期校验（数量 + 类型）。
+// 此前自举 resolveGenericStaticCall 完全无实参校验——缺参（`foldInt<int>(arr,0)`
+// 漏 fn）/ 错参（`foldInt<int>(arr,"str",...)` string 实参 vs int 形参）静默过
+// sema → 错参 codegen 实参类型错（ptr 当 i32）→ opt 崩；缺参运行时行为错。
+// C++ oracle 对替换后的实例签名逐参 typesCompatible 干净拒绝。
+import env;
+import option;
+import collections;
+
+@static class List {
+    static:
+        int foldInt<T>(ArrayList<T> arr, int init, (int, T) -> int f) {
+            int acc = init;
+            for (int i = 0; i < arr.size(); i = i + 1) acc = f(acc, arr.get(i));
+            return acc;
+        }
+}
+class T2 {
+    action:
+        @constructor T2() {
+            ArrayList<int> arr = new ArrayList<int>();
+            arr.add(1);
+            arr.add(2);
+            int s = List.foldInt<int>(arr, "str", (int a, int b) => { return 0; });
+        }
+}
+int main(){return 0;}

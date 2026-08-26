@@ -3082,6 +3082,31 @@ class Sema {
                     }
                 }
             }
+            // BUG-069：泛型 static 调用实参校验（数量 + 类型）。C++ oracle
+            // resolveGenericStaticCall 对替换后的实例签名逐参 typesCompatible；
+            // 自举原全缺 → 缺参/错参静默过 sema → 缺参运行时行为错、错参
+            // codegen 实参类型错（ptr 当 i32）→ opt 崩。镜像：normalizeCallArgs
+            // 管数量/默认/命名，替换后形参 kind 逐参比 resolvedKind。
+            ArrayList<AstParam> gsParams = templ.params();
+            int gsNormFailed = 0;
+            if (gsParams != null) {
+                if (normalizeCallArgs(e, gsParams) == 0) gsNormFailed = 1;
+            }
+            if (gsNormFailed == 0) {
+                for (int gi = 0; gi < e.args().size() && gi < gsParams.size(); gi = gi + 1) {
+                    AstType gsp = substituteType(gsParams.get(gi).type(), tps, concrete);
+                    string gpk = gsp != null ? typeToKind(gsp) : "void";
+                    if (gpk == "void" || gpk == "assoc") continue;
+                    AstExpr garg = e.args().get(gi);
+                    string gat = garg != null ? garg.resolvedKind() : "void";
+                    if (garg != null && garg.kind() == "Lambda" && gpk == "function") gat = "function";
+                    if (Str.len(gat) != 0 && typesCompat(gpk, gat) == 0) {
+                        int gl = garg != null ? garg.line() : 0;
+                        int gc = garg != null ? garg.col() : 0;
+                        diag_.error(gl, gc, "argument " + (gi + 1) + ": expected '" + gpk + "', got '" + gat + "'");
+                    }
+                }
+            }
             // 3) mangling（C++ 全局去重）
             string mangled = "__gs_" + clsName + "_" + templ.name();
             for (int i = 0; i < concrete.size(); i = i + 1) mangled = mangled + "_" + gsTypeArgName(concrete.get(i));
@@ -3206,6 +3231,17 @@ class Sema {
                 if (s.cls() == ifc && s.meth() == meth) return s.ret();
             }
             return "";
+        }
+        // BUG-068：接口方法形参列表（接口变量 obj.method(...) 的实参校验用）。
+        // 接口方法注册在 interfaceMethods_（不在 methods_/methodSigIdx_）→
+        // findMethodParams 返回 null → callParamTypes 不设 → 实参类型不匹配
+        // 漏过 sema（ib.put("str") 静默错参）。接口签名即规范形参。
+        ArrayList<AstParam> findIfaceMethodParams(string ifc, string meth) {
+            for (int i = 0; i < interfaceMethods_.size(); i = i + 1) {
+                MethodSig s = interfaceMethods_.get(i);
+                if (s.cls() == ifc && s.meth() == meth) return s.params();
+            }
+            return null;
         }
         // 类方法（含接口）是否存在
         int hasMethodAny(string cls, string meth) {
@@ -4847,6 +4883,12 @@ class Sema {
                                 }
                             }
                             ArrayList<AstParam> anyMps = findMethodParams(base3, callee.memberName());
+                            // BUG-068：接口变量 obj.method(...) ——接口方法注册在
+                            // interfaceMethods_（不在 methodSigIdx_）→ findMethodParams
+                            // 返回 null → callParamTypes 不设 → 实参类型不匹配漏过
+                            // sema（ib.put("str") 静默错参，oracle 干净拒绝）。接口
+                            // 签名即规范形参，回退用接口形参校验。
+                            if (anyMps == null) anyMps = findIfaceMethodParams(base3, callee.memberName());
                             int normFailed = 0;
                             if (anyMps != null) {
                                 if (normalizeCallArgs(e, anyMps) == 0) { normFailed = 1; ret = "void"; }

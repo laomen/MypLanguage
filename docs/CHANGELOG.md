@@ -27,6 +27,42 @@
 
 ## 编译器版本历史
 
+### v3.15.103 — 修泛型 static 调用缺实参校验 → opt 崩（BUG-069）
+
+**非破坏性**（selfhost sema）。续调用路径实参校验审查：`List.foldInt<int>(arr,
+0)`（漏 fn 实参）与 `List.foldInt<int>(arr, "str", ...)`（string 实参 vs int
+形参）静默过 sema → 错参 codegen 实参类型错（ptr 当 i32）→ **opt 崩**；C++
+oracle 三处全拒。
+
+- **根因**：`resolveGenericStaticCall`（自举）只校验类型实参个数/推导，完全不
+  校验值实参数量与类型；C++ 同名函数对替换后的实例签名逐参 typesCompatible。
+- **修复**：`resolveGenericStaticCall` 末尾加实参校验——`normalizeCallArgs` 管
+  数量/默认/命名；逐参 `substituteType(param.type, tps, concrete)` 得替换后
+  kind 与实参 resolvedKind 比（lambda 实参 → "function"，void/assoc 跳过）。
+- **测试**：负测试 `tests/negative/generic_static_arg_mismatch.myp`；合法
+  foldInt/map 调用不受影响。
+- **已知限制（非本次）**：函数类型形参的签名比较（`(int) -> int` vs
+  `(string) -> int`）自举在所有路径都不做（kind 均 "function"）——oracle 能报
+  `expected '(int) -> int', got '(string) -> int'`。非崩溃缺口，另立待办。
+- 验证：bootstrap 自举成立（2 级 MD5 一致）；全量回归 **132 @test PASS / 0 FAIL**；
+  oracle 对拍 95/0。BUGLIST 记 BUG-069。
+
+### v3.15.102 — 修接口变量方法缺实参类型校验（静默错参）（BUG-068）
+
+**非破坏性**（selfhost sema）。`IBox ib = new IntBox(); ib.put("str")`（`put(int)`
+的 string 实参）自举编译+运行通过（静默错参，ptr 截断成 i32）；oracle 干净拒绝
+`argument 1: expected 'int', got 'string'`。
+
+- **根因**：接口方法注册在 `interfaceMethods_`（不在 `methods_`/`methodSigIdx_`）
+  → Member 分支 `findMethodParams` 返回 null → `callParamTypes` 不设 → 实参检查
+  被跳过。
+- **修复**：新增 `findIfaceMethodParams`；Member 分支 `anyMps` 为空时回退接口
+  形参，走同一 normalizeCallArgs + setCallParamTypes 校验路径。
+- **测试**：负测试 `tests/negative/iface_arg_type_mismatch.myp`；合法接口调用 +
+  多实现类分派不受影响。
+- 验证：bootstrap 自举成立；全量回归 **132 @test PASS / 0 FAIL**；oracle 对拍
+  95/0。BUGLIST 记 BUG-068。
+
 ### v3.15.101 — 修泛型实例方法缺实参类型校验 → opt 崩（BUG-067）
 
 **非破坏性**（selfhost sema）。续 BUG-066 探「oracle 有校验、自举漏」的调用

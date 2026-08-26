@@ -1,0 +1,27 @@
+// EXPECT ERROR: argument 1: expected 'int', got 'string'
+// BUG-068 回归（负测试）：接口变量方法实参类型不匹配须编译期干净拒绝。
+// 此前自举对接口变量 obj.method(...) 漏校验——接口方法注册在 interfaceMethods_
+//（不在 methods_/methodSigIdx_）→ findMethodParams 返回 null → callParamTypes
+// 不设 → 实参检查跳过 → `ib.put("str")`（IBox.put(int) 的 string 实参）静默过
+// sema → 运行时静默错参（ptr 截断成 i32）。C++ oracle 干净拒绝
+// `argument 1: expected 'int', got 'string'`。
+import env;
+
+interface IBox {
+    int getVal();
+    void put(int v);
+}
+class IntBox {
+    interface class IBox;
+    action:
+        int getVal() { return 42; }
+        void put(int v) { }
+}
+class T2 {
+    action:
+        @constructor T2() {
+            IBox ib = new IntBox();
+            ib.put("str");
+        }
+}
+int main(){return 0;}
