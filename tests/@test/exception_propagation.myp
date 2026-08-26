@@ -1,0 +1,191 @@
+// exception_propagation: 异常传播机制 → @test
+// 覆盖：多层跨函数传播（消息完整）/ 对象异常跨函数（类型保留）/
+//       finally 链逐层执行（内→外）/ 跨函数 finally 传播 /
+//       throw; 显式重抛（string 保留消息 + 对象保留类型）/
+//       多 catch 分发顺序（具体类→Error 接口→兜底）/ 不匹配向外 rethrow /
+//       return/break/continue 先执行 finally / catch 后恢复不重复捕获
+import test;
+import error;
+
+// —— 跨函数多层传播：level1 → level2 → level3，level3 抛，顶层捕获 ——
+int lvl3(int v) {
+    if (v < 0) throw "neg:" + v;
+    return v * 10;
+}
+int lvl2(int v) { return lvl3(v); }
+int lvl1(int v) { return lvl2(v); }
+
+// —— 对象异常跨函数：objRisky 抛 ParseError，经 objWrap 传回顶层 ——
+void objRisky(int v) {
+    if (v < 0) { ParseError e = new ParseError(); e.setLine(99); throw e; }
+}
+int objWrap(int v) { objRisky(v); return v; }
+
+// —— 跨函数 finally 顺序累加器（@static class 共享可变状态）——
+@static class FinOrder {
+    property:
+        string seq = "";
+}
+
+// 每个函数一层 try/finally：最内抛 → 各层 finally 按内→外执行
+void finC() { try { throw "cf"; } finally { FinOrder.seq = FinOrder.seq + "Fc;"; } }
+void finB() { try { finC(); } finally { FinOrder.seq = FinOrder.seq + "Fb;"; } }
+void finA() { try { finB(); } finally { FinOrder.seq = FinOrder.seq + "Fa;"; } }
+
+// return 时 finally 仍执行（mode=return）
+int finRet() {
+    try { return 7; } finally { FinOrder.seq = FinOrder.seq + "R;"; }
+}
+
+// —— 1) 多层跨函数传播：消息一次到位、中间层不吞 ——
+@test void test_multi_level() {
+    string c = "";
+    try { int r = lvl1(5); Test.assertEq(r, 50, "lvl1 ok"); }
+    catch (string s) { c = s; }
+    Test.assertStrEq(c, "", "no throw");
+    c = "";
+    try { lvl1(-3); }
+    catch (string s) { c = s; }
+    Test.assertStrEq(c, "neg:-3", "prop msg");
+    Test.report("test_multi_level", true);
+}
+
+// —— 2) 对象异常跨函数传播：类型保留，顶层精确匹配 ——
+@test void test_obj_prop() {
+    string msg = "";
+    try { objWrap(-1); }
+    catch (ParseError e) { msg = e.message(); }
+    Test.assert(msg != "", "obj type preserved");
+    // 不匹配 catch 不能截获
+    msg = "";
+    try { objWrap(-1); }
+    catch (FileError e) { msg = "wrong"; }
+    catch (ParseError e) { msg = "right"; }
+    Test.assertStrEq(msg, "right", "obj match after nomatch");
+    Test.report("test_obj_prop", true);
+}
+
+// —— 3) finally 链：传播路径每层 finally 按内→外执行，再进 catch ——
+@test void test_finally_chain() {
+    string order = "";
+    // 三层 finally 链：throw 冒泡时 L3→L2 逐层执行，最外层 catch 捕获后最外层 finally L1 执行
+    try {
+        try {
+            try { throw "fx"; }
+            finally { order = order + "L3;"; }
+        } finally { order = order + "L2;"; }
+    } catch (string s) { order = order + "C(" + s + ");"; }
+    finally { order = order + "L1;"; }
+    Test.assertStrEq(order, "L3;L2;C(fx);L1;", "finally chain order");
+    // catch + finally 同层：catch 先跑，finally 后跑
+    order = "";
+    try { throw "cf"; }
+    catch (string s) { order = order + "C;"; }
+    finally { order = order + "F;"; }
+    Test.assertStrEq(order, "C;F;", "catch then finally");
+    Test.report("test_finally_chain", true);
+}
+
+// —— 4) 跨函数 finally 传播：每帧 finally 都执行（内→外），顶层 catch ——
+@test void test_finally_cross_fn() {
+    FinOrder.seq = "";
+    try { finA(); }
+    catch (string s) { FinOrder.seq = FinOrder.seq + "CA(" + s + ");"; }
+    Test.assertStrEq(FinOrder.seq, "Fc;Fb;Fa;CA(cf);", "cross fn finally");
+    Test.report("test_finally_cross_fn", true);
+}
+
+// —— 5) throw; 显式重抛：string 保留消息 / 对象保留类型 ——
+@test void test_rethrow() {
+    string out1 = "";
+    try {
+        try { throw "rt1"; } catch (e) { throw; }
+    } catch (e) { out1 = e; }
+    Test.assertStrEq(out1, "rt1", "rethrow str msg");
+    string out2 = "";
+    try {
+        try { ParseError p = new ParseError(); p.setLine(3); throw p; }
+        catch (ParseError e) { throw; }
+    } catch (ParseError e) { out2 = e.message(); }
+    Test.assert(out2 != "", "rethrow obj type");
+    Test.report("test_rethrow", true);
+}
+
+// —— 6) 多 catch 分发顺序：具体类 → Error 接口 → 兜底 ——
+@test void test_dispatch_order() {
+    string r = "";
+    try { throw new FileError(); }
+    catch (FileError e) { r = "concrete"; }
+    catch (Error e) { r = "iface"; }
+    catch (e) { r = "catchall"; }
+    Test.assertStrEq(r, "concrete", "concrete first");
+    try { throw new FileError(); }
+    catch (IOError e) { r = "wrong"; }
+    catch (Error e) { r = "iface"; }
+    catch (e) { r = "catchall"; }
+    Test.assertStrEq(r, "iface", "iface second");
+    try { throw "plain"; }
+    catch (FileError e) { r = "wrong"; }
+    catch (Error e) { r = "wrong2"; }
+    catch (e) { r = "catchall"; }
+    Test.assertStrEq(r, "catchall", "catchall last");
+    Test.report("test_dispatch_order", true);
+}
+
+// —— 7) 内层所有 catch 不匹配 → 向外 rethrow（对象类型不丢失）——
+@test void test_nomatch_rethrow() {
+    string r = "";
+    try {
+        try { throw new JsonError(); }
+        catch (FileError e) { r = "inner_wrong"; }
+    } catch (JsonError e) { r = "outer"; }
+    Test.assertStrEq(r, "outer", "nomatch rethrow");
+    Test.report("test_nomatch_rethrow", true);
+}
+
+// —— 8) return 时 finally 仍执行 ——
+@test void test_return_finally() {
+    FinOrder.seq = "";
+    int v = finRet();
+    Test.assertEq(v, 7, "ret val");
+    Test.assertStrEq(FinOrder.seq, "R;", "ret finally");
+    Test.report("test_return_finally", true);
+}
+
+// —— 9) continue / break 时 finally 仍执行 ——
+@test void test_break_continue_finally() {
+    string s = "";
+    int i = 0;
+    while (i < 3) {
+        i = i + 1;
+        try {
+            if (i == 2) { s = s + "C2;"; continue; }
+            s = s + "i" + i + ";";
+        } finally { s = s + "F" + i + ";"; }
+    }
+    // i=1: i1;F1;  i=2: C2;F2;(continue 仍跑 finally)  i=3: i3;F3;
+    Test.assertStrEq(s, "i1;F1;C2;F2;i3;F3;", "continue finally");
+    s = "";
+    i = 0;
+    while (i < 3) {
+        i = i + 1;
+        try {
+            if (i == 2) { s = s + "B2;"; break; }
+            s = s + "i" + i + ";";
+        } finally { s = s + "F" + i + ";"; }
+    }
+    // i=1: i1;F1;  i=2: B2;F2;(break 仍跑 finally)
+    Test.assertStrEq(s, "i1;F1;B2;F2;", "break finally");
+    Test.report("test_break_continue_finally", true);
+}
+
+// —— 10) catch 后恢复：每个 try 只捕获一次，程序继续 ——
+@test void test_recovery() {
+    int hits = 0;
+    string s = "";
+    try { throw "once"; } catch (e) { hits = hits + 1; s = e; }
+    try { throw "once"; } catch (e) { hits = hits + 1; }
+    Test.assertEq(hits, 2, "each catch once");
+    Test.assertStrEq(s, "once", "recovery msg");
+    Test.report("test_recovery", true);
+}
