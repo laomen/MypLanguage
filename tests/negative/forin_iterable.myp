@@ -1,0 +1,16 @@
+// EXPECT ERROR: cannot iterate over type 'byte'
+// BUG-086 回归（负测试）：for-in 迭代不可迭代对象须编译期干净拒绝。
+// 此前自举 ForIn 对不可迭代对象（int/string/动态数组）静默过 → 循环变量未
+// 声明 → codegen 找不到 → opt 崩（"expected value token"）。C++ 镜像：
+// 不可迭代 → "cannot iterate over type 'X'"；动态数组 → "cannot iterate a
+// dynamic array ... (no runtime length); use slice<T> or a collection class"。
+// 合法：定长数组 / slice<T> / 范围 / 集合类（size()+get(int)）。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            for (int x in 5) { }
+        }
+}
+int main(){return 0;}

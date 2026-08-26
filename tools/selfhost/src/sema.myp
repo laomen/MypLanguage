@@ -3979,6 +3979,23 @@ class Sema {
                     if (s.body() != null) visitStmt(s.body());
                     loopDepth_ = loopDepth_ - 1;
                     sym_.leaveScope();
+                } else if (iterable != null && iterable.kindName() == "Identifier") {
+                    SymbolEntry fiSym = sym_.lookupEntry(iterable.identifierName());
+                    if (fiSym != null && fiSym.kind() == "array" && fiSym.arraySize() <= 0) {
+                        // BUG-086：动态数组不可迭代（镜像 C++ "cannot iterate a
+                        // dynamic array ..."）——for-in 只支持定长数组/slice/集合。
+                        diag_.error(iterable.line(), iterable.col(), "cannot iterate a dynamic array '" + exprTypeName(iterable, "array") + "' (no runtime length); use slice<T> or a collection class");
+                    } else if (Str.len(iterable.resolvedKind()) != 0 && iterable.resolvedKind() != "void") {
+                        // BUG-086：其余不可迭代对象（int/string/无 get 的 class）
+                        //（镜像 C++ "cannot iterate over type 'X'"）。
+                        diag_.error(iterable.line(), iterable.col(), "cannot iterate over type '" + exprTypeName(iterable, iterable.resolvedKind()) + "'");
+                    }
+                } else if (iterable != null && Str.len(iterable.resolvedKind()) != 0 && iterable.resolvedKind() != "void") {
+                    // BUG-086：不可迭代对象（int/string/无 get 的 class 等）→ 拒绝
+                    //（镜像 C++ "cannot iterate over type 'X'"）。此前静默过 →
+                    // 循环变量未声明 → codegen 找不到 → opt 崩（"expected value
+                    // token"）。resolvedKind 为 void（未解析/错误）时跳过防级联。
+                    diag_.error(iterable.line(), iterable.col(), "cannot iterate over type '" + exprTypeName(iterable, iterable.resolvedKind()) + "'");
                 } else if (s.body() != null) visitStmt(s.body());
             } else if (k == "Throw") {
                 // C++ visitThrowStmt：确定 throw_type（rethrow/string/类名）。

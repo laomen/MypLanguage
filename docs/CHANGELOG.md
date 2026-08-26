@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.15.120 — 修 for-in 迭代不可迭代对象漏校验 → opt 崩（BUG-086）
+
+**非破坏性**（selfhost sema）。`for (int x in 5)` / `for (char c in strVar)`
+（不可迭代对象）此前自举静默过 → 循环变量未声明 → codegen 找不到 → **opt 崩**
+（`expected value token`）。C++ 镜像：不可迭代 → `cannot iterate over type 'X'`；
+动态数组 → `cannot iterate a dynamic array ...; use slice<T> or a collection
+class`。
+
+- **修复**：ForIn 末尾补校验——动态数组标识符给专门消息；其余不可迭代给
+  `cannot iterate over type 'X'`（resolvedKind void 跳过防级联）。
+- **测试**：负测试 `tests/negative/forin_iterable.myp`；定长数组/slice/范围
+  for-in 不受影响。
+- 验证：bootstrap 自举成立；全量回归 **374 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-086。
+
 ### v3.15.119 — 修重复变量声明漏校验 + for 循环变量作用域（BUG-085）
 
 **非破坏性**（selfhost sema）。`int x = 5; int x = 7;`（同作用域重复声明）此前

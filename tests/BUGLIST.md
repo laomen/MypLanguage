@@ -2252,3 +2252,25 @@
 - **教训**：重复变量检查与「循环变量作用域」强耦合——必须先让 for 弹作用域
   再查重复，否则自举源码自身的顺序同名循环变量会误报。用豁免（inForInit_）
   是 partial 且漏 `for (int i){} int i` 复用；正确解是作用域。
+
+## BUG-086（已修复 🟩，v3.15.120）：for-in 迭代不可迭代对象漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.120，selfhost sema.myp）
+- **背景**：`for (int x in 5)` / `for (char c in strVar)`（不可迭代对象）此前
+  自举静默过 → 循环变量未声明 → codegen 找不到 → **opt 崩**（"expected value
+  token"，非干净诊断）。C++ 镜像：不可迭代 → `cannot iterate over type 'X'`；
+  动态数组 → `cannot iterate a dynamic array 'X' (no runtime length); use
+  slice<T> or a collection class`。
+- **根因**：自举 ForIn 处理对不可迭代对象只 fallback 访问 body（elemType 保持
+  void），不报错、不声明循环变量。
+- **修复**：ForIn 末尾补校验——①动态数组标识符（arraySize()<=0）→ 专门消息
+  （for-in 只支持定长数组/slice/集合）；②其余不可迭代（int/string/无 get 的
+  class）→ `cannot iterate over type 'X'`（resolvedKind 为 void 时跳过防级联）。
+- **验证**：`for (int x in 5)`（byte）/`for (char c in "hi")`（string）/
+  动态数组均干净拒绝（文本与 oracle 逐字节一致）；定长数组/slice<T>/范围 for-in
+  不受影响。
+- **回归**：负测试 `tests/negative/forin_iterable.myp`；全量 374 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：ForIn 是独立语句处理，容易漏「不可迭代」校验（fallback 直接访问
+  body 而不报错）——镜像 C++ 的 iterKind 判定（定长数组/slice/集合/其余）。
+  动态数组是专门消息，别混进 "cannot iterate over type"。
