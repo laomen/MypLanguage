@@ -1,0 +1,13 @@
+// EXPECT ERROR: cannot match string literal against subject of type 'int'
+// match 扩展：字符串字面量臂对 int subject → 编译拒绝。
+class T {
+    action:
+        void f(int x) {
+            match (x) {
+                "open" => { }
+                _ => { }
+            }
+        }
+        @constructor T() { this.f(1); }
+}
+int main(){return 0;}

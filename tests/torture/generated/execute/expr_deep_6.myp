@@ -1,0 +1,16 @@
+import env;
+// expr_deep_6 : 深度 3 算术表达式（seed=803）
+class T6 {
+    static:
+        long deepEval(long v) {
+            long e = v; e = ((e * 29 + 28) % 93); e = ((e * 32 + 2) % 10); e = ((e * 35 + 7) % 17); return e;
+        }
+    action:
+        @constructor T6() {
+            long acc = 0;
+            for (int k = 0; k < 500; k = k + 1) acc = acc + T6.deepEval(long(k));
+            if (acc == -1) { Console.writeString("FAIL deep\n"); return; }
+            Console.writeString("PASS expr_deep_6 acc=" + acc + "\n");
+        }
+}
+int main() { T6 t = new T6(); return 0; }

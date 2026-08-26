@@ -1,0 +1,48 @@
+import env;
+// match_ext_3 : 标量 match 自验证（int/long/string/char/double + _，target=5）
+class T3 {
+    action:
+        string pickInt(int v) {
+            string r = "";
+            match (v) {
+                0 => { r = "zero"; }
+                -1 => { r = "neg"; }
+                5 => { r = "target"; }
+                _ => { r = "other"; }
+            }
+            return r;
+        }
+        string pickStr(string s) {
+            string r = "";
+            match (s) {
+                "alpha" => { r = "a"; }
+                "beta3" => { r = "b"; }
+                _ => { r = "z"; }
+            }
+            return r;
+        }
+        string pickD(double d) {
+            string r = "";
+            match (d) {
+                0.5 => { r = "half"; }
+                2.0 => { r = "two"; }
+                _ => { r = "oth"; }
+            }
+            return r;
+        }
+        @constructor T3() {
+            int ok = 0;
+            ok = ok + (this.pickInt(0) == "zero" ? 1 : 0);
+            ok = ok + (this.pickInt(-1) == "neg" ? 1 : 0);
+            ok = ok + (this.pickInt(5) == "target" ? 1 : 0);
+            ok = ok + (this.pickInt(99) == "other" ? 1 : 0);
+            ok = ok + (this.pickStr("alpha") == "a" ? 1 : 0);
+            ok = ok + (this.pickStr("beta3") == "b" ? 1 : 0);
+            ok = ok + (this.pickStr("nope") == "z" ? 1 : 0);
+            ok = ok + (this.pickD(0.5) == "half" ? 1 : 0);
+            ok = ok + (this.pickD(9.9) == "oth" ? 1 : 0);
+            if (ok != 9) { Console.writeString("FAIL match_ext_3 ok=" + ok + "\n"); return; }
+            Console.writeString("PASS match_ext_3\n");
+        }
+}
+int main() { T3 t = new T3(); return 0; }

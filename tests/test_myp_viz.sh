@@ -5,7 +5,8 @@
 #   1) tools/viz/main.myp 可编译
 #   2) 输出与 C++ myp_viz 字节级一致（stdlib/examples/tools/tests/BNCTDoseEngine
 #      的合法 .myp 文件；tests/negative 语法错误文件除外——C++ 全解析报错，MYP
-#      迷你解析容错，属预期差异）
+#      迷你解析容错，属预期差异；tests/torture/generated 病态压测文件除外——如
+#      BUG-056 deep/generic_* 自举带深度守卫拒绝而 oracle 无守卫，属预期分歧）
 #   3) 空文件 / 无 mapping 文件输出一致的 DOT 头
 #
 # 用法：bash tests/test_myp_viz.sh
@@ -41,7 +42,8 @@ ok "tools/viz/main.myp 编译"
 CMP_OK=0
 CMP_FAIL=0
 for f in $(find stdlib examples tools tests -name "*.myp" \
-    -not -path "*/build*" -not -path "*/negative/*" 2>/dev/null); do
+    -not -path "*/build*" -not -path "*/negative/*" \
+    -not -path "*torture/generated*" 2>/dev/null); do
     a=$("$TMP/myp_viz2" "$f" 2>&1)
     b=$("$MYP_VIZ" "$f" 2>&1)
     if echo "$b" | grep -q "error"; then

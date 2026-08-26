@@ -1,0 +1,129 @@
+// match_scalar.myp — match 扩展（字面量模式 + _ 通配臂）回归（2026-08-26）
+//   覆盖：整型字面量（含负数/uint 上界）/ long / char / string / double /
+//   通配 _ 默认臂 / 枚举 match 保持原样 + 枚举内 _ 兜底。
+//   设计见 docs/next_improvements.md 决策点 D7。
+import test;
+import env;
+
+enum Color { Red; Green; Blue; }
+
+class MatchProbe {
+    action:
+        string classify(int x) {
+            string r = "";
+            match (x) {
+                0   => { r = "zero"; }
+                1   => { r = "one"; }
+                -1  => { r = "neg"; }
+                _   => { r = "other"; }
+            }
+            return r;
+        }
+        string bigu(uint u) {
+            string r = "";
+            match (u) {
+                4294967295u => { r = "max"; }   // uint 上界（codegen i32 位型）
+                0u          => { r = "zero"; }
+                _           => { r = "mid"; }
+            }
+            return r;
+        }
+        string sz(long n) {
+            string r = "";
+            match (n) {
+                0L         => { r = "empty"; }
+                1000000L   => { r = "mega"; }
+                10000000000L => { r = "big10"; }
+                _          => { r = "huge"; }
+            }
+            return r;
+        }
+        string cmd(string c) {
+            string r = "";
+            match (c) {
+                "open"  => { r = "opened"; }
+                "save"  => { r = "saved"; }
+                _       => { r = "unknown"; }
+            }
+            return r;
+        }
+        string grade(char g) {
+            string r = "";
+            match (g) {
+                'A' => { r = "excellent"; }
+                'B' => { r = "good"; }
+                _   => { r = "poor"; }
+            }
+            return r;
+        }
+        string dbl(double d) {
+            string r = "";
+            match (d) {
+                1.5 => { r = "onefive"; }
+                2.0 => { r = "two"; }
+                _   => { r = "other"; }
+            }
+            return r;
+        }
+        string pick(Color c) {
+            string r = "";
+            match (c) {
+                Color.Red   => { r = "R"; }
+                Color.Green => { r = "G"; }
+                _           => { r = "other"; }   // 枚举 match 内 _ 兜底
+            }
+            return r;
+        }
+}
+
+@test void t_int_match() {
+    MatchProbe p = new MatchProbe();
+    Test.assertStrEq(p.classify(0), "zero");
+    Test.assertStrEq(p.classify(1), "one");
+    Test.assertStrEq(p.classify(-1), "neg");
+    Test.assertStrEq(p.classify(99), "other");
+    Test.assertStrEq(p.classify(-5), "other");
+}
+
+@test void t_uint_match() {
+    MatchProbe p = new MatchProbe();
+    Test.assertStrEq(p.bigu(4294967295u), "max");
+    Test.assertStrEq(p.bigu(0u), "zero");
+    Test.assertStrEq(p.bigu(42u), "mid");
+}
+
+@test void t_long_match() {
+    MatchProbe p = new MatchProbe();
+    Test.assertStrEq(p.sz(0L), "empty");
+    Test.assertStrEq(p.sz(1000000L), "mega");
+    Test.assertStrEq(p.sz(10000000000L), "big10");
+    Test.assertStrEq(p.sz(7L), "huge");
+}
+
+@test void t_string_match() {
+    MatchProbe p = new MatchProbe();
+    Test.assertStrEq(p.cmd("open"), "opened");
+    Test.assertStrEq(p.cmd("save"), "saved");
+    Test.assertStrEq(p.cmd("quit"), "unknown");
+}
+
+@test void t_char_match() {
+    MatchProbe p = new MatchProbe();
+    Test.assertStrEq(p.grade('A'), "excellent");
+    Test.assertStrEq(p.grade('B'), "good");
+    Test.assertStrEq(p.grade('C'), "poor");
+}
+
+@test void t_double_match() {
+    MatchProbe p = new MatchProbe();
+    Test.assertStrEq(p.dbl(1.5), "onefive");
+    Test.assertStrEq(p.dbl(2.0), "two");
+    Test.assertStrEq(p.dbl(3.14), "other");
+}
+
+@test void t_enum_match() {
+    MatchProbe p = new MatchProbe();
+    Test.assertStrEq(p.pick(Color.Red), "R");
+    Test.assertStrEq(p.pick(Color.Green), "G");
+    Test.assertStrEq(p.pick(Color.Blue), "other");  // 枚举内 _ 兜底
+}

@@ -1,0 +1,28 @@
+import env;
+// struct_nest_4 : 14 层嵌套 struct 链式读写自验证
+struct L14 { int v; }
+struct L13 { L14 inner; }
+struct L12 { L13 inner; }
+struct L11 { L12 inner; }
+struct L10 { L11 inner; }
+struct L9 { L10 inner; }
+struct L8 { L9 inner; }
+struct L7 { L8 inner; }
+struct L6 { L7 inner; }
+struct L5 { L6 inner; }
+struct L4 { L5 inner; }
+struct L3 { L4 inner; }
+struct L2 { L3 inner; }
+struct L1 { L2 inner; }
+struct L0 { L1 inner; }
+class T4 {
+    action:
+        @constructor T4() {
+            L0 root;
+            root.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.v = 70;
+            int got = root.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.v;
+            if (got != 70) { Console.writeString("FAIL struct_nest_4 got=" + got + "\n"); return; }
+            Console.writeString("PASS struct_nest_4 v=" + got + "\n");
+        }
+}
+int main() { T4 t = new T4(); return 0; }

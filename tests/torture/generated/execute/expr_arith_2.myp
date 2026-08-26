@@ -1,0 +1,22 @@
+import env;
+// expr_arith_2 : 算术恒等式自验证（seed=279）
+class T2 {
+    action:
+        @constructor T2() {
+            int n = 140;
+            long sumOdd = 0;
+            for (int k = 0; k < n; k = k + 1) sumOdd = sumOdd + (long(k) * 2 + 1);
+            long sq = long(n) * long(n);
+            if (sumOdd != sq) { Console.writeString("FAIL sumOdd " + sumOdd + " != " + sq + "\n"); return; }
+            long fact = 1;
+            for (int k = 1; k <= n; k = k + 1) fact = fact * long(k);
+            long factRef = 1;
+            for (int k = 1; k < n; k = k + 1) factRef = factRef * long(k + 1);
+            if (fact != factRef) { Console.writeString("FAIL fact\n"); return; }
+            long x = long(279) * 2654435761;
+            if ((x ^ x) != 0) { Console.writeString("FAIL xor\n"); return; }
+            if ((x >> 7) != (x / 128)) { Console.writeString("FAIL shift\n"); return; }
+            Console.writeString("PASS expr_arith_2\n");
+        }
+}
+int main() { T2 t = new T2(); return 0; }

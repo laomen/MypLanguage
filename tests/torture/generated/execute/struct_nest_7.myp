@@ -1,0 +1,34 @@
+import env;
+// struct_nest_7 : 20 层嵌套 struct 链式读写自验证
+struct L20 { int v; }
+struct L19 { L20 inner; }
+struct L18 { L19 inner; }
+struct L17 { L18 inner; }
+struct L16 { L17 inner; }
+struct L15 { L16 inner; }
+struct L14 { L15 inner; }
+struct L13 { L14 inner; }
+struct L12 { L13 inner; }
+struct L11 { L12 inner; }
+struct L10 { L11 inner; }
+struct L9 { L10 inner; }
+struct L8 { L9 inner; }
+struct L7 { L8 inner; }
+struct L6 { L7 inner; }
+struct L5 { L6 inner; }
+struct L4 { L5 inner; }
+struct L3 { L4 inner; }
+struct L2 { L3 inner; }
+struct L1 { L2 inner; }
+struct L0 { L1 inner; }
+class T7 {
+    action:
+        @constructor T7() {
+            L0 root;
+            root.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.v = 91;
+            int got = root.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.v;
+            if (got != 91) { Console.writeString("FAIL struct_nest_7 got=" + got + "\n"); return; }
+            Console.writeString("PASS struct_nest_7 v=" + got + "\n");
+        }
+}
+int main() { T7 t = new T7(); return 0; }

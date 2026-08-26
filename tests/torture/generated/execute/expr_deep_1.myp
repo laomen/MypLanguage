@@ -1,0 +1,16 @@
+import env;
+// expr_deep_1 : 深度 4 算术表达式（seed=148）
+class T1 {
+    static:
+        long deepEval(long v) {
+            long e = v; e = ((e * 53 + 24) % 68); e = ((e * 56 + 29) % 75); e = ((e * 59 + 3) % 82); e = ((e * 62 + 8) % 89); return e;
+        }
+    action:
+        @constructor T1() {
+            long acc = 0;
+            for (int k = 0; k < 500; k = k + 1) acc = acc + T1.deepEval(long(k));
+            if (acc == -1) { Console.writeString("FAIL deep\n"); return; }
+            Console.writeString("PASS expr_deep_1 acc=" + acc + "\n");
+        }
+}
+int main() { T1 t = new T1(); return 0; }

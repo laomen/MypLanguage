@@ -1,0 +1,30 @@
+import env;
+// ctrl_7 : 嵌套循环 break/continue 计数（seed=934）
+class T7 {
+    action:
+        @constructor T7() {
+            int a = 5;
+            int b = 5;
+            int c = 5;
+            int count = 0;
+            for (int x = 0; x < a; x = x + 1) {
+                for (int y = 0; y < b; y = y + 1) {
+                    for (int z = 0; z < c; z = z + 1) {
+                        if (z == c - 1) continue;
+                        count = count + 1;
+                    }
+                }
+            }
+            int expect = a * b * (c - 1);
+            if (count != expect) { Console.writeString("FAIL ctrl " + count + " != " + expect + "\n"); return; }
+            int brk = 0;
+            for (int x = 0; x < 10; x = x + 1) {
+                for (int y = 0; y < 10; y = y + 1) {
+                    brk = brk + 1;
+                    if (y >= 4) break;
+                }
+            }
+            Console.writeString("PASS ctrl_7 (count=" + count + " brk=" + brk + ")\n");
+        }
+}
+int main() { T7 t = new T7(); return 0; }

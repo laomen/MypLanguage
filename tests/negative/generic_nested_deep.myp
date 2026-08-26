@@ -1,0 +1,11 @@
+// EXPECT ERROR: generic type nested too deeply
+// BUG-056 回归（负测试）：嵌套泛型 Box<Box<...<int>...>> 深度 >64 须编译期干净拒绝
+// （"generic type nested too deeply (N > 64)"）。此前无守卫：SymbolTable.lookup
+// 线性扫描 + instClassName 递归拼名 → 实例化 O(N³)，实测 depth 800 >25s（DoS）。
+class Box<T> { property: T v; }
+class T { action:
+    @constructor T() {
+        Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<int>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> x;
+    }
+}
+int main(){return 0;}

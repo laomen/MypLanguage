@@ -1,0 +1,97 @@
+import env;
+// big_smatch_2 : 大字符串字面量 match 分发（80 臂 + _ 通配）
+class T2 {
+    action:
+        string pick(string s) {
+            string r = "";
+            match (s) {
+                "key0" => { r = "val0"; }
+                "key1" => { r = "val1"; }
+                "key2" => { r = "val2"; }
+                "key3" => { r = "val3"; }
+                "key4" => { r = "val4"; }
+                "key5" => { r = "val5"; }
+                "key6" => { r = "val6"; }
+                "key7" => { r = "val7"; }
+                "key8" => { r = "val8"; }
+                "key9" => { r = "val9"; }
+                "key10" => { r = "val10"; }
+                "key11" => { r = "val11"; }
+                "key12" => { r = "val12"; }
+                "key13" => { r = "val13"; }
+                "key14" => { r = "val14"; }
+                "key15" => { r = "val15"; }
+                "key16" => { r = "val16"; }
+                "key17" => { r = "val17"; }
+                "key18" => { r = "val18"; }
+                "key19" => { r = "val19"; }
+                "key20" => { r = "val20"; }
+                "key21" => { r = "val21"; }
+                "key22" => { r = "val22"; }
+                "key23" => { r = "val23"; }
+                "key24" => { r = "val24"; }
+                "key25" => { r = "val25"; }
+                "key26" => { r = "val26"; }
+                "key27" => { r = "val27"; }
+                "key28" => { r = "val28"; }
+                "key29" => { r = "val29"; }
+                "key30" => { r = "val30"; }
+                "key31" => { r = "val31"; }
+                "key32" => { r = "val32"; }
+                "key33" => { r = "val33"; }
+                "key34" => { r = "val34"; }
+                "key35" => { r = "val35"; }
+                "key36" => { r = "val36"; }
+                "key37" => { r = "val37"; }
+                "key38" => { r = "val38"; }
+                "key39" => { r = "val39"; }
+                "key40" => { r = "val40"; }
+                "key41" => { r = "val41"; }
+                "key42" => { r = "val42"; }
+                "key43" => { r = "val43"; }
+                "key44" => { r = "val44"; }
+                "key45" => { r = "val45"; }
+                "key46" => { r = "val46"; }
+                "key47" => { r = "val47"; }
+                "key48" => { r = "val48"; }
+                "key49" => { r = "val49"; }
+                "key50" => { r = "val50"; }
+                "key51" => { r = "val51"; }
+                "key52" => { r = "val52"; }
+                "key53" => { r = "val53"; }
+                "key54" => { r = "val54"; }
+                "key55" => { r = "val55"; }
+                "key56" => { r = "val56"; }
+                "key57" => { r = "val57"; }
+                "key58" => { r = "val58"; }
+                "key59" => { r = "val59"; }
+                "key60" => { r = "val60"; }
+                "key61" => { r = "val61"; }
+                "key62" => { r = "val62"; }
+                "key63" => { r = "val63"; }
+                "key64" => { r = "val64"; }
+                "key65" => { r = "val65"; }
+                "key66" => { r = "val66"; }
+                "key67" => { r = "val67"; }
+                "key68" => { r = "val68"; }
+                "key69" => { r = "val69"; }
+                "key70" => { r = "val70"; }
+                "key71" => { r = "val71"; }
+                "key72" => { r = "val72"; }
+                "key73" => { r = "val73"; }
+                "key74" => { r = "val74"; }
+                "key75" => { r = "val75"; }
+                "key76" => { r = "val76"; }
+                "key77" => { r = "val77"; }
+                "key78" => { r = "val78"; }
+                "key79" => { r = "val79"; }
+                _ => { r = "?"; }
+            }
+            return r;
+        }
+        @constructor T2() {
+            string a = this.pick("key0");
+            string b = this.pick("key79");
+        }
+}
+int main() { T2 t = new T2(); return 0; }

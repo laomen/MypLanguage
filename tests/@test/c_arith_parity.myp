@@ -1,0 +1,30 @@
+// cmatch.myp — C 整数语义对拍：b * ~(0!=5) + MAX 位运算链（C 输出 2147476810）
+//   验证 MYP 的 ~ 补码/ushort→int 提升/回绕与 C 一致。
+import test;
+import env;
+class CMatchProbe {
+    action:
+        // 返回 C 程序 foo() 后的 c 值
+        int runFoo() {
+            int one = 1;   // MYP: 0!=5 是 bool 不能 ~（C 里是 int 1），用等价 int
+            if ((this.a + this.b * ~one) != 0) {
+                this.c = -~(this.b * ~one) + int(2147483647);
+            }
+            return this.c;
+        }
+        void setDefaults() { this.c = 0; }
+    property:
+        ushort a = 41461;
+        ushort b = 3419;
+        int c = 0;
+}
+@test void t_c_arith_parity() {
+    CMatchProbe p = new CMatchProbe();
+    Test.assertEq(p.runFoo(), 2147476810);
+    // 逐项与 C 一致
+    Test.assertEq(~1, -2);
+    Test.assertEq(int(3419 * ~1), -6838);
+    Test.assertEq(int(41461 + 3419 * ~1), 34623);
+    Test.assertEq(~(3419 * ~1), 6837);
+    Test.assertEq(-~(3419 * ~1) + int(2147483647), 2147476810);
+}

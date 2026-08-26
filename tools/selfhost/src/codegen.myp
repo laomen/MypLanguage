@@ -8456,17 +8456,28 @@ class CodeGen {
             return agg;
         }
 
-        // match (subject) { Enum.Variant(a,b) => {...} ... }：extract disc + 链式
-        // icmp 分发 + 载荷字段解包绑定（C++ generateMatchStmt）。
+        // match (subject) { Enum.Variant(a,b) => {...} ... } 或
+        // match (subject) { 1 => {...} "s" => {...} _ => {...} ... }：
+        // 枚举 → extract disc + 链式 icmp；标量 → 字面量比较（整型 icmp /
+        // 字符串 myp_str_eq / 浮点 fcmp oeq）；通配 _ → 无条件进臂。
+        // 枚举路径指令顺序与 C++ 完全一致（cmp=newTmp 在 armB/nxt=newBlock 之前），
+        // 保证 -O0 oracle 对拍字节一致。
         void genMatchStmt(AstStmt s) {
             if (s.subject() == null) return;
             string subjectV = genExpr(s.subject());
             string subjectT = exprLlvmType(s.subject());
             string enumName = "";
             if (s.arms().size() > 0) enumName = s.arms().get(0).enumName();
-            // 判别式（元素 0）
-            string disc = newTmp();
-            sb_.append("  " + disc + " = extractvalue " + subjectT + " " + subjectV + ", 0\n");
+            // 类别：subject 为枚举 struct → 提取判别式（元素 0）；否则直接用 subject 值。
+            int isEnum = 0;
+            if (Str.startsWith(subjectT, "{") != 0) isEnum = 1;
+            string disc = subjectV;
+            string discT = subjectT;
+            if (isEnum != 0) {
+                disc = newTmp();
+                sb_.append("  " + disc + " = extractvalue " + subjectT + " " + subjectV + ", 0\n");
+                discT = "i32";
+            }
             int n = s.arms().size();
             if (n == 0) return;
             string mergeB = newBlock("match_end");
@@ -8475,64 +8486,132 @@ class CodeGen {
             for (int i = 0; i < n; i = i + 1) {
                 AstMatchArm arm = s.arms().get(i);
                 openBlock(chkB);
-                string cmp = newTmp();
-                sb_.append("  " + cmp + " = icmp eq i32 " + disc + ", " + arm.index() + "\n");
-                string armB = newBlock("match_arm" + i);
-                string nxt = "";
-                if (i + 1 < n) nxt = newBlock("match_check" + (i + 1));
-                else nxt = mergeB;
-                sb_.append("  br i1 " + cmp + ", label %" + armB + ", label %" + nxt + "\n");
-                terminated_ = 1;
-                openBlock(armB);
-                // 载荷解包绑定
-                if (arm.bindings().size() > 0) {
-                    string subjA = newTmp();
-                    sb_.append("  " + subjA + " = alloca " + subjectT + "\n");
-                    sb_.append("  store " + subjectT + " " + subjectV + ", ptr " + subjA + "\n");
-                    int maxp = enumMaxPayload(enumName);
-                    if (maxp > 0) {
-                        string payloadPtr = newTmp();
-                        sb_.append("  " + payloadPtr + " = getelementptr " + subjectT + ", ptr " + subjA + ", i32 0, i32 1\n");
-                        for (int bi = 0; bi < arm.bindings().size(); bi = bi + 1) {
-                            // 找到 variant 的参数字段类型
-                            AstParam vp = findEnumVariantParam(enumName, arm.index(), bi);
-                            string bindT = vp != null ? llvmType(vp.type()) : "i32";
-                            int off = enumPayloadOffset(enumName, arm.index(), bi);
-                            string fieldPtr = newTmp();
-                            sb_.append("  " + fieldPtr + " = getelementptr i8, ptr " + payloadPtr + ", i32 " + off + "\n");
-                            string loaded = newTmp();
-                            sb_.append("  " + loaded + " = load " + bindT + ", ptr " + fieldPtr + "\n");
-                            string bindA = newTmp();
-                            sb_.append("  " + bindA + " = alloca " + bindT + "\n");
-                            sb_.append("  store " + bindT + " " + loaded + ", ptr " + bindA + "\n");
-                            localNames_.add(arm.bindings().get(bi));
-                            localTypes_.add(bindT);
-                            localAstTypes_.add(vp != null ? vp.type() : null);
-                            localAllocas_.add(bindA);
-                            localElemTypes_.add("");
-                            localIsSlice_.add(0);
-                            localIsArc_.add(vp != null ? isArcType(vp.type()) : 0);
-                        }
-                    } else {
-                        for (int bi = 0; bi < arm.bindings().size(); bi = bi + 1) {
-                            string bindA = newTmp();
-                            sb_.append("  " + bindA + " = alloca i32\n");
-                            sb_.append("  store i32 0, ptr " + bindA + "\n");
-                            localNames_.add(arm.bindings().get(bi));
-                            localTypes_.add("i32");
-                            localAstTypes_.add(null);
-                            localAllocas_.add(bindA);
-                            localElemTypes_.add("");
-                            localIsSlice_.add(0);
-                            localIsArc_.add(0);
+                if (arm.patKind() == "wildcard") {
+                    // 通配默认臂：无条件进臂（无绑定）。
+                    string armB = newBlock("match_arm" + i);
+                    string nxt = "";
+                    if (i + 1 < n) nxt = newBlock("match_check" + (i + 1));
+                    else nxt = mergeB;
+                    sb_.append("  br label %" + armB + "\n");
+                    terminated_ = 1;
+                    openBlock(armB);
+                    genStmt(arm.body());
+                    if (terminated_ == 0) emitBr(mergeB);
+                    chkB = nxt;
+                } else {
+                    string cmp = genMatchArmCmp(arm, disc, discT);
+                    string armB = newBlock("match_arm" + i);
+                    string nxt = "";
+                    if (i + 1 < n) nxt = newBlock("match_check" + (i + 1));
+                    else nxt = mergeB;
+                    sb_.append("  br i1 " + cmp + ", label %" + armB + ", label %" + nxt + "\n");
+                    terminated_ = 1;
+                    openBlock(armB);
+                    // 载荷解包绑定（仅枚举带数据变体）
+                    if (isEnum != 0 && arm.bindings().size() > 0) {
+                        string subjA = newTmp();
+                        sb_.append("  " + subjA + " = alloca " + subjectT + "\n");
+                        sb_.append("  store " + subjectT + " " + subjectV + ", ptr " + subjA + "\n");
+                        int maxp = enumMaxPayload(enumName);
+                        if (maxp > 0) {
+                            string payloadPtr = newTmp();
+                            sb_.append("  " + payloadPtr + " = getelementptr " + subjectT + ", ptr " + subjA + ", i32 0, i32 1\n");
+                            for (int bi = 0; bi < arm.bindings().size(); bi = bi + 1) {
+                                // 找到 variant 的参数字段类型
+                                AstParam vp = findEnumVariantParam(enumName, arm.index(), bi);
+                                string bindT = vp != null ? llvmType(vp.type()) : "i32";
+                                int off = enumPayloadOffset(enumName, arm.index(), bi);
+                                string fieldPtr = newTmp();
+                                sb_.append("  " + fieldPtr + " = getelementptr i8, ptr " + payloadPtr + ", i32 " + off + "\n");
+                                string loaded = newTmp();
+                                sb_.append("  " + loaded + " = load " + bindT + ", ptr " + fieldPtr + "\n");
+                                string bindA = newTmp();
+                                sb_.append("  " + bindA + " = alloca " + bindT + "\n");
+                                sb_.append("  store " + bindT + " " + loaded + ", ptr " + bindA + "\n");
+                                localNames_.add(arm.bindings().get(bi));
+                                localTypes_.add(bindT);
+                                localAstTypes_.add(vp != null ? vp.type() : null);
+                                localAllocas_.add(bindA);
+                                localElemTypes_.add("");
+                                localIsSlice_.add(0);
+                                localIsArc_.add(vp != null ? isArcType(vp.type()) : 0);
+                            }
+                        } else {
+                            for (int bi = 0; bi < arm.bindings().size(); bi = bi + 1) {
+                                string bindA = newTmp();
+                                sb_.append("  " + bindA + " = alloca i32\n");
+                                sb_.append("  store i32 0, ptr " + bindA + "\n");
+                                localNames_.add(arm.bindings().get(bi));
+                                localTypes_.add("i32");
+                                localAstTypes_.add(null);
+                                localAllocas_.add(bindA);
+                                localElemTypes_.add("");
+                                localIsSlice_.add(0);
+                                localIsArc_.add(0);
+                            }
                         }
                     }
+                    genStmt(arm.body());
+                    if (terminated_ == 0) emitBr(mergeB);
+                    chkB = nxt;
                 }
-                genStmt(arm.body());
-                if (terminated_ == 0) emitBr(mergeB);
-                chkB = nxt;
             }
             openBlock(mergeB);
+        }
+
+        // match 臂比较条件（i1）：枚举 → icmp eq disc vs variant index；整型字面量 →
+        // icmp eq disc vs 常量（按 discT 宽度）；字符串 → myp_str_eq != 0；浮点字面量 →
+        // fcmp oeq。通配 _ 在调用方已单独处理（无条件进臂）。
+        string genMatchArmCmp(AstMatchArm arm, string disc, string discT) {
+            string pk = arm.patKind();
+            if (pk == "enum") {
+                string cmp = newTmp();
+                sb_.append("  " + cmp + " = icmp eq " + discT + " " + disc + ", " + arm.index() + "\n");
+                return cmp;
+            }
+            if (pk == "string") {
+                string g = stringLiteral(arm.litStr());
+                string eq = newTmp();
+                sb_.append("  " + eq + " = call i32 @myp_str_eq(ptr " + disc + ", ptr " + g + ")\n");
+                string t = newTmp();
+                sb_.append("  " + t + " = icmp ne i32 " + eq + ", 0\n");
+                return t;
+            }
+            if (pk == "float" || pk == "float32") {
+                string ft = "double";
+                string lit = floatLiteral(arm.litDbl(), 0);
+                if (discT == "float") { ft = "float"; lit = floatLiteral(arm.litDbl(), 1); }
+                string t = newTmp();
+                sb_.append("  " + t + " = fcmp oeq " + ft + " " + disc + ", " + lit + "\n");
+                return t;
+            }
+            // 整型字面量（int/long/uint/char）：常量按 discT 宽度取有符号表示。
+            string c = intConstForType(arm.litInt(), discT);
+            string cmp2 = newTmp();
+            sb_.append("  " + cmp2 + " = icmp eq " + discT + " " + disc + ", " + c + "\n");
+            return cmp2;
+        }
+
+        // 整型常量按目标 LLVM 宽度格式化为有符号十进制（LLVM 接受负号表示，
+        // uint 上界等溢出值取模后以负号写出 → 位型一致）。
+        string intConstForType(long v, string lt) {
+            if (lt == "i64") return "" + v;
+            if (lt == "i32") {
+                long b = v % 4294967296L;
+                if (b >= 2147483648L) b = b - 4294967296L;
+                return "" + b;
+            }
+            if (lt == "i16") {
+                long b = v % 65536L;
+                if (b >= 32768L) b = b - 65536L;
+                return "" + b;
+            }
+            if (lt == "i8") {
+                long b = v % 256L;
+                if (b >= 128L) b = b - 256L;
+                return "" + b;
+            }
+            return "" + v;
         }
 
         // 枚举 variant 的第 fieldIdx 个参数（null 无）。
@@ -10530,20 +10609,12 @@ class CodeGen {
                 // 但 codegen 的 genExpr 仍产出 i1 → 不能按 resolvedKind 判）
                 if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">="
                     || op == "&&" || op == "||") return "i1";
-                // 字符串拼接 → ptr
                 AstExpr lhs = e.lhs();
                 AstExpr rhs = e.rhs();
-                if (op == "+") {
-                    int ls = (lhs != null && lhs.resolvedKind() == "string") ? 1 : 0;
-                    int rs = (rhs != null && rhs.resolvedKind() == "string") ? 1 : 0;
-                    if (ls != 0 || rs != 0) return "ptr";
-                    // 接口默认体等 sema 未解析场景：字符串字面量 resolvedKind
-                    // 标 int，但 LLVM 类型为 ptr → 拼接结果仍为 ptr
-                    //（非 @op 时；double[]+double[] 走 @op，opCall!=0）。
-                    if (e.opCall() == 0 && lhs != null && rhs != null) {
-                        if (exprLlvmType(lhs) == "ptr" || exprLlvmType(rhs) == "ptr") return "ptr";
-                    }
-                }
+                // 字符串拼接（resolvedKind 为 string）→ ptr：快速路径，不递归。
+                if (op == "+"
+                    && ((lhs != null && lhs.resolvedKind() == "string")
+                        || (rhs != null && rhs.resolvedKind() == "string"))) return "ptr";
                 // bitvector 位运算/移位 → 与左操作数同宽（iN）
                 if (e.resolvedKind() == "bitvector" && lhs != null) {
                     return exprLlvmType(lhs);
@@ -10553,9 +10624,15 @@ class CodeGen {
                 // double/float/更宽整数 → 结果类型 = 操作数实际类型（与
                 // genExpr Binary 的 opLt 选择保持一致，否则 return 再转换
                 // 时 double 值被当 i32 sitofp → llc 类型错误）。
+                // 操作数类型只算一次——此前 `+` 分支内另调 exprLlvmType(lhs/rhs)
+                // 与底部重复，左深链 `0+1+1+...` 每层 2 次递归 → 指数爆炸
+                // （exprLlvmType 对 `+` 节点算 llt 又算 rlt，二者再各算……深度 24 → 6s）。
                 if (lhs != null && rhs != null) {
                     string llt = exprLlvmType(lhs);
                     string rlt = exprLlvmType(rhs);
+                    // 字符串拼接（sema 未解析场景：字符串字面量 resolvedKind 标 int，
+                    // 但 LLVM 类型为 ptr；非 @op 时；double[]+double[] 走 @op，opCall!=0）。
+                    if (op == "+" && e.opCall() == 0 && (llt == "ptr" || rlt == "ptr")) return "ptr";
                     if (llt == "double" || rlt == "double") return "double";
                     if (llt == "float" || rlt == "float") return "float";
                     if (IrEmit.isIntType(baseLt) != 0 && IrEmit.isIntType(llt) != 0 && IrEmit.isIntType(rlt) != 0) {

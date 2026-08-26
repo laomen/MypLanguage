@@ -50,6 +50,11 @@
 | BUG-049 | 🟩 | selfhost codegen `&&`/`||` 结果槽栈泄漏——短路降级内联 `alloca i1` 循环体内每轮执行 RSP 不恢复 → 无限循环跌破栈底崩溃（rt_thread_test 自旋暴露） | 回归 `bench/freestanding/rt_thread_test.myp`（自旋 `||` 直写，8/8 稳定） |
 | BUG-050 | 🟩 | 两个编译期解析缺口：(1) **裸 const 标识符不折叠**——顶层 `const int CAP=1024` 被两个编译器都解析成零参 const-decl **函数**类型，裸引用 `CAP`（非 `CAP()`）报 `expected numeric type, got 'function'/'() -> int'`；(2) **selfhost 对 `__myp_*` 盲目去前缀**——通用 Identifier callee 路径把真 `__myp_coro_*`/`__myp_destroy_*` 符号去前缀成 `myp_coro_resume`（未定义符号），且去前缀后函数类型解析失败 → 字面量实参 `0` 不提升成 i64 | 回归 裸 const（`CAP*8` 折叠 + `CAP()` 显式调用双编译）+ shadow `rt_coro_test`（IR `call i64 @__myp_coro_resume(i64, i64 0)`）+ 全量 323 |
 | BUG-051 | � | **@static 类属性默认值不生效**——@static 实例全局恒 `zeroinitializer`（C++ codegen.cpp:1549 `ConstantAggregateZero` / selfhost codegen.myp:1509 `zeroinitializer`），属性默认值（`int x = 5;`/`= -1`）只在 `new` 路径应用（generateNewExpr:3560），@static 全局从不 `new` → 非零默认值静默变 0。手册 manual.md:167 写明「默认值在 new 时生效」→ 文档化但坑（手册又推荐 @static 类做类级共享常量）。**v3.15.69 selfhost codegen 已修复**（显式常量初始化器，含常量折叠）；oracle 冻结不改。**运行时 workaround 已回滚**（coroEnsureInit 显式置 current=-1、thread stackSize 显式置 1048576） | 回归 `tests/@test/manual_static_defaults.myp`（int/long 折叠/一元浮点/bool/字符串/int 除法，7 断言） |
+| BUG-052 | 🟩 | 解析器**错误恢复死循环 OOM**（selfhost，v3.15.85）：`parseEnumDecl` 变体循环 / `parseMatchStmt` 臂循环 `consume`/`parseIdentifier` 失败都**不 advance** → 非法枚举（MYP 枚举须分号 `enum E { V0; V1; }`，逗号 `V0, V1` 即触发）或非法 match 臂（`E => {...}` 缺 `.`/变体名）卡死 → 每次迭代 `perr` 追加 Diag → 无界内存分配（实测 ~18GB，OOM 崩溃系统）。与 2026-08 LSP 爆炸同类缺陷的漏网点（当时只修 parseBlock/parseMapping） | 负测试 `tests/negative/enum_comma_separator.myp`、`tests/negative/match_missing_dot.myp`（7.5MB 有界报错） |
+| BUG-053 | 🟩 | `exprLlvmType` 对 `+` Binary **指数爆炸**（selfhost codegen，v3.15.87）：`+` 分支为判字符串拼接调 `exprLlvmType(lhs/rhs)`，底部 `llt/rlt` 又算一次 → 左深链 `0+1+1+...` 每层 2 次递归、逐层翻倍 → 深度 24 编译 6.2s、深度 28 >20s（原 10,000 加号 >120s 超时不可编译）。内存低（7-24MB），纯时间爆炸 | torture `tests/torture/generated/execute/plus_bomb_0.myp`（10,000 加号 + 100 i++，现 10.8s） |
+| BUG-054 | 🟩 | **不同 struct 类型赋值/初始化静默过 sema**（selfhost sema，v3.15.87）：`typesCompat` 只比 kind "struct"，`A a; B b; a = b;` 或链式字段 `root.inner...inner = root.inner`（L4=L1）被放行 → LLVM opt 报 `defined with type %B but expected %A` 崩溃（非干净诊断）。**附带隐患**：Member 表达式 `resolvedClass` 是**容器**类型名（`root.inner`→L0 而非 L1），直接比 resolvedClass 会误拒合法 `L2 y = a.b.c;` | 负测试 `tests/negative/struct_assign_mismatch.myp`（`A a; B b; a = b;` → `cannot assign value of type 'B' to variable of type 'A'`） |
+| BUG-055 | 🟩 | **解析器表达式/语句级递归无守卫 → 深嵌套栈溢出**（selfhost parser，v3.15.88）：`recursionDepth_` 只数 `parsePrimary`（括号 300 守卫），而**三元（`1?2:1?2:...`）、`??` 合并、右结合赋值（`a=b=c`）、一元链（`!!!!x`）、嵌套块 `{{{...}}}`、if 链（`if(1) if(1)...`）**的右嵌套递归在 parseExpr/parseAssignment/parseCoalesce/parseUnary/parseBlock/parseStatement 层（parsePrimary 之上）——不被计数 → 50000 层 SIGSEGV 栈溢出 | 负测试 `tests/negative/expr_recursion_deep.myp`（500 层三元 → `expression nested too deeply` 干净拒绝）；torture `deep/*`（48 个，编译不崩溃） |
+| BUG-056 | 🟩 | **嵌套泛型实例化 O(N³) 时间爆炸（DoS）**（selfhost sema，v3.15.89）：`Box<Box<...<int>...>>` 深度 N 时 `SymbolTable.lookup` 线性扫描（entries_ 已 N 项 × 长名比较）+ `instClassName` 递归拼名（每层 O(k²)）→ 总 O(N³)。实测 depth 800 >25s、depth 5000 不可完成；纯解析（不存在的泛型类）0.1s 平坦 → 爆炸全在 sema 实例化 | 守卫：`tryInstantiate` 顶层 `typeArgDepth` 测深，>64 单条 `generic type nested too deeply (N > 64)` 干净拒绝（合法嵌套 ≤4 层）；负测试 `tests/negative/generic_nested_deep.myp`；torture `deep/generic_*`（+8）；正向 `tests/@test/nested_generic.myp`（2/4/10 层正常编译） |
 
 ---
 
@@ -1398,3 +1403,149 @@
 - **教训**：`--shared` 模式背锅了——实际是**任何模式**下 @static 全局都不应用默认值
   （之前记的「static-init 不适用于 --shared」是误判）；@static 类非零默认值必须
   运行时显式初始化或避免依赖。
+
+## BUG-052（已修复 🟩，v3.15.85）：解析器错误恢复死循环 OOM（enum 变体 / match 臂不推进）
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.85，selfhost `tools/selfhost/src/parser.myp`）
+- **复现**：任何含**非法枚举**或**非法 match** 的文件即触发。最小复现：
+  - `enum E { V0, V1 }` —— MYP 枚举变体须 `;` 分隔（含末尾）：`enum E { V0; V1; }`；
+    逗号是非法语法 → mypc 内存无限增长（实测 ~18GB，OOM 崩溃系统，被迫手动 kill）。
+  - `match (e) { E => { ... } }` —— match 臂缺 `.` 与变体名（须 `E.V0 => { ... }`）。
+- **根因**（selfhost parser.myp，错误恢复不保证推进——与 2026-08 LSP 内存爆炸同类，
+  但当时只修了 `parseBlock`/`parseMapping`，`parseEnumDecl` 变体循环和
+  `parseMatchStmt` 臂循环漏网）：
+  1. `parseEnumDecl` 变体循环：`consume(";", ...)` / `parseIdentifier` 失败都
+     **不 advance**。非法分隔符（逗号/漏分号）→ 循环卡在同一 token 无限转，每次
+     迭代 `perr` 追加 Diag 对象 → 无界分配。
+  2. `parseMatchStmt` 臂循环同缺陷：`parseIdentifier` + `consume("."/"=>"/"{")`
+     失败不推进 → 非法模式（`E => {...}`）同样死转。
+- **修复**：两循环加**推进保护** `int before = current_; ... if (current_ == before)
+  advance();`（与顶层/mapping/class/block 循环同款）。已核查自举 parser 全部
+  `while (curKind() != "}" ...)` 循环：顶层/class/mapping/block 有 guard；bitfield
+  出错 break；struct 外层 else break——仅 enum/match 两处曾缺。
+- **回归**：负测试 `tests/negative/enum_comma_separator.myp`、`tests/negative/
+  match_missing_dot.myp`（现 7.5MB 有界报错，原 ~18GB OOM）；全量 329/0。
+- **教训**：① MYP 枚举变体须 `;` 分隔（含最后一个）：`enum E { V0; V1; }`，
+  `V0, V1` 是非法语法；② 枚举构造用变体字面量 `E.V0`（**无 `new E(index)`**）；
+  ③ 编译压测必须 `ulimit -v`（`tests/torture/run_torture.sh` 已内置默认 8GB、
+  负测试循环 1GB）——病态输入曾 18GB OOM 崩溃系统。
+
+## BUG-053（已修复 🟩，v3.15.87）：`exprLlvmType` 对 `+` Binary 指数爆炸（巨表达式不可编译）
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.87，selfhost `tools/selfhost/src/codegen.myp`）
+- **复现**：左深 `+` 链表达式（torture plus_bomb 暴露）：
+  `long r = 0 + 1 + 1 + ... + 1;`（N 个加号）。gdb 热栈：`CodeGen_genExpr` →
+  `CodeGen_exprLlvmType`（23 层递归）→ `IrEmit_intWidth` → `myp_str_eq`。
+- **现象**：纯**时间**爆炸（内存 7-24MB 不变）：深度 20=0.5s、22=1.6s、24=6.2s、
+  26>20s（指数 ~1.9x/+1）。10,000 加号 >120s 超时不可编译（用户要的"变态测试"
+  直接打爆编译器）。
+- **根因**（selfhost codegen `exprLlvmType` Binary `+` 分支）：
+  ```myp
+  if (op == "+") {
+      ... if (exprLlvmType(lhs) == "ptr" || exprLlvmType(rhs) == "ptr") return "ptr";
+  }
+  ...（底部）...
+  string llt = exprLlvmType(lhs);   // 又算一次！
+  string rlt = exprLlvmType(rhs);   // 又算一次！
+  ```
+  `+` 分支为判字符串拼接（sema 未解析场景 LLVM 类型为 ptr）调用 `exprLlvmType(lhs/
+  rhs)`，底部 `llt/rlt` **再算一次** → 左深链每层 2 次递归、逐层翻倍 = 2^N。
+- **修复**：`+` 分支去掉递归调用（resolvedKind=="string" 快路径保留，不递归）；
+  把「LLVM 类型为 ptr → 拼接结果 ptr」检测移到底部，**复用已算的 `llt/rlt`**
+  （`if (op=="+" && opCall==0 && (llt=="ptr"||rlt=="ptr")) return "ptr";`）。
+  操作数类型每节点只算一次 → O(n²)（genExpr 每节点一次 exprLlvmType(lhs)），
+  深度 24 6.2s → 0.10s；10,000 加号 >120s → 10.8s。
+- **回归**：torture `plus_bomb_*`（10000..17000 加号 + 100..240 `i++`，execute 8 全过）；
+  字符串拼接/数值 `+` 语义对拍（strcon ok=4）；全量 333/0。
+- **教训**：① 递归类型函数（exprLlvmType 等）内**同一操作数多次递归调用**是
+  指数爆炸温床——左深链无共享子树，但"每层算两次子类型"照样 2^N；② 深表达式
+  编译压测既能测编译器健壮性，也能暴露此类纯时间复杂度 bug（内存限制抓不到）。
+
+## BUG-054（已修复 🟩，v3.15.87）：不同 struct 类型赋值/初始化静默过 sema → LLVM opt 崩溃
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.87，selfhost `tools/selfhost/src/sema.myp`）
+- **复现**（torture struct_nest 生成器踩中）：`A a; B b; a = b;`（A/B 不同 struct）
+  或链式字段 `root.inner...inner = root.inner`（L4=L1）编译过 sema → opt-21 报
+  `error: '%t7' defined with type '%B' but expected '%A'`（store 类型错）崩溃，
+  而非干净诊断。`A a = b;` 初始化同样。
+- **根因**：`typesCompat(a,b)` 只比较 kind 字符串——两个 struct 都是 "struct" 恒等
+  → Assign（sema.myp visitExpr `k=="Assign"`）与 VarDecl init（`typesCompat(vt,it)`）
+  都放行不同 struct 互赋。
+- **附带隐患**（修消息时发现）：Member 表达式（`root.inner`）的 `resolvedClass`
+  是**容器** struct 名（L0）而非字段类型（L1）——若直接比 resolvedClass 会**误拒**
+  合法同型初始化 `L1 x = root.inner;` / `L2 y = a.b.c;`。
+- **修复**：
+  1. 新增 `exprStructName(e)` + `structFieldTypeName(structName, fieldName)`：
+     Identifier 查 SymbolEntry.className；**Member 递归解析对象 struct 名 + 查字段
+     声明类型**（tu_.structs() 找字段 type className/basicName）。
+  2. Assign：`l=="struct" && r=="struct"` 且具体名不同 → 报错
+     `cannot assign value of type 'B' to variable of type 'A'`。
+  3. VarDecl init：`vt=="struct" && it=="struct"` 且具体名不同 → 报错
+     `cannot initialize variable 'a' of type 'A' with value of type 'B'`。
+- **回归**：负测试 `tests/negative/struct_assign_mismatch.myp`（A=B 干净拒绝）；
+  合法嵌套 struct 链 `L1 x=root.inner; L2 y=root.inner.inner; ...`（struval2 ok=4）
+  + 同型整体拷贝（struok ok=2）；torture struct_nest_*（6..20 层）全过；全量 334/0。
+- **教训**：① 类型兼容只比 kind 不够——struct/class 须比具体类型名；② 修类型检查
+  务必验证**合法同型**路径不被误拒（resolvedClass 对 Member 是容器名这个坑）；③
+  生成器踩中的 LLVM 崩溃（非干净诊断）本身就是编译器 bug 信号。
+
+## BUG-055（已修复 🟩，v3.15.88）：解析器表达式/语句级递归无守卫 → 深嵌套栈溢出
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.88，selfhost `tools/selfhost/src/parser.myp`）
+- **复现**（"上千层嵌套括号/嵌套条件表达式/嵌套宏展开，专门搞栈溢出"压测）：
+  - 括号 `(((1)))` ×300 → parsePrimary 300 守卫**生效**（干净报错）——已有保护。
+  - 但**无括号右嵌套**：三元 `1?2:1?2:...9`、`??` 合并 `a??b??c`、右结合赋值
+    `a=b=c=...`、一元链 `!!!!x`、嵌套块 `{{{...}}}`、if 链 `if(1) if(1)...`——
+    **50000 层 SIGSEGV 栈溢出**（gdb 确认 parsePrimary 300 计数器数不到这些
+    parsePrimary 之上的递归）。
+- **根因**：`recursionDepth_`（300 守卫）只在 `parsePrimary` 计数。而三元假分支 /
+  `??` RHS / 赋值 RHS / 一元操作数 / 嵌套块 / if 体的递归都在
+  parseExpr/parseAssignment/parseCoalesce/parseUnary/parseBlock/parseStatement 层——
+  parsePrimary 之上，**不经 parsePrimary** → 计数器不增长 → 无上限 → 栈溢出。
+- **修复**（三处独立计数器，均 300 守卫、跳过平衡括号/到 `;`/`}` 恢复）：
+  1. `exprDepth_`：`parseExpr`（三元/右结合赋值 RHS 改走 parseExpr）+ `parseCoalesce`
+     （`??` 自递归）+ `parseUnary`（拆 wrapper 守卫 + inner，自递归走 wrapper）。
+  2. `stmtDepth_`：`parseBlock`（嵌套块，跳到匹配 `}`）+ `parseStatement`（if/while
+     链，跳到 `;`/`}`）。
+  3. 右结合赋值 `=`/复合赋值 RHS 从 `parseAssignment()` 改 `parseExpr()`（语义等价，
+     获 parseExpr 守卫）。
+- **回归**：负测试 `tests/negative/expr_recursion_deep.myp`（500 层三元干净拒绝）；
+  torture 新增 `deep/*`（48 个：paren/ternary/blocks/ifchain/coalesce/unary，
+  4000..32000 层，编译不崩溃）；全量 334/0。
+- **教训**：① 递归下降解析器的深度守卫必须放在**每个递归入口**（parsePrimary 不够）——
+  右结合操作符（三元/`??`/赋值）和无花括号 if 链是最容易漏的；② 50000 层这类
+  "专门搞栈溢出"压测正好暴露守卫覆盖不全；③ 守卫恢复策略（跳平衡括号/到 `;`）保证
+  报错后还能继续解析不卡死。
+
+## BUG-056（已修复 🟩，v3.15.89）：嵌套泛型实例化 O(N³) 时间爆炸（DoS）
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.89，selfhost `tools/selfhost/src/sema.myp`）
+- **背景**：审查"多层嵌套是否有守护"审计发现——表达式/语句/括号/宏都有守卫，但
+  **类型级嵌套泛型** `Box<Box<...<int>...>>` 的 sema **实例化路径无守卫**。
+- **复现**（`typeArgDepth` 前手工生成 `Box<Box<...int>> x;`，`--emit-llvm` 计时）：
+  - depth 100 → 0.10s；300 → 1.4s；500 → 7.5s；800 → **>25s（超时）**；5000 → 不可完成。
+  - **纯解析路径（不存在的泛型类 `Undef<Undef<...>>`）0.104s 平坦（100→5000 全同）**——
+    解析器对嵌套泛型**无栈溢出**（50000 层 rc=1 干净语义错误），爆炸全在 sema 实例化。
+- **根因**（O(N³)）：
+  1. `SymbolTable.lookup` 是**线性扫描** `entries_`（已 N 项）× 长 mangled 名比较
+     → 每次实例化查重 O(N²)；
+  2. `instClassName` **递归拼名**（每层拼接整串 O(k)）→ 单层实例化名构建 O(N²)；
+  3. `tryInstantiate` 对每个内层 typeArgs 递归实例化 → N 层 × 上面两项 = O(N³)。
+- **修复**（sema.myp）：
+  - `typeArgDepth(AstType)`：O(N) 单遍测最大泛型实参嵌套深度（不递归拼名）。
+  - `tryInstantiate` 入口顶层测深：`>64` → 单条 `generic type nested too deeply
+    (N > 64) while instantiating 'X'` 干净拒绝并整体返回（不做任何实例化/名构建）。
+  - 保留 `instDepth_` 递归计数器作纵深防御（`typeArgDepth` 未覆盖的路径也不得超 64）。
+  - 合法泛型嵌套 ≤4 层（`Map<string, ArrayList<Option<byte>>>`），64 极其宽松。
+- **验证**：depth 10/200 正常编译（rc=0）；200/500/5000 → 单条守卫错误、0.10~0.30s
+  （原 7.5s/25s+/小时级）。
+- **回归**：负测试 `tests/negative/generic_nested_deep.myp`（70 层 → 1 条干净拒绝）；
+  torture 新增 `deep/generic_*`（+8，4000..32000 层编译不崩溃，共 168 全过）；正向
+  `tests/@test/nested_generic.myp`（2/4/10 层声明+构造正常编译运行）；全量 339/0。
+- **viz 对拍**：torture/generated 病态文件（deep/generic_*）从 `test_myp_viz.sh`
+  全语料对拍排除——自举带守卫拒绝、C++ oracle 无守卫，属预期分歧（同 negative/）。
+- **教训**：① 栈溢出守卫 ≠ 全部健壮性——**时间爆炸**（O(N³) 病态输入挂死编译器）
+  同属 DoS，审计时要测"会不会慢到不可完成"而不只看"会不会崩"；② 守卫要放在
+  **顶层一次测深**（单条干净错误），放递归内部会每层各报一次（65 条重复）+ 底下
+  64 层仍做 O(N²) 名构建；③ 区分阶段：纯解析平坦 → 问题在 sema，别误修 parser。
+

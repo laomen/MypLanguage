@@ -1,0 +1,30 @@
+// nested_generic: 嵌套泛型 Box<Box<...<int>>> 浅层（≤64 守卫内）应正常编译
+// （BUG-056：>64 层拒绝；此处 2/4/10 层锁定正向行为——类型解析 + 实例构造）。
+// 注意：泛型方法 set(T)/get() 链式调用有独立 codegen 限制，本测试只验声明+构造。
+import test;
+
+class Box<T> {
+    property: T v;
+}
+
+@test void test_nested2_decl() {
+    // 深度 2：Box<Box<int>>
+    Box<Box<int>> bb = new Box<Box<int>>();
+    Test.assert(bb != null, "nested2 decl");
+    Test.report("test_nested2_decl", true);
+}
+
+@test void test_nested4_decl() {
+    // 深度 4
+    Box<Box<Box<Box<int>>>> b4 = new Box<Box<Box<Box<int>>>>();
+    Test.assert(b4 != null, "nested4 decl");
+    Test.report("test_nested4_decl", true);
+}
+
+@test void test_nested10_decl() {
+    // 深度 10：仅声明+构造（类型解析编译正确），不深链访问
+    Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<int>>>>>>>>>> b10 =
+        new Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<int>>>>>>>>>>();
+    Test.assert(b10 != null, "nested10 decl");
+    Test.report("test_nested10_decl", true);
+}

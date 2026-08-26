@@ -27,6 +27,135 @@
 
 ## 编译器版本历史
 
+### v3.15.89 — 嵌套泛型实例化 O(N³) 时间爆炸守卫（BUG-056）+ 全嵌套守卫审计
+
+**非破坏性**（selfhost sema 健壮性）。"审查多层嵌套是否都有守护"审计：表达式/语句/
+括号/宏都有守卫（BUG-055），但**类型级嵌套泛型** `Box<Box<...<int>...>>` 的 sema
+实例化路径无守卫——不是栈溢出，而是 **O(N³) 时间爆炸（DoS）**。
+
+- **审计结论**（全部嵌套路径逐项实测，`ulimit -v` + `timeout`）：
+  - ✅ 表达式（三元/`??`/赋值/一元）：`exprDepth_` 300 守卫（BUG-055）。
+  - ✅ 语句（块/if/while）：`stmtDepth_` 300 守卫（BUG-055）；括号 `recursionDepth_`。
+  - ✅ 嵌套元组类型 `((int,int),int)`：走表达式路径 → `expression nested too deeply`。
+  - ✅ 嵌套函数类型：解析干净报错（无崩溃）；解析器嵌套泛型 50000 层**无栈溢出**
+    （0.104s 平坦）——parseType 递归安全。
+  - ✅ 嵌套数组字面量 / 宏展开（depth>100）：均有守卫。
+  - ⚠️ **嵌套泛型 sema 实例化无守卫** → 本次修复。
+- **根因**（O(N³)，sema.myp）：`SymbolTable.lookup` 线性扫描（entries_ 已 N 项 ×
+  长名比较）+ `instClassName` 递归拼名（每层 O(k²)）→ 实例化总 O(N³)。实测
+  depth 800 >25s、5000 不可完成；纯解析路径 0.1s 平坦 → 爆炸全在 sema。
+- **修复**：`typeArgDepth(AstType)` O(N) 单遍测深 + `tryInstantiate` 入口顶层检查，
+  `>64` → 单条 `generic type nested too deeply (N > 64)` 干净拒绝；`instDepth_`
+  计数器作纵深防御。合法嵌套 ≤4 层，64 极其宽松。depth 200/500/5000 → 0.1~0.3s
+  单条错误（原 7.5s/25s+/小时级）。
+- **测试**：负例 `tests/negative/generic_nested_deep.myp`（70 层）；torture 新增
+  `deep/generic_*`（+8 → 168 全过）；正向 `tests/@test/nested_generic.myp`
+  （2/4/10 层声明+构造）；`test_myp_viz.sh` 对拍排除 torture/generated 病态文件
+  （自举带守卫 vs oracle 无守卫，预期分歧）。
+- 验证：bootstrap 自举成立（MD5 一致）；全量回归 **339/0**（+1 正向、+1 负例）；
+  torture compile 40×3 + deep 56 + execute 72 = 168 全过。BUGLIST 记 BUG-056。
+
+### v3.15.88 — 修解析器表达式/语句级递归无守卫（深嵌套栈溢出）+ torture deep 压测
+
+**非破坏性**（selfhost parser 健壮性）。用户要求"上千层嵌套括号/嵌套条件表达式/嵌套
+宏展开，专门搞栈溢出"压测——暴露 `recursionDepth_` 只数 `parsePrimary`（括号 300
+守卫），而**三元 / `??` 合并 / 右结合赋值 / 一元链 / 嵌套块 / if 链**的右嵌套递归
+都在 parsePrimary 之上、不经 parsePrimary → 50000 层 SIGSEGV 栈溢出。
+
+- **修复**（parser.myp，三个独立计数器均 300 守卫 + 跳过恢复）：
+  1. `exprDepth_`：`parseExpr`（三元；右结合赋值 RHS 改走 parseExpr，语义等价）、
+     `parseCoalesce`（`??` 自递归）、`parseUnary`（拆 wrapper 守卫 + inner）。
+  2. `stmtDepth_`：`parseBlock`（嵌套块，跳匹配 `}`）、`parseStatement`（if/while
+     链，跳到 `;`/`}`）。
+  - 报错文本 `expression/statement/block nested too deeply`，与既有 parsePrimary
+    守卫一致；恢复后继续解析不卡死。
+- **torture 新增 `deep/` 类别**（48 个：paren/ternary/blocks/ifchain/coalesce/
+  unary，4000..32000 层）——编译**不得崩溃**（低于阈值编译成功 / 超阈值干净报错
+  均算过，SIGSEGV/abort 判失败）。`run_torture.sh` 加 deep 段 + 汇总。
+- **负测试**：`tests/negative/expr_recursion_deep.myp`（500 层三元 → `expression
+  nested too deeply` 干净拒绝，原 50000 层 SIGSEGV）。
+- 验证：括号/三元/合并/赋值/一元/块/if 链 50000 层全干净报错（原 SIGSEGV）；
+  正常代码不受影响；全量回归 **334/0**。BUGLIST 记 BUG-055。
+
+### v3.15.87 — 修 `exprLlvmType` 对 `+` Binary 指数爆炸（巨表达式不可编译）+ torture plus_bomb
+
+**非破坏性**（selfhost codegen 健壮性）。用户要求添加"百个 `i++` + 一万个加号"的
+变态压测 → 直接打爆编译器（10,000 加号 >120s 超时不可编译），暴露纯**时间**爆炸
+（内存 7-24MB 不变）。
+
+- **根因**（`tools/selfhost/src/codegen.myp` `exprLlvmType` Binary `+` 分支）：
+  `+` 分支为判字符串拼接调用 `exprLlvmType(lhs/rhs)`，底部 `llt/rlt` **再算一次**
+  → 左深链 `0+1+1+...` 每层 2 次递归、逐层翻倍 = 指数 2^N。实测深度 20=0.5s、
+  24=6.2s、26>20s。gdb 热栈：`genExpr → exprLlvmType`（23 层递归）→ `intWidth`。
+- **修复**：`+` 分支去掉递归（resolvedKind=="string" 快路径保留不递归）；「LLVM 类型
+  为 ptr → 拼接结果 ptr」检测移到底部复用已算的 `llt/rlt`。操作数类型每节点算一次
+  → O(n²)。深度 24：6.2s → **0.10s**；10,000 加号：>120s → **10.8s**。
+- **torture 扩展**（`tests/torture/gen_torture.sh`）：
+  - 新增 `plus_bomb_*`（8 个 execute，10000..17000 加号巨表达式 + 100..240 `i++` 语句，
+    自验证 r/`i` 正确）——正是它暴露本 bug。
+  - 新增 `struct_nest_*`（8 个 execute，6..20 层嵌套 struct 链式读写自验证）与
+    `struct_deep_*`（8 个 compile，40..180 层嵌套 struct 定义压测）。
+  - torture execute 56 → **72**、compile 32 → **40** 全过（含 plus_bomb 总 ~4min）。
+- **附带修复 BUG-054（torture struct_nest 生成器踩中）**：**不同 struct 类型赋值/初始化
+  静默过 sema**——`typesCompat` 只比 kind "struct"，`A a; B b; a = b;` 或链式字段
+  `root.inner...inner = root.inner`（L4=L1）被放行 → LLVM opt 报 `defined with type
+  %B but expected %A` 崩溃（非干净诊断）。修复：`exprStructName`（Identifier 查
+  SymbolEntry.className；**Member 递归解析对象 struct + 查字段声明类型**——resolvedClass
+  对 Member 是容器名，直接比会误拒合法 `L2 y = a.b.c;`）→ Assign / VarDecl init 比较
+  具体 struct 名，报错带名：`cannot assign value of type 'B' to variable of type 'A'`。
+  负测试 `tests/negative/struct_assign_mismatch.myp`；合法嵌套链/同型拷贝仍正常。
+- 验证：字符串拼接/数值 `+` 语义对拍（strcon ok=4）；全量回归 **334/0**（+1 负例）；
+  torture compile 40×3 + execute 72 全过。BUGLIST 记 BUG-053 / BUG-054。
+
+### v3.15.86 — match 扩展：字面量模式 + `_` 通配臂（switch-case 等价物）
+
+**非破坏性（additive）**。按决策点 D7（docs/next_improvements.md）：不新增 `switch`
+关键字，直接扩展 `match`——Arm 从仅枚举变体扩为三类模式。
+
+- **语法**（grammar.md `MatchPattern`）：枚举变体 `E.V0`（不变，可带数据绑定）/
+  整型字面量 `0`/`-1`/`4294967295u`/`0L`/`'c'`（负数、uint 上界、long、char 码）/
+  字符串字面量 `"open"` / 浮点字面量 `1.5` / 通配 `_`（默认臂，可选）。
+- **实现**（selfhost，三处同步）：
+  - `ast.myp` AstMatchArm 加 `patKind_/litInt_/litStr_/litDbl_`（默认 "enum"）+ dump。
+  - `parser.myp` `parseMatchArmPattern`：识别 `_`、负数/整型/字符串/char/浮点字面量，
+    枚举路径不变；保留推进保护。
+  - `sema.myp`：按 subject 类型校验字面量臂（整型↔整型/string↔string/float↔
+    float/double）；枚举臂与字面量臂混用 → 报错；`_` 无约束。
+  - `codegen.myp` `genMatchStmt`：枚举 subject → extractvalue 判别式（与 C++ 指令
+    顺序逐字节一致，-O0 oracle 对拍不回归）；标量 subject → 直接比较（整型 icmp /
+    `myp_str_eq` / `fcmp oeq`）；`_` → 无条件进臂。
+- **特性语义**：无 fallthrough（隐式 break）；标量 match 允许非穷尽（`_` 可选）；
+  枚举 match 内 `_` 作兜底；不可混用枚举臂与字面量臂。
+- **测试**：`tests/@test/match_scalar.myp`（7 tests：int/uint 上界/long/string/char/
+  double/枚举+_）+ 3 负例（字面量对 string、字符串对 int、枚举+字面量混用）+
+  **torture 扩展**（+8 大整型字面量 match、+8 大字符串 match 编译压测、+8 标量
+  match 自验证、+8 嵌套 match → torture 88 全过）。
+- 验证：bootstrap 自举成立（MD5 一致）；全量回归 **333/0**（+7 @test 断言、+3 负例）；torture compile 32×3 档 + execute 56 全过。
+
+### v3.15.85 — 修枚举/match 错误恢复死循环 OOM（torture 大枚举暴露）+ torture 套件内存限制
+
+**非破坏性**（编译器健壮性）。Torture 套件（GCC Torture 风格）大枚举压测暴露：解析器
+**错误恢复不保证推进**——非法枚举/match 语法会让解析循环卡死，每次迭代 `perr` 追加
+Diag → 无界内存分配（实测 ~18GB，OOM 崩溃系统）。
+
+- **根因**（selfhost `parser.myp`）：
+  - `parseEnumDecl` 变体循环：`consume(";")`/`parseIdentifier` 失败都**不 advance**。
+    MYP 枚举须分号分隔 `enum Color { Red; Green; Blue; }`；若写成逗号 `V0, V1`（或
+    漏分号），循环卡在同一个 token 上无限转 → Diag 无界增长 → OOM。
+  - `parseMatchStmt` 臂循环同缺陷：`parseIdentifier`+`consume("."/"=>"/"{")` 失败
+    不推进，非法模式（`E => {...}` 缺 `.`/变体名）同样死转。
+  - 修复：两循环加**推进保护**（`int before = current_; ... if (current_ == before)
+    advance();`，与顶层/mapping/class/block 循环同款）。
+- **torture 套件**（`tests/torture/`）：
+  - `gen_torture.sh` 生成枚举改为**分号语法**；big_match 构造器改变体字面量
+    （MYP 不支持 `new E(index)` 枚举构造）。
+  - `run_torture.sh` 加**内存限制**（`MEM_LIMIT_KB` 默认 8GB，`ulimit -v` 作用
+    mypc/opt/llc/ld 全链路）——编译压测必须限内存，防病态输入 OOM 崩溃系统。
+- **负测试**（`tests/negative/`）：新增 `enum_comma_separator.myp`、`match_missing_dot.myp`
+  （此前会 OOM，现应有界报错）；负测试循环加超时 + 1GB 内存限。
+- 验证：非法枚举/match 现 **7.5MB 有界报错**（原 18GB OOM）；torture **compile 16×3 档 +
+  execute 40 全过**；全量回归 **329/0**（含 2 新负测试）。
+
 ### v3.15.77 — N×M:1 每线程状态地基：pthread 线程 + 编译器 `@static @thread`（LLVM thread_local）
 
 **非破坏性**。续 v3.15.76；N×M:1 协程（每线程独立协程表、@thread 下真并行）的

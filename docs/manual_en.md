@@ -675,6 +675,59 @@ match (s) {
   branch; data-bearing variants bind data with `Variant(v1, v2, …)`.
 - Enums are sealed (no else fallback), so `match` must cover the variants used.
 
+### Generic Match — literal & wildcard patterns (v2.2, additive)
+
+Besides enum variants, `match` also supports **integer / string / char / float literal**
+patterns and the **`_` wildcard default arm**, serving as the equivalent of a switch-case
+(no `switch` keyword needed):
+
+```myp
+int code = 2;
+string what = "";
+match (code) {
+    0  => { what = "zero"; }
+    1  => { what = "one"; }
+    -1 => { what = "negative"; }      // negative integer literal
+    _  => { what = "other"; }         // wildcard default arm (optional)
+}
+
+string cmd = "open";
+match (cmd) {
+    "open" => { open(); }
+    "save" => { save(); }
+    _      => { unknown(); }
+}
+
+char g = 'A';
+match (g) {
+    'A' => { best(); }
+    _   => { other(); }
+}
+
+double d = 1.5;
+match (d) {
+    1.5 => { oneFive(); }
+    2.0 => { two(); }
+    _   => { other(); }
+}
+```
+
+- **Literal arms** must match the type of the `match` subject: integer literals ↔ integer
+  subjects (int/long/uint/char etc.), string literals ↔ string, float literals ↔ float/double.
+- **`_` wildcard arm** = the default branch (the `default` equivalent), **optional** — scalar
+  `match` need not be exhaustive. It can also act as a catch-all inside an enum `match`
+  (`Color.Red => {...} _ => {...}`).
+- **No fallthrough**: each arm implicitly `break`s and never falls into the next.
+- **No mixing**: enum-variant and literal arms cannot be mixed in one `match` (compile error).
+- **Float arms compare bit-exactly** (`fcmp oeq`, same semantics as C `==`):
+  `match (0.1 + 0.2) { 0.3 => ... }` does **not** match (0.1+0.2 = 0.30000000000000004 ≠
+  the 64-bit pattern of 0.3). Suited for exactly representable constants (state values like
+  `1.5`/`2.0`), not for tolerance comparisons of computed results (use `Math.abs(a-b) < eps`).
+  A `NaN` subject never matches any literal arm (ordered comparison), falling through to `_`
+  or the end.
+- Common uses: state machines (int dispatch), command parsing (string dispatch), sentinel
+  values (`-1`) matching.
+
 ### Exception Handling (try / catch / finally / throw)
 
 MYP uses `try` / `catch` / `finally` / `throw` for structured exception handling, built on C `setjmp`/`longjmp` (one handler per try, thread-local).

@@ -1091,7 +1091,11 @@ class AstStmt {
                 if (subject_ != null) subject_.dump(sb, ind + 2);
                 for (int i = 0; i < arms_.size(); i = i + 1) {
                     AstMatchArm a = arms_.get(i);
-                    Dump.line(sb, ind + 2, "(Arm enum=\"" + Dump.esc(a.enumName()) + "\" variant=\"" + Dump.esc(a.variant()) + "\" index=" + a.index() + " bindings=[" + Dump.joinList(a.bindings()) + "])");
+                    if (a.patKind() == "enum") {
+                        Dump.line(sb, ind + 2, "(Arm enum=\"" + Dump.esc(a.enumName()) + "\" variant=\"" + Dump.esc(a.variant()) + "\" index=" + a.index() + " bindings=[" + Dump.joinList(a.bindings()) + "])");
+                    } else {
+                        Dump.line(sb, ind + 2, "(Arm pat=" + a.patKind() + " litInt=" + a.litInt() + " litStr=\"" + Dump.esc(a.litStr()) + "\" bindings=[" + Dump.joinList(a.bindings()) + "])");
+                    }
                     if (a.body() != null) a.body().dump(sb, ind + 4);
                 }
             } else if (kind_ == "Try") {
@@ -1267,11 +1271,17 @@ class AstStmt {
 class AstMatchArm {
     action:
         @constructor AstMatchArm() {
+            // patKind：enum（变体）/ int / long / uint / char / string / float /
+            // float32（字面量模式）/ wildcard（_ 通配默认臂）。
+            patKind_ = "enum";
             enum_ = "";
             variant_ = "";
             index_ = 0;
             bindings_ = new ArrayList<string>();
             body_ = null;
+            litInt_ = 0L;
+            litStr_ = "";
+            litDbl_ = 0.0;
         }
         ArrayList<string> bindings() { return bindings_; }
         void setEnum(string v) { enum_ = v; }
@@ -1282,12 +1292,24 @@ class AstMatchArm {
         string variant() { return variant_; }
         int index() { return index_; }
         AstStmt body() { return body_; }
+        string patKind() { return patKind_; }
+        void setPatKind(string v) { patKind_ = v; }
+        long litInt() { return litInt_; }
+        void setLitInt(long v) { litInt_ = v; }
+        string litStr() { return litStr_; }
+        void setLitStr(string v) { litStr_ = v; }
+        double litDbl() { return litDbl_; }
+        void setLitDbl(double v) { litDbl_ = v; }
     property:
+        string patKind_;
         string enum_;
         string variant_;
         int index_;
         ArrayList<string> bindings_;
         AstStmt body_;
+        long litInt_;
+        string litStr_;
+        double litDbl_;
 }
 
 class AstCatch {

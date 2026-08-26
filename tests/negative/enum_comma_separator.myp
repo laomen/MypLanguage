@@ -1,0 +1,5 @@
+// EXPECT ERROR: expected ';' after variant
+// BUG 回归：MYP 枚举变体须分号分隔；逗号 `V0, V1` 曾令 parseEnumDecl 变体
+// 循环卡死（consume 不推进）→ 无界 Diag 分配 OOM 崩溃系统。现应有界报错。
+enum E { V0, V1 }
+int main(){return 0;}

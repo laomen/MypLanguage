@@ -1,0 +1,51 @@
+import env;
+// struct_deep_0 : 40 层嵌套 struct 定义（仅编译压测）
+struct D40 { int v; }
+struct D39 { D40 inner; }
+struct D38 { D39 inner; }
+struct D37 { D38 inner; }
+struct D36 { D37 inner; }
+struct D35 { D36 inner; }
+struct D34 { D35 inner; }
+struct D33 { D34 inner; }
+struct D32 { D33 inner; }
+struct D31 { D32 inner; }
+struct D30 { D31 inner; }
+struct D29 { D30 inner; }
+struct D28 { D29 inner; }
+struct D27 { D28 inner; }
+struct D26 { D27 inner; }
+struct D25 { D26 inner; }
+struct D24 { D25 inner; }
+struct D23 { D24 inner; }
+struct D22 { D23 inner; }
+struct D21 { D22 inner; }
+struct D20 { D21 inner; }
+struct D19 { D20 inner; }
+struct D18 { D19 inner; }
+struct D17 { D18 inner; }
+struct D16 { D17 inner; }
+struct D15 { D16 inner; }
+struct D14 { D15 inner; }
+struct D13 { D14 inner; }
+struct D12 { D13 inner; }
+struct D11 { D12 inner; }
+struct D10 { D11 inner; }
+struct D9 { D10 inner; }
+struct D8 { D9 inner; }
+struct D7 { D8 inner; }
+struct D6 { D7 inner; }
+struct D5 { D6 inner; }
+struct D4 { D5 inner; }
+struct D3 { D4 inner; }
+struct D2 { D3 inner; }
+struct D1 { D2 inner; }
+struct D0 { D1 inner; }
+class T0 {
+    action:
+        @constructor T0() {
+            D0 root;
+            root.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.v = 1;
+        }
+}
+int main() { T0 t = new T0(); return 0; }

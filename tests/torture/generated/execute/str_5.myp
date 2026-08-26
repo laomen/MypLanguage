@@ -1,0 +1,14 @@
+import env;
+// str_5 : 字符串操作自验证（seed=672）
+class T5 {
+    action:
+        @constructor T5() {
+            string s = "torture-5-" + 5 + "-suffix";
+            if (s + "" != s) { Console.writeString("FAIL concat\n"); return; }
+            long acc = 0;
+            for (int k = 0; k < 100; k = k + 1) acc = acc + myp_strlen("x" + k);
+            Console.writeString("PASS str_5 (len=" + myp_strlen(s) + " acc=" + acc + ")\n");
+        }
+}
+ffi int myp_strlen(string s);
+int main() { T5 t = new T5(); return 0; }

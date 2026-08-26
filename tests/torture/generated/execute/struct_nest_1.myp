@@ -1,0 +1,22 @@
+import env;
+// struct_nest_1 : 8 层嵌套 struct 链式读写自验证
+struct L8 { int v; }
+struct L7 { L8 inner; }
+struct L6 { L7 inner; }
+struct L5 { L6 inner; }
+struct L4 { L5 inner; }
+struct L3 { L4 inner; }
+struct L2 { L3 inner; }
+struct L1 { L2 inner; }
+struct L0 { L1 inner; }
+class T1 {
+    action:
+        @constructor T1() {
+            L0 root;
+            root.inner.inner.inner.inner.inner.inner.inner.inner.v = 49;
+            int got = root.inner.inner.inner.inner.inner.inner.inner.inner.v;
+            if (got != 49) { Console.writeString("FAIL struct_nest_1 got=" + got + "\n"); return; }
+            Console.writeString("PASS struct_nest_1 v=" + got + "\n");
+        }
+}
+int main() { T1 t = new T1(); return 0; }

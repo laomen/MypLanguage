@@ -1,0 +1,21 @@
+import env;
+// arr_3 : 数组翻转两次 = 恒等（seed=410）
+class T3 {
+    action:
+        @constructor T3() {
+            int n = 11;
+            long[] a = new long[n];
+            for (int k = 0; k < n; k = k + 1) a[k] = long(k * 25);
+            for (int k = 0; k < n / 2; k = k + 1) {
+                long t = a[k]; a[k] = a[n - 1 - k]; a[n - 1 - k] = t;
+            }
+            for (int k = 0; k < n / 2; k = k + 1) {
+                long t = a[k]; a[k] = a[n - 1 - k]; a[n - 1 - k] = t;
+            }
+            int bad = 0;
+            for (int k = 0; k < n; k = k + 1) if (a[k] != long(k * 25)) bad = 1;
+            if (bad != 0) { Console.writeString("FAIL arr\n"); return; }
+            Console.writeString("PASS arr_3 (n=" + n + ")\n");
+        }
+}
+int main() { T3 t = new T3(); return 0; }

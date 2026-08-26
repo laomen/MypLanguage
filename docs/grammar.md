@@ -453,9 +453,17 @@ AwaitExpr        ::= 'await' Expression                            // 表达式�
 MappingStmt      ::= 'mapping' '(' ')' MappingAnnot? '{' MappingChain+ '}'  // 局部 mapping
 
 MatchStmt        ::= 'match' '(' Expression ')' '{' MatchArm+ '}'
-MatchArm         ::= EnumName '.' VariantName BindingList? '=>' '{' Stmt* '}'
+MatchArm         ::= MatchPattern BindingList? '=>' '{' Stmt* '}'
+MatchPattern     ::= EnumName '.' VariantName                     // 枚举变体（可携带数据绑定）
+                   | '-'? IntegerLiteral                          // 整型字面量（含 long/uint/char 码）
+                   | FloatLiteral                                 // 浮点字面量
+                   | StringLiteral                                // 字符串字面量
+                   | '_'                                          // 通配默认臂（= default，可选）
 BindingList      ::= '(' Identifier (',' Identifier)* ')'
-// 枚举变体匹配；变体可选携带数据绑定 (v1, v2, …)，臂体为块
+// 枚举变体匹配；变体可选携带数据绑定 (v1, v2, …)，臂体为块。字面量/通配臂
+// 无绑定。字面量臂类型须与 subject 匹配（整型↔整型、string↔string、float↔
+// float/double）；枚举臂与字面量臂不可混用；通配 _ 作默认兜底（可不穷尽）。
+// 无 fallthrough（隐式 break）。
 
 TryStmt          ::= 'try' Block CatchClause+ FinallyClause?
 CatchClause      ::= 'catch' '(' (Type Identifier | Identifier)? ')' Block

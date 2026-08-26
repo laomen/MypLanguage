@@ -1,0 +1,16 @@
+// EXPECT ERROR: cannot assign value of type 'B' to variable of type 'A'
+// BUG-054 回归（负测试）：不同 struct 类型赋值/初始化须编译期拒绝——
+// 此前 typesCompat 只比 kind "struct"，`A a; B b; a = b;` 静默过 sema
+// → LLVM opt 报 "defined with type %B but expected %A" 崩溃（非干净诊断）。
+// 现应有界报错（带具体 struct 名）。
+struct A { int v; }
+struct B { int v; }
+class T {
+    action:
+        @constructor T() {
+            A a;
+            B b;
+            a = b;
+        }
+}
+int main(){return 0;}

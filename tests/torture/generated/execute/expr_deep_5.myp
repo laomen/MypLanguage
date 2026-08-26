@@ -1,0 +1,16 @@
+import env;
+// expr_deep_5 : 深度 8 算术表达式（seed=672）
+class T5 {
+    static:
+        long deepEval(long v) {
+            long e = v; e = ((e * 92 + 21) % 52); e = ((e * 95 + 26) % 59); e = ((e * 98 + 0) % 66); e = ((e * 4 + 5) % 73); e = ((e * 7 + 10) % 80); e = ((e * 10 + 15) % 87); e = ((e * 13 + 20) % 94); e = ((e * 16 + 25) % 11); return e;
+        }
+    action:
+        @constructor T5() {
+            long acc = 0;
+            for (int k = 0; k < 500; k = k + 1) acc = acc + T5.deepEval(long(k));
+            if (acc == -1) { Console.writeString("FAIL deep\n"); return; }
+            Console.writeString("PASS expr_deep_5 acc=" + acc + "\n");
+        }
+}
+int main() { T5 t = new T5(); return 0; }

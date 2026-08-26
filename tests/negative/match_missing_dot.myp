@@ -1,0 +1,17 @@
+// EXPECT ERROR: expected '.' after enum type
+// BUG 回归：match 臂 `E => {...}` 缺 '.' 与变体名——parseIdentifier/consume
+// 失败不推进曾令 match 循环卡死 → 无界 Diag 分配 OOM。现应有界报错。
+enum E { V0; V1; }
+class T {
+    action:
+        int pick(E e) {
+            int r = 0;
+            match (e) {
+                E => { r = 1; }
+                E.V1 => { r = 2; }
+            }
+            return r;
+        }
+        @constructor T() { E e = E.V0; int x = this.pick(e); }
+}
+int main(){return 0;}

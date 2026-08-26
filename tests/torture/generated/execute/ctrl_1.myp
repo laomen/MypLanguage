@@ -1,0 +1,30 @@
+import env;
+// ctrl_1 : 嵌套循环 break/continue 计数（seed=148）
+class T1 {
+    action:
+        @constructor T1() {
+            int a = 3;
+            int b = 4;
+            int c = 5;
+            int count = 0;
+            for (int x = 0; x < a; x = x + 1) {
+                for (int y = 0; y < b; y = y + 1) {
+                    for (int z = 0; z < c; z = z + 1) {
+                        if (z == c - 1) continue;
+                        count = count + 1;
+                    }
+                }
+            }
+            int expect = a * b * (c - 1);
+            if (count != expect) { Console.writeString("FAIL ctrl " + count + " != " + expect + "\n"); return; }
+            int brk = 0;
+            for (int x = 0; x < 10; x = x + 1) {
+                for (int y = 0; y < 10; y = y + 1) {
+                    brk = brk + 1;
+                    if (y >= 2) break;
+                }
+            }
+            Console.writeString("PASS ctrl_1 (count=" + count + " brk=" + brk + ")\n");
+        }
+}
+int main() { T1 t = new T1(); return 0; }

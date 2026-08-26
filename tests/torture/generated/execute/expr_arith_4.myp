@@ -1,0 +1,22 @@
+import env;
+// expr_arith_4 : 算术恒等式自验证（seed=541）
+class T4 {
+    action:
+        @constructor T4() {
+            int n = 240;
+            long sumOdd = 0;
+            for (int k = 0; k < n; k = k + 1) sumOdd = sumOdd + (long(k) * 2 + 1);
+            long sq = long(n) * long(n);
+            if (sumOdd != sq) { Console.writeString("FAIL sumOdd " + sumOdd + " != " + sq + "\n"); return; }
+            long fact = 1;
+            for (int k = 1; k <= n; k = k + 1) fact = fact * long(k);
+            long factRef = 1;
+            for (int k = 1; k < n; k = k + 1) factRef = factRef * long(k + 1);
+            if (fact != factRef) { Console.writeString("FAIL fact\n"); return; }
+            long x = long(541) * 2654435761;
+            if ((x ^ x) != 0) { Console.writeString("FAIL xor\n"); return; }
+            if ((x >> 7) != (x / 128)) { Console.writeString("FAIL shift\n"); return; }
+            Console.writeString("PASS expr_arith_4\n");
+        }
+}
+int main() { T4 t = new T4(); return 0; }

@@ -1,0 +1,14 @@
+import env;
+// str_6 : 字符串操作自验证（seed=803）
+class T6 {
+    action:
+        @constructor T6() {
+            string s = "torture-6-" + 6 + "-suffix";
+            if (s + "" != s) { Console.writeString("FAIL concat\n"); return; }
+            long acc = 0;
+            for (int k = 0; k < 100; k = k + 1) acc = acc + myp_strlen("x" + k);
+            Console.writeString("PASS str_6 (len=" + myp_strlen(s) + " acc=" + acc + ")\n");
+        }
+}
+ffi int myp_strlen(string s);
+int main() { T6 t = new T6(); return 0; }

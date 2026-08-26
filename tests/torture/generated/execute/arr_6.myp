@@ -1,0 +1,21 @@
+import env;
+// arr_6 : 数组翻转两次 = 恒等（seed=803）
+class T6 {
+    action:
+        @constructor T6() {
+            int n = 14;
+            long[] a = new long[n];
+            for (int k = 0; k < n; k = k + 1) a[k] = long(k * 30);
+            for (int k = 0; k < n / 2; k = k + 1) {
+                long t = a[k]; a[k] = a[n - 1 - k]; a[n - 1 - k] = t;
+            }
+            for (int k = 0; k < n / 2; k = k + 1) {
+                long t = a[k]; a[k] = a[n - 1 - k]; a[n - 1 - k] = t;
+            }
+            int bad = 0;
+            for (int k = 0; k < n; k = k + 1) if (a[k] != long(k * 30)) bad = 1;
+            if (bad != 0) { Console.writeString("FAIL arr\n"); return; }
+            Console.writeString("PASS arr_6 (n=" + n + ")\n");
+        }
+}
+int main() { T6 t = new T6(); return 0; }

@@ -2396,6 +2396,54 @@ class Sema {
             sb.append(")");
             return sb.toString();
         }
+        // match 字面量臂 subject 判定：整型族（int/long/uint/ulong/byte/short/ubyte/ushort/char）。
+        int isIntKindMatch(string k) {
+            if (k == "int" || k == "long" || k == "uint" || k == "ulong"
+                || k == "byte" || k == "short" || k == "ubyte" || k == "ushort"
+                || k == "char") return 1;
+            return 0;
+        }
+        // 表达式对应的具体 struct/class 名（BUG-054：typesCompat 只比 kind "struct"，
+        // 不同 struct 类型赋值需比较具体名）。
+        // ⚠️ Member 访问（obj.field）的 resolvedClass 是**容器**类型名（如
+        // root.inner 的 resolvedClass=L0 而非字段类型 L1）——必须查 struct 定义
+        // 解析字段声明类型，否则同名 struct 比较误判（误拒合法 `L2 y = a.b.c;`）。
+        string exprStructName(AstExpr e) {
+            if (e == null) return "";
+            if (e.kind() == "Member") {
+                AstExpr mobj = e.array();
+                string on = exprStructName(mobj);
+                if (Str.len(on) != 0) {
+                    string ft = structFieldTypeName(on, e.memberName());
+                    if (Str.len(ft) != 0) return ft;
+                }
+                return "";
+            }
+            if (Str.len(e.resolvedClass()) != 0) return e.resolvedClass();
+            if (Str.len(e.valueClass()) != 0) return e.valueClass();
+            if (e.kind() == "Identifier") {
+                SymbolEntry en = sym_.lookupEntry(e.name());
+                if (en != null && Str.len(en.className()) != 0) return en.className();
+            }
+            return "";
+        }
+        // struct 的字段声明类型名（struct 名 + 字段名 → 字段类型 className/basicName）。
+        string structFieldTypeName(string structName, string fieldName) {
+            if (tu_ == null) return "";
+            for (int i = 0; i < tu_.structs().size(); i = i + 1) {
+                AstStruct st = tu_.structs().get(i);
+                if (st.name() != structName) continue;
+                for (int j = 0; j < st.props().size(); j = j + 1) {
+                    AstProp p = st.props().get(j);
+                    if (p.name() != fieldName) continue;
+                    AstType pt = p.type();
+                    if (pt == null) return "";
+                    if (Str.len(pt.className()) != 0) return pt.className();
+                    return pt.basicName();
+                }
+            }
+            return "";
+        }
         // 操作数类型名（struct/class 用类名，C++ typeName）
         string exprTypeName(AstExpr e, string kind) {
             if (kind == "struct" || kind == "class") {
@@ -2888,21 +2936,51 @@ class Sema {
             }
         }
         // 触发泛型类实例化（类型引用带 typeArgs，递归内层）
+        // BUG-056：泛型类型实参最大嵌套深度（O(N) 单遍，不递归拼名）。
+        int typeArgDepth(AstType t) {
+            if (t == null) return 0;
+            int m = 0;
+            for (int i = 0; i < t.typeArgs().size(); i = i + 1) {
+                int d = typeArgDepth(t.typeArgs().get(i));
+                if (d > m) m = d;
+            }
+            return m + 1;
+        }
         void tryInstantiate(string cn, ArrayList<AstType> tas) {
             if (Str.len(cn) == 0) return;
             if (tas.size() == 0) return;
+            // BUG-056：嵌套泛型实例化深度守卫。Box<Box<...<int>...>> 深度 N 时，
+            // SymbolTable.lookup 线性扫描（entries_ 已 N 项 × 长名比较）+ instClassName
+            // 递归拼名（每层 O(k²)）→ 实例化总 O(N³)：实测 depth 800 >25s（DoS）。
+            // 顶层一次性测深：超限整体拒绝（1 条错误），避免对深层类型做任何实例化/
+            // 名构建。合法泛型嵌套 ≤4 层（如 Map<string, ArrayList<Option<byte>>>），
+            // 64 极其宽松。
+            int td = typeArgDepth(tas.get(0));
+            if (td > 64) {
+                diag_.error(0, 0, "generic type nested too deeply (" + td + " > 64) while instantiating '" + cn + "' — limit nested generic instantiation depth");
+                return;
+            }
+            // 纵深防御：递归计数器（typeArgDepth 未覆盖的路径也不得超 64）。
+            if (instDepth_ >= 64) {
+                diag_.error(0, 0, "generic type nested too deeply (>64) while instantiating '" + cn + "'");
+                return;
+            }
+            instDepth_ = instDepth_ + 1;
             // C++ has_placeholder：类型实参是当前泛型参数占位符（T/E）→ 延迟实例化，
             // 否则模板体内 `new Option<T>()` 会生成 Option_T_inst 幽灵实例。
-            for (int i = 0; i < tas.size(); i = i + 1) {
+            int proceed = 1;
+            for (int i = 0; i < tas.size() && proceed != 0; i = i + 1) {
                 AstType ta = tas.get(i);
-                if (ta != null && (inGeneric(ta.className()) != 0 || inGeneric(ta.basicName()) != 0)) return;
+                if (ta != null && (inGeneric(ta.className()) != 0 || inGeneric(ta.basicName()) != 0)) proceed = 0;
             }
-            for (int i = 0; i < tas.size(); i = i + 1) {
-                AstType ta = tas.get(i);
-                if (ta != null && ta.typeArgs().size() > 0) tryInstantiate(ta.className(), ta.typeArgs());
+            if (proceed != 0) {
+                for (int i = 0; i < tas.size(); i = i + 1) {
+                    AstType ta = tas.get(i);
+                    if (ta != null && ta.typeArgs().size() > 0) tryInstantiate(ta.className(), ta.typeArgs());
+                }
+                if (isGenericClass(cn) != 0) instantiateClass(cn, tas);
             }
-            if (isGenericClass(cn) == 0) return;
-            instantiateClass(cn, tas);
+            instDepth_ = instDepth_ - 1;
         }
         // F4-G1：泛型静态方法调用是否命中注册模板（返回索引，-1 = 否）
         int findGenericStatic(AstExpr callee) {
@@ -3434,12 +3512,26 @@ class Sema {
                         int bad = 0;
                         if (reported == 0 && it == "void") bad = 1;
                         else if (it != "void" && typesCompat(vt, it) == 0) bad = 1;
+                        // BUG-054：struct 初始化须比较具体 struct 名（typesCompat 只比
+                        // kind "struct"；`A a = b;`（b 为 B）静默过 sema → LLVM opt 报错）。
+                        else if (it == "struct" && vt == "struct") {
+                            string dt = Str.len(v.type().className()) != 0 ? v.type().className() : v.type().basicName();
+                            string di = exprStructName(v.init());
+                            if (Str.len(dt) != 0 && Str.len(di) != 0 && dt != di) bad = 1;
+                        }
                         if (bad != 0) {
                             int dl = v.nameLine();
                             int dc = v.nameCol();
                             if (dl == 0) { dl = s.line(); dc = s.col(); }
+                            string itn = it;
+                            string vtn = vt;
+                            if (it == "struct" && vt == "struct") {
+                                itn = exprStructName(v.init());
+                                vtn = Str.len(v.type().className()) != 0 ? v.type().className() : v.type().basicName();
+                                if (Str.len(itn) == 0) itn = "struct";
+                            }
                             diag_.error(dl, dc, "cannot initialize variable '" + v.name()
-                                + "' of type '" + typeNameOf(vt, v.type()) + "' with value of type '" + typeNameOf(it, null) + "'");
+                                + "' of type '" + typeNameOf(vtn, v.type()) + "' with value of type '" + typeNameOf(itn, null) + "'");
                         }
                     }
                     // tuple arity/元素检查（C++ typesCompatible 对 tuple 比较）
@@ -3651,31 +3743,74 @@ class Sema {
                 }
             } else if (k == "Match") {
                 if (s.subject() != null) visitExpr(s.subject());
+                string subjKind = s.subject() != null ? s.subject().resolvedKind() : "void";
+                // subject 类别（match 扩展：字面量臂 int/long/uint/char/string/float）
+                int subjInt = isIntKindMatch(subjKind);
+                int subjFloat = (subjKind == "double" || subjKind == "float") ? 1 : 0;
+                int subjString = (subjKind == "string") ? 1 : 0;
+                int sawEnum = 0;
+                int sawLiteral = 0;
                 for (int i = 0; i < s.arms().size(); i = i + 1) {
                     AstMatchArm arm = s.arms().get(i);
-                    int enumIndex = findEnum(arm.enumName());
-                    if (enumIndex < 0) {
-                        diag_.error(s.line(), s.col(), "unknown enum type '" + arm.enumName() + "'");
+                    string pk = arm.patKind();
+                    if (pk == "wildcard") {
+                        // 通配默认臂：无 subject 类型约束；无绑定。
+                        sym_.enterScope();
+                        if (arm.body() != null) visitStmt(arm.body());
+                        sym_.leaveScope();
                         continue;
                     }
-                    ArrayList<AstEnumVariant> variants = tu_.enums().get(enumIndex).variants();
-                    int variantIndex = -1;
-                    for (int vi = 0; vi < variants.size(); vi = vi + 1) {
-                        if (variants.get(vi).name() == arm.variant()) { variantIndex = vi; break; }
+                    if (pk == "enum") {
+                        if (sawLiteral != 0) {
+                            diag_.error(s.line(), s.col(), "cannot mix enum variant and literal match arms");
+                        }
+                        sawEnum = 1;
+                        int enumIndex = findEnum(arm.enumName());
+                        if (enumIndex < 0) {
+                            diag_.error(s.line(), s.col(), "unknown enum type '" + arm.enumName() + "'");
+                            continue;
+                        }
+                        ArrayList<AstEnumVariant> variants = tu_.enums().get(enumIndex).variants();
+                        int variantIndex = -1;
+                        for (int vi = 0; vi < variants.size(); vi = vi + 1) {
+                            if (variants.get(vi).name() == arm.variant()) { variantIndex = vi; break; }
+                        }
+                        if (variantIndex < 0) {
+                            diag_.error(s.line(), s.col(), "unknown variant '" + arm.variant() + "' in enum '" + arm.enumName() + "'");
+                            continue;
+                        }
+                        arm.setIndex(variantIndex);
+                        AstEnumVariant variant = variants.get(variantIndex);
+                        sym_.enterScope();
+                        for (int bi = 0; bi < arm.bindings().size() && bi < variant.params().size(); bi = bi + 1) {
+                            AstType bt = variant.params().get(bi).type();
+                            sym_.declare(arm.bindings().get(bi), bt != null ? typeToKind(bt) : "void");
+                        }
+                        if (arm.body() != null) visitStmt(arm.body());
+                        sym_.leaveScope();
+                    } else {
+                        // 字面量臂（int/long/uint/char/string/float/float32）
+                        if (sawEnum != 0) {
+                            diag_.error(s.line(), s.col(), "cannot mix enum variant and literal match arms");
+                        }
+                        sawLiteral = 1;
+                        if (pk == "string") {
+                            if (subjString == 0) {
+                                diag_.error(s.line(), s.col(), "cannot match string literal against subject of type '" + subjKind + "'");
+                            }
+                        } else if (pk == "float" || pk == "float32") {
+                            if (subjFloat == 0) {
+                                diag_.error(s.line(), s.col(), "cannot match float literal against subject of type '" + subjKind + "'");
+                            }
+                        } else {
+                            if (subjInt == 0) {
+                                diag_.error(s.line(), s.col(), "cannot match numeric literal against subject of type '" + subjKind + "'");
+                            }
+                        }
+                        sym_.enterScope();
+                        if (arm.body() != null) visitStmt(arm.body());
+                        sym_.leaveScope();
                     }
-                    if (variantIndex < 0) {
-                        diag_.error(s.line(), s.col(), "unknown variant '" + arm.variant() + "' in enum '" + arm.enumName() + "'");
-                        continue;
-                    }
-                    arm.setIndex(variantIndex);
-                    AstEnumVariant variant = variants.get(variantIndex);
-                    sym_.enterScope();
-                    for (int bi = 0; bi < arm.bindings().size() && bi < variant.params().size(); bi = bi + 1) {
-                        AstType bt = variant.params().get(bi).type();
-                        sym_.declare(arm.bindings().get(bi), bt != null ? typeToKind(bt) : "void");
-                    }
-                    if (arm.body() != null) visitStmt(arm.body());
-                    sym_.leaveScope();
                 }
             } else if (k == "Try") {
                 // C++ visitTryStmt：try/catch/finally 体内允许函数调用
@@ -4133,9 +4268,26 @@ class Sema {
                 }
                 string l = visitExpr(e.lhs());
                 string r = e.rhs() != null ? visitExpr(e.rhs()) : "void";
-                if (l != "void" && r != "void" && typesCompat(l, r) == 0) {
-                    diag_.error(e.line(), e.col(), "cannot assign value of type '" + r
-                        + "' to variable of type '" + l + "'");
+                int badAssign = (l != "void" && r != "void" && typesCompat(l, r) == 0) ? 1 : 0;
+                // BUG-054：struct 赋值须比较具体 struct 名（typesCompat 只比
+                // kind "struct"，不同 struct 互赋静默过 sema → LLVM opt 报错）。
+                if (badAssign == 0 && l == "struct" && r == "struct"
+                    && e.lhs() != null && e.rhs() != null) {
+                    string ln = exprStructName(e.lhs());
+                    string rn = exprStructName(e.rhs());
+                    if (Str.len(ln) != 0 && Str.len(rn) != 0 && ln != rn) badAssign = 1;
+                }
+                if (badAssign != 0) {
+                    string lm = l;
+                    string rm = r;
+                    if (l == "struct" && r == "struct") {
+                        lm = exprStructName(e.lhs());
+                        rm = exprStructName(e.rhs());
+                        if (Str.len(lm) == 0) lm = "struct";
+                        if (Str.len(rm) == 0) rm = "struct";
+                    }
+                    diag_.error(e.line(), e.col(), "cannot assign value of type '" + rm
+                        + "' to variable of type '" + lm + "'");
                 }
                 e.setResolvedKind(l);
                 return l;
@@ -6182,6 +6334,7 @@ class Sema {
         ArrayList<string> instDone_;
         ArrayList<string> instNames_;
         ArrayList<ArrayList<AstType>> instTAs_;
+        int instDepth_;   // BUG-056 泛型实例化嵌套深度守卫
         ArrayList<string> gsKeys_;
         ArrayList<string> gsClasses_;
         ArrayList<AstAction> gsActions_;

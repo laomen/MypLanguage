@@ -1,0 +1,24 @@
+import env;
+// struct_nest_2 : 10 层嵌套 struct 链式读写自验证
+struct L10 { int v; }
+struct L9 { L10 inner; }
+struct L8 { L9 inner; }
+struct L7 { L8 inner; }
+struct L6 { L7 inner; }
+struct L5 { L6 inner; }
+struct L4 { L5 inner; }
+struct L3 { L4 inner; }
+struct L2 { L3 inner; }
+struct L1 { L2 inner; }
+struct L0 { L1 inner; }
+class T2 {
+    action:
+        @constructor T2() {
+            L0 root;
+            root.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.v = 56;
+            int got = root.inner.inner.inner.inner.inner.inner.inner.inner.inner.inner.v;
+            if (got != 56) { Console.writeString("FAIL struct_nest_2 got=" + got + "\n"); return; }
+            Console.writeString("PASS struct_nest_2 v=" + got + "\n");
+        }
+}
+int main() { T2 t = new T2(); return 0; }

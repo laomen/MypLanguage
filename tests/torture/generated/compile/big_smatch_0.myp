@@ -1,0 +1,57 @@
+import env;
+// big_smatch_0 : 大字符串字面量 match 分发（40 臂 + _ 通配）
+class T0 {
+    action:
+        string pick(string s) {
+            string r = "";
+            match (s) {
+                "key0" => { r = "val0"; }
+                "key1" => { r = "val1"; }
+                "key2" => { r = "val2"; }
+                "key3" => { r = "val3"; }
+                "key4" => { r = "val4"; }
+                "key5" => { r = "val5"; }
+                "key6" => { r = "val6"; }
+                "key7" => { r = "val7"; }
+                "key8" => { r = "val8"; }
+                "key9" => { r = "val9"; }
+                "key10" => { r = "val10"; }
+                "key11" => { r = "val11"; }
+                "key12" => { r = "val12"; }
+                "key13" => { r = "val13"; }
+                "key14" => { r = "val14"; }
+                "key15" => { r = "val15"; }
+                "key16" => { r = "val16"; }
+                "key17" => { r = "val17"; }
+                "key18" => { r = "val18"; }
+                "key19" => { r = "val19"; }
+                "key20" => { r = "val20"; }
+                "key21" => { r = "val21"; }
+                "key22" => { r = "val22"; }
+                "key23" => { r = "val23"; }
+                "key24" => { r = "val24"; }
+                "key25" => { r = "val25"; }
+                "key26" => { r = "val26"; }
+                "key27" => { r = "val27"; }
+                "key28" => { r = "val28"; }
+                "key29" => { r = "val29"; }
+                "key30" => { r = "val30"; }
+                "key31" => { r = "val31"; }
+                "key32" => { r = "val32"; }
+                "key33" => { r = "val33"; }
+                "key34" => { r = "val34"; }
+                "key35" => { r = "val35"; }
+                "key36" => { r = "val36"; }
+                "key37" => { r = "val37"; }
+                "key38" => { r = "val38"; }
+                "key39" => { r = "val39"; }
+                _ => { r = "?"; }
+            }
+            return r;
+        }
+        @constructor T0() {
+            string a = this.pick("key0");
+            string b = this.pick("key39");
+        }
+}
+int main() { T0 t = new T0(); return 0; }

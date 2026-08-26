@@ -162,7 +162,9 @@ for test_file in tests/negative/*.myp; do
 
     printf "  %-25s " "$name"
 
-    compile_output=$($MYPCC "$test_file" 2>&1)
+    # 内存限 + 超时（编译压测惯例）：非法输入曾 OOM 崩溃系统（枚举/ match 错误恢复
+    # 死循环），负测试须在受限环境跑——挂死/超限即 CRASH 而非干净拒绝。
+    compile_output=$( ( ulimit -v 1048576; myp_timeout $TIMEOUT_SEC "$MYPCC" "$test_file" ) 2>&1)
     rc=$?
     if [ $rc -ne 0 ]; then
         # 崩溃（段错误/abort/ASan）不是"干净拒绝"，必须判失败（T2：意外

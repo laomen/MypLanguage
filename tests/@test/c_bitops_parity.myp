@@ -1,0 +1,21 @@
+// c_bitops_parity.myp — C 位运算对拍：((c|b)^~c)&(a|~c) 64 位（C 输出 -236191838907956185）
+//   验证 MYP 的 long 位运算（| ^ ~ &）与 C 一致。
+import test;
+import env;
+class BitOpsProbe {
+    action:
+        long compute() {
+            long a = 6664195969892517546L;
+            long b = 1679594420099092216L;
+            long c = 1515497576132836640L;
+            long d = ((c | b) ^ ~c) & (a | ~c);
+            return d;
+        }
+}
+@test void t_c_bitops_parity() {
+    BitOpsProbe p = new BitOpsProbe();
+    Test.assertEq(p.compute(), -236191838907956185);
+    // 中间值与 C/Python 一致
+    Test.assertEq(long(1679630721485701112L), 1679630721485701112L);
+    Test.assertEq(~1515497576132836640L, -1515497576132836641L);
+}

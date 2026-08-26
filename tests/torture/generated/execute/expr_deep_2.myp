@@ -1,0 +1,16 @@
+import env;
+// expr_deep_2 : 深度 5 算术表达式（seed=279）
+class T2 {
+    static:
+        long deepEval(long v) {
+            long e = v; e = ((e * 87 + 0) % 19); e = ((e * 90 + 5) % 26); e = ((e * 93 + 10) % 33); e = ((e * 96 + 15) % 40); e = ((e * 2 + 20) % 47); return e;
+        }
+    action:
+        @constructor T2() {
+            long acc = 0;
+            for (int k = 0; k < 500; k = k + 1) acc = acc + T2.deepEval(long(k));
+            if (acc == -1) { Console.writeString("FAIL deep\n"); return; }
+            Console.writeString("PASS expr_deep_2 acc=" + acc + "\n");
+        }
+}
+int main() { T2 t = new T2(); return 0; }

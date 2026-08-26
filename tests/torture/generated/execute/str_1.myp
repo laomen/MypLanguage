@@ -1,0 +1,14 @@
+import env;
+// str_1 : 字符串操作自验证（seed=148）
+class T1 {
+    action:
+        @constructor T1() {
+            string s = "torture-1-" + 1 + "-suffix";
+            if (s + "" != s) { Console.writeString("FAIL concat\n"); return; }
+            long acc = 0;
+            for (int k = 0; k < 100; k = k + 1) acc = acc + myp_strlen("x" + k);
+            Console.writeString("PASS str_1 (len=" + myp_strlen(s) + " acc=" + acc + ")\n");
+        }
+}
+ffi int myp_strlen(string s);
+int main() { T1 t = new T1(); return 0; }

@@ -1,0 +1,16 @@
+import env;
+// expr_deep_0 : 深度 3 算术表达式（seed=17）
+class T0 {
+    static:
+        long deepEval(long v) {
+            long e = v; e = ((e * 19 + 17) % 27); e = ((e * 22 + 22) % 34); e = ((e * 25 + 27) % 41); return e;
+        }
+    action:
+        @constructor T0() {
+            long acc = 0;
+            for (int k = 0; k < 500; k = k + 1) acc = acc + T0.deepEval(long(k));
+            if (acc == -1) { Console.writeString("FAIL deep\n"); return; }
+            Console.writeString("PASS expr_deep_0 acc=" + acc + "\n");
+        }
+}
+int main() { T0 t = new T0(); return 0; }

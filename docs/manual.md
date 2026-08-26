@@ -650,6 +650,55 @@ match (s) {
   带数据变体用 `Variant(v1, v2, …)` 绑定数据后使用。
 - 枚举是 sealed（无 else 兜底分支），`match` 需覆盖用到的变体。
 
+### 通用 match（字面量 + 通配，v2.2，additive）
+
+除枚举变体外，`match` 还支持**整型/字符串/字符/浮点字面量**模式与 **`_` 通配默认臂**，
+充当 switch-case 的等价物（无需 `switch` 关键字）：
+
+```myp
+int code = 2;
+string what = "";
+match (code) {
+    0  => { what = "zero"; }
+    1  => { what = "one"; }
+    -1 => { what = "negative"; }      // 负数整型字面量
+    _  => { what = "other"; }         // 通配默认臂（可选）
+}
+
+string cmd = "open";
+match (cmd) {
+    "open" => { open(); }
+    "save" => { save(); }
+    _      => { unknown(); }
+}
+
+char g = 'A';
+match (g) {
+    'A' => { best(); }
+    _   => { other(); }
+}
+
+double d = 1.5;
+match (d) {
+    1.5 => { oneFive(); }
+    2.0 => { two(); }
+    _   => { other(); }
+}
+```
+
+- **字面量臂**类型须与 `match` 的 subject 一致：整型字面量↔整型 subject（int/long/
+  uint/char 等）、字符串字面量↔string、浮点字面量↔float/double。
+- **`_` 通配臂** = 默认分支（`default` 等价物），**可选**——标量 match 允许非穷尽。
+  也可在枚举 match 中作兜底（`Color.Red => {...} _ => {...}`）。
+- **无 fallthrough**：每臂隐式 `break`，不会串入下一臂。
+- **不可混用**：同一 `match` 内枚举臂与字面量臂不能混用（编译期报错）。
+- **浮点臂是位精确比较**（`fcmp oeq`，与 C `==` 语义一致）：`match (0.1 + 0.2) {
+  0.3 => ... }` **不会匹配**（0.1+0.2=0.30000000000000004 ≠ 0.3 的 64 位位型）。
+  适合精确可表示的常量（状态值 `1.5`/`2.0`），不适合计算结果容差比较（用
+  `Math.abs(a-b) < eps`）。`NaN` subject 永不匹配任何字面量臂（oeq 有序比较），
+  落到 `_` 或直接跳过。
+- 常见场景：状态机（int 分发）、命令解析（string 分发）、哨兵值（`-1`）匹配。
+
 ### 异常处理（try / catch / finally / throw）
 
 MYP 用 `try` / `catch` / `finally` / `throw` 做结构化异常处理，机制基于 C `setjmp`/`longjmp`（每 try 独立 handler，线程本地）。

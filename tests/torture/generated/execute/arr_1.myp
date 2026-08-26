@@ -1,0 +1,21 @@
+import env;
+// arr_1 : 数组翻转两次 = 恒等（seed=148）
+class T1 {
+    action:
+        @constructor T1() {
+            int n = 9;
+            long[] a = new long[n];
+            for (int k = 0; k < n; k = k + 1) a[k] = long(k * 54);
+            for (int k = 0; k < n / 2; k = k + 1) {
+                long t = a[k]; a[k] = a[n - 1 - k]; a[n - 1 - k] = t;
+            }
+            for (int k = 0; k < n / 2; k = k + 1) {
+                long t = a[k]; a[k] = a[n - 1 - k]; a[n - 1 - k] = t;
+            }
+            int bad = 0;
+            for (int k = 0; k < n; k = k + 1) if (a[k] != long(k * 54)) bad = 1;
+            if (bad != 0) { Console.writeString("FAIL arr\n"); return; }
+            Console.writeString("PASS arr_1 (n=" + n + ")\n");
+        }
+}
+int main() { T1 t = new T1(); return 0; }

@@ -1,0 +1,13 @@
+// EXPECT ERROR: cannot match numeric literal against subject of type 'string'
+// match 扩展：整型字面量臂对 string subject → 编译拒绝。
+class T {
+    action:
+        void f(string s) {
+            match (s) {
+                1 => { }
+                _ => { }
+            }
+        }
+        @constructor T() { this.f("x"); }
+}
+int main(){return 0;}
