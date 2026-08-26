@@ -2103,3 +2103,23 @@
 - **教训**：parser 对字面 void 的表示是 basicName="void"（非空）——判定字面
   void 要看 basicName 而非「空」。内建/类型关键字做参数/字段时的校验（sema.cpp
   的 cannot declare … of type 'void' 系列）逐一比对。
+
+## BUG-079（已修复 🟩，v3.15.113）：bitvector 移位量漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.113，selfhost sema.myp）
+- **背景**：`bitvector<8> v8; v8 << "x"`（string 移位量）此前静默过 sema → codegen
+  把 ptr 当移位量 → **opt 崩**（"constant expression type mismatch: got type
+  'ptr' but expected 'i8'"，非干净诊断）。C++ visitBinaryOp 要求 bitvector 移位
+  量是整数或 bitvector。
+- **根因**：自举 bitvector 移位特殊分支（sema.myp `(op=="<<"||">>") &&
+  l=="bitvector"`）只设标志返回 "bitvector"，不校验右操作数类型（比通用数字
+  移位路径早 return，跳过 "expected numeric type" 检查）。
+- **修复**：该分支加 `isNumKind(r)==0 && r!="bitvector"` → 报 `bitvector shift
+  requires a bitvector left operand and an integer or bitvector shift amount`
+  （与 oracle 文本逐字节一致）。
+- **验证**：`v8 << "x"` 干净拒绝；合法 `v8 << 2` / `v8 << 1L` 不受影响。
+- **回归**：负测试 `tests/negative/bitvector_shift_type.myp`；全量 367 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：特殊类型（bitvector）的运算符路径常提前 return 绕过通用校验——凡
+  oracle 对某类型组合有专有 error 分支（bitvector 比较/移位/位运算），自举对应
+  分支都要补。

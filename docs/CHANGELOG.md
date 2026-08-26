@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.113 — 修 bitvector 移位量漏校验 → opt 崩（BUG-079）
+
+**非破坏性**（selfhost sema）。`bitvector<8> v8; v8 << "x"`（string 移位量）
+此前静默过 sema → codegen 把 ptr 当移位量 → **opt 崩**（`constant expression
+type mismatch: got type 'ptr' but expected 'i8'`）。C++ visitBinaryOp 要求
+bitvector 移位量是整数或 bitvector。
+
+- **根因**：自举 bitvector 移位特殊分支只设标志返回 "bitvector"，不校验右操作
+  数类型（比通用数字移位路径早 return，跳过 "expected numeric type" 检查）。
+- **修复**：该分支加 `isNumKind(r)==0 && r!="bitvector"` → 报 `bitvector shift
+  requires a bitvector left operand and an integer or bitvector shift amount`。
+- **测试**：负测试 `tests/negative/bitvector_shift_type.myp`；合法 `v8 << 2` /
+  `v8 << 1L` 不受影响。
+- 验证：bootstrap 自举成立；全量回归 **367 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-079。
+
 ### v3.15.112 — 修 void 参数漏校验 → opt 崩（BUG-078）
 
 **非破坏性**（selfhost sema）。`void take(void v)` 的 void 参数此前静默过 sema →

@@ -4315,6 +4315,15 @@ class Sema {
                     return "bitvector";
                 }
                 if ((op == "<<" || op == ">>") && l == "bitvector") {
+                    // BUG-079：bitvector 移位量须整数或 bitvector（镜像 C++
+                    // visitBinaryOp）。v8 << "x" 此前静默过 → codegen 把 ptr 当
+                    // 移位量 → opt 崩（"constant expression type mismatch: got
+                    // type 'ptr' but expected 'i8'"）。
+                    if (isNumKind(r) == 0 && r != "bitvector") {
+                        diag_.error(e.rhs().line(), e.rhs().col(), "bitvector shift requires a bitvector left operand and an integer or bitvector shift amount");
+                        e.setResolvedKind("void");
+                        return "void";
+                    }
                     e.setLhsUnsigned(1);
                     e.setRhsUnsigned(1);
                     e.setResultUnsigned(1);

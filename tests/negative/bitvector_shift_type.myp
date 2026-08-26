@@ -1,0 +1,16 @@
+// EXPECT ERROR: bitvector shift requires a bitvector left operand and an integer or bitvector shift amount
+// BUG-079 回归（负测试）：bitvector 移位量须整数或 bitvector 须编译期干净拒绝。
+// 此前自举 bitvector 移位特殊分支（sema.myp l=="bitvector" 的 << >>）不校验
+// 移位量类型 → `v8 << "x"`（string 移位量）静默过 sema → codegen 把 ptr 当
+// 移位量 → opt 崩（"constant expression type mismatch: got type 'ptr' but
+// expected 'i8'"）。C++ visitBinaryOp 镜像。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            bitvector<8> v8 = bitvector<8>(5);
+            bitvector<8> b = v8 << "x";
+        }
+}
+int main(){return 0;}
