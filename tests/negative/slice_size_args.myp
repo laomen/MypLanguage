@@ -1,0 +1,15 @@
+// EXPECT ERROR: slice requires exactly one size argument: new slice<T>(n)
+// BUG-090 回归（负测试）：new slice<T>(n) 恰一个 size 参数（int/long/short/
+// byte）。此前自举静默接受 new slice<int>(4,5)（多余 size）与
+// new slice<string>("abc")（size 非整数）→ codegen 错配。
+// C++ visitNewExpr 镜像 "slice requires exactly one size argument" /
+// "slice size must be an integer expression"。合法：new slice<int>(n)。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            slice<int> bad = new slice<int>(4, 5);
+        }
+}
+int main(){return 0;}

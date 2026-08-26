@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.15.124 — 修 slice 构造/成员调用参数漏校验（BUG-090）
+
+**非破坏性**（selfhost sema）。`slice<int,int>` / `new slice<int>(4,5)` /
+`new slice<string>("abc")` / `s.data(2)` 此前自举静默接受 → codegen 按单元素/
+size 生成 → 垃圾/错配。C++ visitNewExpr + visitCall 镜像。
+
+- **修复**：①New slice 加 3 项校验（恰一类型参数 / 恰一 size / size 为
+  int/long/short/byte）；②slice 成员 .size/.length/.data（Identifier 基 +
+  Call 返回 slice 基）加实参数为 0 校验。
+- **测试**：负测试 `tests/negative/slice_type_args.myp` +
+  `tests/negative/slice_size_args.myp`；`new slice<int>(3)`/`s.size()`/`s.data()`
+  不受影响。
+- 验证：bootstrap 自举成立；全量回归 **380 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-090。
+
 ### v3.15.123 — 修 for-in 变量类型不匹配漏校验（BUG-089）
 
 **非破坏性**（selfhost sema）。`for (string s in int[2] arr)`（显式循环变量

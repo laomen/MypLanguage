@@ -1,0 +1,16 @@
+// EXPECT ERROR: slice requires exactly one type argument: slice<T>
+// BUG-090 回归（负测试）：slice 构造须恰一个类型参数 + 恰一个整数 size；
+// slice 成员 size()/length()/data() 不带参数。此前自举静默接受
+// slice<int,int> / new slice<int>(4,5) / new slice<string>("abc") / s.data(2)
+// → codegen 按单元素/size 生成 → 垃圾/错配。C++ visitNewExpr 镜像。
+// 合法：new slice<int>(n)（n 为 int/long/short/byte）/
+// s.size()/s.length()/s.data() 无参调用。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            slice<int,int> bad = new slice<int,int>(4);
+        }
+}
+int main(){return 0;}

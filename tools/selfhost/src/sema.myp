@@ -5294,13 +5294,30 @@ class Sema {
                         if (mo != null && mo.kind() == "Identifier") {
                             string mot2 = sym_.lookup(mo.name());
                             if (mot2 == "slice") {
-                                if (callee.memberName() == "size" || callee.memberName() == "length") ret = "int";
-                                else if (callee.memberName() == "data") ret = "array";
+                                // BUG-090：slice 成员调用不带参数（镜像 C++
+                                // "slice size()/length() takes no arguments" /
+                                // "slice data() takes no arguments"）。此前
+                                // s.data(2) 静默接受 → 返回 array 错配。
+                                if (callee.memberName() == "size" || callee.memberName() == "length") {
+                                    if (e.args().size() != 0) diag_.error(e.line(), e.col(), "slice size()/length() takes no arguments");
+                                    ret = "int";
+                                }
+                                else if (callee.memberName() == "data") {
+                                    if (e.args().size() != 0) diag_.error(e.line(), e.col(), "slice data() takes no arguments");
+                                    ret = "array";
+                                }
                             }
                         } else if (mo != null && mo.kind() == "Call" && mo.resolvedKind() == "slice") {
                             // makeSlice().size()：slice 返回调用结果的内建成员（BUG-059）
-                            if (callee.memberName() == "size" || callee.memberName() == "length") ret = "int";
-                            else if (callee.memberName() == "data") ret = "array";
+                            // BUG-090：同 slice 成员调用不带参数
+                            if (callee.memberName() == "size" || callee.memberName() == "length") {
+                                if (e.args().size() != 0) diag_.error(e.line(), e.col(), "slice size()/length() takes no arguments");
+                                ret = "int";
+                            }
+                            else if (callee.memberName() == "data") {
+                                if (e.args().size() != 0) diag_.error(e.line(), e.col(), "slice data() takes no arguments");
+                                ret = "array";
+                            }
                         }
                         string cn = "";
                         if (mo != null && mo.kind() == "Identifier") {
@@ -5942,7 +5959,24 @@ class Sema {
             if (k == "New") {
                 // slice<T>(n) → slice 类型
                 if (e.className() == "slice") {
+                    // BUG-090：镜像 C++ visitNewExpr——slice 恰一个类型参数 +
+                    // 恰一个整数 size。此前 slice<int,int>/new slice<int>(4,5)/
+                    // new slice<string>("abc") 静默接受（只设 slice 返回）→
+                    // codegen 按单元素/size 生成 → 垃圾/错配。
+                    if (e.typeArgs().size() != 1) {
+                        diag_.error(e.line(), e.col(), "slice requires exactly one type argument: slice<T>");
+                    }
+                    if (e.args().size() != 1) {
+                        diag_.error(e.line(), e.col(), "slice requires exactly one size argument: new slice<T>(n)");
+                    }
                     for (int i = 0; i < e.args().size(); i = i + 1) visitExpr(e.args().get(i));
+                    if (e.args().size() == 1) {
+                        AstExpr se = e.args().get(0);
+                        string sk = se.resolvedKind();
+                        if (sk != "int" && sk != "long" && sk != "short" && sk != "byte") {
+                            diag_.error(se.line(), se.col(), "slice size must be an integer expression");
+                        }
+                    }
                     e.setResolvedKind("slice");
                     return "slice";
                 }

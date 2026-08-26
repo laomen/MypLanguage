@@ -2348,3 +2348,28 @@
 - **教训**：for-in 循环变量显式类型是独立校验点（has_type 分支）；class 元素
   的 elemType 带 "class:" 前缀须剥前缀再比类名，接口←类须保守放行防误伤
   （inInterface 泛判，不逐类查 implements）。
+
+## BUG-090（已修复 🟩，v3.15.124）：slice 构造/成员调用参数漏校验（应拒绝却接受）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.124，selfhost sema.myp）
+- **背景**：①`slice<int,int>`（两个类型参数）②`new slice<int>(4,5)`（两个
+  size）③`new slice<string>("abc")`（size 非整数）④`s.data(2)`（slice 成员带
+  参数）此前自举静默接受 → codegen 按单元素/size 生成 → 垃圾/错配。C++
+  visitNewExpr 镜像：`slice requires exactly one type argument: slice<T>` /
+  `slice requires exactly one size argument: new slice<T>(n)` / `slice size
+  must be an integer expression`；visitCall 镜像 `slice size()/length() takes
+  no arguments` / `slice data() takes no arguments`。
+- **根因**：自举 New slice 分支只 visit 全部实参设 slice 返回，不查类型/实参
+  个数与 size 整型性；slice 成员 .size()/.length()/.data() 分支只设返回类型不
+  查实参数。
+- **修复**：①New slice 加 3 项校验（typeArgs==1 / args==1 / size 为
+  int/long/short/byte，镜像 oracle visitNewExpr）；②slice 成员 .size/.length/
+  .data 两处分支（Identifier 基 + Call 返回 slice 基 BUG-059）加实参数为 0
+  校验。
+- **验证**：四种非法形态干净拒绝（文本与 oracle 一致）；`new slice<int>(3)` /
+  `s.size()` / `s.data()` / `s.length()` 均不受影响；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/slice_type_args.myp` +
+  `tests/negative/slice_size_args.myp`；全量 380 通过 / 0 失败；oracle 对拍
+  95/0。
+- **教训**：slice 是内建「伪类」——其构造与成员调用都是内建拦截（不落类方法
+  表），校验须在拦截点显式写；实参/类型实参个数 + 参数类型是常漏三项。
