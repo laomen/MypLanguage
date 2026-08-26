@@ -1,0 +1,17 @@
+// EXPECT ERROR: popcount expects an integer argument
+// BUG-091 回归（负测试）：位操作内建（popcount/clz/ctz/bitreverse 一元，
+// rotl/rotr 二元）实参须整型。
+// 此前自举只 visit 实参不校验类型 → popcount(1.5)（浮点）静默过 → codegen 非法
+// 内在签名 → opt 崩（"invalid intrinsic signature"）；rotl(5,"x") 移位量字符串
+// → opt 崩（"got type 'ptr' but expected 'i32'"）。C++ visitBitOps 镜像
+// "expects an integer argument" / "shift amount must be an integer" / "takes N
+// argument(s)"。合法：popcount(255)/rotl(1,3)。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            double x = popcount(1.5);
+        }
+}
+int main(){return 0;}

@@ -2373,3 +2373,33 @@
   95/0。
 - **教训**：slice 是内建「伪类」——其构造与成员调用都是内建拦截（不落类方法
   表），校验须在拦截点显式写；实参/类型实参个数 + 参数类型是常漏三项。
+
+## BUG-091（已修复 🟩，v3.15.125）：内建实参校验缺失 → opt 崩（parse/位操作/bytes 族）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.125，selfhost sema.myp）
+- **背景**：isNoVisitIntr 拦截名单内建（不 visit callee/实参）中 parse 族 /
+  位操作族 / bytes 族 / load4-store4 无实参校验 → 错参静默过 → codegen 发非法
+  内在签名 → **opt 崩**：
+  - `parseInt(123)` → "integer constant must have integer type"
+  - `popcount(1.5)` → "invalid intrinsic signature"
+  - `rotl(5,"x")` → "got type 'ptr' but expected 'i32'"
+  - `bytesOf("hi",2)` / `bytesOf("hi")` → "got type 'ptr' but expected 'i64'"
+  C++ 镜像：visitParse/visitParseOpt（string 实参）、visitBitOps（整型实参 +
+  移位量整型）、visitBytesStr/visitBytesOf（恰一实参 + 类型匹配回落普通解析）、
+  visitVec4Access（load4/store4）。
+- **根因**：isNoVisitIntr 分支对 parse/bytes 族只设返回类型不 visit 实参（与
+  BUG-084 checkedAdd 同构的校验盲区）；位操作族 visit 实参但不校验类型。
+- **修复**：①parse 族加「恰一实参 + string 类型」校验（parseIntOpt 特
+  "takes exactly one string argument"）；②位操作族加实参数与整型校验（一元
+  popcount/clz/ctz/bitreverse=1、二元 rotl/rotr=2；非整型 → expects an
+  integer argument / shift amount must be an integer）；③bytes/bytesOf 加
+  「恰一实参 + 类型匹配（bytes←string，bytesOf←bitvector）否则回落普通函数
+  解析」；str 加「恰一实参 + 收数组否则回落」；④load4/store4 加
+  float[] 首参/索引整型/float4 三参校验。
+- **验证**：各错参形态干净拒绝；parseInt("123")/popcount(255)/rotl(1,3)/
+  bytes("s") 合法用编译+运行正确；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/parse_type.myp` + `bitop_type.myp` +
+  `bytesof_args.myp`；全量 382 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：isNoVisitIntr（拦截名单内建不 visit 实参）是校验盲区——凡内建收
+  特定类型实参，必须在该分支显式 visit+校验；类型不匹配的「回落普通函数解析」
+  （非崩溃 undefined）也要镜像，否则自举会把非法参数当内建 → codegen 崩。

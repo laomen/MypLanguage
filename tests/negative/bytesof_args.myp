@@ -1,0 +1,15 @@
+// EXPECT ERROR: bytesOf takes exactly one argument
+// BUG-091 回归（负测试）：bytes/bytesOf/str 须恰一个实参；实参类型不匹配
+// （bytesOf 非 bitvector）回落普通函数解析（undefined/void，非崩溃）。
+// 此前自举 bytesOf("hi",2) 静默过 → codegen 实参个数错 → opt 崩（"got type
+// 'ptr' but expected 'i64'"）。C++ visitBytesStr/visitBytesOf 镜像 "takes
+// exactly one argument"。合法：bytesOf(bitvector)/bytes("s")/str(ubyte[])。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            ubyte[] b = bytesOf("hi", 2);
+        }
+}
+int main(){return 0;}

@@ -5097,23 +5097,123 @@ class Sema {
                                 }
                                 e.setArgsVisited(1);
                             }
-                            else if (fn == "parseIntOpt") ret = "tuple";
-                            else if (fn == "parseInt") ret = "int";
-                            else if (fn == "parseLong") ret = "long";
-                            else if (fn == "parseUint") ret = "uint";
-                            else if (fn == "parseUlong") ret = "ulong";
-                            else if (fn == "parseFloat") ret = "float";
-                            else if (fn == "parseDouble") ret = "double";
-                            else if (fn == "bytes" || fn == "bytesOf") ret = "array";
-                            else if (fn == "str") ret = "string";
-                            else if (fn == "load4") ret = "float4";
-                            else if (fn == "store4") ret = "void";
-                            else if (fn == "bytesOf") ret = "array";
-                            else if ((fn == "popcount" || fn == "clz" || fn == "ctz" || fn == "bitreverse"
-                                || fn == "rotl" || fn == "rotr") && e.args().size() > 0) {
-                                ret = visitExpr(e.args().get(0));
-                                for (int ai = 1; ai < e.args().size(); ai = ai + 1) visitExpr(e.args().get(ai));
+                            else if (fn == "parseInt" || fn == "parseLong" || fn == "parseUint" || fn == "parseUlong"
+                                || fn == "parseFloat" || fn == "parseDouble" || fn == "parseIntOpt") {
+                                // BUG-091：parse* 实参须恰一个字符串（镜像 C++
+                                // visitParse/visitParseOpt）。此前 isNoVisitIntr
+                                // 不 visit 实参 → parseInt(123) 静默过 → codegen
+                                // 发非法内在签名 → opt 崩（"integer constant must
+                                // have integer type"）。
+                                if (e.args().size() != 1) {
+                                    diag_.error(e.line(), e.col(), fn == "parseIntOpt" ? fn + " takes exactly one string argument" : fn + " takes exactly one argument");
+                                }
+                                if (e.args().size() > 0) {
+                                    string pk = visitExpr(e.args().get(0));
+                                    if (pk != "string") {
+                                        diag_.error(e.args().get(0).line(), e.args().get(0).col(), fn + " expects a string argument");
+                                    }
+                                }
                                 e.setArgsVisited(1);
+                                if (fn == "parseIntOpt") ret = "tuple";
+                                else if (fn == "parseInt") ret = "int";
+                                else if (fn == "parseLong") ret = "long";
+                                else if (fn == "parseUint") ret = "uint";
+                                else if (fn == "parseUlong") ret = "ulong";
+                                else if (fn == "parseFloat") ret = "float";
+                                else if (fn == "parseDouble") ret = "double";
+                            }
+                            else if (fn == "bytes" || fn == "bytesOf") {
+                                // BUG-091：bytes/bytesOf 须恰一个实参（镜像 C++
+                                // visitBytesStr/visitBytesOf）；且实参类型匹配
+                                // （bytes←string，bytesOf←bitvector），不匹配则
+                                // 回落普通函数解析（非崩溃）。此前 bytesOf("hi",2)
+                                // 静默过 → opt 崩；bytesOf("hi") 当内建 → opt 崩。
+                                if (e.args().size() != 1) {
+                                    diag_.error(e.line(), e.col(), fn + " takes exactly one argument");
+                                    e.setArgsVisited(1);
+                                    ret = "array";
+                                } else {
+                                    string ak = visitExpr(e.args().get(0));
+                                    e.setArgsVisited(1);
+                                    int matches = (fn == "bytes") ? (ak == "string" ? 1 : 0) : (ak == "bitvector" ? 1 : 0);
+                                    if (matches != 0) ret = "array";
+                                    else {
+                                        string frb = findFuncRet(fn, 1);
+                                        if (Str.len(frb) != 0) ret = frb;
+                                        else ret = "void";
+                                    }
+                                }
+                            }
+                            else if (fn == "str") {
+                                // BUG-091：str 须恰一个实参且收 ubyte[]（镜像
+                                // visitBytesStr）；非数组回落普通解析防崩。
+                                if (e.args().size() != 1) {
+                                    diag_.error(e.line(), e.col(), "str takes exactly one argument");
+                                    e.setArgsVisited(1);
+                                    ret = "string";
+                                } else {
+                                    string ak2 = visitExpr(e.args().get(0));
+                                    e.setArgsVisited(1);
+                                    if (ak2 == "array") ret = "string";
+                                    else {
+                                        string frs = findFuncRet("str", 1);
+                                        if (Str.len(frs) != 0) ret = frs;
+                                        else ret = "void";
+                                    }
+                                }
+                            }
+                            else if (fn == "load4" || fn == "store4") {
+                                // BUG-091：load4(float[] a, long i) /
+                                // store4(float[] a, long i, float4 v)（镜像 C++
+                                // visitVec4Access）。实参类型错 → codegen 非法
+                                // 内在签名 → opt 崩。
+                                if (e.args().size() < 2) {
+                                    diag_.error(e.line(), e.col(), fn + " expects (float[] a, long i" + (fn == "store4" ? ", float4 v)" : ")"));
+                                }
+                                if (e.args().size() > 0) {
+                                    string ak = visitExpr(e.args().get(0));
+                                    if (ak != "array") {
+                                        diag_.error(e.args().get(0).line(), e.args().get(0).col(), fn + " first argument must be a 'float[]' (got '" + ak + "')");
+                                    }
+                                }
+                                if (e.args().size() > 1) visitExpr(e.args().get(1));
+                                if (fn == "store4" && e.args().size() > 2) visitExpr(e.args().get(2));
+                                e.setArgsVisited(1);
+                                if (fn == "load4") ret = "float4";
+                                else ret = "void";
+                            }
+                            else if (fn == "popcount" || fn == "clz" || fn == "ctz" || fn == "bitreverse"
+                                || fn == "rotl" || fn == "rotr") {
+                                // BUG-091：位操作内建实参须整数（镜像 C++
+                                // visitBitOps）。popcount(1.5) 此前静默过 →
+                                // codegen 非法内在签名 → opt 崩（"invalid
+                                // intrinsic signature"）；rotl(5,"x") 移位量
+                                // 字符串 → opt 崩（"got type 'ptr' but expected
+                                // 'i32'"）。
+                                int unary = (fn == "popcount" || fn == "clz" || fn == "ctz" || fn == "bitreverse") ? 1 : 0;
+                                int want = unary != 0 ? 1 : 2;
+                                if (e.args().size() != want) {
+                                    diag_.error(e.line(), e.col(), fn + " takes " + want + " argument(s)");
+                                }
+                                string pk0 = "void";
+                                if (e.args().size() > 0) {
+                                    pk0 = visitExpr(e.args().get(0));
+                                    if (pk0 != "byte" && pk0 != "short" && pk0 != "int" && pk0 != "long"
+                                        && pk0 != "ubyte" && pk0 != "ushort" && pk0 != "uint" && pk0 != "ulong"
+                                        && pk0 != "char") {
+                                        diag_.error(e.args().get(0).line(), e.args().get(0).col(), fn + " expects an integer argument");
+                                    }
+                                }
+                                for (int ai = 1; ai < e.args().size(); ai = ai + 1) {
+                                    string pk2 = visitExpr(e.args().get(ai));
+                                    if (pk2 != "byte" && pk2 != "short" && pk2 != "int" && pk2 != "long"
+                                        && pk2 != "ubyte" && pk2 != "ushort" && pk2 != "uint" && pk2 != "ulong"
+                                        && pk2 != "char") {
+                                        diag_.error(e.args().get(ai).line(), e.args().get(ai).col(), fn + " shift amount must be an integer");
+                                    }
+                                }
+                                e.setArgsVisited(1);
+                                ret = pk0;
                             }
                             else {
                                 string fr2 = findFuncRet(fn, e.args().size());

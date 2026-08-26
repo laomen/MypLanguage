@@ -1,0 +1,16 @@
+// EXPECT ERROR: parseInt expects a string argument
+// BUG-091 回归（负测试）：parse* 内建实参须恰一个字符串。
+// 此前自举 isNoVisitIntr 分支不 visit/校验 parse 族实参 → parseInt(123) 静默过
+// → codegen 发非法内在签名 → opt 崩（"integer constant must have integer
+// type"）。C++ visitParse/visitParseOpt 镜像 "expects a string argument" /
+// "takes exactly one argument"。合法：parseInt("123")/parseLong("9")/parseIntOpt
+// (s)（返回 (int,bool) 元组）。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            int a = parseInt(123);
+        }
+}
+int main(){return 0;}

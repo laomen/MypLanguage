@@ -27,6 +27,23 @@
 
 ## 编译器版本历史
 
+### v3.15.125 — 修内建实参校验缺失 → opt 崩（parse/位操作/bytes 族，BUG-091）
+
+**非破坏性**（selfhost sema）。isNoVisitIntr 拦截名单内建（不 visit 实参）中
+parse 族 / 位操作族 / bytes 族 / load4-store4 无实参校验 → 错参静默过 →
+codegen 发非法内在签名 → **opt 崩**（`parseInt(123)`/`popcount(1.5)`/
+`rotl(5,"x")`/`bytesOf("hi",2)`）。
+
+- **修复**：①parse 族加「恰一实参 + string 类型」校验；②位操作族加实参数与
+  整型校验（一元=1、rotl/rotr=2；移位量整型）；③bytes/bytesOf/str 加「恰一
+  实参 + 类型匹配否则回落普通函数解析」（bytes←string、bytesOf←bitvector、
+  str←数组）；④load4/store4 加 float[]/整型索引/float4 校验。
+- **测试**：负测试 `tests/negative/parse_type.myp` + `bitop_type.myp` +
+  `bytesof_args.myp`；parseInt("123")/popcount(255)/rotl(1,3)/bytes("s") 合法
+  用编译+运行正确。
+- 验证：bootstrap 自举成立；全量回归 **382 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-091。
+
 ### v3.15.124 — 修 slice 构造/成员调用参数漏校验（BUG-090）
 
 **非破坏性**（selfhost sema）。`slice<int,int>` / `new slice<int>(4,5)` /
