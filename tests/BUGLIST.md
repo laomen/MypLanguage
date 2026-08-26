@@ -1904,3 +1904,29 @@
 - **教训**：泛型 static 调用是 `resolveGenericStaticCall` 独立路径，容易漏「值
   实参校验」——与实例方法（Member 分支）不同，须在 resolve 内补齐。凡泛型替换
   （substituteType/substRetAst）出现处，实参校验都要用替换后签名。
+
+## BUG-070（已修复 🟩，v3.15.104）：bitcast 非数字操作数/源类型不匹配漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-26，v3.15.104，selfhost sema.myp）
+- **背景**：续「缺失编译期校验 → codegen 崩」族审查，覆盖内建 `bitcast<T,U>`：
+  - ❌ `bitcast<int>(s)`（string 操作数，非数字）静默过 sema → codegen 发射
+    `bitcast ptr to i32`（ptr 64 位 vs i32 32 位，LLVM 非法 cast）→ **opt 崩**
+    （`invalid cast opcode for cast from 'ptr' to 'i32'`，非干净诊断）。
+  - ❌ `bitcast<float,int>(x)`（显式源 float 与 int 操作数不匹配）静默过。
+  - C++ `visitBitcast` 三段检查齐全（源类型匹配 / numeric / 同宽）。
+- **根因**：自举 bitcast 只查宽度 `if (sw != 0 && tw != 0 && sw != tw)`——非数字
+  源（string/class）`bitcastWidth→0` 时条件为假 → 不报错直接放行；也缺显式源
+  类型与操作数类型的兼容检查。
+- **修复**：镜像 C++ visitBitcast 三段——①显式源（2 个类型实参）与操作数
+  resolvedKind 比 `typesCompat`，不匹配报 `bitcast source type 'X' does not match
+  operand type 'Y'`；②`sw==0 || tw==0` 报 `bitcast requires numeric source and
+  target types (integer/float/char)`；③同宽检查保留（原逻辑）。
+- **验证**：`bitcast<int>(string)` / `bitcast<float,int>(x)` / 宽度不符均干净拒绝；
+  合法 `bitcast<int>(int)`、`bitcast<double>(long)`、`bitcast<int>(float)` 位保持
+  正确（1.5f → 1069547520）。
+- **回归**：负测试 `tests/negative/bitcast_numeric.myp`（EXPECT ERROR bitcast
+  requires numeric source and target types）；全量 132 @test PASS / 0 FAIL；
+  oracle 对拍 95/0。
+- **教训**：内建（bitcast 等）的编译期校验也是「oracle 有、自举漏」高发区——凡
+  oracle 有 error 分支的自举内建都要逐段比对，尤其「宽度 0 = 非数字」这类
+  `!= 0 &&` 守卫会让非法输入绕过整段校验。

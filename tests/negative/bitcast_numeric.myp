@@ -1,0 +1,18 @@
+// EXPECT ERROR: bitcast requires numeric source and target types (integer/float/char)
+// BUG-070 回归（负测试）：bitcast 非数字操作数须编译期干净拒绝。
+// 此前自举 bitcast 只查宽度（`if (sw != 0 && tw != 0 && sw != tw)`）——非数字源
+// （string/class 等）bitcastWidth→0 时条件跳过 → `bitcast<int>("hi")` 静默过
+// sema → codegen 发射 `bitcast ptr to i32`（ptr 64 位 vs i32 32 位，LLVM 非法
+// cast）→ opt 崩（"invalid cast opcode for cast from 'ptr' to 'i32'"，非干净
+// 诊断）。C++ visitBitcast 三段检查（源类型匹配 / numeric / 同宽）齐全。
+// 同族还缺：显式源类型不匹配（bitcast<float,int>(x) vs int 操作数）。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            string s = "hi";
+            int c = bitcast<int>(s);
+        }
+}
+int main(){return 0;}

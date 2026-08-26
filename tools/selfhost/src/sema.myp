@@ -4639,9 +4639,29 @@ class Sema {
                                 string sk = "";
                                 if (cta.size() == 2) sk = typeToKind(cta.get(0));
                                 else sk = e.args().size() > 0 ? e.args().get(0).resolvedKind() : "void";
+                                // BUG-070：显式源类型须与操作数类型兼容（C++
+                                // visitBitcast 第一段检查）；否则静默放行。
+                                if (cta.size() == 2 && e.args().size() > 0) {
+                                    string opr = e.args().get(0).resolvedKind();
+                                    if (Str.len(opr) != 0 && typesCompat(sk, opr) == 0) {
+                                        diag_.error(e.line(), e.col(), "bitcast source type '" + sk + "' does not match operand type '" + opr + "'");
+                                        e.setResolvedKind("void");
+                                        return "void";
+                                    }
+                                }
                                 int sw = bitcastWidth(sk);
                                 int tw = bitcastWidth(bk);
-                                if (sw != 0 && tw != 0 && sw != tw) {
+                                // BUG-070：非数字源/目标（string/class 等）——C++
+                                // visitBitcast 报 numeric 错误；自举原只查 sw!=tw
+                                //（sw==0 时跳过）→ bitcast<int>(string) 静默放行 →
+                                // codegen `bitcast ptr to i32` → opt 崩
+                                // （invalid cast opcode for cast from 'ptr' to 'i32'）。
+                                if (sw == 0 || tw == 0) {
+                                    diag_.error(e.line(), e.col(), "bitcast requires numeric source and target types (integer/float/char)");
+                                    e.setResolvedKind("void");
+                                    return "void";
+                                }
+                                if (sw != tw) {
                                     diag_.error(e.line(), e.col(), "bitcast requires source and target of the same width (" + sw + " vs " + tw + " bits)");
                                     e.setResolvedKind("void");
                                     return "void";

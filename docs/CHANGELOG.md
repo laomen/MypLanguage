@@ -27,6 +27,26 @@
 
 ## 编译器版本历史
 
+### v3.15.104 — 修 bitcast 非数字操作数/源类型不匹配漏校验 → opt 崩（BUG-070）
+
+**非破坏性**（selfhost sema）。内建 `bitcast<T,U>` 校验缺口：
+`bitcast<int>(s)`（string 操作数，非数字）静默过 sema → codegen 发射
+`bitcast ptr to i32`（ptr 64 位 vs i32 32 位，LLVM 非法 cast）→ **opt 崩**
+（`invalid cast opcode for cast from 'ptr' to 'i32'`）；`bitcast<float,int>(x)`
+（显式源 float 与 int 操作数不匹配）同样静默。
+
+- **根因**：自举 bitcast 只查宽度 `if (sw != 0 && tw != 0 && sw != tw)`——非数字
+  源（string/class）`bitcastWidth→0` 时条件为假 → 不报错放行；缺显式源类型与
+  操作数兼容检查。
+- **修复**：镜像 C++ visitBitcast 三段——①显式源与操作数 `typesCompat` 不匹配报
+  `bitcast source type 'X' does not match operand type 'Y'`；②`sw==0 || tw==0`
+  报 `bitcast requires numeric source and target types (integer/float/char)`；
+  ③同宽检查保留。
+- **测试**：负测试 `tests/negative/bitcast_numeric.myp`；合法 bitcast 位保持
+  正确（int/long→double/int→float 全通）。
+- 验证：bootstrap 自举成立（2 级 MD5 一致）；全量回归 **132 @test PASS / 0 FAIL**；
+  oracle 对拍 95/0。BUGLIST 记 BUG-070。
+
 ### v3.15.103 — 修泛型 static 调用缺实参校验 → opt 崩（BUG-069）
 
 **非破坏性**（selfhost sema）。续调用路径实参校验审查：`List.foldInt<int>(arr,
