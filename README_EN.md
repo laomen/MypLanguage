@@ -33,10 +33,33 @@ MYP is an **event-driven component** programming language built around `class` +
 ### Build & Install
 
 ```bash
-# Dependencies: LLVM 21, CMake 3.20+, GCC
+# Dependencies: LLVM 21 (incl. llc/opt/ld.lld backend tools), CMake 3.20+, GCC/lld
 mkdir build && cd build
-cmake .. -DCMAKE_PREFIX_PATH=/usr/lib/llvm-21/lib/cmake/llvm
-make -j$(nproc)
+cmake .. -DCMAKE_PREFIX_PATH=/usr/lib/llvm-21/lib/cmake/llvm   # optional -DMYP_ENABLE_GPU=OFF to skip GPU
+make -j$(nproc)                                                # or cmake --build . -j$(nproc)
+```
+
+The build runs two chains and produces `build/mypc` (the user-level compiler):
+
+- **C++ oracle chain**: `mypc-seed` (LLVM 21 reference implementation; frontend
+  oracle contract via `--frontend-dump`).
+- **Self-hosted chain**: `mypc-seed` compiles `tools/selfhost/*.myp` → `myp_self`
+  (stage-0) → self-compiles → `myp_self2` (stage-1) → re-compiles → `myp_self3`
+  (stage-2); `scripts/bootstrap_install.sh` **MD5 gate** checks `myp_self2 == myp_self3`
+  (byte-identical ⇒ self-hosting holds) → installs `myp_self2` as `build/mypc`.
+- **Runtime archive**: `runtime_myp/*.myp` compiled by `myp_self` into
+  `libmyp_rt_myp.a` (MYP runtime, de-gcc migration); generated programs link
+  **MYP runtime only** by default (`(MYP runtime only)` marker).
+
+Key artifacts (`build/`): `mypc` (self-hosted compiler), `mypc-seed` (oracle),
+`myp_self/self2/self3`, `myp` (package manager), `myp_fmt2`/`myp_viz2` (self-hosted
+formatter/visualizer), `myp_lsp`/`myp_debug`, plus `libmyp_rt_myp.a` (MYP runtime
+archive) / `libmyp_rt.a` (C runtime).
+
+Verify:
+
+```bash
+MYPCC=./build/mypc bash tests/run_tests.sh    # full regression (regression/negative/test-framework/self-host/GPU)
 ```
 
 ### Hello World
