@@ -1,0 +1,117 @@
+// uds: 标准库 Unix domain socket（AF_UNIX 本机 IPC）→ @test
+// 单线程回环：server → connect（内核排入 backlog）→ accept → 双向
+// send/recvLine → poll 超时 → close/unlink 清理。
+// 注：Unix 专属（Linux/macOS）；MYP 无模块级全局变量，路径用函数生成。
+import test;
+import uds;
+import text;
+
+string udsPath() { return "/tmp/myp_uds_test_" + Str.len("myp") + ".sock"; }
+
+// —— 1) server/connect/accept 建连 ——
+@test void test_setup() {
+    Uds.unlink(udsPath());
+    int srv = Uds.server(udsPath());
+    Test.assert(srv >= 0, "server fd");
+    int cli = Uds.connect(udsPath());
+    Test.assert(cli >= 0, "client fd");
+    int acc = Uds.accept(srv);
+    Test.assert(acc >= 0, "accept fd");
+    Test.assert(acc != srv && acc != cli, "distinct fds");
+    // 清理
+    Uds.close(acc);
+    Uds.close(cli);
+    Uds.close(srv);
+    Uds.unlink(udsPath());
+    Test.report("test_setup", true);
+}
+
+// —— 2) client → server 单向消息 ——
+@test void test_client_to_server() {
+    Uds.unlink(udsPath());
+    int srv = Uds.server(udsPath());
+    int cli = Uds.connect(udsPath());
+    int acc = Uds.accept(srv);
+    int n = Uds.send(cli, "ping\n");
+    Test.assertEq(n, 5, "sent bytes");
+    string line = Uds.recvLine(acc);
+    Test.assertStrEq(line, "ping", "srv recvLine");
+    Uds.close(acc);
+    Uds.close(cli);
+    Uds.close(srv);
+    Uds.unlink(udsPath());
+    Test.report("test_client_to_server", true);
+}
+
+// —— 3) server → client 反向消息 ——
+@test void test_server_to_client() {
+    Uds.unlink(udsPath());
+    int srv = Uds.server(udsPath());
+    int cli = Uds.connect(udsPath());
+    int acc = Uds.accept(srv);
+    Uds.send(acc, "pong\n");
+    string line = Uds.recvLine(cli);
+    Test.assertStrEq(line, "pong", "cli recvLine");
+    Uds.close(acc);
+    Uds.close(cli);
+    Uds.close(srv);
+    Uds.unlink(udsPath());
+    Test.report("test_server_to_client", true);
+}
+
+// —— 4) 双向多行 ——
+@test void test_bidi() {
+    Uds.unlink(udsPath());
+    int srv = Uds.server(udsPath());
+    int cli = Uds.connect(udsPath());
+    int acc = Uds.accept(srv);
+    Uds.send(cli, "one\ntwo\n");
+    Test.assertStrEq(Uds.recvLine(acc), "one", "srv line1");
+    Test.assertStrEq(Uds.recvLine(acc), "two", "srv line2");
+    Uds.send(acc, "reply\n");
+    Test.assertStrEq(Uds.recvLine(cli), "reply", "cli reply");
+    Uds.close(acc);
+    Uds.close(cli);
+    Uds.close(srv);
+    Uds.unlink(udsPath());
+    Test.report("test_bidi", true);
+}
+
+// —— 5) poll：无数据时超时返回 -1 ——
+@test void test_poll_timeout() {
+    Uds.unlink(udsPath());
+    int srv = Uds.server(udsPath());
+    int cli = Uds.connect(udsPath());
+    int acc = Uds.accept(srv);
+    int[] fds = new int[2];
+    fds[0] = srv;
+    fds[1] = cli;
+    int pi = Uds.poll(fds, 2, 50);
+    Test.assertEq(pi, -1, "poll timeout -1");
+    Uds.close(acc);
+    Uds.close(cli);
+    Uds.close(srv);
+    Uds.unlink(udsPath());
+    Test.report("test_poll_timeout", true);
+}
+
+// —— 6) 端到端：建连 + 双向 + 清理，server() 可复用（unlink 后重开）——
+@test void test_reuse_path() {
+    // 第一次会话
+    Uds.unlink(udsPath());
+    int srv1 = Uds.server(udsPath());
+    int cli1 = Uds.connect(udsPath());
+    int acc1 = Uds.accept(srv1);
+    Uds.send(cli1, "hi\n");
+    Test.assertStrEq(Uds.recvLine(acc1), "hi", "sess1");
+    Uds.close(acc1);
+    Uds.close(cli1);
+    Uds.close(srv1);
+    Uds.unlink(udsPath());
+    // 第二次复用同一路径（unlink 清理残留后）
+    int srv2 = Uds.server(udsPath());
+    Test.assert(srv2 >= 0, "reuse server");
+    Uds.close(srv2);
+    Uds.unlink(udsPath());
+    Test.report("test_reuse_path", true);
+}

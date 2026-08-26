@@ -1,0 +1,57 @@
+// logger: 标准库 Logger 日志工具 → @test
+// Logger 输出走 Console（stdout），@test 无法断言输出内容，故测状态机 +
+// 冒烟：级别枚举 / setLevel(LogLevel) 生效（stdlib 已修——原 setLevel(int)
+// 无法收枚举，头部注释用法从未编译过）/ 各级别方法不崩（含过滤路径）。
+// 注意：MYP 枚举不能 int() 转换（值类型 {i32}），getLevel() 返回数值比较。
+import test;
+import logger;
+
+// —— 1) setLevel(LogLevel) 状态机 ——
+@test void test_level_state() {
+    Logger log = new Logger("app");
+    Test.assertEq(log.getLevel(), 1, "default INFO");
+    log.setLevel(LogLevel.DEBUG);
+    Test.assertEq(log.getLevel(), 0, "set DEBUG");
+    log.setLevel(LogLevel.WARN);
+    Test.assertEq(log.getLevel(), 2, "set WARN");
+    log.setLevel(LogLevel.ERROR);
+    Test.assertEq(log.getLevel(), 3, "set ERROR");
+    log.setLevel(LogLevel.INFO);
+    Test.assertEq(log.getLevel(), 1, "set back INFO");
+    Test.report("test_level_state", true);
+}
+
+// —— 2) 冒烟：各级别方法在 DEBUG 级全跑不崩（含输出路径）——
+@test void test_smoke_all_levels() {
+    Logger log = new Logger("smoke");
+    log.setLevel(LogLevel.DEBUG);
+    log.debug("d");
+    log.info("i");
+    log.warn("w");
+    log.error("e");
+    Test.report("test_smoke_all_levels", true);
+}
+
+// —— 3) 冒烟：过滤路径（ERROR 级，debug/info/warn 被过滤跳过，不输出不崩）——
+@test void test_smoke_filtered() {
+    Logger log = new Logger("filt");
+    log.setLevel(LogLevel.ERROR);
+    log.debug("hidden d");
+    log.info("hidden i");
+    log.warn("hidden w");
+    log.error("shown e");
+    Test.report("test_smoke_filtered", true);
+}
+
+// —— 4) 多个 Logger 实例互不干扰 ——
+@test void test_multi() {
+    Logger a = new Logger("a");
+    Logger b = new Logger("b");
+    a.setLevel(LogLevel.DEBUG);
+    b.setLevel(LogLevel.ERROR);
+    Test.assertEq(a.getLevel(), 0, "a level");
+    Test.assertEq(b.getLevel(), 3, "b level");
+    a.info("a msg");
+    b.info("b msg");
+    Test.report("test_multi", true);
+}
