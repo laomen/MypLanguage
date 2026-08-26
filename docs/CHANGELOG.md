@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.117 — 修 @async 非 @coro 上下文调用漏校验（应拒绝却接受）（BUG-083）
+
+**非破坏性**（selfhost sema）。`@async` 方法/函数在非 @coro 上下文直接调用此前
+自举静默当普通调用；C++ visitCall 报 `'@async' function can only be awaited
+inside an '@coro' method`。
+
+- **修复**：新增 `asyncFuncNames_`/`asyncMethodKeys_` 注册（仿 coroNames_）+ 助手
+  isAsyncFunc/isAsyncMethod + checkAsyncCall + 三条调用路径接线（顶层函数/
+  Member 方法/类内未限定裸调用）。
+- **测试**：负测试 `tests/negative/async_method_outside_coro.myp`；@coro 内
+  await 不受影响；async 系列测试全过。
+- 验证：bootstrap 自举成立；全量回归 **371 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-083。
+
 ### v3.15.116 — 修 const 属性赋值漏校验（应拒绝却接受）（BUG-082）
 
 **非破坏性**（selfhost sema）。`const int cap = 100; cap = 200;` 此前自举静默

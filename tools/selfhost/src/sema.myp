@@ -317,6 +317,8 @@ class Sema {
             intrRets_ = new ArrayList<string>();
             methods_ = new ArrayList<MethodSig>();
             coroNames_ = new ArrayList<string>();
+            asyncFuncNames_ = new ArrayList<string>();
+            asyncMethodKeys_ = new ArrayList<string>();
             curGeneric_ = new ArrayList<string>();
             interfaceNames_ = new ArrayList<string>();
             interfaceMethods_ = new ArrayList<MethodSig>();
@@ -542,6 +544,29 @@ class Sema {
             int mi = methodSigIdx_.get(cls + "." + meth, -1);   // O(1)
             if (mi < 0) return 0;
             return methods_.get(mi).coro();
+        }
+        // BUG-083：顶层函数是否 @async（await 形态3，须 @coro 上下文调用）
+        int isAsyncFunc(string name) {
+            for (int i = 0; i < asyncFuncNames_.size(); i = i + 1) {
+                if (asyncFuncNames_.get(i) == name) return 1;
+            }
+            return 0;
+        }
+        // BUG-083：类方法（action/static/function）是否 @async
+        int isAsyncMethod(string cls, string meth) {
+            string key = cls + "." + meth;
+            for (int i = 0; i < asyncMethodKeys_.size(); i = i + 1) {
+                if (asyncMethodKeys_.get(i) == key) return 1;
+            }
+            return 0;
+        }
+        // BUG-083：调用点统一检查——非 @coro 上下文调用 @async 须拒绝（镜像
+        // C++ visitCall 的 "'@async' function can only be awaited inside an
+        // '@coro' method"）。
+        void checkAsyncCall(AstExpr e, int isAsync) {
+            if (isAsync != 0 && inCoro_ == 0) {
+                diag_.error(e.line(), e.col(), "'@async' function can only be awaited inside an '@coro' method");
+            }
         }
         // 类方法形参列表（默认参数补全用）
         ArrayList<AstParam> findMethodParams(string cls, string meth) {
@@ -1671,6 +1696,7 @@ class Sema {
                     funcParams_.add(f.params());
                     if (funcIdx_.contains(f.name()) == 0) funcIdx_.put(f.name(), funcNames_.size() - 1);
                     if (f.coro() != 0) coroNames_.add(f.name());
+                    if (f.async() != 0) asyncFuncNames_.add(f.name());
                     methods_.add(new MethodSig(st.name(), f.name(), f.ret() != null ? typeToKind(f.ret()) : "void", f.params().size(), f.params(), f.coro() != 0 ? 1 : 0, f.ret()));
                     string mkey = st.name() + "." + f.name();
                     if (methodSigIdx_.contains(mkey) == 0) methodSigIdx_.put(mkey, methods_.size() - 1);
@@ -1890,6 +1916,7 @@ class Sema {
                             diag_.error(a.line(), a.col(), "constructor '" + a.name() + "' must have void return type");
                     }
                     addMethod(c.name(), a.name(), a.ret(), a.params().size(), a.params(), a.coro());
+                    if (a.async() != 0) asyncMethodKeys_.add(c.name() + "." + a.name());
                     for (int pi = 0; pi < a.params().size(); pi = pi + 1) {
                         AstExpr defaultExpr = a.params().get(pi).defaultExpression();
                         if (defaultExpr != null) markAllExpr(defaultExpr);
@@ -1919,6 +1946,7 @@ class Sema {
                         }
                     }
                     addMethod(c.name(), a.name(), a.ret(), a.params().size(), a.params(), a.coro());
+                    if (a.async() != 0) asyncMethodKeys_.add(c.name() + "." + a.name());
                     // F4-G1：登记泛型静态方法模板（Class.method → 模板 AstAction）
                     if (a.typeParams().size() > 0) {
                         gsKeys_.add(c.name() + "." + a.name());
@@ -1929,6 +1957,7 @@ class Sema {
                 for (int j = 0; j < c.funcs().size(); j = j + 1) {
                     AstFunction f = c.funcs().get(j);
                     addMethod(c.name(), f.name(), f.ret(), f.params().size(), f.params(), f.coro());
+                    if (f.async() != 0) asyncMethodKeys_.add(c.name() + "." + f.name());
                     if (f.ctor() != 0 && f.name() == "") {
                         // @startup function
                     }
@@ -1956,6 +1985,7 @@ class Sema {
                 funcParams_.add(f.params());
                 if (funcIdx_.contains(f.name()) == 0) funcIdx_.put(f.name(), funcNames_.size() - 1);
                 if (f.coro() != 0) coroNames_.add(f.name());
+                if (f.async() != 0) asyncFuncNames_.add(f.name());
                 // 收集 @op 运算符重载函数
                 if (Str.len(f.op()) != 0) {
                     opSyms_.add(f.op());
@@ -5013,6 +5043,9 @@ class Sema {
                                 } else if (topNormFailed == 0) {
                                     string fr = findFuncRet(fn, e.args().size());
                                     if (Str.len(fr) != 0) {
+                                        // BUG-083：非 @coro 上下文调用 @async 顶层函数须拒绝
+                                        //（await 形态3 只能 @coro 内）。
+                                        checkAsyncCall(e, isAsyncFunc(fn));
                                         ret = fr;
                                         // 链式调用 f().member()：记录返回类名（自举缺口——普通
                                         // 顶层函数调用只设 kind 不设 valueClass，导致成员访问回落到
@@ -5032,6 +5065,9 @@ class Sema {
                                         } else if (inClass_ != 0) {
                                         string mr = findMethodRet(currentClass_, fn, e.args().size());
                                         if (Str.len(mr) != 0) {
+                                            // BUG-083：类内未限定 @async 方法调用（slowCalc(5)）
+                                            // 非 @coro 上下文须拒绝。
+                                            checkAsyncCall(e, isAsyncMethod(currentClass_, fn));
                                             ret = mr;
                                             // 链式调用 (m()).member：记录返回类名
                                             string rcl2 = findMethodRetClass(currentClass_, fn);
@@ -5142,6 +5178,9 @@ class Sema {
                             }
                             string fr = findMethodRet(base3, callee.memberName(), e.args().size());
                             if (Str.len(fr) == 0) fr = findIfaceMethodRet(base3, callee.memberName());
+                            // BUG-083：非 @coro 上下文调用 @async 方法须拒绝（await
+                            // 形态3 只能 @coro 内）。base3 是 resolveBase 后的类名。
+                            if (Str.len(fr) != 0) checkAsyncCall(e, isAsyncMethod(base3, callee.memberName()));
                             // B3（C++ BUG-017 镜像）：接口变量关联类型方法——sb.getVal()
                             // 返回接口占位 assoc，但 sb 的具体类已知（sb = new StrBox()）
                             // → 从具体类同名方法解析真实返回类型（string/int），并把
@@ -6868,6 +6907,8 @@ class Sema {
         AstType lambdaExpectedRet_;
         AstTU tu_;
         ArrayList<string> coroNames_;
+        ArrayList<string> asyncFuncNames_;
+        ArrayList<string> asyncMethodKeys_;
         ArrayList<string> curGeneric_;
         ArrayList<string> interfaceNames_;
         ArrayList<MethodSig> interfaceMethods_;

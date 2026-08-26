@@ -2185,3 +2185,25 @@
 - **教训**：新增校验引用类索引（classProps_/classIdx_）时必须守卫索引有效性——
   struct 方法里 currentClass_ 不是类，findClass 返回 -1 会导致 OOB 段错误；
   这在「自举编译器自身崩溃」上尤其隐蔽（stderr 段错误消息不进管道）。
+
+## BUG-083（已修复 🟩，v3.15.117）：@async 非 @coro 上下文调用漏校验（应拒绝却接受）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.117，selfhost sema.myp）
+- **背景**：`@async` 方法/函数在非 @coro 上下文直接调用（`slowCalc(5)`）此前
+  自举静默当普通调用（运行时阻塞回退）→「应拒绝却接受」。C++ visitCall 报
+  `'@async' function can only be awaited inside an '@coro' method`。
+- **根因**：自举完全不跟踪 @async 注解（AstAction/AstFunction 有 async()，parser
+  257/512 设置，但 sema 从不查询）。
+- **修复**：①新增 `asyncFuncNames_`（顶层 @async 函数）+ `asyncMethodKeys_`
+  （cls.method，action/static/function）注册（4 处 addMethod/函数注册点）；②助手
+  `isAsyncFunc`/`isAsyncMethod` + `checkAsyncCall(e, isAsync)`（非 @coro 上下文
+  报错）；③调用点接线——顶层函数路径（findFuncRet 命中）、Member 方法路径、
+  类内未限定方法路径（Path A，裸 `slowCalc(5)` 走这条）。
+- **验证**：裸/this/obj 的 @async 调用在非 @coro 干净拒绝（消息与 oracle 逐字节
+  一致）；`@coro` 内 `await slowCalc(5)` 不受影响；async_file/async_socket 等
+  async 测试全过。
+- **回归**：负测试 `tests/negative/async_method_outside_coro.myp`；全量 371 通过
+  / 0 失败；oracle 对拍 95/0。
+- **教训**：@async 是「注解有、sema 不查」类缺口——凡 C++ 有 isAsyncCallee/
+  has_async 查询、自举 AstAction 有 async() 但从不使用的，都要镜像（跟
+  @coro 的 coroNames_ 同构）。类内裸调用（未限定）也要覆盖三条调用路径。

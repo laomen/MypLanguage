@@ -1,0 +1,16 @@
+// EXPECT ERROR: '@async' function can only be awaited inside an '@coro' method
+// BUG-083 回归（负测试）：@async 方法/函数只能在 @coro 上下文调用须编译期拒绝。
+// 此前自举不跟踪 @async 注解 → 普通类方法/顶层函数里 `slowCalc(5)`（@async 直调）
+// 静默当普通调用（运行时阻塞回退）→「应拒绝却接受」。C++ visitCall 报
+// "'@async' function can only be awaited inside an '@coro' method"。
+// 合法：@coro 内 `await slowCalc(5)`。
+import env;
+
+class T2 {
+    action:
+        @async int slowCalc(int x) { return x * 2; }
+        @constructor T2() {
+            int v = slowCalc(5);
+        }
+}
+int main(){return 0;}
