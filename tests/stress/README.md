@@ -35,6 +35,10 @@ ASAN=1 bash tests/stress/run_stress.sh         # AddressSanitizer 查内存错�
 | `mem_stress` | **分配器高压震荡 + 泄漏检测**（字符串/数组/对象混分 + ARC 释放） | 30 波 × 2 万对象，`Memory.live*Count` 校验 | 每波 live 回到基线、无泄漏 |
 | `net_stress` | **网络并发风暴**（双向 TCP echo） | 100 并发客户端 send + await recvAsync + 服务端 echo 校验 | 全部收到正确响应、count 归零 |
 | `io_stress` | **文件 IO 高频往返**（写/读/删） | 200 文件 × 50 行，`Fs.removeRecursive` 清理 | 内容逐行校验、行数精确、无崩溃 |
+| `timer_stress` | **协程定时器/截止期高压**（Timeline.startTimeout + await） | 400 协程 1..40ms 错开定时 | 全部按时触发、协程归零 |
+| `exception_stress` | **异常高压 throw/catch + ARC 泄漏检测** | 10 万次 boom（try 分配对象 + 条件 throw + catch） | 抛必捕、live 无增长（v3.15.84 修 catch 字符串泄漏：每抛漏 1 串） |
+| `json_stress` | **JSON 解析高压**（嵌套对象/数组） | 300 动态构造文档 + 字段校验 | 全部字段精确、无崩溃 |
+| `waitany_stress` | **多路复用等待高压**（Coro.waitAny 事件广播 + 超时） | 300 协程等事件 0 + 100 协程超时（20ms） | 事件唤醒全返回 0、超时全 -1、协程归零 |
 
 ## 建议流程
 

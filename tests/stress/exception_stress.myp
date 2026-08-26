@@ -1,0 +1,64 @@
+// tests/stress/exception_stress.myp — 异常高压 throw/catch + ARC 清理 + 泄漏检测
+// 10 万次 boom：try 里分配对象 + 条件 throw → catch；验证每抛必捕、ARC 无泄漏
+// （Memory.live*Count 回到基线）、结果精确。压 setjmp/longjmp 异常边界 + 帧清理。
+import env;
+import memory;
+
+@static class Cnt {
+    property:
+        int thrown = 0;
+        int caught = 0;
+}
+class Payload {
+    property:
+        long v_;
+        string tag_;
+    action:
+        @constructor Payload(long v) {
+            v_ = v;
+            tag_ = "payload-" + v;   // 字符串成员（分配）
+        }
+        long get() { return v_; }
+}
+class E {
+    action:
+        long boom(int seed) {
+            Payload p = new Payload(long(seed));   // try 外分配（函数退出释放）
+            int r = 0;
+            try {
+                if (seed % 3 == 0) {
+                    Cnt.thrown = Cnt.thrown + 1;
+                    throw "err-" + seed;           // 异常载荷字符串
+                }
+                r = 1;
+            } catch (string e) {
+                Cnt.caught = Cnt.caught + 1;
+                r = 0;
+            }
+            return long(r) + p.get();
+        }
+}
+class ExStress {
+    static:
+        int run() {
+            // 预热
+            E e = new E();
+            long acc = 0;
+            for (int i = 0; i < 1000; i++) acc = acc + e.boom(i);
+            long base = Memory.liveTotalCount();
+            int thrown0 = Cnt.thrown;
+            for (int i = 1000; i < 100000; i++) acc = acc + e.boom(i);
+            long live = Memory.liveTotalCount();
+            int thrown = Cnt.thrown - thrown0;
+            // 1000..99999 中 %3==0 的个数：floor(99999/3)-floor(999/3)=33333-333=33000
+            int expectThrown = 33000;
+            if (Cnt.thrown != Cnt.caught) { Console.writeString("FAIL thrown!=caught\n"); return 1; }
+            if (thrown != expectThrown) { Console.writeString("FAIL thrown=" + thrown + " expect=" + expectThrown + "\n"); return 2; }
+            if (live > base + 500) { Console.writeString("FAIL leak live=" + live + " base=" + base + "\n"); return 3; }
+            if (acc == 0) return 4;
+            Console.writeString("PASS exception_stress (throw=" + thrown + " live-delta=" + (live - base) + ")\n");
+            return 0;
+        }
+}
+
+int main() { return ExStress.run(); }

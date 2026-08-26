@@ -1,0 +1,76 @@
+// tests/stress/waitany_stress.myp — 多路复用等待高压（Coro.waitAny，v3.15.83）
+// 300 协程 waitAny([evt0,evt1]) 等事件 0 → fire 后全部以事件 0 唤醒；
+// 100 协程 waitAny(同 ids, 20ms) 无事件 → 超时返回 -1。
+// 压 CoroW 等待表注册/清理 + 事件 notify 广播 + 超时截止期路径。
+// 验证：事件唤醒全部返回 0、超时全部返回 -1、协程归零。
+import env;
+import coro;
+import time;
+
+class Signal {
+    action:
+        void send0() { a(); }
+        void send1() { b(); }
+    event:
+        a();
+        b();
+}
+@coro(stack=64) long waitEvt0() {
+    long[] ids = new long[2];
+    ids[0] = 0;
+    ids[1] = 1;
+    long r = Coro.waitAny(ids, 2, 100000, 0);
+    return (r == 0) ? 1 : 0;   // 期望事件 0 唤醒
+}
+@coro(stack=64) long waitTimeout() {
+    long[] ids = new long[2];
+    ids[0] = 2;   // 永不 fire 的事件 id（与事件组隔离）
+    ids[1] = 3;
+    long r = Coro.waitAny(ids, 2, 20, 0);
+    return (r == -1) ? 1 : 0;  // 期望超时
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            int NE = 300;
+            int NT = 100;
+            long[] he = new long[NE];
+            long[] ht = new long[NT];
+            for (int i = 0; i < NE; i++) he[i] = waitEvt0();
+            for (int i = 0; i < NT; i++) ht[i] = waitTimeout();
+            // 先让超时组跑（20ms 内不 fire）
+            int guard = 0;
+            while (guard < 10000) {
+                Coro.scheduler();
+                guard = guard + 1;
+                if (guard > 50) break;   // 给超时组 ~几 ms
+            }
+            // fire 事件 0 → 事件组唤醒
+            Signal s = new Signal();
+            s.send0();
+            // 推进全部完成
+            guard = 0;
+            int done = 0;
+            while (guard < 1000000) {
+                Coro.scheduler();
+                done = 0;
+                for (int j = 0; j < NE; j++) if (Coro.status(he[j]) == 0) done = done + 1;
+                for (int j = 0; j < NT; j++) if (Coro.status(ht[j]) == 0) done = done + 1;
+                if (done == NE + NT) break;
+                Time.sleep(2);
+                guard = guard + 1;
+            }
+            int evtOk = 0;
+            int toOk = 0;
+            for (int j = 0; j < NE; j++) if (Coro.result(he[j]) == 1) evtOk = evtOk + 1;
+            for (int j = 0; j < NT; j++) if (Coro.result(ht[j]) == 1) toOk = toOk + 1;
+            if (evtOk != NE || toOk != NT || Coro.count() != 0) {
+                Console.writeString("FAIL waitany evtOk=" + evtOk + " toOk=" + toOk + " left=" + Coro.count() + "\n");
+                return;
+            }
+            Console.writeString("PASS waitany_stress (evt=" + evtOk + " timeout=" + toOk + ")\n");
+        }
+}
+
+int main() { Main m = new Main(); return 0; }

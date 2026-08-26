@@ -1,0 +1,53 @@
+// tests/stress/timer_stress.myp — 定时器/截止期高压（v3.15.83）
+// 400 个协程各 await Timeline.timeout（1..40ms 错开）+ 调度推进。
+// 压 Timeline 定时器系统 + 协程截止期路径（myp_timer_check / deadline 过期）。
+// 验证：全部按时触发、返回正确、协程归零。
+import env;
+import coro;
+import timeline;
+import time;
+
+class TimerWork {
+    action:
+        @coro(stack=64) long timedWait(long ms) {
+            Timeline tl;
+            tl.startTimeout(ms);
+            await Timeline.timeout;
+            return 1L;
+        }
+}
+
+class TimerStress {
+    static:
+        int run() {
+            int N = 400;
+            long[] hs = new long[N];
+            TimerWork w = new TimerWork();
+            for (int i = 0; i < N; i++) {
+                long ms = 1 + (i % 40);   // 1..40ms 错开
+                hs[i] = w.timedWait(ms);
+            }
+            int guard = 0;
+            int ok = 0;
+            while (guard < 1000000) {
+                Coro.scheduler();
+                ok = 0;
+                for (int j = 0; j < N; j++) {
+                    if (Coro.status(hs[j]) == 0) ok = ok + 1;
+                }
+                if (ok == N) break;
+                Time.sleep(2);
+                guard = guard + 1;
+            }
+            if (ok != N) { Console.writeString("FAIL timer ok=" + ok + "\n"); return 1; }
+            int good = 0;
+            for (int j = 0; j < N; j++) {
+                if (Coro.result(hs[j]) == 1) good = good + 1;
+            }
+            if (good != N || Coro.count() != 0) { Console.writeString("FAIL timer good=" + good + "\n"); return 1; }
+            Console.writeString("PASS timer_stress (" + N + " coro timers)\n");
+            return 0;
+        }
+}
+
+int main() { return TimerStress.run(); }

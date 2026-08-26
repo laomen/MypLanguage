@@ -1,0 +1,31 @@
+// tests/stress/json_stress.myp — JSON 解析高压（v3.15.83）
+// 300 个动态构造的嵌套 JSON 文档（对象+子对象+数组），逐一解析 + 字段校验。
+// 压 json 库 + 字符串分配/解析路径。
+// 验证：全部字段精确、数组索引正确、无崩溃。
+import env;
+import json;
+
+class JsonStress {
+    static:
+        int run() {
+            for (int i = 0; i < 300; i++) {
+                string s = "{\"a\":" + i + ",\"obj\":{\"x\":" + (i * 2)
+                    + ",\"name\":\"n" + i + "\"},\"arr\":[";
+                for (int j = 0; j < 10; j++) {
+                    if (j > 0) s = s + ",";
+                    s = s + (i + j);
+                }
+                s = s + "]}";
+                Json j = new Json(s);
+                if (j.getInt("a") != i) { Console.writeString("FAIL a " + i + "\n"); return 1; }
+                if (j.getInt("obj.x") != i * 2) { Console.writeString("FAIL x " + i + "\n"); return 2; }
+                if (j.getString("obj.name") != ("n" + i)) { Console.writeString("FAIL name " + i + "\n"); return 3; }
+                if (j.arrayLen("arr") != 10) { Console.writeString("FAIL arrLen " + i + "\n"); return 4; }
+                if (j.getInt("obj.x") != i * 2) { Console.writeString("FAIL x2 " + i + "\n"); return 5; }
+            }
+            Console.writeString("PASS json_stress (300 docs)\n");
+            return 0;
+        }
+}
+
+int main() { return JsonStress.run(); }

@@ -54,6 +54,20 @@ IR 确认 `@__myp_static_TL = thread_local global`；pthread_key 探针同理。
 
 > 这是 N×M:1 协程迁移的地基（步骤 0/1）。下一步见 v3.15.78（per-thread 表迁移）。
 
+### v3.15.84 — 修 catch 字符串泄漏（exception_stress 暴露）+ 新增 4 个压测
+
+**非破坏性**。续 v3.15.83；`exception_stress`（10 万次 throw/catch + `Memory.live*`
+泄漏检测）暴露 **catch 变量字符串每抛漏 1 个**（实测 33000/10 万）：
+
+- **根因**（selfhost codegen `bindCatchVar`）：曾先 `err = myp_get_error()`（rc=1 新
+  计数串）再 `dup = myp_strdup(err)` 存 catch 变量——`err` 临时**从未释放**（每抛漏 1
+  串）；且 `myp_get_error` 已返回独立拷贝（`myp_alloc`+memcpy），strdup 完全冗余。
+  修复：直接用 `err`（catch 变量按 ARC 槽在 catch 结束后释放）。bootstrap 重建 + 全量
+  **327/0**。
+- **新增 4 个压测**（stress 12→16）：`timer_stress`（400 协程定时器错开）、
+  `exception_stress`（throw/catch + ARC 泄漏检测）、`json_stress`（300 JSON 文档）、
+  `waitany_stress`（300 事件广播 + 100 超时多路复用）。全量 stress **16/16**。
+
 ### v3.15.83 — 压测深挖修 3 个跨线程竞态（TimeBuf 共享缓冲挂死 + 通道状态竞态）
 
 **非破坏性**。续 v3.15.82；新增两个压力测试（`tests/stress/coro_churn.myp`

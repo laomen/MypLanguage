@@ -8282,13 +8282,15 @@ class CodeGen {
             string cty = cc.type();
             if (Str.len(cty) == 0) cty = "string";
             if (cty == "string") {
+                // v3.15.83 修复：曾先 `err = myp_get_error()` 再 `dup = myp_strdup(err)`
+                // ——`err` 临时从未释放（每抛漏 1 串，exception_stress 实测 33000/10 万
+                // 泄漏）；且 myp_get_error 已返回独立计数拷贝（myp_alloc+memcpy），strdup
+                // 完全冗余。直接用 err（catch 变量按 ARC 槽在 catch 结束后释放）。
                 string err = newTmp();
                 sb_.append("  " + err + " = call ptr @myp_get_error()\n");
-                string dup = newTmp();
-                sb_.append("  " + dup + " = call ptr @myp_strdup(ptr " + err + ")\n");
                 string ev = entryAlloca("ptr");
                 sb_.append("  store ptr null, ptr " + ev + "\n");
-                sb_.append("  store ptr " + dup + ", ptr " + ev + "\n");
+                sb_.append("  store ptr " + err + ", ptr " + ev + "\n");
                 localNames_.add(cc.varName());
                 localTypes_.add("ptr");
                 localAstTypes_.add(null);
