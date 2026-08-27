@@ -2057,15 +2057,12 @@ class Sema {
             // 收集 ffi 声明（也是可调用函数，返回类型来自声明）
             for (int i = 0; i < tu.ffis().size(); i = i + 1) {
                 AstFFI f = tu.ffis().get(i);
-                // BUG-134：ffi 声明 void 形参须拒（镜像 BUG-078 declareParam
-                // 检查）——否则 codegen 发 `declare i32 @cadd(void)` → opt-21 崩
-                // （void type only allowed for function results）。
+                // 设计：ffi 是「只登记不校验」路径（无 body、不走 declareParam）——
+                // 形参校验复用 checkParamType（void 参数 / 泛型类型实参实例化，
+                // 镜像常规声明路径），重复形参名用 checkDupParamNames（BUG-106）。
+                checkDupParamNames(f.params(), 0, 0);
                 for (int pi = 0; pi < f.params().size(); pi = pi + 1) {
-                    AstType pt = f.params().get(pi).type();
-                    if (pt != null && typeToKind(pt) == "void"
-                        && pt.basicName() == "void" && Str.len(pt.className()) == 0) {
-                        diag_.error(pt.line(), pt.col(), "cannot declare parameter of type 'void'");
-                    }
+                    checkParamType(f.params().get(pi));
                 }
                 funcNames_.add(f.name());
                 funcRet_.add(f.ret());
@@ -3682,6 +3679,20 @@ class Sema {
                 seen.put(pn, 1);
             }
         }
+        // 形参类型校验（void 参数 / 泛型类型实参实例化）——**纯校验、不声明符号**。
+        // 供 declareParam（常规声明路径）与 ffi 收集循环（只登记不校验路径）等
+        // 所有声明点复用，保证形参检查一致（单一校验源）。
+        void checkParamType(AstParam p) {
+            AstType pt = p.type();
+            // BUG-078/134：void 参数须拒绝（parser 把字面 void 的 basicName 设为
+            // "void"——据此判定；未知类型 className 非空不误伤）。
+            if (pt != null && typeToKind(pt) == "void"
+                && pt.basicName() == "void" && Str.len(pt.className()) == 0) {
+                diag_.error(pt.line(), pt.col(), "cannot declare parameter of type 'void'");
+            }
+            // 泛型类型实参实例化（ArrayList<int> 等）——声明与校验一致。
+            if (pt != null && pt.typeArgs().size() > 0) tryInstantiate(pt.className(), pt.typeArgs());
+        }
         void declareParam(AstParam p, int checkDefault) {
             AstExpr defaultExpr = p.defaultExpression();
             if (checkDefault != 0 && defaultExpr != null) {
@@ -3698,18 +3709,9 @@ class Sema {
                 // C++ 不访问 struct 方法默认值（保持默认 Int）→ 整树标 int
                 markAllExpr(defaultExpr);
             }
+            // 校验（void / 类型实参）→ 声明（符号登记）分离：校验复用 checkParamType。
+            checkParamType(p);
             AstType pt = p.type();
-            // BUG-078：void 参数须拒绝（镜像 C++ sema.cpp "cannot declare
-            // parameter of type 'void'"）。此前 `void take(void v)` 的 void 参数
-            // 静默过 sema → codegen 发 `define internal void @T2_take(ptr %this,
-            // void %v)` → opt 崩（"void type only allowed for function results"，
-            // 非干净诊断）。parser 把字面 void 的 basicName 设为 "void"——据此
-            // 判定（未知类型 className 非空，不误伤）。
-            if (pt != null && typeToKind(pt) == "void"
-                && pt.basicName() == "void" && Str.len(pt.className()) == 0) {
-                diag_.error(pt.line(), pt.col(), "cannot declare parameter of type 'void'");
-            }
-            if (pt != null && pt.typeArgs().size() > 0) tryInstantiate(pt.className(), pt.typeArgs());
             if (pt != null && pt.isTuple() != 0 && pt.funcParamTypes().size() != 0) {
                 sym_.declareTuple(p.name(), "tuple", pt.funcParamTypes());
             } else if (pt != null && pt.element() != null) {

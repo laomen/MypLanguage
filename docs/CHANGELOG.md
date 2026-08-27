@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.169 — ffi 形参校验设计统一（checkParamType 抽取复用）
+
+**非破坏性**（selfhost sema 重构）。ffi 声明是「只登记不校验」路径（无 body、
+不走 declareParam）——BUG-134 只补了 void 形参；本次把 `declareParam` 的形参
+**校验**抽出为独立 `checkParamType`（void 参数 + 泛型类型实参实例化，纯校验不
+声明符号），`declareParam`（常规路径）与 ffi 收集循环（只登记路径）都调用它，
+保证所有声明点形参检查一致（单一校验源）。
+
+- **修复**：`checkParamType(p)` 抽取 + `declareParam` 复用；ffi 收集循环改调
+  `checkParamType`（每参）+ `checkDupParamNames`（重复形参名，BUG-106 常规检查
+  镜像）——`ffi int cadd(int a, int a)` 新拒绝。
+- **测试**：负测试 `ffi_dup_param.myp`；`ffi void 形参`、常规重复形参、有效 ffi
+  均不受影响；bootstrap 自举成立。
+
 ### v3.15.168 — 修 ffi 声明 void 形参漏校验 → opt 崩（BUG-134）
 
 **非破坏性**（selfhost sema）。`ffi int cadd(void v);`（ffi 声明 void 形参）

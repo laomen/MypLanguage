@@ -1,0 +1,13 @@
+// BUG-134 设计落地（负向）：ffi 声明重复形参名——`ffi int cadd(int a, int a);`
+// 自举此前静默接受（ffi 收集循环只登记、不校验形参）→ 调用点按名解析歧义。
+// 设计：ffi「只登记不校验」路径复用 checkDupParamNames（BUG-106 常规路径检查）。
+// EXPECT ERROR: duplicate parameter name 'a'
+import env;
+ffi int cadd(int a, int a);
+class T2 {
+    action:
+        @constructor T2() {
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

@@ -3389,3 +3389,9 @@ value of type ..." / 实参 "argument 1: expected 'IC', got 'NotImpl'" / 返回
 - **教训**：ffi 声明是「只登记不校验」路径（不走 declareParam）——凡常规声明
   路径（declareParam）有的检查（void 参数、重复参数等），ffi 收集循环须镜像；
   BUG-078 只覆盖常规函数，ffi/事件等独立收集点易漏。
+- **设计落地（v3.15.169）**：ffi「只登记不校验」路径的形参检查统一为
+  `checkParamType(p)`（从 declareParam 抽出的**纯校验**：void 参数 + 泛型类型
+  实参实例化，不声明符号）——`declareParam`（常规路径）与 ffi 收集循环都调用
+  它，单一校验源；ffi 另加 `checkDupParamNames`（`ffi int cadd(int a, int a)`
+  新拒绝）。负测试 `ffi_dup_param.myp`。原则：凡常规声明路径有的形参检查，所有
+  「只登记不校验」收集点（ffi/事件等）都经同一校验函数复用，避免逐点复制。
