@@ -3242,3 +3242,29 @@ used inside a class action"。
   并行嵌套无池安全支持——共享全局 pool 非可重入）；自举 codegen 对嵌套缺守卫
   发重入 pool 调用 → 竞争非确定；与 seed 行为对齐（emitKernelStmt 生成嵌套
   for）。
+
+## BUG-129（已修复 🟩，v3.15.163）：带数据枚举变体裸引用漏校验 → 垃圾数据
+
+**非破坏性**（selfhost sema）。`Opt o = Opt.Some;`（带数据变体 `Some(int v)`
+裸引用、无 `(data)`）自举此前静默接受 → 枚举值只有 tag、无 payload → 后续
+match `Opt.Some(x)` 提取**垃圾数据**（曾得 x=1730215984）。oracle 把
+`Opt.Some` 当 Function 类型 `(int)->unknown` 拒（"cannot initialize variable
+'o' of type 'unknown' with value of type '(int) -> unknown'"）。
+
+- **根因**：自举 Member 处理枚举变体分支 `enumHasVariant` → 一律 `t="enum"`
+  （不区分数据/无数据变体）；codegen genEnumVariant 按 `call.args().size()`
+  决定是否插 payload——裸引用 args 空 → 只插 tag、payload 留 poison →
+  match 提取垃圾。
+- **修复**：Member 枚举变体分支加数据 arity 检查——`enumVariantParamCount`
+  > 0（带数据变体）且裸引用 → "enum variant 'X.Y' requires N data
+  argument(s) (use 'X.Y(...)')"，resolvedKind=void。Call 形式 `Opt.Some(5)`
+  在 Call 分支（BUG-115 处）提前处理、不经此 Member 检查 → 不受影响；无数据
+  变体 `Opt.None` 裸引用仍合法。
+- **验证**：裸引用 `Opt o = Opt.Some;` / `take(Opt.Some)` `sev=error`；
+  `Opt.Some(42)` match 得 42、`Opt.None` 正常；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/enum_variant_bare_data.myp`；全量 442
+  通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：枚举带数据变体「裸引用 vs Call」是两个 AST 形态（Member vs
+  Call(Member)）——自举 Call 分支处理带实参构造（BUG-115）、Member 分支漏
+  数据变体裸引用；凡带数据变体须有实参（oracle 视裸引用为 Function 值）；
+  枚举值「tag-only 无 payload」是隐式垃圾数据的来源。

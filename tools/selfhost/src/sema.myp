@@ -3028,6 +3028,16 @@ class Sema {
             }
             return 0;
         }
+        // BUG-129：枚举变体数据字段数（无数据变体返回 0，未知变体返回 -1）。
+        int enumVariantParamCount(string en, string vn) {
+            int ei = findEnum(en);
+            if (ei < 0) return -1;
+            ArrayList<AstEnumVariant> variants = tu_.enums().get(ei).variants();
+            for (int vi = 0; vi < variants.size(); vi = vi + 1) {
+                if (variants.get(vi).name() == vn) return variants.get(vi).params().size();
+            }
+            return -1;
+        }
         int isThreadVar(string name) {
             for (int i = 0; i < threadVars_.size(); i = i + 1) {
                 if (threadVars_.get(i) == name) return 1;
@@ -6564,6 +6574,19 @@ class Sema {
                                 if (eei >= 0) {
                                     e.setResolvedClass(cn);
                                     if (enumHasVariant(eei, e.memberName()) != 0) {
+                                        // BUG-129：带数据变体裸引用（`Opt.Some` 无
+                                        // `(data)`）——枚举值只有 tag、无 payload →
+                                        // 后续匹配提取垃圾数据（曾得 x=1730215984）。
+                                        // oracle 把 `Opt.Some` 当 Function 类型
+                                        // `(int)->unknown` 拒。自举干净拒绝，指引带
+                                        // 实参（Call 形式 `Opt.Some(5)` 走 Call 分支
+                                        // 不经此处，不受影响）。
+                                        int vpc = enumVariantParamCount(cn, e.memberName());
+                                        if (vpc > 0) {
+                                            diag_.error(e.line(), e.col(), "enum variant '" + cn + "." + e.memberName() + "' requires " + vpc + " data argument(s) (use '" + cn + "." + e.memberName() + "(...)'");
+                                            e.setResolvedKind("void");
+                                            return "void";
+                                        }
                                         t = "enum";
                                     } else {
                                         // C++：enum 'Color' has no variant 'Xyz'

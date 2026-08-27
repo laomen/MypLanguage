@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.163 — 修带数据枚举变体裸引用漏校验 → 垃圾数据（BUG-129）
+
+**非破坏性**（selfhost sema）。`Opt o = Opt.Some;`（带数据变体 `Some(int v)`
+裸引用、无 `(data)`）自举此前静默接受 → 枚举值只有 tag、无 payload → 后续
+match `Opt.Some(x)` 提取**垃圾数据**（曾得 x=1730215984）。oracle 把
+`Opt.Some` 当 Function 类型 `(int)->unknown` 拒（应拒却接受）。
+
+- **修复**：Member 处理枚举变体分支加数据 arity 检查——`enumVariantParamCount`
+  > 0（带数据变体）且裸引用 → "enum variant 'X.Y' requires N data
+  argument(s) (use 'X.Y(...)')"。Call 形式 `Opt.Some(5)` 走 Call 分支（不经
+  此检查）；无数据变体 `Opt.None` 裸引用仍合法。
+- **测试**：负测试 `tests/negative/enum_variant_bare_data.myp`；`Opt.Some(42)`
+  match 得 42、`Opt.None` 正常；bootstrap 自举成立。
+
 ### v3.15.162 — 修嵌套 @parallel for 数据竞争（内层并行化 → 串行化）（BUG-128）
 
 **非破坏性**（selfhost codegen）。`@parallel for` 嵌套在 `@parallel for` 体内

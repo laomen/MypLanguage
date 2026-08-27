@@ -1,0 +1,16 @@
+// BUG-129 负向：带数据枚举变体裸引用（`Opt o = Opt.Some;` 无 `(data)`）——自举
+// 此前静默接受 → 枚举值只有 tag、无 payload → 后续 match `Opt.Some(x)` 提取
+// 垃圾数据（曾得 x=1730215984）。oracle 把 `Opt.Some` 当 Function 类型
+// `(int)->unknown` 拒。自举干净拒绝并指引带实参（`Opt.Some(5)` Call 形式走
+// Call 分支不经此检查，不受影响；无数据变体 `Opt.None` 裸引用仍合法）。
+// EXPECT ERROR: enum variant 'Opt.Some' requires 1 data argument(s)
+import env;
+enum Opt { Some(int v); None; }
+class T2 {
+    action:
+        @constructor T2() {
+            Opt o = Opt.Some;
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}
