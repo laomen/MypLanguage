@@ -37,6 +37,9 @@ ffi void myp_fail_alloc_check();
         long last_aligned = 0;  // 最后一次分配的 16 对齐大小
         long freeHead = 0;      // 空闲链表头（块首，arenaLock 保护；0=空）
         long lockS = 0;         // 自旋锁字地址（mmap 直分配，勿用 arena；0=未初始化）
+        // size-class 分桶——2 幂大小类 (32..32768+，16 类) 各一空闲
+        // 链表。块按 stored 归 class，分配按 req 的 class 起找（O(1) 链表头）。
+        long[16] freeLists;
 }
 // arena 自旋锁（性能优先）：@parallel/@thread 并发 bump 需要——C 版用 TLS arena
 // 天然隔离，MYP 全局 bump 无锁会竞态（parallel_string_new 曾损坏）。锁字 mmap
@@ -91,9 +94,11 @@ void arenaReclaim(long base0) {
     } else {
         long total = __myp_mem_load_i64(base0);
         if (total > 0) {
+            // size-class 分桶——块按 total 归对应 2 幂 class 链表
+            long fidx = classOf(total);
             __myp_mem_store_i64(base0 + 8, total);       // freed: total@+8
-            __myp_mem_store_i64(base0, Arena.freeHead);  // freed: next@+0
-            Arena.freeHead = base0;
+            __myp_mem_store_i64(base0, Arena.freeLists[fidx]);  // freed: next@+0
+            Arena.freeLists[fidx] = base0;
         }
     }
     arenaUnlock();
@@ -108,7 +113,15 @@ void arenaReclaim(long base0) {
 // C: myp_arena_bump_alloc —— 从 mmap bump arena 取 size 字节（header+payload），
 // **返回 header base**（块首 base0 前 8B 存 total 前缀）。失败返回 0。
 // grow=1：块容量 2x（字符串拼接增长用——回退拷贝后需增长头，否则每涨 16B 就重拷
-// 整串 → O(N²)+内存爆炸）。空闲链表首适复用 + LIFO 由 arenaReclaim 配合。
+// 整串 → O(N²)+内存爆炸）。size-class 分桶复用（v3.15.177）。
+// 2 幂大小类索引——req 归到最小 2 幂 ≥ req 的类（32..32768，idx 0..15）。
+long classOf(long req) {
+    long c = 32;
+    long idx = 0;
+    while (c < req && idx < 15) { c = c * 2; idx = idx + 1; }
+    return idx;
+}
+
 long myp_arena_alloc_ex(long size, int grow) {
     myp_fail_alloc_check();   // 包 B：确定性注入点（第 at 次 bump 分配）
     if (size < 1) size = 1;
@@ -117,23 +130,28 @@ long myp_arena_alloc_ex(long size, int grow) {
     long cap = req;
     if (grow != 0) cap = req * 2;   // 拼接增长 2x 块容量（几何）
     arenaLock();
-    // 空闲链表复用（首适 stored_total >= req；grow 也匹配 req 以复用 2x 块保持头寸）
-    long prev = 0;
-    long cur = Arena.freeHead;
-    while (cur != 0) {
-        long stored = __myp_mem_load_i64(cur + 8);
-        if (stored >= req) {
-            long nxt = __myp_mem_load_i64(cur);
-            if (prev == 0) Arena.freeHead = nxt;
-            else __myp_mem_store_i64(prev, nxt);
-            __myp_mem_store_i64(cur, stored);   // live: total@base0
-            Arena.last_base = 0;                // 复用块非 bump tail → 禁 LIFO
-            Arena.last_aligned = 0;
-            arenaUnlock();
-            return cur + 8;   // header base
+    // size-class 复用：按 req 的 2 幂 class 起向上找，桶内 first-fit 遍历（同基线
+    // freeHead 遍历但分桶更小 → 匹配更好 + 遍历更短）。
+    long idx = classOf(req);
+    while (idx < 16) {
+        long prev = 0;
+        long cur = Arena.freeLists[idx];
+        while (cur != 0) {
+            long stored = __myp_mem_load_i64(cur + 8);
+            if (stored >= req) {
+                long nxt = __myp_mem_load_i64(cur);
+                if (prev == 0) Arena.freeLists[idx] = nxt;
+                else __myp_mem_store_i64(prev, nxt);
+                __myp_mem_store_i64(cur, stored);   // live: total@base0
+                Arena.last_base = 0;                // 复用块非 bump tail → 禁 LIFO
+                Arena.last_aligned = 0;
+                arenaUnlock();
+                return cur + 8;   // header base
+            }
+            prev = cur;
+            cur = __myp_mem_load_i64(cur);
         }
-        prev = cur;
-        cur = __myp_mem_load_i64(cur);
+        idx = idx + 1;
     }
     if (Arena.cur == 0 || Arena.cur_used + cap > Arena.cur_cap) {
         long chunk = cap;
@@ -531,6 +549,41 @@ void ccCascade(long addr, string obj) {
 // C: void myp_collect_cycles(void) —— 回收引用环。安全点调用（无并发引用变更）：
 // 显式 Memory.collectCycles() 或 myp_free_all（退出，工作线程已 join）。
 void myp_collect_cycles() {
+    // v3.15.177: 压缩 + 去重 CC.all 登记表——去掉死条目（rc==0/复用/非活块）且
+    // **按地址去重**（同一地址被多次分配（复用）→ all 表按分配事件膨胀：混合负载
+    // 20 万迭代×6 Node = 120 万登记 → 收集器处理 120 万假根 → keys 表 32MB+ 且慢）。
+    // 用 CC.keys 哈希标记已见地址（收集前 keys 空）。校验与下方找根同款。
+    if (CC.allCap > 0) {
+        if (CC.cap < 4096) ccEnsureCap(4096);
+        long w = 0;
+        for (long i = 0; i < CC.allN; i = i + 1) {
+            long e = CC.all[i];
+            if (e == 0) continue;
+            long o = e & 0xFFFFFFFFFFFF;   // 低 48 位 = data 地址
+            int rtid = int(e >> 48);       // 高 16 位 = 记录 type_id
+            int ctid = __myp_mem_load_i32(o - 4);
+            if (ctid != rtid) continue;
+            if (ccClassOk(ctid) == 0) continue;
+            int rcv = __myp_atomic_load_i32_addr(o - 8);
+            if (rcv < 1) continue;   // rc==0：已死
+            long t = __myp_mem_load_i64(o - 16);
+            if (t < 16 || t >= (1 << 30)) continue;   // 非活块
+            if (ccLookup(o) != 0) continue;   // 地址已登记 → 去重
+            ccInsert(o, 1);   // 标记已见
+            CC.all[w] = e;
+            w = w + 1;
+        }
+        CC.allN = w;
+        ccReset();   // 清 keys 去重标记
+        if (CC.allCap > 4096 && CC.allCap > w * 4) {
+            long nc = w * 2;
+            if (nc < 4096) nc = 4096;
+            long[] na = new long[nc];
+            for (long i = 0; i < w; i = i + 1) na[i] = CC.all[i];
+            CC.allCap = nc;
+            CC.all = na;
+        }
+    }
     // 快照 class 根：迭代 ccAll 登记表（myp_alloc_object 每分配追加），校验
     // "当前 type_id == 记录 type_id" 过滤假根——被释放/复用的旧条目（当前 tid ≠
     // 记录 tid，或 rc==0 / base0 total 非活块）被跳过。⚠️ 不持 arenaLock：收集器
@@ -774,6 +827,7 @@ void myp_arena_free_all() {
     Arena.last_base = 0;
     Arena.last_aligned = 0;
     Arena.freeHead = 0;
+    for (int i = 0; i < 16; i = i + 1) Arena.freeLists[i] = 0;   // size-class
 }
 
 // C: void myp_free_all(void) —— codegen 在 main() 退出 epilogue 调用；释放进程级

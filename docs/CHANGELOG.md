@@ -47,6 +47,27 @@
 - **测试**：`tests/@test/cyclecollect_multi.myp`（2 tests：1000 环显式收集 + 自动
   收集下多环回收）。全量 456/456 + parity 95/95 + 自举 MD5 一致。
 
+### v3.15.177 — 修复 CC.all 登记表膨胀（混合负载内存降 1300x + 提速 3x）
+
+**非破坏性**（纯 MYP 运行时）。定位并修复长时混合负载（`tests/leak_long.myp`）
+内存峰值/速度问题的根因：
+- **根因**：`CC.all`（环收集类对象登记表）按**分配事件**无限膨胀——`myp_alloc_
+  object` 每次 `new` 类对象 `ccAllAdd` 追加登记，**同一地址被空闲链表复用就重复
+  登记**（混合负载 20 万迭代×6 Node = 120 万登记）→ 收集器遍历 120 万假根 →
+  CC 哈希表（keys）扩到 32MB+ → 内存大 + 收集慢拖垮整体。
+- **修复（alloc.myp）**：`myp_collect_cycles` 开头**压缩 + 按地址去重** `CC.all`
+  ——复用找根同款校验（ctid==rtid / rc>=1 / 活块）过滤死条目，再用 CC.keys 哈希
+  （ccLookup/ccInsert）标记已见地址去重；压缩后若容量 >4x 实际且 >4096 则缩容
+  （防峰值遗留大数组）。allN 回到存活对象数 → 收集器只处理真根。
+- **附带改进**：size-class 分桶（2 幂类 32..32768+，`freeLists[16]`，`classOf`）
+  替换单 freeHead 首适——桶内 first-fit 遍历（分桶更小 → 匹配更好 + 遍历更短）；
+  归桶按 `classOf(total)`；`myp_arena_free_all` 清 freeLists。
+- **效果（leak_long 混合负载 90s）**：RSS 峰值 **11.9GB → 9MB**（降 1300x，接近
+  同负载 C++ 3.8MB），迭代 **86k/s → 255k/s**（提速 3x，较修复前 size-class 版
+  33k/s 快 7.7x）；Node/total 存活计数稳定有界（无泄漏）；arenaR 764KB 趋平。
+- **测试**：全量 456/456 + parity 95/95 + 自举 MD5 一致；环收集回归
+  `cyclecollect_multi`（2 tests）通过。
+
 ### v3.15.175 — 泛型数组元素释放修复 + 泛型环收集
 
 **非破坏性**（编译器 + 两运行时）。按「零用户操作 + 最少运行时内存操作」方向
