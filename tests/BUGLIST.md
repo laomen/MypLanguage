@@ -2745,3 +2745,25 @@ operand（got 'double'）"（BitNot）。
 - **教训**：一元操作符校验不是只有 `!` 一处——`-`（expectNumeric）与 `~`
   （BitNot 专属整型/bitvector/bit）各有独立条件；自举 Unary 处理器此前是
   「只设 resolvedKind 不校验」的盲点（与 BUG-074 的 `!` 成对补齐）。
+
+## BUG-106（已修复 🟩，v3.15.140）：重复形参名漏校验 → opt 崩
+
+**非破坏性**（selfhost sema）。`int f(int a, int a)` 重复形参名静默过 sema →
+codegen 发 `define internal i32 @f(i32 %a, i32 %a)`（LLVM 参数重名）→ **opt-21
+崩**（redefinition of argument '%a'）。oracle 容忍（last-wins 运行，输出正常），
+但重复形参名是用户错误——自举干净拒绝。
+
+- **根因**：自举 declareParam 逐参声明、从不检查同形参表内重名（BUG-085 的
+  duplicate variable 只覆盖函数体局部变量，不覆盖形参）。
+- **修复**：新增 `checkDupParamNames(ArrayList<AstParam>, fline, fcol)` helper
+  （StrHashMap 记录已见名，重名报 "duplicate parameter name 'X'"），接入 5 处
+  形参声明循环——顶层函数/类 action/类 function/类 static action/struct 方法
+  （调用处用函数/方法行号作诊断位置；AstParam 无 nameLine/nameCol 成员）。
+- **验证**：顶层/类 action/struct 方法三形态全部 `sev=error`；正常形参
+  `f(3,4)`=7 仍编译+运行；bootstrap 自举成立（自举源码无重复形参）。
+- **回归**：负测试 `tests/negative/dup_param_name.myp` / `dup_param_action.myp`；
+  全量 410 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：重复校验要覆盖「函数/方法形参表」——oracle 靠 LLVM 参数按索引引用
+  容忍重名，自举 codegen 按名引用即崩；同类盲区（BUG-085 局部变量、BUG-095
+  方法、BUG-094 bitfield 字段）逐个补齐。方向相反（oracle 接受、自举崩）——
+  编译期干净拒绝优于 codegen 崩。

@@ -1,0 +1,13 @@
+// BUG-106 负向：同一形参表内重复形参名漏校验 → opt-21 崩（LLVM redefinition
+// of argument '%a'）。oracle 容忍（last-wins 运行），但重复形参名是用户错误，
+// 自举干净拒绝。
+// EXPECT ERROR: duplicate parameter name 'a'
+import env;
+int f(int a, int a) { return a; }
+class T2 {
+    action:
+        @constructor T2() {
+            Console.writeString("" + f(1, 2) + "\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

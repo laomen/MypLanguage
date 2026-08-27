@@ -2110,6 +2110,7 @@ class Sema {
                 loopDepth_ = 0;
                 sym_.enterScope();
                 int topFCheck = f.typeParams().size() == 0 ? 1 : 0;
+                checkDupParamNames(f.params(), f.line(), f.col());
                 for (int j = 0; j < f.params().size(); j = j + 1) {
                     declareParam(f.params().get(j), topFCheck);
                 }
@@ -2302,6 +2303,7 @@ class Sema {
                             }
                         }
                     }
+                    checkDupParamNames(a.params(), a.line(), a.col());
                     for (int j = 0; j < a.params().size(); j = j + 1) {
                         declareParam(a.params().get(j), 1);
                     }
@@ -2327,6 +2329,7 @@ class Sema {
                     int gbase3 = curGeneric_.size();
                     for (int gi = 0; gi < f.typeParams().size(); gi = gi + 1) curGeneric_.add(f.typeParams().get(gi));
                     sym_.enterScope();
+                    checkDupParamNames(f.params(), f.line(), f.col());
                     for (int j = 0; j < f.params().size(); j = j + 1) {
                         declareParam(f.params().get(j), 1);
                     }
@@ -2350,6 +2353,7 @@ class Sema {
                     int gbase2 = curGeneric_.size();
                     for (int gi = 0; gi < a.typeParams().size(); gi = gi + 1) curGeneric_.add(a.typeParams().get(gi));
                     sym_.enterScope();
+                    checkDupParamNames(a.params(), a.line(), a.col());
                     for (int j = 0; j < a.params().size(); j = j + 1) {
                         declareParam(a.params().get(j), 1);
                     }
@@ -2379,6 +2383,7 @@ class Sema {
                     inCoro_ = f.coro() != 0 ? 1 : 0;
                     loopDepth_ = 0;
                     sym_.enterScope();
+                    checkDupParamNames(f.params(), f.line(), f.col());
                     for (int j = 0; j < f.params().size(); j = j + 1) {
                         declareParam(f.params().get(j), 0);
                     }
@@ -3532,6 +3537,21 @@ class Sema {
         }
         // 声明参数并访问其默认值表达式（类型推断）。checkDefault=1 时按 C++
         // checkParamDefaults 校验默认值类型（struct 方法不校验）。
+        // BUG-106：同一形参表内重复形参名 → LLVM 参数重名 → opt-21 崩
+        //（redefinition of argument '%a'）。oracle 容忍（last-wins 运行），但重复
+        // 形参名是用户错误——自举干净拒绝（与 BUG-085 duplicate variable 同精神）。
+        void checkDupParamNames(ArrayList<AstParam> ps, int fline, int fcol) {
+            StrHashMap<int> seen = new StrHashMap<int>();
+            for (int i = 0; i < ps.size(); i = i + 1) {
+                string pn = ps.get(i).name();
+                if (Str.len(pn) == 0) continue;
+                if (seen.contains(pn) != 0) {
+                    diag_.error(fline, fcol, "duplicate parameter name '" + pn + "'");
+                    return;
+                }
+                seen.put(pn, 1);
+            }
+        }
         void declareParam(AstParam p, int checkDefault) {
             AstExpr defaultExpr = p.defaultExpression();
             if (checkDefault != 0 && defaultExpr != null) {

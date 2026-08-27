@@ -1,0 +1,13 @@
+// BUG-106 负向：类 action 形参表内重复形参名漏校验 → opt-21 崩（LLVM
+// redefinition of argument '%a'）。
+// EXPECT ERROR: duplicate parameter name 'a'
+import env;
+class T2 {
+    action:
+        int go(int a, int a) { return a; }
+        @constructor T2() {
+            go(1, 2);
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

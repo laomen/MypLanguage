@@ -39,6 +39,19 @@
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-098。
 
+### v3.15.140 — 修重复形参名漏校验（BUG-106）
+
+**非破坏性**（selfhost sema）。`int f(int a, int a)` 重复形参名自举此前**接受**
+→ codegen 发 `define ...(i32 %a, i32 %a)`（LLVM 参数重名）→ **opt-21 崩**
+（redefinition of argument '%a'）。oracle 容忍（last-wins），但重复形参名是
+用户错误，自举干净拒绝。
+
+- **修复**：新增 `checkDupParamNames` helper（StrHashMap 记录已见名），接入 5
+  处形参声明循环（顶层函数/类 action/类 function/类 static action/struct
+  方法），重名报 "duplicate parameter name 'X'"。
+- **测试**：负测试 `tests/negative/dup_param_name.myp` / `dup_param_action.myp`；
+  正常形参编译+运行正确；bootstrap 自举成立。
+
 ### v3.15.139 — 修一元 - / ~ 操作数类型漏校验（BUG-105）
 
 **非破坏性**（selfhost sema）。`-"x"`（一元负号 string）与 `~d`（位取反
