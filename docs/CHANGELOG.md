@@ -27,6 +27,28 @@
 
 ## 编译器版本历史
 
+### v3.15.170 — MYP_MEM_REPORT 泄漏报告（按 type_id 分组打印存活对象）
+
+**非破坏性**（纯运行时 + stdlib，不碰编译器）。按「零用户操作」的内存管理方向
+（ARC 自动释放 + 自动回收，不做手动 free/破环），第一步落地**泄漏定位**：
+- 设环境变量 `MYP_MEM_REPORT=1`，进程退出时自动打印**仍存活**的 class 实例，
+  按 type_id（类名，来自 `__myp_type_name_table`）分组 + 总数。自举程序（MYP
+  运行时归档）在 `myp_free_all` 开头打（main 局部 ARC 槽已释放 → 真泄漏/程序期
+  对象）；C 运行时经 atexit（协程清理后、原始释放前）。
+- `Memory.memReport()`（stdlib）任意时刻打同款快照（stdout，@test 可捕获）。
+- MYP 运行时读进程级 `TLive.counts`（跨线程累计，非 TLS）；C 运行时遍历进程级
+  分配链表（按 类/串/数组 布局分类，STR/ARR 先判）。
+
+**配套维护**（既有 BUG-074 之后 runtime_myp 未同步，归档一直无法重建）：
+`runtime_myp/*.myp` 的 `while (1)`/`if (int)` 陈旧写法统一改 `while (true)`/
+`if (x != 0)`（11 文件）+ `num.myp` 函数作用域 `c`→`sc`（避免与 while 块 `c`
+重名）+ `event.myp` `if(dup)`→`if(dup!=0)`——归档恢复可重建（此前删 build/ 从零
+构建会在 myp_rt_myp 步失败）。
+
+- **测试**：`tests/@test/memreport.myp`（自环泄漏计数不回落 + memReport 输出含
+  类名 + 非环对象释放回落）；端到端 `MYP_MEM_REPORT=1` 泄漏程序 stderr 报
+  `Node: 1`。全量 451/0、parity 95/0、bootstrap 2 级 MD5 一致。
+
 ### v3.15.169 — ffi 形参校验设计统一（checkParamType 抽取复用）
 
 **非破坏性**（selfhost sema 重构）。ffi 声明是「只登记不校验」路径（无 body、

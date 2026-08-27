@@ -93,7 +93,7 @@ int fsDirEach(long fd, int wantIndex, int mode, long outName) {
     if (buf == 0) return -1;
     int count = 0;
     int found = 0;
-    while (1) {
+    while (true) {
         long r = __myp_syscall(217, fd, buf, 8192, 0, 0, 0);   // getdents64
         if (r <= 0) break;
         long off = 0;
@@ -265,7 +265,7 @@ int myp_fs_remove_recursive(string path) {
         long buf2 = myp_arena_alloc(8192);
         if (buf2 == 0) { __myp_syscall(3, fd, 0, 0, 0, 0, 0); return -1; }
         int fail = 0;
-        while (1) {
+        while (true) {
             long r = __myp_syscall(217, fd, buf2, 8192, 0, 0, 0);
             if (r <= 0) break;
             long off = 0;

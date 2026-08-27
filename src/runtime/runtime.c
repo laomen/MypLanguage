@@ -1851,6 +1851,50 @@ const char* myp_obj_type_name(void* obj) {
     return myp_type_name(myp_obj_type_id(obj));
 }
 
+// ---- MYP_MEM_REPORT: leak report at process exit (MYP_MEM_REPORT=1) ----
+// Walks the process-global alloc list (all threads are joined by exit) and
+// prints the still-live objects grouped by class name to stderr. Runs AFTER
+// coroutine cleanup (frame-slot objects released → true leak signal) and
+// BEFORE the raw list free, so the counts are exactly what would leak.
+// Node layout (see myp_alloc_object/myp_alloc_str/myp_alloc_class_array):
+//   class {next,prev} rc@+16 type_id@+20 data@+24
+//   string{next,prev} len@+16 rc@+20 type_id(STR)@+24 data@+28
+//   array {next,prev} count@+16 elem@+24 pad@+28 rc@+32 type_id(ARR)@+36
+// STR/ARR ids are checked first, so the remaining nodes are class objects
+// whose type_id sits at +20 (rc at +16 is always >= 1).
+static void myp_mem_report(void) {
+    const char* en = getenv("MYP_MEM_REPORT");
+    if (!en || en[0] != '1') return;
+    int max = (&__myp_max_type_id) ? (int)__myp_max_type_id : 0;
+    myp_alloc_lock_ensure();
+    pthread_spin_lock(&myp_alloc_lock);
+    long class_total = 0, str_total = 0, arr_total = 0;
+    size_t ncap = max > 0 ? (size_t)max + 1 : 0;
+    size_t* counts = ncap ? (size_t*)calloc(ncap, sizeof(size_t)) : NULL;
+    for (myp_alloc_node_t* node = myp_alloc_head; node; node = node->next) {
+        uint32_t n36 = *(const uint32_t*)((const char*)node + 36);
+        uint32_t n24 = *(const uint32_t*)((const char*)node + 24);
+        uint32_t n20 = *(const uint32_t*)((const char*)node + 20);
+        uint32_t n16 = *(const uint32_t*)((const char*)node + 16);
+        if (n36 == MYP_ARR_TYPE_ID) { arr_total++; continue; }
+        if (n24 == MYP_STR_TYPE_ID) { str_total++; continue; }
+        if (counts && n16 >= 1 && n20 > 0 && n20 < ncap) { counts[n20]++; class_total++; }
+        else if (n16 >= 1 && n20 > 0) class_total++;   // no name table: count only
+    }
+    fprintf(stderr, "MYP memory report: live objects at exit (all threads)\n");
+    if (counts) {
+        for (int tid = 1; tid < (int)ncap; tid++) {
+            if (!counts[tid]) continue;
+            const char* nm = __myp_type_name_table[tid];
+            fprintf(stderr, "  %s: %zu\n", (nm && nm[0]) ? nm : "(unknown type)", counts[tid]);
+        }
+        free(counts);
+    }
+    fprintf(stderr, "  class instances: %ld, strings: %ld, arrays: %ld\n",
+            class_total, str_total, arr_total);
+    pthread_spin_unlock(&myp_alloc_lock);
+}
+
 // Forward declaration — region arena is defined below (after myp_free_all).
 void myp_region_free_all(void);
 
@@ -5245,6 +5289,10 @@ static void __myp_coro_register_cleanup(void) {
     // still live (leaked / program-lifetime). Runs after main returns when all
     // @thread workers have been joined, so no thread is still using blocks.
     atexit(myp_free_alloc_list_global);
+    // MYP_MEM_REPORT: report live objects BEFORE the raw free (registered after
+    // free_alloc_list → runs before it under LIFO; after coroutine cleanup, so
+    // frame-slot objects are already released and the counts are true leaks).
+    atexit(myp_mem_report);
     // M7: free the weak registry (entry/slot-array blocks only).
     atexit(myp_weak_free_all);
     atexit(__myp_coro_cleanup_all);

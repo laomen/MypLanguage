@@ -51,7 +51,7 @@ string myp_process_output(string cmd) {
     int len = 0;
     string buf = myp_alloc(cap);
     string tmp = myp_alloc(4096);
-    while (1) {
+    while (true) {
         long n = fread(__myp_str_ptr(tmp), 1, 4095, fp);
         if (n <= 0) break;
         int in = int(n);

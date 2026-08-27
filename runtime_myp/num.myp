@@ -91,16 +91,16 @@ int myp_str_parse_int_opt(long s, long ok) {
     }
     long p = s;
     long i = 0;
-    while (1) {
+    while (true) {
         int c = __myp_mem_load_i8(p + i);
         if (c == 0) break;
         if (c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12) i = i + 1;
         else break;
     }
     int neg = 0;
-    int c = __myp_mem_load_i8(p + i);
-    if (c == 45) { neg = 1; i = i + 1; }        // '-'
-    else if (c == 43) i = i + 1;                // '+'
+    int sc = __myp_mem_load_i8(p + i);
+    if (sc == 45) { neg = 1; i = i + 1; }        // '-'
+    else if (sc == 43) i = i + 1;                // '+'
     int base = 10;
     int any = 0;
     int c0 = __myp_mem_load_i8(p + i);
@@ -108,7 +108,7 @@ int myp_str_parse_int_opt(long s, long ok) {
     if (c0 == 48 && (c1 == 120 || c1 == 88)) { base = 16; i = i + 2; }   // 0x/0X
     else if (c0 == 48) { base = 8; i = i + 1; any = 1; }                 // 前导 0 → 八进制（'0' 是数字）
     long v = 0;
-    while (1) {
+    while (true) {
         int c = __myp_mem_load_i8(p + i);
         if (c == 0) break;
         int d = -1;
@@ -133,7 +133,7 @@ string myp_itoa_common(ulong u, int neg) {
     long tp = __myp_str_ptr(tmp);
     int pos = 23;
     int n = 0;
-    while (1) {
+    while (true) {
         ulong d = u % 100;
         u = u / 100;
         pos = pos - 1;

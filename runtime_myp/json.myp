@@ -228,7 +228,7 @@ int jsonParseArray() {
     int s = jsonNewNode(5);
     jsonSkipWs();
     if (jsonPeek() == 93) { jsonAdvance(); return s; }   // ']'
-    while (1) {
+    while (true) {
         jsonSkipWs();
         int ch = jsonParseValue();
         if (ch < 0) return -1;
@@ -245,7 +245,7 @@ int jsonParseObject() {
     int s = jsonNewNode(6);
     jsonSkipWs();
     if (jsonPeek() == 125) { jsonAdvance(); return s; }   // '}'
-    while (1) {
+    while (true) {
         jsonSkipWs();
         if (jsonPeek() != 34) return -1;   // '"'
         int keyNode = jsonParseString();

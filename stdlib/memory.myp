@@ -18,6 +18,8 @@
 // 注：动态数组请用 `import collections` 的 `ArrayList<T>`（已支持自动扩容）；
 // 本模块只负责裸内存管理，不提供容器类型。
 
+import env;
+
 // ---- FFI 声明：C 标准库内存函数（指针以 long 承载）----
 ffi long malloc(long size);
 ffi void free(long ptr);
@@ -29,6 +31,8 @@ ffi long myp_live_string_count();
 ffi long myp_live_array_count();
 ffi long myp_live_total_count();
 ffi long myp_live_object_count_by_type(long typeId);
+// RTTI：type_id → 类名（MYP 运行时 / C 运行时均提供；泄漏报告用）
+ffi string myp_type_name(int typeId);
 ffi long myp_diag_arena_reserved();
 ffi long myp_diag_arena_used();
 ffi long myp_diag_region_reserved();
@@ -91,6 +95,22 @@ class Memory {
         long liveTotalCount() { return myp_live_total_count(); }
         long liveObjectCountByType(long typeId) {
             return myp_live_object_count_by_type(typeId);
+        }
+
+        // ---- MYP_MEM_REPORT：泄漏诊断 ----
+        // 按 type_id 打印当前存活的 class 实例（跨线程累计；MYP 运行时为进程级
+        // 计数）。进程退出时设环境变量 MYP_MEM_REPORT=1 会自动打印同款报告；
+        // 本方法可在任意时刻做快照（stdout，@test 可捕获）。
+        void memReport() {
+            long total = 0L;
+            Console.writeString("MYP memory report (live class instances):\n");
+            for (int tid = 1; tid < 1024; tid = tid + 1) {
+                long c = myp_live_object_count_by_type(tid);
+                if (c <= 0L) continue;
+                Console.writeString("  " + myp_type_name(tid) + ": " + c + "\n");
+                total = total + c;
+            }
+            Console.writeString("  total: " + total + "\n");
         }
 
         // 非 ARC bump arena（进程级字符串/数组历史分配）reserved/used 字节

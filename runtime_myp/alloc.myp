@@ -391,7 +391,11 @@ void myp_arena_free_all() {
 ffi void myp_release_class_slices_from_depth(long depth);   // region.myp
 ffi void myp_region_free_all();                             // region.myp
 ffi void myp_restore_term();                                // term.myp（raw 模式还原）
+ffi void myp_mem_report();                                  // diag.myp（MYP_MEM_REPORT=1）
 void myp_free_all() {
+    // MYP_MEM_REPORT=1 时先打泄漏报告（此时 main 局部 ARC 槽已释放 → 只剩泄漏/
+    // 程序期对象；arena 尚未 reset，myp_type_name 的计数拷贝仍可分配）。
+    myp_mem_report();
     myp_restore_term();
     myp_release_class_slices_from_depth(0);
     myp_region_free_all();

@@ -24,7 +24,7 @@ int myp_strlen(string s) {
 // C: int32_t myp_str_eq(const char* a, const char* b) —— 内容相等（1/0）
 int myp_str_eq(string a, string b) {
     int i = 0;
-    while (1) {
+    while (true) {
         int ca = __myp_charcode(a, i);
         int cb = __myp_charcode(b, i);
         if (ca != cb) return 0;
@@ -36,7 +36,7 @@ int myp_str_eq(string a, string b) {
 // C: int32_t myp_str_cmp(const char* a, const char* b) —— strcmp 语义，归一 -1/0/1
 int myp_str_cmp(string a, string b) {
     int i = 0;
-    while (1) {
+    while (true) {
         int ca = __myp_charcode(a, i);
         int cb = __myp_charcode(b, i);
         if (ca != cb) {

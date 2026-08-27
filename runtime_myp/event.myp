@@ -324,7 +324,7 @@ void evDispatch(int slot) {
             for (int j = 0; j < rn; j = j + 1) {
                 if (__myp_mem_load_i32(EvTab.routeThr + (rb + long(j)) * 4) == hthr) { dup = 1; break; }
             }
-            if (dup) continue;
+            if (dup != 0) continue;
             __myp_mem_store_i32(EvTab.routeThr + (rb + long(rn)) * 4, hthr);
             rn = rn + 1;
             evRouteToThread(hthr, eid, sender, data, size, 1);

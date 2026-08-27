@@ -653,7 +653,7 @@ string exactDigits(double a) {
     }
     // 小数位：rem/2^r 精确有限展开——先 rem*=10 再取高 r 位（digit=floor(rem*10/2^r)）
     int len = bigInitM(w, remLong);
-    while (1) {
+    while (true) {
         len = bigMul10(w, len);          // rem *= 10
         for (int ci = 0; ci < len; ci = ci + 1) w2[ci] = w[ci];
         int len2 = bigShr(w2, len, int(rl));

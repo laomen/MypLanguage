@@ -324,7 +324,7 @@ long ioModeFlags(string mode) {
     int c0 = __myp_mem_load_i8(p);
     int hasPlus = 0;
     long i = 0;
-    while (1) {
+    while (true) {
         int c = __myp_mem_load_i8(p + i);
         if (c == 0) break;
         if (c == '+') hasPlus = 1;

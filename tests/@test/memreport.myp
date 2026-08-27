@@ -1,0 +1,49 @@
+// memreport: MYP_MEM_REPORT 泄漏诊断（Memory.memReport / liveObjectCountByType）
+// 自环泄漏：Node.next = 自身 → 环永不释放 → 按类型计数应显示 Node 存活 1，
+// memReport 输出应含类名。进程退出设 MYP_MEM_REPORT=1 自动打同款报告（stderr）。
+
+import test;
+import memory;
+import rtti;
+
+class Node {
+    action:
+        void setNext(Node n) { next = n; }
+        int getVal() { return val; }
+        void setVal(int v) { val = v; }
+    property:
+        Node next;
+        int val = 0;
+}
+
+// 自环泄漏：作用域内计数（含本实例）；出作用域强引用释放后，环保活 → 计数不回落。
+// memReport 按 type_id 列出存活类 → 应含 Node。
+@test void test_cycle_leak() {
+    int tid = 0;
+    long before = 0;
+    {
+        Node n = new Node();
+        tid = Rtti.typeId(n);
+        before = Memory.liveObjectCountByType(tid);   // = 之前 + 1（n 存活）
+        n.setNext(n);                                  // 自环 → rc 永不为 0
+    }
+    long after = Memory.liveObjectCountByType(tid);
+    Test.assertLongEq(after, before, "cycle keeps alive");
+
+    Test.captureStart();
+    Memory.memReport();
+    Test.assertOutputContains("Node", "memReport lists Node");
+}
+
+// 非环：出作用域即释放 → 计数回落 1（相对测量，不受前序泄漏影响）
+@test void test_acyclic_released() {
+    int tid = 0;
+    long before = 0;
+    {
+        Node a = new Node();
+        tid = Rtti.typeId(a);
+        before = Memory.liveObjectCountByType(tid);   // = 之前 + 1
+    }
+    long after = Memory.liveObjectCountByType(tid);
+    Test.assertLongEq(after, before - 1, "acyclic released");
+}

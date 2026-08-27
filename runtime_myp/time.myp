@@ -62,7 +62,7 @@ void myp_sleep_ms(long ms) {
     if (ts == 0) return;
     __myp_mem_store_i64(ts, ms / 1000);
     __myp_mem_store_i64(ts + 8, (ms % 1000) * 1000000);
-    while (1) {
+    while (true) {
         long r = __myp_syscall(35, ts, ts + 16, 0, 0, 0, 0);   // nanosleep(req, rem)
         if (r >= 0) break;
         // EINTR：rem@ts+16 已被内核改写为剩余时间 → 拷回 req 重试

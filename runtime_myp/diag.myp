@@ -111,3 +111,29 @@ void myp_bounds_error(long idx, long len) {
     __myp_syscall(62, pid, 6, 0, 0, 0, 0);   // kill(pid, SIGABRT)
     __myp_syscall(60, 134, 0, 0, 0, 0, 0);   // 兜底 exit(134)
 }
+
+// ---- MYP_MEM_REPORT：进程退出按 type_id 打印存活类对象（泄漏诊断）----
+// C: static void myp_mem_report(void)（MYP_MEM_REPORT=1 时）。MYP 版读进程级
+// @static TLive.counts（跨线程累计；C 版走 TLS + 分配链表，语义一致）——type_id
+// → 类名用 rtti.myp 的 myp_type_name（__myp_type_name_table）。alloc.myp 的
+// myp_free_all 开头调用（main 局部槽已释放 → 只剩泄漏/程序期对象）。
+ffi string myp_type_name(int tid);   // rtti.myp（--shared 按名解析）
+void myp_mem_report() {
+    string v = myp_env_get("MYP_MEM_REPORT");
+    if (myp_strlen(v) <= 0 || v[0] != '1') return;
+    diagCStr(__myp_str_ptr("MYP memory report: live class instances at exit\n"));
+    long total = 0;
+    for (int tid = 1; tid < 1024; tid = tid + 1) {
+        long c = TLive.counts[tid];
+        if (c <= 0) continue;
+        diagCStr(__myp_str_ptr("  "));
+        diagCStr(__myp_str_ptr(myp_type_name(tid)));
+        diagCStr(__myp_str_ptr(": "));
+        diagI64(c);
+        diagCStr(__myp_str_ptr("\n"));
+        total = total + c;
+    }
+    diagCStr(__myp_str_ptr("  total: "));
+    diagI64(total);
+    diagCStr(__myp_str_ptr("\n"));
+}
