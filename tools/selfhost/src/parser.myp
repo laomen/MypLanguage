@@ -994,7 +994,15 @@ class Parser {
         }
 
         AstStmt parseVarDeclStmt() {
+            // BUG-122：`const` 前缀须在此消费（line 841 语句分发与 for-init 都路由
+            // 到此且未 advance）——此前 `const int x = 5;` 局部变量 parseType 看到
+            // "const" → "expected type" 误拒（oracle 接受，const 局部当普通变量）。
+            // 标记 isConst（仅记录，不强制——与 oracle 一致：const 局部可重赋值）。
+            // 注意：`var` 由 parseType 消费（作 int 推断占位，isTypeTokenStr 含 var），
+            // 只对 `const` 显式 advance——双消费 var 会误拒 `var x = 5`。
             int isVar = curKind() == "var" ? 1 : 0;
+            int isConst = curKind() == "const" ? 1 : 0;
+            if (isConst != 0) advance();
             AstType shared = parseType();
             AstStmt s = new AstStmt();
             s.setKind("VarDecl");
@@ -1002,6 +1010,7 @@ class Parser {
                 AstVar v = new AstVar();
                 v.setType(shared);
                 if (isVar != 0) v.setInferred(1);
+                if (isConst != 0) v.setConst(1);
                 if (matchKind("$") != 0) {
                     int nl = peekLine(); int nc = peekCol();
                     v.setName("$" + parseIdentifier("expected variable name after '$'"));

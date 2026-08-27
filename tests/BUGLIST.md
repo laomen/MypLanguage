@@ -3080,3 +3080,27 @@ return this.k; } }`——`this` 在 @static 方法内自举此前静默过 sema 
 - **教训**：反向缺口（oracle 接受-垃圾、自举崩）也须修——@static 方法无实例，
   `this` 语义无意义，干净拒绝优于 opt 崩；@static 上下文需 inStatic_ 标志
   （与 inClass_/inStruct_/inCoro_ 同族）在 ThisExpr 前置检查。
+
+## BUG-122（已修复 🟩，v3.15.156）：`const` 局部变量 parser 误拒（拒合法代码）
+
+**非破坏性**（selfhost parser）。`const int x = 5;`（函数体/类 action/for-init
+的 const 局部变量）自举此前 **parse 误拒**（"expected type"——parseType 看到
+`const`），oracle 接受（const 局部当普通变量，可重赋值）。这是「拒合法代码」
+的反向缺口。
+
+- **根因**：语句分发 line 841 `if (k == "const") return parseVarDeclStmt();`
+  未 advance `const` 就调 parseVarDeclStmt → parseType 看到 "const"（非类型
+  token）→ "expected type"。for-init（line 1183 `curKind()=="const"`）同理。
+- **修复**：parseVarDeclStmt 开头处理 `const` 前缀——`isConst` 检测 + 显式
+  advance + v.setConst(1)（仅记录不强制，与 oracle 一致：const 局部可重赋值）。
+  **关键**：只对 `const` advance、不对 `var` advance——`var` 由 parseType 消费
+  （isTypeTokenStr 含 var，作 int 推断占位）；双消费 var 会误拒 `var x = 5`
+  （首版即犯此错，5 个测试回归失败后修正）。
+- **验证**：const 局部（函数体/action/for-init）编译+运行正确；const 局部可
+  重赋值（与 oracle 一致）；`var x = 5` 等 var 声明不受影响；顶层 const-decl
+  （const int CAP）不受影响；bootstrap 自举成立。
+- **回归**：正测试 `tests/@test/const_local_var.myp`（4 断言）；全量 435 通过
+  / 0 失败；oracle 对拍 95/0。
+- **教训**：parser 关键字修饰符（var/const）的消费点要分清——`var` 走
+  parseType（类型 token 占位）、`const` 走显式 advance；改动前先确认该 token
+  的既有消费路径（防双消费/漏消费）。

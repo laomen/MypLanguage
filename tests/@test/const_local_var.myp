@@ -1,0 +1,21 @@
+// const_local_var: `const` 局部变量（BUG-122 正向回归）
+// 覆盖：函数体/类 action/for-init 的 const 局部声明；const 局部可重赋值
+// （与 oracle 一致，仅记录不强制）；顶层 const-decl 不受影响。
+import test;
+
+int topFn() {
+    const int x = 5;
+    return x;
+}
+
+@test void test_const_local() {
+    const int a = 1;
+    Test.assertEq(a, 1, "const local init");
+    Test.assertEq(topFn(), 5, "const local in top fn");
+    const int b = 2;
+    b = 3;  // const 局部可重赋值（与 oracle 一致）
+    Test.assertEq(b, 3, "const local reassign");
+    int s = 0;
+    for (const int i = 0; i < 3; i = i + 1) { s = s + i; }
+    Test.assertEq(s, 3, "const local in for-init");
+}

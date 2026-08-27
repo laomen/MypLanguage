@@ -27,6 +27,18 @@
 
 ## 编译器版本历史
 
+### v3.15.156 — 修 `const` 局部变量 parser 误拒（BUG-122）
+
+**非破坏性**（selfhost parser）。`const int x = 5;`（函数体/类 action/for-init
+的 const 局部变量）自举此前 **parse 误拒**（"expected type"），oracle 接受
+（const 局部当普通变量，可重赋值）。「拒合法代码」反向缺口。
+
+- **修复**：parseVarDeclStmt 开头处理 `const` 前缀（isConst 检测 + 显式
+  advance + v.setConst(1) 仅记录不强制）。只对 `const` advance、不对 `var`
+  advance（var 由 parseType 消费，双消费会误拒 `var x = 5`）。
+- **测试**：正测试 `tests/@test/const_local_var.myp`（4 断言）；var 声明/顶层
+  const-decl 不受影响；bootstrap 自举成立。
+
 ### v3.15.155 — 修 @static 方法内使用 this → opt 崩（BUG-121）
 
 **非破坏性**（selfhost sema）。`@static class S1 { static: int getK() {
