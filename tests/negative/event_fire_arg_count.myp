@@ -1,0 +1,15 @@
+// BUG-131 负向：事件 fire(...) 实参数不足——`fire()`（事件 fire(int v)）自举
+// 此前静默接受（事件以 0 参注册、isEvent 跳过校验）→ 事件参数缺失；oracle 拒
+// "expected 1 arguments, got 0"。按事件真实参数（events()）数量比对。
+// EXPECT ERROR: expected 1 arguments, got 0
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            fire();
+            Console.writeString("A\n");
+        }
+    event:
+        fire(int v);
+}
+int main(){T2 t=new T2();return 0;}

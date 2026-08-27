@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.165 — 修事件 fire(...) 实参校验漏 → opt 崩/静默缺参（BUG-131）
+
+**非破坏性**（selfhost sema）。`fire("x")`（事件 `fire(int v)` 实参类型不匹配）
+自举此前静默过 sema → codegen `fire_T2_fire(ptr, i32 <string ptr>)` → **opt-21
+崩**；`fire()`（缺参）静默接受。oracle 拒 "argument 1: expected 'int', got
+'string'" / "expected 1 arguments, got 0"。
+
+- **根因**：事件在 methods_ 以 0 参注册（mapping 裸名触发用）、isEvent 守卫跳过
+  normalizeCallArgs → fire(...) 实参从不校验。
+- **修复**：`eventParamsOf(cls, name)`（查 events() 真实参数）+ 类内未限定调用
+  isEvent 分支加 fire 实参校验（数量 + 逐参 typesCompat 按 (形参, 实参) 序）。
+- **测试**：负测试 `event_fire_arg_type.myp` + `event_fire_arg_count.myp`；
+  `fire(42)` 编译+运行正确；bootstrap 自举成立。
+
 ### v3.15.164 — 修 mapping 源事件/目标 action 存在性漏校验（BUG-130）
 
 **非破坏性**（selfhost sema）。`mapping() { Src.nonexist -> Dst.onOut; }`（源

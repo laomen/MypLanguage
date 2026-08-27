@@ -1,0 +1,17 @@
+// BUG-131 负向：事件 fire(...) 实参类型不匹配——`fire("x")`（事件 fire(int v)）
+// 自举此前静默过 sema → codegen fire_T2_fire(ptr, i32 <string ptr>) → opt-21 崩
+// （constant expression type mismatch）；oracle 拒 "argument 1: expected 'int',
+// got 'string'"。事件在 methods_ 以 0 参注册（mapping 裸名触发用）、isEvent 守卫
+// 跳过 normalizeCallArgs → 漏校验；按事件真实参数（events()）逐参比对。
+// EXPECT ERROR: argument 1: expected 'int', got 'string'
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            fire("x");
+            Console.writeString("A\n");
+        }
+    event:
+        fire(int v);
+}
+int main(){T2 t=new T2();return 0;}

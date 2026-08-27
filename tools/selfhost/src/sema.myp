@@ -3017,6 +3017,19 @@ class Sema {
             }
             return 0;
         }
+        // BUG-131：事件真实参数（events() 声明，非 methods_ 里 0 参注册）——
+        // fire(...) 实参校验用。未找到返回 null。
+        ArrayList<AstParam> eventParamsOf(string cls, string evn) {
+            for (int x = 0; x < tu_.classes().size(); x = x + 1) {
+                AstClass cl = tu_.classes().get(x);
+                if (cl.name() != cls) continue;
+                ArrayList<AstEvent> evs = cl.events();
+                for (int y = 0; y < evs.size(); y = y + 1) {
+                    if (evs.get(y).name() == evn) return evs.get(y).params();
+                }
+            }
+            return null;
+        }
         // enum 查找
         int findEnum(string name) {
             return enumIdx_.get(name, -1);   // O(1)（P6 规模修复）
@@ -6062,6 +6075,10 @@ class Sema {
                                             // 注意：事件（event: 段）在 methods_ 里以 0 参数
                                             // 注册（mapping 触发用裸名 emit(v)，实参另处处理），
                                             // 须 isEvent 守卫跳过，否则误报 "takes no arguments"。
+                                            // BUG-131：但 `fire(...)`（真事件触发）实参须按事件
+                                            // **真实**参数校验（events()）——fire("x")/fire()
+                                            // 此前静默过 sema → codegen fire_<Cls>_<Ev> 参数错配
+                                            // → opt-21 崩 / 静默缺参。
                                             ArrayList<AstParam> mpsA = findMethodParams(currentClass_, fn);
                                             int normFailedA = 0;
                                             if (isEvent(currentClass_, fn) == 0 && mpsA != null) {
@@ -6070,6 +6087,31 @@ class Sema {
                                                     e.setCallParamTypes(paramKinds(mpsA));
                                                     // BUG-100：函数类型形参签名
                                                     e.setCallParamFuncSig(paramFuncSigs(mpsA));
+                                                }
+                                            } else if (isEvent(currentClass_, fn) != 0) {
+                                                ArrayList<AstParam> evParams = eventParamsOf(currentClass_, fn);
+                                                if (evParams != null) {
+                                                    if (e.args().size() != evParams.size()) {
+                                                        diag_.error(e.line(), e.col(), "expected " + evParams.size() + " arguments, got " + e.args().size());
+                                                        normFailedA = 1;
+                                                        ret = "void";
+                                                        for (int ai = 0; ai < e.args().size(); ai = ai + 1) visitExpr(e.args().get(ai));
+                                                        e.setArgsVisited(1);
+                                                    } else {
+                                                        e.setCallParamTypes(paramKinds(evParams));
+                                                        int anyFail = 0;
+                                                        for (int ai = 0; ai < e.args().size(); ai = ai + 1) {
+                                                            string ak = visitExpr(e.args().get(ai));
+                                                            string pk = typeToKind(evParams.get(ai).type());
+                                                            // typesCompat(a,b)=promotesTo(b,a)——须 (形参, 实参) 序
+                                                            if (Str.len(pk) != 0 && Str.len(ak) != 0 && typesCompat(pk, ak) == 0) {
+                                                                diag_.error(e.line(), e.col(), "argument " + (ai + 1) + ": expected '" + pk + "', got '" + ak + "'");
+                                                                anyFail = 1;
+                                                            }
+                                                        }
+                                                        e.setArgsVisited(1);
+                                                        if (anyFail != 0) { normFailedA = 1; ret = "void"; }
+                                                    }
                                                 }
                                             }
                                             if (normFailedA == 0 && mpsA != null) fillDefaultArgs(e, mpsA);

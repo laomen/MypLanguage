@@ -3294,3 +3294,27 @@ match `Opt.Some(x)` 提取**垃圾数据**（曾得 x=1730215984）。oracle 把
   须按节点位置区分（节点 0=事件、1+=action）；oracle 自身无 sema 校验（源在
   verify 崩、目标容忍），自举干净拒绝优于两端；`AstMappingNode` 无位置 →
   诊断 0,0。
+
+## BUG-131（已修复 🟩，v3.15.165）：事件 fire(...) 实参校验漏 → opt 崩/静默缺参
+
+**非破坏性**（selfhost sema）。`fire("x")`（事件 `fire(int v)` 实参类型不匹配）
+自举此前静默过 sema → codegen `fire_T2_fire(ptr, i32 <string ptr>)` → **opt-21
+崩**（constant expression type mismatch）；`fire()`（缺参）静默接受 → 事件参数
+缺失。oracle 拒 "argument 1: expected 'int', got 'string'" / "expected 1
+arguments, got 0"。
+
+- **根因**：事件（event: 段）在 methods_ 以 **0 参数**注册（mapping 裸名触发
+  emit(v) 用，避免误报 "takes no arguments"），类内未限定调用路径的 isEvent
+  守卫跳过 normalizeCallArgs → `fire(...)` 实参从不校验。
+- **修复**：①新增 `eventParamsOf(cls, name)`——查 events() 真实参数（非 methods_
+  0 参注册）；②类内未限定调用 isEvent 分支加 fire 实参校验——数量比对
+  （"expected N arguments, got M"）+ 逐参 `typesCompat(pk, ak)`（**注意序**：
+  typesCompat(a,b)=promotesTo(b,a)，须 (形参, 实参) 否则 byte 字面量误报）。
+- **验证**：`fire("x")` / `fire()` `sev=error`（消息与 oracle 逐字一致）；
+  `fire(42)`（byte 字面量→int 提升）编译+运行正确；bootstrap 自举成立。
+- **回归**：负测试 `event_fire_arg_type.myp` + `event_fire_arg_count.myp`；
+  全量 446 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：事件是「声明 0 参注册（mapping 用）+ 真 fire 实参另查」的双轨——
+  isEvent 守卫防 mapping 误报、但连 fire(...) 也跳过 → 须按事件真实参数
+  （events()）单独校验；typesCompat 参数序（形参, 实参）易倒置导致 byte 字面量
+  误报。
