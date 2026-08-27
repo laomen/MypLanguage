@@ -1,0 +1,108 @@
+// cyclecollect_arr: 数组/切片环检测（v3.15.173）——补 v1 覆盖缺口：
+// 环经 class→Node[]→Node→A 现在可回收；共享数组元素（活对象）不误释放。
+// 数组/切片 backing 在 trial/restore 级联元素、collectWhite 回收白 backing。
+
+import test;
+import memory;
+import rtti;
+
+class Node {
+    action:
+        void setNext(Node n) { next = n; }
+        void setPrev(Node p) { prev = p; }
+        void setArr(Node[] a) { arr = a; }
+        int getVal() { return val; }
+        void setVal(int v) { val = v; }
+    property:
+        Node next;
+        Node prev;
+        Node[] arr;
+        int val = 0;
+}
+
+class Holder {
+    action:
+        @constructor Holder(Node n) { held = n; }
+        Node get() { return held; }
+    property:
+        Node held;
+}
+
+class ArrHolder {
+    action:
+        @constructor ArrHolder(Node[] a) { held = a; }
+        Node[] get() { return held; }
+    property:
+        Node[] held;
+}
+
+// 经数组的环：a.arr → arr[0]=b, b.next=a。收集后 a、b、数组 backing 全回收。
+@test void test_array_cycle() {
+    int tid = 0;
+    long before = 0;
+    {
+        Node a = new Node();
+        Node b = new Node();
+        Node[] arr = new Node[1];
+        arr[0] = b;
+        a.setArr(arr);      // a → 数组 → b
+        b.setNext(a);       // b → a
+        tid = Rtti.typeId(a);
+        before = Memory.liveObjectCountByType(tid);   // = 之前 + 2（a、b 存活）
+    }
+    Memory.collectCycles();
+    Test.assertLongEq(Memory.liveObjectCountByType(tid), before - 2,
+        "cycle through array collected (a,b freed)");
+}
+
+// 自环经数组：a.arr → arr[0]=a（数组元素指向持有者）→ 数组 backing 也回收。
+@test void test_self_through_array() {
+    int tid = 0;
+    long before = 0;
+    {
+        Node a = new Node();
+        Node[] arr = new Node[1];
+        arr[0] = a;
+        a.setArr(arr);      // a → 数组 → a
+        tid = Rtti.typeId(a);
+        before = Memory.liveObjectCountByType(tid);
+    }
+    Memory.collectCycles();
+    Test.assertLongEq(Memory.liveObjectCountByType(tid), before - 1,
+        "self-cycle through array collected");
+}
+
+// 共享数组元素：数组元素是活对象（Holder 也持有）→ 垃圾环/数组回收后元素完好。
+@test void test_shared_elem_preserved() {
+    Node live = new Node();
+    live.setVal(42);
+    Holder h = new Holder(live);
+    {
+        Node a = new Node();
+        Node[] arr = new Node[1];
+        arr[0] = live;       // 数组元素 = 活对象
+        a.setArr(arr);
+        a.setNext(a);        // a 自环 → 垃圾
+    }
+    Memory.collectCycles();
+    Test.assertLongEq(h.get().getVal(), 42, "live element intact after collect");
+    Test.assertLongEq(live.getVal(), 42, "live node intact");
+}
+
+// 活数组保留：数组被活对象（ArrHolder）持有，垃圾环也共享同一数组 → 收集后
+// 数组与其元素仍在（trial 级联未误杀活数组/活元素）。
+@test void test_live_array_preserved() {
+    Node live = new Node();
+    live.setVal(7);
+    Node[] arr = new Node[1];
+    arr[0] = live;
+    ArrHolder ah = new ArrHolder(arr);
+    {
+        Node g = new Node();
+        g.setArr(arr);   // 垃圾环也持有数组
+        g.setNext(g);    // g 自环 → 垃圾
+    }
+    Memory.collectCycles();
+    Test.assertLongEq(ah.get()[0].getVal(), 7, "live array+element intact after collect");
+    Test.assertLongEq(arr[0].getVal(), 7, "local view intact");
+}

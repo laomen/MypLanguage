@@ -15,6 +15,8 @@ ffi long myp_str_to_long(string s);
 ffi string myp_to_string_u64(long val);
 ffi string myp_to_string_i64(long val);
 ffi int myp_strlen(string s);
+ffi long myp_live_string_count();   // alloc.myp（v3.15.173 报告纳入字符串/数组）
+ffi long myp_live_array_count();    // alloc.myp
 
 @static class TLive {
     property:
@@ -121,7 +123,7 @@ ffi string myp_type_name(int tid);   // rtti.myp（--shared 按名解析）
 void myp_mem_report() {
     string v = myp_env_get("MYP_MEM_REPORT");
     if (myp_strlen(v) <= 0 || v[0] != '1') return;
-    diagCStr(__myp_str_ptr("MYP memory report: live class instances at exit\n"));
+    diagCStr(__myp_str_ptr("MYP memory report: live objects at exit\n"));
     long total = 0;
     for (int tid = 1; tid < 1024; tid = tid + 1) {
         long c = TLive.counts[tid];
@@ -135,5 +137,12 @@ void myp_mem_report() {
     }
     diagCStr(__myp_str_ptr("  total: "));
     diagI64(total);
+    diagCStr(__myp_str_ptr("\n"));
+    // v3.15.173：纳入引用计数字符串/数组 backing 存活数（环收集前计数——
+    // 退出自动收集已回收可达环，此处为残余泄漏/程序期对象）
+    diagCStr(__myp_str_ptr("  strings: "));
+    diagI64(myp_live_string_count());
+    diagCStr(__myp_str_ptr("\n  arrays: "));
+    diagI64(myp_live_array_count());
     diagCStr(__myp_str_ptr("\n"));
 }

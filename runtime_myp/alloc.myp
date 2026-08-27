@@ -440,6 +440,35 @@ void ccCallStub(long addr, string obj) {
     if (stub != 0) __myp_call_ptr(stub, obj);
 }
 
+// 数组/切片 backing 级联（trial/restore 模式）：逐元素 myp_release（按当前模式
+// 递归，visited 守卫防共享元素重复级联）。pad==0 类元素 / pad==2 slice 元素；
+// 标量(pad==1)无元素。头部：count@addr-24, elem_size@addr-16, pad@addr-12。
+void ccArrayCascade(long addr) {
+    long count = __myp_mem_load_i64(addr - 24);
+    int elem_size = __myp_mem_load_i32(addr - 16);
+    int pad = __myp_mem_load_i32(addr - 12);
+    if (pad == 2) {   // 元素 = slice 胖指针 {data,len} → 释放内层 data
+        for (long i = 0; i < count; i = i + 1) {
+            long inner = __myp_mem_load_i64(addr + i * elem_size);
+            myp_release(__myp_addr_to_str(inner));
+        }
+    } else if (pad == 0) {   // 元素 = 类引用 → 逐元素
+        for (long i = 0; i < count; i = i + 1) {
+            long inner = __myp_mem_load_i64(addr + i * 8);
+            myp_release(__myp_addr_to_str(inner));
+        }
+    }
+}
+
+// 模式级联（trial/restore 统一入口）：class → destroy stub（递归字段）；
+// 数组/切片 → 逐元素（v3.15.173 补数组环检测——环经 class→Node[]→Node→A
+// 现在可回收）；字符串 → 无。
+void ccCascade(long addr, string obj) {
+    int tid = __myp_mem_load_i32(addr - 4);
+    if (tid == -1) { ccArrayCascade(addr); return; }
+    ccCallStub(addr, obj);
+}
+
 // C: void myp_collect_cycles(void) —— 回收引用环。安全点调用（无并发引用变更）：
 // 显式 Memory.collectCycles() 或 myp_free_all（退出，工作线程已 join）。
 void myp_collect_cycles() {
@@ -481,7 +510,7 @@ void myp_collect_cycles() {
         long o = roots[i];
         if (ccLookup(o) == 0) {
             ccInsert(o, 1);   // 灰
-            ccCallStub(o, __myp_addr_to_str(o));
+            ccCascade(o, __myp_addr_to_str(o));
         }
     }
     CC.trial = 0;
@@ -492,13 +521,13 @@ void myp_collect_cycles() {
         long o = CC.keys[i];
         if (__myp_atomic_load_i32_addr(o - 8) > 0) {
             ccSetColor(o, 2);   // 黑
-            ccCallStub(o, __myp_addr_to_str(o));   // restore 级联
+            ccCascade(o, __myp_addr_to_str(o));   // restore 级联
         } else {
             ccSetColor(o, 3);   // 白
         }
     }
     CC.restore = 0;
-    // collectWhite（finalize=1：字段零操作，真实释放白类对象；白字符串直接回收）
+    // collectWhite（finalize=1：字段零操作，真实释放白类对象；白字符串/数组直接回收）
     CC.finalize = 1;
     for (long i = 0; i < CC.cap; i = i + 1) {
         if (CC.keys[i] == 0 || CC.colors[i] != 3) continue;
@@ -510,8 +539,11 @@ void myp_collect_cycles() {
             arenaReclaim(o - 20);
         } else if (ccClassOk(tid) != 0) {
             ccCallStub(o, __myp_addr_to_str(o));   // finalize：清 weak + 释放
+        } else if (tid == -1) {
+            // 白数组/切片 backing：仅垃圾引用 → 回收（元素由各自 collectWhite 处理）
+            if (Live.arrays > 0) Live.arrays = Live.arrays - 1;
+            arenaReclaim(o - 32);   // 数组块 base0（含 8B total 前缀：data-24 头 base，base0=data-32）
         }
-        // MYP_ARR(-1)：v1 保守保留
     }
     CC.finalize = 0;
     ccReset();
@@ -532,7 +564,7 @@ int myp_release(string obj) {
         __myp_atomic_add_i32_addr(addr - 8, 1);   // rc++
         if (col == 1) {               // 灰 → 黑 + 级联
             ccSetColor(addr, 2);
-            ccCallStub(addr, obj);
+            ccCascade(addr, obj);
         } else if (col == 3) {        // 白 → 黑（活对象可达）
             ccSetColor(addr, 2);
         }
@@ -542,7 +574,7 @@ int myp_release(string obj) {
         __myp_atomic_sub_i32_addr(addr - 8, 1);   // rc--
         if (ccLookup(addr) == 0) {
             ccInsert(addr, 1);        // 灰
-            ccCallStub(addr, obj);
+            ccCascade(addr, obj);
         }
         return 0;
     }

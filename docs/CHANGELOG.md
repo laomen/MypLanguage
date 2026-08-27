@@ -27,6 +27,28 @@
 
 ## 编译器版本历史
 
+### v3.15.173 — 数组/切片环检测 + 报告纳入字符串/数组 + 并发窗口补收集
+
+**非破坏性**（纯运行时 + stdlib，不碰编译器）。按「零用户操作 + 最少运行时内存
+操作」方向第四步：补 v1 保守覆盖缺口 + 完善泄漏诊断 + 闭合并发窗口：
+- **数组/切片环检测**：collectWhite 之前数组当叶子（`class→Node[]→Node→A` 的环
+  泄漏）。现 `ccCascade` 统一模式级联——trial/restore 对数组/切片 backing 逐元素
+  `myp_release`（pad==0 类元素 / pad==2 slice 元素；visited 守卫防共享元素重复
+  级联）；collectWhite 回收**白数组 backing**（元素由各自 collectWhite 处理）。
+  共享数组元素（活对象）经 trial+scanBlack 记账精确保活（不误释放）。
+- **MYP_MEM_REPORT 纳入字符串/数组**：泄漏报告新增 `strings:` / `arrays:` 行
+  （退出自动收集后残余真泄漏/程序期对象；`"cycle-string"` 随环回收不报）。
+- **@parallel 结束补收集**：`myp_pool_parallel_for` 结束时（workers 已完成、主
+  线程安全点）若 pending 保持 → 立即 `myp_cc_try_collect()`，闭合并发窗口泄漏
+  （@thread 体结束在自身线程、其他线程可能并发 → 保持跳过，由事件循环/退出兜底）。
+- 已知特性：`Memory.liveArrayCount()`/报告 arrays 行含收集器内部 backing
+  （ccAll 登记表 + 哈希 keys/colors 常驻复用）——用相对值测量。
+- `tests/@test/cyclecollect_arr.myp`：经数组环 / 经数组自环 / 共享数组元素保活 /
+  活数组保留，4 tests。
+- 压力测试：2000 普通环节点 + 1000 经数组环节点 → collect 后 1（全回收，幂等）；
+  泄漏测试：环（含字符串）退出自动回收，报告只报真泄漏。
+- 全量 454/454、平价 95/95、bootstrap MD5 门通过。
+
 ### v3.15.172 — 执行期自动环收集（分配水位 + 安全点 + 并发守卫）
 
 **非破坏性**（纯运行时 + stdlib，不碰编译器）。按「零用户操作 + 最少运行时内存
