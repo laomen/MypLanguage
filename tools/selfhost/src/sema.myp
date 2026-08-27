@@ -4883,6 +4883,33 @@ class Sema {
                     e.setResolvedKind(t);
                     return t;
                 }
+                if (op == "-") {
+                    // BUG-105：一元负号须数字（镜像 C++ expectNumeric at
+                    // visitUnaryOp Negate）。-"x"（string）此前静默 →
+                    // codegen 生成 neg string → opt-21 崩（integer constant
+                    // must have integer type）。
+                    if (Str.len(o) != 0 && isNumKind(o) == 0) {
+                        diag_.error(e.operand().line(), e.operand().col(), "expected numeric type, got '" + exprTypeName(e.operand(), o) + "'");
+                        e.setResolvedKind("int");
+                        return "int";
+                    }
+                    e.setResolvedKind(o);
+                    return o;
+                }
+                if (op == "~") {
+                    // BUG-105：~ 位取反须整型/bitvector/bit（镜像 C++
+                    // visitUnaryOp UnaryOpKind::BitNot）。~d（double）此前
+                    // 静默 → codegen 生成 not double → opt-21 崩（integer
+                    // constant must have integer type）。
+                    int ok = (o == "bitvector" || o == "bit" || (isNumKind(o) != 0 && o != "float" && o != "double")) ? 1 : 0;
+                    if (ok == 0) {
+                        diag_.error(e.operand().line(), e.operand().col(), "'~' requires an integer or bitvector operand (got '" + exprTypeName(e.operand(), o) + "')");
+                        e.setResolvedKind("int");
+                        return "int";
+                    }
+                    e.setResolvedKind(o);
+                    return o;
+                }
                 e.setResolvedKind(o);
                 return o;
             }

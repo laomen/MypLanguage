@@ -1,0 +1,14 @@
+// BUG-105 负向：一元负号操作数类型漏校验（镜像 C++ visitUnaryOp Negate 的
+// expectNumeric）。-"x"（string）此前静默 → codegen 生成 neg string →
+// opt-21 崩（integer constant must have integer type）。
+// EXPECT ERROR: expected numeric type, got 'string'
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            string s = "x";
+            string r = -s;
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

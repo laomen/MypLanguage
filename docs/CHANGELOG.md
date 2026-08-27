@@ -39,6 +39,19 @@
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-098。
 
+### v3.15.139 — 修一元 - / ~ 操作数类型漏校验（BUG-105）
+
+**非破坏性**（selfhost sema）。`-"x"`（一元负号 string）与 `~d`（位取反
+double/float）自举此前**接受** → codegen 生成 neg/not 非整型 → opt-21 崩
+（integer constant must have integer type），oracle 拒。
+
+- **修复**：Unary 分支补两道校验——①`-`（Negate）操作数须数字（isNumKind，
+  镜像 expectNumeric），报 "expected numeric type, got 'X'"；②`~`（BitNot）
+  须 bitvector/bit/整型（排除 float/double），报 "'~' requires an integer or
+  bitvector operand (got 'X')"。
+- **测试**：负测试 `tests/negative/unary_tilda_type.myp` / `unary_minus_type.myp`；
+  `~int`/`-int`/`-double` 编译+运行正确；bootstrap 自举成立。
+
 ### v3.15.138 — 修三元分支类型不兼容漏校验（BUG-104）
 
 **非破坏性**（selfhost sema）。`p ? 5 : "str"` 自举此前**接受并运行**（应拒却

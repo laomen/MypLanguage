@@ -2723,3 +2723,25 @@ and 'string'"。
 - **教训**：三元是「表达式级类型合并点」——双分支须数值可提升或类型兼容；自举
   只镜像了数值提升路径、漏了非数值兼容检查（与 BUG-074 的三元条件 bool 检查
   互补）。null 与 string 不兼容是 oracle 既有语义（非自举新加）。
+
+## BUG-105（已修复 🟩，v3.15.139）：一元 - / ~ 操作数类型漏校验 → opt 崩
+
+**非破坏性**（selfhost sema）。`-"x"`（一元负号 string）与 `~d`（位取反
+double/float）此前静默过 sema → codegen 生成 neg/not 非整型 → **opt-21 崩**
+（integer constant must have integer type）。oracle 拒 "expected numeric type,
+got 'string'"（Negate expectNumeric）与 "'~' requires an integer or bitvector
+operand（got 'double'）"（BitNot）。
+
+- **根因**：自举 Unary 处理只镜像了 `!`（BUG-074 expectBool）；`-`/`~` 直接
+  `setResolvedKind(o); return o;` 从不校验操作数类型。
+- **修复**：Unary 分支补两道校验——①`-`（Negate）：`isNumKind(o)==0` →
+  "expected numeric type, got 'X'"（exprTypeName 取显示名），错误返回 Int（镜像
+  oracle）；②`~`（BitNot）：`bitvector/bit/整型（排除 float/double）` 合法，
+  否则 "'~' requires an integer or bitvector operand (got 'X')"。
+- **验证**：`~double`/`~float`/`-"x"` 三形态全部 `sev=error`；`~int`（-6）/
+  `-int`/`-double`（-5,-1.5）仍编译+运行；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/unary_tilda_type.myp` / `unary_minus_type.myp`；
+  全量 408 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：一元操作符校验不是只有 `!` 一处——`-`（expectNumeric）与 `~`
+  （BitNot 专属整型/bitvector/bit）各有独立条件；自举 Unary 处理器此前是
+  「只设 resolvedKind 不校验」的盲点（与 BUG-074 的 `!` 成对补齐）。

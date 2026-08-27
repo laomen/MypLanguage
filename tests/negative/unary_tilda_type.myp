@@ -1,0 +1,14 @@
+// BUG-105 负向：~ 位取反操作数类型漏校验（镜像 C++ visitUnaryOp
+// UnaryOpKind::BitNot）。~d（double）此前静默 → codegen 生成 not double →
+// opt-21 崩（integer constant must have integer type）。~ 仅整型/bitvector/bit。
+// EXPECT ERROR: '~' requires an integer or bitvector operand
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            double d = 1.5;
+            double r = ~d;
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}
