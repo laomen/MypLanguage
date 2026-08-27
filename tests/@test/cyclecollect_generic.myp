@@ -1,0 +1,91 @@
+// cyclecollect_generic: 泛型容器环/数组释放（v3.15.175）——修复两个 bug：
+// ① arrayElemKind 不解析泛型占位 T → `new T[n]` 恒为标量（elem_kind=1），
+//    ArrayList<Cls> 等泛型容器的类元素永不释放 → OOM；修复后 resolveType(T)
+//    → 具体类 → elem_kind=0 逐元素释放。
+// ② __myp_max_type_id 由 constant 改 global（外部引用链接解析正确）→ 泛型实例
+//    对象（ArrayList_Node_inst / Box_Node_inst）参与环收集（此前被假 maxv 误拒
+//    → 泛型环泄漏）。
+// 覆盖：ArrayList<Node> 环（a↔l 经 slice backing 数组）/ acyclic 释放 /
+// 泛型 Box<T> 环 / 环经数组元素。
+
+import test;
+import memory;
+import rtti;
+import collections;
+
+class Node {
+    action:
+        void setList(ArrayList<Node> l) { list = l; }
+        void setBox(Box<Node> b) { box = b; }
+        int getVal() { return val; }
+        void setVal(int v) { val = v; }
+    property:
+        ArrayList<Node> list;
+        Box<Node> box;
+        int val = 0;
+}
+
+class Box<T> {
+    action:
+        void add(T v) {
+            if (data_ == null) { data_ = new T[4]; }
+            data_[cnt_] = v;
+            cnt_ = cnt_ + 1;
+        }
+    property:
+        T[] data_;
+        int cnt_ = 0;
+}
+
+// ArrayList<Node> 环：Node.list → ArrayList，ArrayList.data_ → Node。
+// 出作用域后 rc 各 1（互指）→ 收集前计数不回落；collectCycles 后全回收。
+@test void test_arraylist_cycle() {
+    int tid = 0;
+    long before = 0;
+    {
+        Node a = new Node();
+        ArrayList<Node> l = new ArrayList<Node>();
+        l.add(a);       // 数组持有 a（elem_kind=0，retain）
+        a.setList(l);   // a 持有 l
+        tid = Rtti.typeId(a);
+        before = Memory.liveObjectCountByType(tid);   // = 之前 + 1（a）
+    }
+    long mid = Memory.liveObjectCountByType(tid);
+    Test.assertLongEq(mid, before, "ArrayList cycle keeps a alive before collect");
+    Memory.collectCycles();
+    Test.assertLongEq(Memory.liveObjectCountByType(tid), before - 1,
+        "ArrayList<Node> cycle collected (a freed)");
+}
+
+// acyclic ArrayList<Node>：Node 只在数组里，无环 → 局部释放后归 0（不泄漏）。
+@test void test_arraylist_acyclic() {
+    int tid = 0;
+    long before = 0;
+    {
+        Node a = new Node();
+        ArrayList<Node> l = new ArrayList<Node>();
+        l.add(a);
+        tid = Rtti.typeId(a);
+        before = Memory.liveObjectCountByType(tid);   // = 之前 + 1（a）
+    }
+    Memory.collectCycles();
+    Test.assertLongEq(Memory.liveObjectCountByType(tid), before - 1,
+        "acyclic ArrayList<Node> released");
+}
+
+// 泛型 Box<T> 环：a.box → Box，Box.data_ → 数组 → a（环经泛型容器 + slice 数组）。
+@test void test_box_generic_cycle() {
+    int tid = 0;
+    long before = 0;
+    {
+        Node a = new Node();
+        Box<Node> b = new Box<Node>();
+        b.add(a);       // b.data_ 数组持有 a
+        a.setBox(b);    // a 持有 b
+        tid = Rtti.typeId(a);
+        before = Memory.liveObjectCountByType(tid);
+    }
+    Memory.collectCycles();
+    Test.assertLongEq(Memory.liveObjectCountByType(tid), before - 1,
+        "Box<Node> generic cycle collected");
+}

@@ -434,6 +434,9 @@ void ccBumpDec(long key) {
 }
 
 // 合法类 type_id？防 __myp_release_table 越界（STR=-2 / ARR=-1 是叶子，永不下表）。
+// v3.15.175：`__myp_max_type_id` 改由程序生成（global i32，与 __myp_release_table
+// 同为可写全局 → 外部引用链接解析正确；此前是 constant，链接错位读到垃圾值（如
+// Box<Node> tid=6 > 假 maxv=3）→ 泛型实例对象被误拒 → 泛型环泄漏）。
 int ccClassOk(int tid) {
     if (tid <= 0) return 0;
     if (tid > 1024) return 0;   // TLive 同界，防超大/脏 id
@@ -447,6 +450,22 @@ int ccClassOk(int tid) {
 // 弱注册表守卫：trial/restore 期不扰动（finalize 期允许真实清槽）。weak.myp 用。
 int myp_cc_active() {
     if (CC.trial == 1 || CC.restore == 1) return 1;
+    return 0;
+}
+
+// v3.15.175: addr 是否在 arena 某 chunk 内（mmap 映射范围 [h+32, h+32+cap)）。
+// 用 cap（chunk 容量）而非 used（chunk 头 used@16 不随 bump 更新，恒 0）。trial
+// 级联释放字段前验证——max_type_id 修复后所有类参与 trial，暴露出个别对象持有
+// 悬垂引用（如 File.path 指向已释放 string / AstInterface 字段指向已释放对象），
+// 其内存已被复用/覆盖，直接读 header 会段错误。chunk 映射外（未映射地址）→ 0
+// 跳过，不写无效内存；chunk 内但已释放/复用 → 后续 type_id 合法性检查挡。
+int ccAddrOk(long addr) {
+    long h = Arena.head;
+    while (h != 0) {
+        long cap = __myp_mem_load_i64(h + 8);
+        if (addr >= h + 32 && addr < h + 32 + cap) return 1;
+        h = __myp_mem_load_i64(h);   // next
+    }
     return 0;
 }
 
@@ -508,7 +527,8 @@ void myp_collect_cycles() {
         int ctid = __myp_mem_load_i32(o - 4);
         if (ctid != rtid) continue;
         if (ccClassOk(ctid) == 0) continue;
-        if (__myp_atomic_load_i32_addr(o - 8) < 1) continue;   // rc==0：已死
+        int rcv = __myp_atomic_load_i32_addr(o - 8);
+        if (rcv < 1) continue;   // rc==0：已死
         long t = __myp_mem_load_i64(o - 16);   // base0 total
         if (t < 16 || t >= (1 << 30)) continue;   // 非活块（空闲链表 base0+0=next 指针）
         if (nroot >= rootsCap) {
@@ -610,6 +630,20 @@ int myp_release(string obj) {
             // v3.15.174 深环栈溢出保护：超限 → 停止深入，收集后回滚放弃（不崩溃）
             CC.abort = 1;
         } else {
+            // v3.15.175：悬垂字段防御——max_type_id 修复后所有类参与 trial，暴露出
+            // 个别对象持有悬垂引用（如 File.path 指向已释放 string / AstInterface
+            // 字段指向已释放对象，内存被复用/覆盖）。释放前验证 addr 在 arena bump
+            // 区（ccAddrOk）且 type_id 合法，无效即跳过——不写无效内存（rc--），
+            // 避免 trial 阶段段错误。
+            if (ccAddrOk(addr) == 0) {
+                CC.depth = CC.depth - 1;
+                return 0;   // 非 arena 活块（悬垂/复用）→ 跳过
+            }
+            int tid0 = __myp_mem_load_i32(addr - 4);
+            if (tid0 != -1 && tid0 != -2 && ccClassOk(tid0) == 0) {
+                CC.depth = CC.depth - 1;
+                return 0;   // 脏 type_id → 悬垂/复用内存 → 跳过
+            }
             __myp_atomic_sub_i32_addr(addr - 8, 1);   // rc--
             int wasNew = 0;
             if (ccLookup(addr) == 0) { ccInsert(addr, 1); wasNew = 1; }   // 灰

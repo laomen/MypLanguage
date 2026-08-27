@@ -455,7 +455,12 @@ void CodeGen::generateArcSupport(TranslationUnit& tu) {
 
     // M9: max type_id — lets the runtime validate object headers in strict
     // mode (a live header's type_id must be STR/ARR magic or 1..max_tid).
-    new llvm::GlobalVariable(*module_, llvm::Type::getInt32Ty(ctx_), true,
+    // v3.15.175: non-constant (writable) — a constant global gets linked/
+    // optimized differently, so the MYP runtime's `__myp_fn_addr` external ref
+    // (ccClassOk) reads a shifted/garbage value (e.g. Box<Node> tid=6 > fake
+    // maxv=3) and rejects generic-instance objects → generic cycles/arrays leak.
+    // Writable, like __myp_release_table, resolves correctly.
+    new llvm::GlobalVariable(*module_, llvm::Type::getInt32Ty(ctx_), false,
         llvm::GlobalValue::ExternalLinkage,
         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), max_tid),
         "__myp_max_type_id");

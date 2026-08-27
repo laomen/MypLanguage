@@ -27,6 +27,30 @@
 
 ## 编译器版本历史
 
+### v3.15.175 — 泛型数组元素释放修复 + 泛型环收集
+
+**非破坏性**（编译器 + 两运行时）。按「零用户操作 + 最少运行时内存操作」方向
+第六步：修复泛型容器（`ArrayList<Cls>` 等）类元素永不释放的真实泄漏（长时间
+运行 OOM 根因），并补全经数组/泛型容器的环收集：
+- **编译器（selfhost + C++ oracle）**：`arrayElemKind` 先用 `resolveType` 解析
+  泛型占位 T → 具体类 → `new T[n]`（`ArrayList.data_` 等）elem_kind 从恒 1（标
+  量）改为 0（类引用，销毁逐元素释放）。此前泛型容器持有类元素永不释放 → 积
+  累 OOM。同 C++ `isArcClassType` 对 `current_type_params_` 的占位解析。
+- **编译器（selfhost + C++ oracle）**：`__myp_max_type_id` 由 `constant` 改
+  `global`（可写全局，与 `__myp_release_table` 一致）——runtime 经
+  `__myp_fn_addr` 的外部引用此前对 constant 链接错位（读垃圾 maxv，如
+  `Box<Node>` tid=6 > 假 maxv=3）→ 泛型实例对象被误拒 → 泛型环/数组泄漏。
+- **MYP 运行时**：泛型实例类（`ArrayList_Node_inst`/`Box_Node_inst`）正确参与
+  环收集；trial 级联加**悬垂字段防御**（`ccAddrOk`：字段指针须在 arena chunk 映
+  射范围 + type_id 合法，否则跳过）——max_type_id 修复后所有类参与 trial，暴露
+  个别对象持有的悬垂引用（已释放 string/对象被复用），此前靠假 maxv 规避。
+- **C 运行时**：补数组/切片 backing 元素级联（`myp_cc_array_cascade`，trial/
+  restore/collectWhite 对齐 MYP `ccArrayCascade`）——此前数组在 trial 当叶子，
+  经数组的环不检测；collectWhite 白数组此前留在原地泄漏，现释放。trial 加 8
+  对齐悬垂防御。
+- **测试**：`tests/@test/cyclecollect_generic.myp`（3 tests）——`ArrayList<Node>`
+  环 / acyclic 释放 / 泛型 `Box<T>` 环。全量 455/455 + parity 95/95 + 自举 MD5 一致。
+
 ### v3.15.174 — 深环栈溢出保护 + 修复收集器 OOM
 
 **非破坏性**（纯运行时 + stdlib，不碰编译器）。按「零用户操作 + 最少运行时内存

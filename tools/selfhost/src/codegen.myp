@@ -11043,9 +11043,12 @@ class CodeGen {
 
         // 动态数组元素类别（同 C++ generateNewExpr slice 分支）：
         // 0 = 类/字符串引用（销毁时逐元素释放），1 = 标量，2 = 嵌套 slice。
-        // 注意：泛型占位 T 不解析为具体类型（同 C++ isArcClassType/isStringType
-        // 对占位符返回 false），故 new T[n] 恒为 1——与参考端字节一致。
+        // v3.15.175：先 resolveType 把泛型占位 T 解析为具体类型（同 C++
+        // isArcClassType 对 current_type_params_ 的占位解析），否则
+        // `new T[n]` 恒为 1 → 泛型容器（ArrayList<Cls> 等）的类元素永不释放。
         int arrayElemKind(AstType et) {
+            if (et == null) return 1;
+            et = resolveType(et);
             if (et == null) return 1;
             if (et.str() == "string") return 0;
             if (et.className() == "slice") return 2;
@@ -11446,7 +11449,11 @@ class CodeGen {
             ArrayList<string> names = classTypeNames();
             int n = names.size();
             StringBuilder sb = new StringBuilder();
-            sb.append("@__myp_max_type_id = constant i32 " + n + "\n");
+            // v3.15.175: global（可写）而非 constant——与 __myp_release_table 同为
+            // 可写全局，runtime 的外部引用（ccClassOk 经 __myp_fn_addr 读）链接解析
+            // 正确；constant 会被链接/优化特殊处理，runtime 侧读到错位垃圾值（如
+            // Box<Node> tid=6 > 假 maxv=3 → 泛型实例被误拒 → 泛型环/数组泄漏）。
+            sb.append("@__myp_max_type_id = global i32 " + n + "\n");
             // 类名字符串全局（private，无 ARC 头；myp_type_name 用 myp_strdup 拷贝）
             ArrayList<string> gvs = new ArrayList<string>();
             for (int i = 0; i < names.size(); i = i + 1) {

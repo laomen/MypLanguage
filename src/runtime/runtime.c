@@ -1381,6 +1381,11 @@ static int myp_header_type_id_ok(uint32_t tid) {
 // negative (<= max), so STR/ARR would pass and index out of bounds.
 static int myp_cc_has_stub(uint32_t tid) {
     if (tid == MYP_STR_TYPE_ID || tid == MYP_ARR_TYPE_ID) return 0;
+    // v3.15.175: __myp_max_type_id is now emitted as a writable GLOBAL (was a
+    // constant) by both codegens, so this weak extern resolves to the real
+    // value and generic instances (Box<Node> tid up to max) pass. Previously a
+    // stripped/mis-resolved constant made this 0 → every class rejected → no
+    // cycles ever collected.
     return tid > 0 && &__myp_max_type_id && (int)tid <= __myp_max_type_id;
 }
 static void myp_strict_abort_header(void* obj, uint32_t tid) {
@@ -1668,6 +1673,30 @@ void myp_weak_free_all(void) {
 // Forward decl — defined after myp_free_object, used by myp_release below.
 static void myp_free_class_array(void* data);
 
+// v3.15.175: cascade array/slice-backing ELEMENTS during trial (markGray) and
+// restore (scanBlack) — aligns the C runtime with the MYP runtime's
+// ccArrayCascade. Previously arrays were treated as trial leaves, so cycles
+// THROUGH an array (e.g. Box<T>.data_ → T where Box<T> holds a class) were
+// never detected: the class element's rc was never decremented, stayed black,
+// and leaked. Elements are per-elem_kind: class refs (pad==0) or nested slice
+// fat pointers (pad==2); scalar (pad==1) has none.
+uint32_t myp_release(void* obj);
+static void myp_cc_array_cascade(void* obj) {
+    myp_arr_header_t* ah = (myp_arr_header_t*)((char*)obj - MYP_ARR_HEADER_SIZE);
+    if (ah->pad == MYP_ARR_ELEM_SLICE) {
+        char* p = (char*)obj;
+        for (uint64_t i = 0; i < ah->count; i++) {
+            void* inner_data = *(void**)p;
+            myp_release(inner_data);
+            p += ah->elem_size;
+        }
+    } else if (ah->pad == MYP_ARR_ELEM_CLASS) {
+        void** elems = (void**)obj;
+        for (uint64_t i = 0; i < ah->count; i++)
+            myp_release(elems[i]);
+    }
+}
+
 uint32_t myp_release(void* obj) {
     if (!obj) return 0;
     // Cycle collector modes (see myp_collect_cycles).
@@ -1685,7 +1714,9 @@ uint32_t myp_release(void* obj) {
         if (*cp == MYP_CC_GRAY) {
             *cp = MYP_CC_BLACK;
             uint32_t rtid = rh->type_id;
-            if (myp_cc_has_stub(rtid))
+            if (rtid == MYP_ARR_TYPE_ID)
+                myp_cc_array_cascade(obj);   // v3.15.175: cascade array elements
+            else if (myp_cc_has_stub(rtid))
                 __myp_release_table[rtid](obj);   // cascade restore
         } else if (*cp == MYP_CC_WHITE) {
             *cp = MYP_CC_BLACK;   // reachable from a live object → not garbage
@@ -1697,6 +1728,17 @@ uint32_t myp_release(void* obj) {
         if (myp_cc_depth > 45000) {
             myp_cc_abort = 1;   // deep-cycle stack guard: stop descending
         } else {
+            // v3.15.175: dangling-field guard. With max_type_id now resolving
+            // correctly, every class participates in trial; a stray object that
+            // holds a dangling ref (already-freed string/class) cascades into a
+            // bogus pointer. Non-8-aligned addresses are certainly not runtime
+            // objects (class data = malloc node + 24 → 8-aligned; strings/
+            // arrays similar) — skip before dereferencing the header (would
+            // SIGSEGV).
+            if (((uintptr_t)obj & 7) != 0) {
+                myp_cc_depth--;
+                return 0;
+            }
             myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
             uint32_t old = atomic_fetch_sub_explicit(&h->rc, 1, memory_order_relaxed);
             int was_new = !myp_cc_lookup(obj);
@@ -1704,7 +1746,9 @@ uint32_t myp_release(void* obj) {
             myp_cc_bump_dec(obj);   // record decrement (rollback restores rc by dec)
             if (was_new) {
                 uint32_t tid = h->type_id;
-                if (myp_cc_has_stub(tid))
+                if (tid == MYP_ARR_TYPE_ID)
+                    myp_cc_array_cascade(obj);   // v3.15.175: cascade array elements
+                else if (myp_cc_has_stub(tid))
                     __myp_release_table[tid](obj);   // cascade trial (no free)
             }
         }
@@ -1834,10 +1878,11 @@ void myp_release_class_obj_ex(void* obj) {
 // explicit myp_collect_cycles() / Memory.collectCycles() from a single-threaded
 // phase, or at process exit after all workers are joined.
 //
-// v1 limitations (conservative — never frees a live object, may leave some
-// garbage behind): array/slice backings are treated as leaves in the trial
-// (cycles through them are not detected; their class elements are untouched),
-// and white array backings are left in place.
+// v3.15.175: array/slice backings now PARTICIPATE in cycle detection — their
+// elements are cascaded in trial (markGray) and restore (scanBlack) exactly
+// like class fields (myp_cc_array_cascade), and white backings are freed in
+// collectWhite. Cycles THROUGH an array (e.g. Box<T>.data_ → T) are detected
+// and collected.
 
 // Collect all reference cycles reachable from the process-global alloc list.
 // Must run at a safe point (single-threaded mutation of references).
@@ -1934,12 +1979,18 @@ void myp_collect_cycles(void) {
             myp_alloc_list_remove(node);
             if (myp_live_strings > 0) myp_live_strings--;
             free(node);
+        } else if (tid == MYP_ARR_TYPE_ID) {
+            // v3.15.175: free white array/slice backing. Its elements are
+            // WHITE too and each is freed separately in this same pass (their
+            // rc was trial-decremented and never restored, so freeing here must
+            // NOT cascade). Previously left in place (v1 conservative) → leaked
+            // every cycle-orphaned array backing.
+            myp_free_class_array(o);
         } else if (myp_cc_has_stub(tid)) {
             __myp_release_table[tid](o);   // finalize: clear weak + free, refs' rc untouched
         } else if (tid > 0) {
             myp_free_object(o);            // no stub (shouldn't happen): plain free
         }
-        // MYP_ARR: left in place (v1 conservative).
     }
     myp_cc_finalize = 0;
 
