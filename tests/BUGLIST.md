@@ -3059,3 +3059,24 @@ expression"（codegen_expr.cpp:2510，干净拒绝不崩）。@parallel 体内�
 - **教训**：codegen 能力边界（自举无法发射直接 lambda 调用）须在 sema 干净拒绝
   ——BUG-103 只修了「多参」形态、漏「正确计数」直调（codegen 崩）；oracle 的
   "cannot call expression" 在 codegen 层（不崩）→ 自举应在 sema 层提前拒。
+
+## BUG-121（已修复 🟩，v3.15.155）：@static 方法内使用 this → opt 崩
+
+**非破坏性**（selfhost sema）。`@static class S1 { static: int getK() {
+return this.k; } }`——`this` 在 @static 方法内自举此前静默过 sema → codegen
+生成访问 `%this.addr`（无实例）→ **opt-21 崩**（use of undefined value
+'%this.addr'）。oracle 接受但返回垃圾 0（语义无意义）；@static 类无实例，静态
+状态应经 `Class.property` 访问。
+
+- **根因**：自举 ThisExpr 处理无条件返回 "class"，不区分 @static 方法上下文
+  （无 inStatic_ 标志）；@static 方法体 visit 时 codegen 找不到 this 槽。
+- **修复**：①新增 `int inStatic_` 字段；②@static action 循环 body visit 前置 1/
+  后置 0；③ThisExpr 处理 `inStatic_!=0` → "cannot use 'this' inside a @static
+  method (no instance; access static state via Class.property)" 干净拒绝。
+- **验证**：@static 方法内 this `sev=error`（不再 opt 崩）；实例方法 this /
+  @static 类属性（Class.prop）编译+运行正确；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/this_in_static.myp`；全量 434 通过 / 0
+  失败；oracle 对拍 95/0。
+- **教训**：反向缺口（oracle 接受-垃圾、自举崩）也须修——@static 方法无实例，
+  `this` 语义无意义，干净拒绝优于 opt 崩；@static 上下文需 inStatic_ 标志
+  （与 inClass_/inStruct_/inCoro_ 同族）在 ThisExpr 前置检查。

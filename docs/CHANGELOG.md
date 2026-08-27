@@ -27,6 +27,18 @@
 
 ## 编译器版本历史
 
+### v3.15.155 — 修 @static 方法内使用 this → opt 崩（BUG-121）
+
+**非破坏性**（selfhost sema）。`@static class S1 { static: int getK() {
+return this.k; } }`——`this` 在 @static 方法内自举此前**接受** → codegen 访问
+`%this.addr`（无实例）→ **opt-21 崩**（use of undefined value）。oracle 接受
+但返回垃圾 0；静态状态应经 `Class.property` 访问。
+
+- **修复**：新增 `inStatic_` 标志（@static action 循环置位），ThisExpr 处理
+  `inStatic_!=0` → "cannot use 'this' inside a @static method" 干净拒绝。
+- **测试**：负测试 `tests/negative/this_in_static.myp`；实例方法 this / @static
+  类属性编译+运行正确；bootstrap 自举成立。
+
 ### v3.15.154 — 修 lambda 直调（正确计数）codegen 崩（BUG-120）
 
 **非破坏性**（selfhost sema）。`(int x) => { return x + 1; } (5)`（lambda 直调

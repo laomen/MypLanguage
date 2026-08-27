@@ -1,0 +1,15 @@
+// BUG-121 负向：@static 方法内使用 this 自举 opt-21 崩（use of undefined
+// value '%this.addr'）——无实例，静态状态用 Class.property 访问。
+// EXPECT ERROR: cannot use 'this' inside a @static method
+import env;
+@static class S1 {
+    static:
+        int getK() { return this.k; }
+    property:
+        int k = 3;
+}
+class T2 {
+    action:
+        @constructor T2() { Console.writeString("A\n"); }
+}
+int main(){T2 t=new T2();return 0;}

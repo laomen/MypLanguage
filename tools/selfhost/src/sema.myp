@@ -378,6 +378,7 @@ class Sema {
             inCatchDepth_ = 0;
             currentRet_ = "";
             currentRetAst_ = null;
+            inStatic_ = 0;
             loopDepth_ = 0;
             inCoro_ = 0;
             currentMethodName_ = "";
@@ -2354,6 +2355,7 @@ class Sema {
                     currentRetAst_ = a.ret();
                     inCoro_ = a.coro() != 0 ? 1 : 0;
                     loopDepth_ = 0;
+                    inStatic_ = 1;
                     // F4-G2：叠加方法自身类型参数
                     int gbase2 = curGeneric_.size();
                     for (int gi = 0; gi < a.typeParams().size(); gi = gi + 1) curGeneric_.add(a.typeParams().get(gi));
@@ -2370,6 +2372,7 @@ class Sema {
                     }
                     sym_.leaveScope();
                     while (curGeneric_.size() > gbase2) curGeneric_.remove(curGeneric_.size() - 1);
+                    inStatic_ = 0;
                 }
                 sym_.leaveScope();
             }
@@ -4964,7 +4967,18 @@ class Sema {
                 e.setResolvedKind("string"); return "string";
             }
             if (k == "Null") { e.setResolvedKind("null"); return "null"; }
-            if (k == "This") { e.setResolvedKind("class"); return "class"; }
+            if (k == "This") {
+                // BUG-121：@static 方法内无实例，`this` 无意义——自举 codegen
+                // 生成访问 %this.addr → opt-21 崩（use of undefined value）。
+                // oracle 接受但返回垃圾 0；此处干净拒绝（静态属性用 Class.prop）。
+                if (inStatic_ != 0) {
+                    diag_.error(e.line(), e.col(), "cannot use 'this' inside a @static method (no instance; access static state via Class.property)");
+                    e.setResolvedKind("void");
+                    return "void";
+                }
+                e.setResolvedKind("class");
+                return "class";
+            }
             if (k == "Identifier") {
                 if (inGpuFor_ != 0 && e.name() == "kernel") {
                     e.setResolvedKind("int");
@@ -8048,6 +8062,7 @@ class Sema {
         int autoMain_;
         string currentRet_;
         AstType currentRetAst_;
+        int inStatic_;
         int loopDepth_;
         int inCoro_;
         string currentMethodName_;
