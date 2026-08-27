@@ -310,6 +310,9 @@ string myp_alloc_slice_backing(long count, int elem_size, int elem_kind) {
         long threshold = 100000;      // 自动收集水位（每 N 次类对象分配；<=0 关闭）
         int pending = 0;              // 水位已到，待安全点收集
         long thrCount = 0;            // 活动 @thread/@parallel 计数地址（arena 4B，原子）
+        int depth = 0;                // v3.15.174：级联递归深度（深环栈溢出保护）
+        int abort = 0;                // 深度超限 → 回滚放弃本次收集（不崩溃）
+        int[] decs;                   // 每对象 trial 递减次数（平行 keys/colors；回滚用）
 }
 
 // 活动线程计数（原子，进程级，arena 4B 地址——mmap 零初始化）。⚠️ 空闲链表
@@ -362,6 +365,7 @@ void ccReset() {
     for (long i = 0; i < CC.cap; i = i + 1) {
         CC.keys[i] = 0;
         CC.colors[i] = 0;
+        CC.decs[i] = 0;
     }
 }
 
@@ -391,6 +395,7 @@ void ccInsert(long key, int color) {
         long nc = CC.cap == 0 ? 256 : CC.cap * 2;
         long[] nk = new long[nc];
         int[] ncol = new int[nc];
+        int[] ndec = new int[nc];
         long nmask = nc - 1;
         for (long i = 0; i < CC.cap; i = i + 1) {
             if (CC.keys[i] == 0) continue;
@@ -398,6 +403,7 @@ void ccInsert(long key, int color) {
             while (nk[j] != 0) j = (j + 1) & nmask;
             nk[j] = CC.keys[i];
             ncol[j] = CC.colors[i];
+            ndec[j] = CC.decs[i];
         }
         // ⚠️ 必须先置 CC.cap 再重赋值 CC.keys/CC.colors：重赋值会 ARC 释放旧数组
         // backing → trial 模式 myp_release(旧数组) → 嵌套 ccInsert；若 cap 未更新
@@ -405,13 +411,26 @@ void ccInsert(long key, int color) {
         CC.cap = nc;
         CC.keys = nk;
         CC.colors = ncol;
+        CC.decs = ndec;
     }
     long mask = CC.cap - 1;
     long i = (key >> 4) & mask;
     while (CC.keys[i] != 0) i = (i + 1) & mask;
     CC.keys[i] = key;
     CC.colors[i] = color;
+    CC.decs[i] = 0;
     CC.n = CC.n + 1;
+}
+
+// trial 递减计数：对象每次被 trial 递减，decs[槽]++（深度超限回滚时按次数恢复 rc）。
+// 前提：对象必已在哈希（ccInsert 后）。
+void ccBumpDec(long key) {
+    long mask = CC.cap - 1;
+    long i = (key >> 4) & mask;
+    while (CC.keys[i] != 0) {
+        if (CC.keys[i] == key) { CC.decs[i] = CC.decs[i] + 1; return; }
+        i = (i + 1) & mask;
+    }
 }
 
 // 合法类 type_id？防 __myp_release_table 越界（STR=-2 / ARR=-1 是叶子，永不下表）。
@@ -507,13 +526,28 @@ void myp_collect_cycles() {
     // markGray（trial=1：rc-- + 级联，不释放）
     CC.trial = 1;
     for (long i = 0; i < nroot; i = i + 1) {
+        if (CC.abort != 0) break;
         long o = roots[i];
         if (ccLookup(o) == 0) {
-            ccInsert(o, 1);   // 灰
+            ccInsert(o, 1);
             ccCascade(o, __myp_addr_to_str(o));
         }
     }
     CC.trial = 0;
+    if (CC.abort != 0) {
+        // v3.15.174 深度超限：回滚 markGray（按 decs 恢复 rc）→ 放弃本次收集
+        // （深环保守泄漏，但**不崩溃**；浅环正常收集）。复位水位避免每次重试浪费。
+        for (long i = 0; i < CC.cap; i = i + 1) {
+            if (CC.keys[i] != 0 && CC.decs[i] > 0) {
+                __myp_atomic_add_i32_addr(CC.keys[i] - 8, CC.decs[i]);
+            }
+        }
+        CC.abort = 0;
+        CC.pending = 0;
+        CC.allocSinceCollect = 0;
+        ccReset();
+        return;
+    }
     // scan（restore=1：rc>0 者 rc++ + 级联标黑；rc==0 标白）
     CC.restore = 1;
     for (long i = 0; i < CC.cap; i = i + 1) {
@@ -571,11 +605,18 @@ int myp_release(string obj) {
         return 0;
     }
     if (CC.trial == 1) {              // markGray：rc-- + 级联，不释放
-        __myp_atomic_sub_i32_addr(addr - 8, 1);   // rc--
-        if (ccLookup(addr) == 0) {
-            ccInsert(addr, 1);        // 灰
-            ccCascade(addr, obj);
+        CC.depth = CC.depth + 1;
+        if (CC.depth > 45000) {
+            // v3.15.174 深环栈溢出保护：超限 → 停止深入，收集后回滚放弃（不崩溃）
+            CC.abort = 1;
+        } else {
+            __myp_atomic_sub_i32_addr(addr - 8, 1);   // rc--
+            int wasNew = 0;
+            if (ccLookup(addr) == 0) { ccInsert(addr, 1); wasNew = 1; }   // 灰
+            ccBumpDec(addr);   // 记录递减次数（深度回滚时按次数恢复 rc）
+            if (wasNew != 0) ccCascade(addr, obj);   // 首次级联（visited 守卫防共享重复）
         }
+        CC.depth = CC.depth - 1;
         return 0;
     }
     int old = __myp_atomic_sub_i32_addr(addr - 8, 1);  // fetch_sub

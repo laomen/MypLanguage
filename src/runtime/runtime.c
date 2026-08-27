@@ -1542,9 +1542,11 @@ void myp_weak_store(void** slot, void* obj) {
 static __thread int myp_cc_trial = 0;      // markGray: decrement + cascade, no free
 static __thread int myp_cc_restore = 0;    // scanBlack: rc++, no free/clear
 static __thread int myp_cc_finalize = 0;   // collectWhite: weak_clear + free, rc untouched
+static __thread int myp_cc_depth = 0;      // cascade recursion depth (deep-cycle stack guard)
+static __thread int myp_cc_abort = 0;      // depth exceeded → rollback + abandon collection
 
-// open-addressing hash map: object ptr -> color (capacity is a power of two)
-typedef struct { void* key; uint8_t color; } myp_cc_entry_t;
+// open-addressing hash map: object ptr -> color (+ trial-decrement count for rollback)
+typedef struct { void* key; uint8_t color; uint32_t dec; } myp_cc_entry_t;
 static myp_cc_entry_t* myp_cc_tab = NULL;
 static size_t myp_cc_cap = 0;
 static size_t myp_cc_n = 0;
@@ -1584,7 +1586,18 @@ static void myp_cc_insert(void* key, uint8_t color) {
     while (myp_cc_tab[i].key) i = (i + 1) & mask;
     myp_cc_tab[i].key = key;
     myp_cc_tab[i].color = color;
+    myp_cc_tab[i].dec = 0;
     myp_cc_n++;
+}
+// Record one trial decrement for `key` (rollback restores rc by dec). Key must
+// already be in the table (inserted by the trial path before bumping).
+static void myp_cc_bump_dec(void* key) {
+    size_t mask = myp_cc_cap - 1;
+    size_t i = ((uintptr_t)key >> 4) & mask;
+    while (myp_cc_tab[i].key) {
+        if (myp_cc_tab[i].key == key) { myp_cc_tab[i].dec++; return; }
+        i = (i + 1) & mask;
+    }
 }
 
 void myp_collect_cycles(void);   // defined after myp_release_class_obj_ex
@@ -1680,15 +1693,23 @@ uint32_t myp_release(void* obj) {
         return 0;
     }
     if (myp_cc_trial) {            // markGray: decrement + cascade, never free
-        myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
-        uint32_t old = atomic_fetch_sub_explicit(&h->rc, 1, memory_order_relaxed);
-        if (!myp_cc_lookup(obj)) {
-            myp_cc_insert(obj, MYP_CC_GRAY);
-            uint32_t tid = h->type_id;
-            if (myp_cc_has_stub(tid))
-                __myp_release_table[tid](obj);   // cascade trial (no free)
+        myp_cc_depth++;
+        if (myp_cc_depth > 45000) {
+            myp_cc_abort = 1;   // deep-cycle stack guard: stop descending
+        } else {
+            myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
+            uint32_t old = atomic_fetch_sub_explicit(&h->rc, 1, memory_order_relaxed);
+            int was_new = !myp_cc_lookup(obj);
+            if (was_new) myp_cc_insert(obj, MYP_CC_GRAY);
+            myp_cc_bump_dec(obj);   // record decrement (rollback restores rc by dec)
+            if (was_new) {
+                uint32_t tid = h->type_id;
+                if (myp_cc_has_stub(tid))
+                    __myp_release_table[tid](obj);   // cascade trial (no free)
+            }
         }
-        return old ? old - 1 : 0;
+        myp_cc_depth--;
+        return 0;
     }
     myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
     if (myp_strict_checks) {
@@ -1850,6 +1871,7 @@ void myp_collect_cycles(void) {
     // markGray on every root (visited guard makes each component processed once).
     myp_cc_trial = 1;
     for (size_t i = 0; i < nroot; i++) {
+        if (myp_cc_abort) break;   // deep-cycle guard: stop marking further roots
         void* o = roots[i];
         if (!myp_cc_lookup(o)) {
             myp_cc_insert(o, MYP_CC_GRAY);
@@ -1860,6 +1882,23 @@ void myp_collect_cycles(void) {
         }
     }
     myp_cc_trial = 0;
+    if (myp_cc_abort) {
+        // Deep-cycle stack guard: roll back markGray (restore rc by recorded dec)
+        // and abandon this collection (conservative leak, but never stack-overflow
+        // crash). Reset the water-mark so a persistent deep cycle doesn't retry
+        // every collection.
+        for (size_t i = 0; i < myp_cc_cap && myp_cc_tab; i++) {
+            if (myp_cc_tab[i].key && myp_cc_tab[i].dec) {
+                myp_obj_header_t* rh =
+                    (myp_obj_header_t*)((char*)myp_cc_tab[i].key - MYP_OBJ_HEADER_SIZE);
+                atomic_fetch_add_explicit(&rh->rc, myp_cc_tab[i].dec, memory_order_relaxed);
+            }
+        }
+        myp_cc_abort = 0;
+        myp_cc_reset();
+        free(roots);
+        return;
+    }
 
     // scan: restore live subtrees (rc>0 → black via restore mode), mark garbage white.
     myp_cc_restore = 1;
