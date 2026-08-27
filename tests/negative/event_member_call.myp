@@ -1,0 +1,17 @@
+// BUG-132 负向：事件不能作为成员访问/调用（`this.fire(...)` / `s.ev(...)`）——
+// fire 走裸名 `fire(...)`。自举此前把成员事件按方法解析 → codegen 发
+// @<Cls>_<Ev> 未定义 → opt-21 崩（use of undefined value）；oracle 拒
+// "cannot call expression"（即使实参正确）。await Class.event / mapping
+// Class.event 走专用路径不受影响。
+// EXPECT ERROR: cannot call expression
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            this.fire(42);
+            Console.writeString("A\n");
+        }
+    event:
+        fire(int v);
+}
+int main(){T2 t=new T2();return 0;}

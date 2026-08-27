@@ -4635,8 +4635,11 @@ class Sema {
                     AstExpr ae = s.expr();
                     if (ae.kind() == "Member") {
                         AstExpr ao = ae.array();
-                        if (s.timeout() != null && ao != null && ao.kind() == "Identifier") {
-                            // 事件引用 Class.event（带 timeout）→ int（C++ 对 await 事件标 int）
+                        if (ao != null && ao.kind() == "Identifier") {
+                            // 事件引用 Class.event → int（C++ 对 await 事件标 int），
+                            // 不 visit 成员——BUG-132 成员访问事件本应拒，但 await 事件
+                            // 是专用路径（含/不含 timeout 都须短路，否则 await Signal.go
+                            // 无 timeout 会落到 Member 分支被 "cannot call expression" 误拒）。
                             if (isEvent(ao.name(), ae.memberName()) != 0) {
                                 ao.setResolvedKind("int");
                                 ae.setResolvedKind("int");
@@ -6584,6 +6587,18 @@ class Sema {
                         int ci = findClass(base2);
                         if (ci >= 0) {
                             e.setResolvedClass(cn);
+                            // BUG-132：事件不能作为成员访问/调用（fire 走裸名
+                            // fire(...)）——`this.fire(...)` / `s.ev(...)` 自举
+                            // 此前按方法解析 → codegen 发 @<Cls>_<Ev> 未定义 →
+                            // opt-21 崩（use of undefined value）。oracle 拒
+                            // "cannot call expression"（即使实参正确）。await
+                            // Class.event / mapping Class.event 走专用路径不经
+                            // 此处，不受影响。
+                            if (isEvent(base2, e.memberName()) != 0) {
+                                diag_.error(e.line(), e.col(), "cannot call expression");
+                                e.setResolvedKind("void");
+                                return "void";
+                            }
                             if (hasMethod(base2, e.memberName()) != 0) {
                                 t = "function";
                             } else {
@@ -6665,6 +6680,14 @@ class Sema {
                         int ci = findClass(currentClass_);
                         if (ci >= 0) {
                             e.setResolvedClass(currentClass_);
+                            // BUG-132：`this.<event>` 也按事件拒（裸名 fire(...) 才
+                            // 触发）——此分支是 this 基座（cn 空）落点，镜像上面
+                            // Identifier 基座的 isEvent 检查。
+                            if (isEvent(currentClass_, e.memberName()) != 0) {
+                                diag_.error(e.line(), e.col(), "cannot call expression");
+                                e.setResolvedKind("void");
+                                return "void";
+                            }
                             if (hasMethod(currentClass_, e.memberName()) != 0) t = "function";
                             else {
                                 string pt = findPropType(ci, e.memberName());

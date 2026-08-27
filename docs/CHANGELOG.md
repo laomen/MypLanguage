@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.166 — 修事件成员访问/调用漏校验 → opt 崩（BUG-132）
+
+**非破坏性**（selfhost sema）。`this.fire(...)` / `s.ev(...)`（事件作为成员
+访问/调用）自举此前按方法解析 → codegen 发 `@<Cls>_<Ev>` 未定义 → **opt-21
+崩**（use of undefined value）。oracle 拒 "cannot call expression"（即使实参
+正确）。fire 应走裸名 `fire(...)`（事件成员访问/调用非法）。
+
+- **修复**：Member 处理两处（Identifier 基座 / `this` 基座的 inClass_ 分支）加
+  isEvent 检查 → "cannot call expression"；**await Class.event 专用路径须短路**
+  （Await 处理含/不含 timeout 都跳过 visitExpr，否则无 timeout 落 Member 分支
+  误拒）。
+- **测试**：负测试 `tests/negative/event_member_call.myp`；`await Signal.go` 等
+  coro/event 测试无回归；bootstrap 自举成立。
+
 ### v3.15.165 — 修事件 fire(...) 实参校验漏 → opt 崩/静默缺参（BUG-131）
 
 **非破坏性**（selfhost sema）。`fire("x")`（事件 `fire(int v)` 实参类型不匹配）

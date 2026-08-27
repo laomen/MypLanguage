@@ -3318,3 +3318,28 @@ arguments, got 0"。
   isEvent 守卫防 mapping 误报、但连 fire(...) 也跳过 → 须按事件真实参数
   （events()）单独校验；typesCompat 参数序（形参, 实参）易倒置导致 byte 字面量
   误报。
+
+## BUG-132（已修复 🟩，v3.15.166）：事件成员访问/调用漏校验 → opt 崩
+
+**非破坏性**（selfhost sema）。`this.fire(...)` / `s.ev(...)`（事件作为成员
+访问/调用）自举此前按方法解析（事件在 methods_ 注册、hasMethod 命中）→
+codegen 发 `@<Cls>_<Ev>` 未定义 → **opt-21 崩**（use of undefined value）。
+oracle 拒 "cannot call expression"（即使实参正确）。fire 应走裸名 `fire(...)`
+（事件成员访问/调用非法）。
+
+- **根因**：Member 处理把事件当方法（hasMethod 含 events）→ t="function" →
+  Call 生成 @<Cls>_<Ev>（事件无此函数）→ 崩。Identifier 基座（s.ev）与
+  `this` 基座（cn 空 → inClass_ 分支）两条路径都漏。
+- **修复**：Member 处理两处（Identifier 基座 / inClass_ 分支）加 isEvent 检查 →
+  "cannot call expression"（镜像 oracle 消息）；**await Class.event 专用路径须
+  短路**——Await 处理原来只在有 timeout 时跳过 visitExpr，无 timeout 会落
+  Member 分支误拒；改为含/不含 timeout 都跳过（coro_event 等 5 测试曾 COMPILE
+  FAIL，修复后全绿）。
+- **验证**：`this.fire(42)` / `this.fire("x")` / `s.ev("x")` `sev=error`（不再
+  opt 崩）；裸名 `fire(42)` 编译+运行正确；`await Signal.go`（无 timeout）
+  coro 测试全 PASS；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/event_member_call.myp`；全量 447 通过 / 0
+  失败；oracle 对拍 95/0。
+- **教训**：事件是「裸名 fire 触发 / await 专用 / mapping 专用」——Member 访问
+  事件必非法；但**专用路径（await）要先短路**，否则新校验误伤合法用法；`this`
+  基座（cn 空落 inClass_ 分支）与 Identifier 基座两条路径都要补同样的检查。
