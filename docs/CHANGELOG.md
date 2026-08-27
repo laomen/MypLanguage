@@ -47,6 +47,20 @@
 - **测试**：`tests/@test/cyclecollect_multi.myp`（2 tests：1000 环显式收集 + 自动
   收集下多环回收）。全量 456/456 + parity 95/95 + 自举 MD5 一致。
 
+### v3.15.180 — ccAddrOk O(1) 快路径（混合负载 +5%）
+
+**非破坏性**（纯 MYP 运行时）。perf 定位混合负载（`tests/leak_long.myp`）真实
+热点：`myp_release` 占 81%，其中 `ccAddrOk`（trial 级联悬垂防御）的 chunk 链表
+线性遍历（O(chunk数)）占其 ~86%——环收集 markGray 级联时每个对象 release 都遍历
+全 chunk 链（对象数 × chunk数）。修复：
+- **`ccAddrOk` 加 O(1) 快路径（alloc.myp）**：新增 `CC.okHint` 缓存上次命中的
+  chunk + 先查最新 chunk（`CArena.cur`/`Arena.cur`），命中直接返回，未命中才走
+  慢路径全遍历（命中的记入 hint）。
+- **效果**：混合负载迭代 **820 万 → 860 万/8s（+5%）**；456/456 + parity 95/95
+  + 自举 MD5 一致。
+- **备注**：优化后 perf 无单一热点（释放 30% + 分配 16% + 回收 9% + retain
+  1.8% 分散）——MYP 运行时已无明显局部低效点，进一步提速需编译器内联 ARC。
+
 ### v3.15.179 — 类对象独立 arena + 环收集 walk 免登记（混合负载提速 4.3x）
 
 **非破坏性**（纯 MYP 运行时）。方案 A：彻底移除每次 `new` 类对象的 `ccAllAdd`

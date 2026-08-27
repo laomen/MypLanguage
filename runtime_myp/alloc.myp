@@ -446,6 +446,7 @@ string myp_alloc_slice_backing(long count, int elem_size, int elem_kind) {
         int depth = 0;                // v3.15.174：级联递归深度（深环栈溢出保护）
         int abort = 0;                // 深度超限 → 回滚放弃本次收集（不崩溃）
         int[] decs;                   // 每对象 trial 递减次数（平行 keys/colors；回滚用）
+        long okHint = 0;              // v3.15.180：ccAddrOk 上次命中的 chunk 头（O(1) 快路径）
 }
 
 // 活动线程计数（原子，进程级，arena 4B 地址——mmap 零初始化）。⚠️ 空闲链表
@@ -598,17 +599,36 @@ int myp_cc_active() {
 // next 指旧；head 最旧且 next=0），从 head 遍历只能到首 chunk，新 chunk 的对象
 // 全被误判为悬垂 → 多环/多 chunk 时大规模漏收集（1000 环只收 204）。
 // v3.15.179: 类对象现在在 CArena（字符串/数组/raw 仍在 Arena）→ 两处都查。
+// v3.15.180: **O(1) 快路径**——缓存上次命中的 chunk + 先查最新 chunk。trial 级联
+// 释放的对象地址通常连续/集中在最新 chunk（bump 顺序分配），命中率 ~99%，把
+// 每次 trial release 的 O(chunk数) 线性遍历降到 O(1)（perf 实测此循环占
+// myp_release 86%——leak_long 混合负载收集期每对象都遍历全 chunk 链）。
 int ccAddrOk(long addr) {
-    long h = Arena.cur;
+    // 快路径 1：上次命中的 chunk（级联对象地址通常连续）
+    if (CC.okHint != 0) {
+        long cap = __myp_mem_load_i64(CC.okHint + 8);
+        if (addr >= CC.okHint + 32 && addr < CC.okHint + 32 + cap) return 1;
+    }
+    // 快路径 2：最新 chunk（bump 当前分配点，多数活对象在此）
+    if (CArena.cur != 0) {
+        long cap = __myp_mem_load_i64(CArena.cur + 8);
+        if (addr >= CArena.cur + 32 && addr < CArena.cur + 32 + cap) { CC.okHint = CArena.cur; return 1; }
+    }
+    if (Arena.cur != 0) {
+        long cap = __myp_mem_load_i64(Arena.cur + 8);
+        if (addr >= Arena.cur + 32 && addr < Arena.cur + 32 + cap) { CC.okHint = Arena.cur; return 1; }
+    }
+    // 慢路径：全 chunk 链遍历（命中的记入 hint）
+    long h = CArena.cur;
     while (h != 0) {
         long cap = __myp_mem_load_i64(h + 8);
-        if (addr >= h + 32 && addr < h + 32 + cap) return 1;
+        if (addr >= h + 32 && addr < h + 32 + cap) { CC.okHint = h; return 1; }
         h = __myp_mem_load_i64(h);   // next
     }
-    h = CArena.cur;
+    h = Arena.cur;
     while (h != 0) {
         long cap = __myp_mem_load_i64(h + 8);
-        if (addr >= h + 32 && addr < h + 32 + cap) return 1;
+        if (addr >= h + 32 && addr < h + 32 + cap) { CC.okHint = h; return 1; }
         h = __myp_mem_load_i64(h);   // next
     }
     return 0;
