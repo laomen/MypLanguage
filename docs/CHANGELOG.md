@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.162 — 修嵌套 @parallel for 数据竞争（内层并行化 → 串行化）（BUG-128）
+
+**非破坏性**（selfhost codegen）。`@parallel for` 嵌套在 `@parallel for` 体内
+此前自举对内层也发 `myp_pool_parallel_for` → 共享全局 pool 的
+work_fn/work_arg/barrier 被并发外层 worker 覆写 → 数据竞争、**非确定错误结果**
+（total 应为 100 却得 11 / sum[0]=7 / 各 run 不同）。seed（build-cpu/mypc）用
+emitKernelStmt 生成嵌套 for（只有最外层并行化），结果正确 100。
+
+- **修复**：新增 `parallelDepth_` 守卫（genParallelBody 生成 body 期间 +1/-1）；
+  `@parallel for` 且 `parallelDepth_>0`（已在并行 body 内）→ 走 `genSerialFor`
+  串行化，不再发嵌套 pool 调用。
+- **测试**：正测试 `tests/@test/parallel_nested.myp`（双层 + 三层混合嵌套，
+  5 断言，3 次运行确定）；全量 441 通过 / 0 失败；oracle 对拍 95/0。
+- **嵌套 @gpu for / 混合嵌套**：GPU kernel 生成失败（llc 报错）→ CPU 串行回退，
+  结果正确（llc 噪音非致命）。
+
 ### v3.15.161 — 修 `this` 仅类 action 内合法漏校验 → opt 崩（BUG-127）
 
 **非破坏性**（selfhost sema）。顶层函数里 `this.x`（非类/struct/lambda）自举

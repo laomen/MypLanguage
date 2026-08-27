@@ -4372,7 +4372,10 @@ class CodeGen {
             openBlock(bodyB);
             loopBreak_.add(endB);
             loopContinue_.add(stepB);
+            // 嵌套 @parallel for 串行化：body 生成期间置 parallelDepth_（仅本函数作用域）。
+            parallelDepth_ = parallelDepth_ + 1;
             if (body != null) genStmt(body);
+            parallelDepth_ = parallelDepth_ - 1;
             if (terminated_ == 0) emitBr(stepB);
             loopBreak_.remove(loopBreak_.size() - 1);
             loopContinue_.remove(loopContinue_.size() - 1);
@@ -7543,7 +7546,11 @@ class CodeGen {
             } else if (k == "For") {
                 // @parallel for：数据并行（生成并行 body 函数 + myp_pool_parallel_for）。
                 // 无法并行化（非规范 for 形态）时回退串行。
-                if (st.parallel() != 0 && canParallelizeFor(st) != 0) {
+                // 嵌套 @parallel for（parallelDepth_>0，已在并行 body 函数内）→ 串行化：
+                // 共享全局 pool 的 work_fn/work_arg/barrier 会被并发外层 worker 覆写 →
+                // 数据竞争、非确定错误结果（seed 的 generateParallelFor 用 emitKernelStmt
+                // 生成嵌套 for，即只有最外层并行化）。
+                if (st.parallel() != 0 && canParallelizeFor(st) != 0 && parallelDepth_ == 0) {
                     genParallelFor(st);
                     return;
                 }
@@ -11893,6 +11900,10 @@ class CodeGen {
         int curFnRegion_;
         string curRegionMark_;
         int parallelCounter_;
+        // 嵌套 @parallel for 守卫：>0 表示当前在并行 body 函数内（生成嵌套
+        // @parallel for 时须串行化——镜像 seed 行为，共享全局 pool 的
+        // work_fn/barrier 被并发外层 worker 覆写 → 数据竞争/非确定错误）。
+        int parallelDepth_;
         StringBuilder parallelBodies_;
         // GPU CPU 回退上下文：@gpu for / @gpu tile 串行执行时模拟 kernel.* 语义
         //（gid=循环变量 / bx=p/block / tx=p%block / bd=block / gx=ceil(bound/bd)）。

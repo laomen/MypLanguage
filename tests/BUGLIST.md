@@ -3214,3 +3214,31 @@ used inside a class action"。
   有 in_class_method_/in_struct_method_ 双检查；自举 ThisExpr 曾只设 resolved
   Kind 不校验上下文（与 BUG-121 inStatic_ 同族、比其更宽）；@static/顶层函数
   两条路径都在 ThisExpr 前置检查。
+
+## BUG-128（已修复 🟩，v3.15.162）：嵌套 @parallel for 数据竞争（内层并行化 → 串行化）
+
+**非破坏性**（selfhost codegen）。`@parallel for` 嵌套在 `@parallel for` 体内
+自举此前对内层也发 `myp_pool_parallel_for` → 共享全局 pool（myp_global_pool）
+的 work_fn/work_arg/barrier/deques 被并发外层 worker 覆写 → 数据竞争、
+**非确定错误结果**（total 应为 100 却得 11 / sum[0]=7 / 各 run 不同）。seed
+（build-cpu/mypc）的 generateParallelFor 用 emitKernelStmt 生成嵌套 for
+（只有最外层并行化），结果确定正确 100。
+
+- **根因**：自举 codegen.myp 的 For 处理 `parallel()` + canParallelizeFor →
+  无条件 genParallelFor；genParallelBody 生成外层 body 时对内层 @parallel for
+  再 genParallelFor → 嵌套 myp_pool_parallel_for 调用（外层 4 个 worker 并发
+  各自调内层 → 竞争）。
+- **修复**：新增 `int parallelDepth_` 守卫（genParallelBody 生成 body 期间
+  +1/-1）；For 处理 `st.parallel()!=0 && canParallelizeFor(st)!=0 &&
+  parallelDepth_==0` 才 genParallelFor，否则（嵌套）走 genSerialFor 串行化。
+- **验证**：双层嵌套 total=100、三层混合嵌套各元素 16，3 次运行确定一致；
+  内层普通 for 不受影响；现有 @parallel 测试全 PASS；bootstrap 自举成立。
+- **回归**：正测试 `tests/@test/parallel_nested.myp`（双层 + 三层混合，5
+  断言，3 次确定）；全量 441 通过 / 0 失败；oracle 对拍 95/0。
+- **嵌套 @gpu for / 混合嵌套**（@gpu in @parallel / @parallel in @gpu）：GPU
+  kernel 生成失败（llc-21 报错 stderr）→ CPU 串行回退，结果正确；llc 噪音非
+  致命（exit 0）。
+- **教训**：@parallel for 的「嵌套」语义 = 只有最外层并行化、内层串行（数据
+  并行嵌套无池安全支持——共享全局 pool 非可重入）；自举 codegen 对嵌套缺守卫
+  发重入 pool 调用 → 竞争非确定；与 seed 行为对齐（emitKernelStmt 生成嵌套
+  for）。

@@ -1,0 +1,36 @@
+// 嵌套 @parallel for 回归（正测试）：只有最外层并行化，内层串行执行——
+// 镜像 seed generateParallelFor（用 emitKernelStmt 生成嵌套 for）。
+// 修复前自举对内层 @parallel for 发嵌套 myp_pool_parallel_for → 共享全局
+// pool 的 work_fn/work_arg/barrier 被并发外层 worker 覆写 → 数据竞争、
+// 非确定错误结果（曾得 total=11 / sum[0]=7，应为 100 / 各 4）。
+import test;
+
+@test void test_nested_parallel() {
+    int[] sum = new int[4];
+    @parallel for (int i = 0; i < 4; i = i + 1) {
+        @parallel for (int j = 0; j < 4; j = j + 1) {
+            sum[i] = sum[i] + 1;
+        }
+    }
+    Test.assertEq(sum[0], 4, "nested sum0");
+    Test.assertEq(sum[1], 4, "nested sum1");
+    Test.assertEq(sum[2], 4, "nested sum2");
+    Test.assertEq(sum[3], 4, "nested sum3");
+    Test.assertEq(sum[0] + sum[1] + sum[2] + sum[3], 16, "nested total");
+    Test.report("test_nested_parallel", true);
+}
+
+@test void test_nested_parallel_deep() {
+    // 三层嵌套：只有最外层并行化，内两层串行 → 每元素 4*4=16。
+    int[] m = new int[2];
+    @parallel for (int i = 0; i < 2; i = i + 1) {
+        for (int j = 0; j < 4; j = j + 1) {
+            @parallel for (int k = 0; k < 4; k = k + 1) {
+                m[i] = m[i] + 1;
+            }
+        }
+    }
+    Test.assertEq(m[0], 16, "deep m0");
+    Test.assertEq(m[1], 16, "deep m1");
+    Test.report("test_nested_parallel_deep", true);
+}
