@@ -1,0 +1,15 @@
+// BUG-116 负向：tuple 变量赋值（非声明）类型不匹配漏校验 → opt-21 崩（'%t11'
+// defined with type '{ i32, ptr }' but expected '{ i32, i32 }'）。镜像 C++
+// typesCompatible 对 tuple 结构性比较。
+// EXPECT ERROR: cannot assign value of type '(int, string)' to variable of type '(int, int)'
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            (int, string) t = (1, "a");
+            (int, int) u = (2, 3);
+            u = t;
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

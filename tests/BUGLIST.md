@@ -2962,14 +2962,16 @@ string)'"。
 
 - **根因**：自举 tuple arity/元素检查只处理 `tie.kind()=="Tuple"`（字面量）
   形态；tuple 变量/调用返回元组 形态漏（init 解析为 "tuple" 无元素比较）。
-- **修复**：复用 `destructureTupleElems`（Tuple 字面量/Identifier/Call 三形态
-  取元素 kind 列表）扩展变量初始化检查——与 `v.type().funcParamTypes()` 比对
-  arity + 逐元素 typesCompat；不匹配报 "(int, int)" vs "(int, string)" 风格
-  消息（与 oracle 逐字一致）。
-- **验证**：tuple 变量元素不匹配/arity 错双形态 `sev=error`（消息与 oracle
-  一致）；匹配形态编译+运行正确；bootstrap 自举成立。
-- **回归**：负测试 `tests/negative/tuple_var_type_mismatch.myp`；全量 427
-  通过 / 0 失败；oracle 对拍 95/0。
-- **教训**：tuple 初始化校验「字面量有、变量/调用无」是不对称盲区（BUG-093 的
-  destructureTupleElems 已覆盖三形态，变量初始化检查可直接复用）；tuple 是
-  结构化类型——typesCompat 按 kind 只到 "tuple"，须逐元素比较。
+  赋值语句（`u = t`）同样只做 typesCompat("tuple","tuple")=1 静默过。
+- **修复**：①变量初始化——复用 `destructureTupleElems`（Tuple 字面量/
+  Identifier/Call 三形态取元素 kind 列表）与 `v.type().funcParamTypes()` 比对
+  arity + 逐元素 typesCompat；②赋值语句——`l=="tuple"&&r=="tuple"` 时同样用
+  destructureTupleElems 双端比较；新增 `tupleKindListName`（kind 列表 →
+  "(int, string)" 显示名）。消息与 oracle 逐字一致。
+- **验证**：tuple 变量初始化元素不匹配/arity 错 + 赋值语句不匹配 三形态
+  `sev=error`（消息与 oracle 一致）；匹配形态编译+运行正确；bootstrap 成立。
+- **回归**：负测试 `tests/negative/tuple_var_type_mismatch.myp` /
+  `tuple_assign_type_mismatch.myp`；全量 428 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：tuple 初始化/赋值校验「字面量有、变量/调用无」是不对称盲区（BUG-093
+  的 destructureTupleElems 已覆盖三形态可直接复用）；tuple 是结构化类型——
+  typesCompat 按 kind 只到 "tuple"，变量声明与赋值语句两处都要逐元素比较。

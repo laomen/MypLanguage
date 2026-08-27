@@ -27,17 +27,19 @@
 
 ## 编译器版本历史
 
-### v3.15.150 — 修 tuple 变量初始化类型不匹配漏校验（BUG-116）
+### v3.15.150 — 修 tuple 变量初始化/赋值类型不匹配漏校验（BUG-116）
 
 **非破坏性**（selfhost sema）。`(int, int) u = t`（t 为 `(int, string)` 元组
-变量）自举此前**接受** → codegen store 类型不匹配 → **opt-21 崩**（'%t9'
-defined with type '{ i32, ptr }' but expected '{ i32, i32 }'），oracle 拒。
+变量）与 `u = t;`（赋值语句）自举此前**接受** → codegen store 类型不匹配 →
+**opt-21 崩**（'%t9'/'%t11' defined with type '{ i32, ptr }' but expected
+'{ i32, i32 }'），oracle 拒。
 
-- **修复**：复用 `destructureTupleElems`（字面量/Identifier/Call 三形态取元素
-  kind）扩展 tuple 变量初始化检查——arity + 逐元素 typesCompat，消息与 oracle
-  逐字一致。
-- **测试**：负测试 `tests/negative/tuple_var_type_mismatch.myp`；匹配形态编译
-  +运行正确；bootstrap 自举成立。
+- **修复**：①变量初始化——复用 `destructureTupleElems`（字面量/Identifier/Call
+  三形态取元素 kind）与声明类型比对 arity + 逐元素 typesCompat；②赋值语句——
+  `l==r=="tuple"` 时双端 destructureTupleElems 比较；新增 `tupleKindListName`
+  显示名。消息与 oracle 逐字一致。
+- **测试**：负测试 `tests/negative/tuple_var_type_mismatch.myp` /
+  `tuple_assign_type_mismatch.myp`；匹配形态编译+运行正确；bootstrap 自举成立。
 
 ### v3.15.149 — 修枚举变体数据实参数漏校验（BUG-115）
 

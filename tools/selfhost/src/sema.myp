@@ -2705,6 +2705,17 @@ class Sema {
             sb.append(")");
             return sb.toString();
         }
+        // BUG-116：kind 列表 → "(int, string)" 显示名（tuple 变量赋值错误消息用）。
+        string tupleKindListName(ArrayList<string> ks) {
+            StringBuilder sb2 = new StringBuilder();
+            sb2.append("(");
+            for (int i = 0; i < ks.size(); i = i + 1) {
+                if (i != 0) sb2.append(", ");
+                sb2.append(ks.get(i));
+            }
+            sb2.append(")");
+            return sb2.toString();
+        }
         // match 字面量臂 subject 判定：整型族（int/long/uint/ulong/byte/short/ubyte/ushort/char）。
         int isIntKindMatch(string k) {
             if (k == "int" || k == "long" || k == "uint" || k == "ulong"
@@ -5260,6 +5271,23 @@ class Sema {
                     string rn = exprStructName(e.rhs());
                     if (Str.len(ln) != 0 && Str.len(rn) != 0 && ln != rn) badAssign = 1;
                 }
+                // BUG-116：tuple 赋值须逐元素类型匹配（typesCompat 只到
+                // "tuple"）。u = t（u:(int,int)、t:(int,string)）此前静默 →
+                // codegen store 类型不匹配 → opt-21 崩。复用 destructureTupleElems
+                // 取双端元素 kind 列表比较 arity + 逐元素。
+                if (badAssign == 0 && l == "tuple" && r == "tuple"
+                    && e.lhs() != null && e.rhs() != null) {
+                    ArrayList<string> lte = destructureTupleElems(e.lhs());
+                    ArrayList<string> rte = destructureTupleElems(e.rhs());
+                    if (lte != null && rte != null) {
+                        if (lte.size() != rte.size()) badAssign = 1;
+                        else {
+                            for (int tix = 0; tix < lte.size(); tix = tix + 1) {
+                                if (typesCompat(lte.get(tix), rte.get(tix)) == 0) { badAssign = 1; break; }
+                            }
+                        }
+                    }
+                }
                 if (badAssign != 0) {
                     string lm = l;
                     string rm = r;
@@ -5268,6 +5296,11 @@ class Sema {
                         rm = exprStructName(e.rhs());
                         if (Str.len(lm) == 0) lm = "struct";
                         if (Str.len(rm) == 0) rm = "struct";
+                    } else if (l == "tuple" && r == "tuple") {
+                        ArrayList<string> lte2 = destructureTupleElems(e.lhs());
+                        ArrayList<string> rte2 = destructureTupleElems(e.rhs());
+                        if (lte2 != null) lm = tupleKindListName(lte2);
+                        if (rte2 != null) rm = tupleKindListName(rte2);
                     }
                     diag_.error(e.line(), e.col(), "cannot assign value of type '" + rm
                         + "' to variable of type '" + lm + "'");
