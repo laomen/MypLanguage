@@ -1,0 +1,21 @@
+// EXPECT ERROR: 'NoGet' is not iterable: requires size() and get(int) methods
+// BUG-097 回归（负测试）：集合类须同时有 size() 与 get(int) 才可 for-in。
+// 此前 class 只有 size() 无 get(int) → getType 空、elemType 保持 void 但未报错
+// → codegen 发 undefined @NoGet_get → opt-21 崩（"use of undefined value
+// '@NoGet_get'"）。C++ visitForInStmt 镜像 "'X' is not iterable: requires
+// size() and get(int) methods"。合法：ArrayList<int> 等（有 get+size）。
+import env;
+
+class NoGet {
+    action:
+        @constructor NoGet() { }
+        int size() { return 2; }
+}
+class T2 {
+    action:
+        @constructor T2() {
+            NoGet ng = new NoGet();
+            for (int x in ng) { Console.writeString("x\n"); }
+        }
+}
+int main(){return 0;}

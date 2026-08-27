@@ -1,0 +1,21 @@
+// EXPECT ERROR: cannot iterate a collection whose element is an array 'array'
+// BUG-097 回归（负测试）：集合类元素是数组（get(int) 返回 T[]）不可 for-in。
+// C++ visitForInStmt 镜像 "cannot iterate a collection whose element is an
+// array 'X'; wrap it in a class or use slice<T>"。此前元素数组静默 → 循环变量
+// 按数组类型声明/迭代错配。合法：元素为标量/类的集合。
+import env;
+
+class Coll {
+    action:
+        @constructor Coll() { }
+        int size() { return 2; }
+        int[] get(int i) { return new int[2]; }
+}
+class T2 {
+    action:
+        @constructor T2() {
+            Coll c = new Coll();
+            for (int x in c) { Console.writeString("x\n"); }
+        }
+}
+int main(){return 0;}

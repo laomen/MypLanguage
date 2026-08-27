@@ -2526,3 +2526,31 @@
 - **教训**：声明收集循环的 duplicate 校验覆盖不均——class/enum 有、interface/
   bitfield 漏（bitfield 已 BUG-094）。凡 oracle 有 duplicate 分支、自举收集处
   无比对，即「应拒却接受」。
+
+## BUG-097（已修复 🟩，v3.15.131）：集合类缺 get/size 或元素是数组漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.131，selfhost sema.myp）
+- **背景**：`for (int x in ng)`（ng 是只有 size() 无 get(int) 的类）此前自举
+  静默 → codegen 发 undefined @NoGet_get → **opt-21 崩**（"use of undefined
+  value '@NoGet_get'"）。集合 get(int) 返回数组（`int[] get(int)`）时也静默 →
+  循环变量按数组类型声明/迭代错配。C++ visitForInStmt 镜像：`'X' is not
+  iterable: requires size() and get(int) methods` / `cannot iterate a
+  collection whose element is an array 'X'; wrap it in a class or use slice<T>`。
+- **根因**：自举 ForIn class 路径只查 `findMethodRetAst("get")`（无 get 时
+  getType 空、elemType 保持 void）但**不报错**——靠下游 generic "cannot
+  iterate over type" 分支兜底，而该分支因 iterable.resolvedKind() 解析时序未
+  触发 → 无 sema 错 → codegen 崩。
+- **修复**：ForIn class 路径改显式校验——findMethodParams 查 get(int)（1 参）
+  + size()（0 参），缺任一 → "'X' is not iterable: requires size() and get(int)
+  methods"；get 返回 array → "cannot iterate a collection whose element is an
+  array"（置 elemType=void 防声明循环变量）。新增 iterReported 标志抑制
+  generic "cannot iterate over type" 级联。
+- **验证**：缺 get/元素数组干净拒绝（单错）；ArrayList<int> 等合法集合 for-in
+  不受影响（for_in/collections_chain 回归 PASS）；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/forin_no_get.myp` +
+  `tests/negative/forin_array_elem.myp`；全量 393 通过 / 0 失败；oracle 对拍
+  95/0。
+- **教训**：ForIn 集合类路径的「缺 get/size」此前靠 generic 兜底（BUG-086），
+  但兜底有解析时序盲区（resolvedKind 未及时设）→ 静默 → codegen 崩。凡 oracle
+  有专门消息（is not iterable + 原因 / element is an array），自举须显式发而非
+  依赖 generic。

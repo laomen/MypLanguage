@@ -4101,6 +4101,7 @@ class Sema {
                 AstExpr iterable = s.iterable();
                 if (iterable != null) visitExpr(iterable);
                 string elemType = "void";
+                int iterReported = 0;   // BUG-097：已报专门消息则抑制 generic 级联
                 if (iterable != null && iterable.kindName() == "Range") {
                     elemType = "int";
                     s.setIterKind(3);
@@ -4118,14 +4119,42 @@ class Sema {
                     } else if (iterableSym != null && iterableSym.kind() == "class" && Str.len(iterableSym.className()) != 0) {
                         string className = iterableSym.className();
                         string baseName = resolveBase(className);
-                        AstType getAst = findMethodRetAst(baseName, "get");
-                        string getType = substRet(baseName, getAst, iterableSym);
-                        if (Str.len(getType) != 0) {
-                            elemType = getType;
-                            if (findClass(getType) >= 0) elemType = "class:" + getType;
-                            s.setClassName(className);
-                            s.setSizeFn(className + "_size");
-                            s.setGetFn(className + "_get");
+                        // BUG-097：集合类须同时有 size() 与 get(int)（镜像 C++
+                        // visitForInStmt "'X' is not iterable: requires size()
+                        // and get(int) methods"）。此前 class 只有 size() 无
+                        // get(int) → getType 空、elemType 保持 void 但未报错 →
+                        // codegen 发 undefined @NoGet_get → opt-21 崩（"use of
+                        // undefined value '@NoGet_get'"）。
+                        ArrayList<AstParam> getP = findMethodParams(baseName, "get");
+                        ArrayList<AstParam> sizeP = findMethodParams(baseName, "size");
+                        int hasGet = (getP != null && getP.size() == 1) ? 1 : 0;
+                        int hasSize = (sizeP != null && sizeP.size() == 0) ? 1 : 0;
+                        if (hasGet != 0 && hasSize != 0) {
+                            AstType getAst = findMethodRetAst(baseName, "get");
+                            string getType = substRet(baseName, getAst, iterableSym);
+                            if (Str.len(getType) != 0) {
+                                // BUG-097：集合元素是数组 → 拒（镜像 C++
+                                // "cannot iterate a collection whose element is
+                                // an array 'X'; wrap it in a class or use
+                                // slice<T>"）。此前元素数组静默 → 循环变量按
+                                // 数组类型声明/迭代错配。
+                                if (getType == "array") {
+                                    diag_.error(s.line(), s.col(), "cannot iterate a collection whose element is an array '" + exprTypeName(iterable, getType) + "'; wrap it in a class or use slice<T>");
+                                    iterReported = 1;
+                                    elemType = "void";
+                                } else {
+                                    elemType = getType;
+                                    if (findClass(getType) >= 0) elemType = "class:" + getType;
+                                    s.setClassName(className);
+                                    s.setSizeFn(className + "_size");
+                                    s.setGetFn(className + "_get");
+                                }
+                            }
+                        } else {
+                            // 集合类缺 get/size → 专门消息（不再走 generic
+                            // cannot iterate，且避免 codegen 崩）
+                            diag_.error(s.line(), s.col(), "'" + className + "' is not iterable: requires size() and get(int) methods");
+                            iterReported = 1;
                         }
                     }
                 }
@@ -4169,16 +4198,18 @@ class Sema {
                         // BUG-086：动态数组不可迭代（镜像 C++ "cannot iterate a
                         // dynamic array ..."）——for-in 只支持定长数组/slice/集合。
                         diag_.error(iterable.line(), iterable.col(), "cannot iterate a dynamic array '" + exprTypeName(iterable, "array") + "' (no runtime length); use slice<T> or a collection class");
-                    } else if (Str.len(iterable.resolvedKind()) != 0 && iterable.resolvedKind() != "void") {
+                    } else if (Str.len(iterable.resolvedKind()) != 0 && iterable.resolvedKind() != "void" && iterReported == 0) {
                         // BUG-086：其余不可迭代对象（int/string/无 get 的 class）
-                        //（镜像 C++ "cannot iterate over type 'X'"）。
+                        //（镜像 C++ "cannot iterate over type 'X'"）。BUG-097：
+                        // 集合类缺 get/size 已报专门消息 → 不再级联。
                         diag_.error(iterable.line(), iterable.col(), "cannot iterate over type '" + exprTypeName(iterable, iterable.resolvedKind()) + "'");
                     }
-                } else if (iterable != null && Str.len(iterable.resolvedKind()) != 0 && iterable.resolvedKind() != "void") {
+                } else if (iterable != null && Str.len(iterable.resolvedKind()) != 0 && iterable.resolvedKind() != "void" && iterReported == 0) {
                     // BUG-086：不可迭代对象（int/string/无 get 的 class 等）→ 拒绝
                     //（镜像 C++ "cannot iterate over type 'X'"）。此前静默过 →
                     // 循环变量未声明 → codegen 找不到 → opt 崩（"expected value
                     // token"）。resolvedKind 为 void（未解析/错误）时跳过防级联。
+                    // BUG-097：集合类缺 get/size 已报专门消息 → 不再级联。
                     diag_.error(iterable.line(), iterable.col(), "cannot iterate over type '" + exprTypeName(iterable, iterable.resolvedKind()) + "'");
                 } else if (s.body() != null) visitStmt(s.body());
             } else if (k == "Throw") {

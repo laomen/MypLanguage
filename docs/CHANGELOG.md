@@ -27,6 +27,23 @@
 
 ## 编译器版本历史
 
+### v3.15.131 — 修集合类缺 get/size 或元素是数组漏校验 → opt 崩（BUG-097）
+
+**非破坏性**（selfhost sema）。`for (int x in ng)`（ng 是只有 size() 无 get(int)
+的类）此前自举静默 → codegen 发 undefined `@NoGet_get` → **opt-21 崩**（`use of
+undefined value '@NoGet_get'`）。集合 `int[] get(int)`（元素数组）也静默 → 循环
+变量错配。C++ visitForInStmt 镜像。
+
+- **修复**：ForIn class 路径显式校验 get(int)（1 参）+ size()（0 参），缺任一 →
+  `'X' is not iterable: requires size() and get(int) methods`；get 返回 array →
+  `cannot iterate a collection whose element is an array 'X'; wrap it in a class
+  or use slice<T>`；新增 iterReported 抑制 generic 级联。
+- **测试**：负测试 `tests/negative/forin_no_get.myp` +
+  `tests/negative/forin_array_elem.myp`；ArrayList<int> 等合法集合 for-in 不受
+  影响（for_in/collections_chain 回归 PASS）。
+- 验证：bootstrap 自举成立；全量回归 **393 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-097。
+
 ### v3.15.130 — 修重复 interface 名漏校验（BUG-096）
 
 **非破坏性**（selfhost sema）。两次 `interface I1 { ... }`（重复声明名）此前
