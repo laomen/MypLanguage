@@ -1,0 +1,45 @@
+// ctor_promotion: 数值宽化提升（BUG-101 正向回归）
+// 覆盖：long→double 变量/实参/构造器（promotesTo 缺 long→double 此前拒）/
+//       int↔long 双向构造器匹配（ctorArgCompat 只走 promotesTo 无对称此前拒
+//       new Box(int)(1L)）/
+//       合法构造器选择（byte→int 等）不受影响
+import test;
+
+double f(double d) { return d; }
+
+// 单构造器类（避免双构造器歧义——Box(int)+Box(double) 对 1L 双可行 → 歧义拒）
+class BoxD {
+    action:
+        @constructor BoxD(double d) { }
+}
+class BoxI {
+    action:
+        @constructor BoxI(int n) { }
+}
+
+@test void test_long_to_double() {
+    // 1) long 字面量 → double 变量
+    double a = 1L;
+    Test.assertFloatEq(a, 1.0, 1e-12, "long->double var");
+    // 2) long → double 实参
+    double b = f(1L);
+    Test.assertFloatEq(b, 1.0, 1e-12, "long->double arg");
+    // 3) long → double 构造器（Box(double) 唯一可行）
+    BoxD bd = new BoxD(1L);
+    Test.assert(bd != null, "long->double ctor");
+    // 4) byte → double 构造器（提升）
+    BoxD bd2 = new BoxD(2);
+    Test.assert(bd2 != null, "byte->double ctor");
+    Test.report("test_long_to_double", true);
+}
+
+@test void test_int_long_ctor() {
+    // int↔long 双向：Box(int) 接收 long 实参（oracle 接受，此前自举 ctorArgCompat
+    // 走 promotesTo(long,int)=0 拒）
+    BoxI bi = new BoxI(5L);
+    Test.assert(bi != null, "long->int ctor (int↔long)");
+    // byte → int 提升（既有行为不回归）
+    BoxI bi2 = new BoxI(3);
+    Test.assert(bi2 != null, "byte->int ctor");
+    Test.report("test_int_long_ctor", true);
+}

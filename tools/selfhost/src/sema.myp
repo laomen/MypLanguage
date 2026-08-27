@@ -243,7 +243,7 @@ class SymbolTable {
             if (from == "char")   return (to == "ubyte" || to == "ushort" || to == "uint" || to == "ulong" || to == "int" || to == "long" || to == "double") ? 1 : 0;
             if (from == "short")  return (to == "int" || to == "long" || to == "double") ? 1 : 0;
             if (from == "int")    return (to == "long" || to == "double") ? 1 : 0;
-            if (from == "long")   return 0;
+            if (from == "long")   return (to == "double") ? 1 : 0;   // BUG-101：long→double 合法宽化
             if (from == "float")  return (to == "double") ? 1 : 0;
             if (from == "ubyte")  return (to == "ushort" || to == "uint" || to == "ulong" || to == "int" || to == "long" || to == "double") ? 1 : 0;
             if (from == "ushort") return (to == "uint" || to == "ulong" || to == "int" || to == "long" || to == "double") ? 1 : 0;
@@ -2656,10 +2656,16 @@ class Sema {
             return 0;
         }
         // 构造器实参兼容：actual 只能提升到 parameter，禁止 double→int 等收窄。
+        // BUG-101：promotesTo 无 int↔long 双向对称（typesCompat 有）——
+        // `new Box(int 构造)(1L)`（long→int）oracle 接受（int↔long 全兼容）、
+        // 自举 ctorArgCompat 走 promotesTo(long,int)=0 拒。promotesTo 失败时
+        // 回落 typesCompat（覆盖 int↔long 双向）。
         int ctorArgCompat(string parameter, string actual) {
             if (parameter == actual) return 1;
-            if (isNumKind(parameter) != 0 && isNumKind(actual) != 0)
-                return TKind.promotesTo(actual, parameter);
+            if (isNumKind(parameter) != 0 && isNumKind(actual) != 0) {
+                if (TKind.promotesTo(actual, parameter) != 0) return 1;
+                return typesCompat(parameter, actual);
+            }
             return typesCompat(parameter, actual);
         }
         // typeName（C++ typeName）：有 AstType 用 str()（tuple/array/class 精确），否则 kind 名

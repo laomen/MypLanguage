@@ -39,6 +39,20 @@
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-098。
 
+### v3.15.135 — 修 long→double / int↔long 构造器提升漏（BUG-101）
+
+**非破坏性**（selfhost sema）。`double a = 1L;`（long→double 变量/实参）与
+`new BoxD(1L)`（long→double 构造器）、`new BoxI(1L)`（int↔long 构造器）——oracle
+均接受，自举此前**拒绝合法代码**。
+
+- **修复**：①`promotesTo(long→double)`=1（64 位整数宽化到 double）；②
+  `ctorArgCompat` promotesTo 失败时回落 typesCompat（覆盖 int↔long 双向）。
+  歧义双构造器仍拒（自举 "no matching" / oracle "ambiguous"，双端拒）。
+- **测试**：正测试 `tests/@test/ctor_promotion.myp`（2 tests / 8 断言）；
+  `double a=1L`/`f(1L)`/`new BoxD(1L)`/`new BoxI(1L)` 编译+运行正确。
+- 验证：bootstrap 自举成立；全量回归 **400 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-101。
+
 ### v3.15.134 — 修函数类型实参签名/裸函数名漏校验 → opt 崩（BUG-100）
 
 **非破坏性**（selfhost sema + ast）。`apply(strFn, 5)`（形参 (int)->int 收

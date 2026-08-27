@@ -2625,3 +2625,27 @@
   不支持裸函数名→闭包（seed 也拒）——「oracle 有 Function 结构性签名比较、自举
   kind 二分」是漏检；同时 codegen 能力边界（裸函数名）须在 sema 干净拒绝而非
   opt 崩。
+
+## BUG-101（已修复 🟩，v3.15.135）：long→double / int↔long 构造器提升漏（拒合法代码）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.135，selfhost sema.myp）
+- **背景**：`double a = 1L;`（long→double 变量/实参）与 `new BoxD(1L)`（long→
+  double 构造器）、`new BoxI(1L)`（int↔long 构造器）——oracle 均接受，自举此前
+  **拒绝合法代码**（"cannot initialize ... / argument ... expected 'double' /
+  no matching constructor for 'Box(long)'"）。
+- **根因**：①`promotesTo` 的 long 分支恒 0——long→double 未视为合法宽化提升
+  （byte/short/int→double 都有，long 漏）；②`ctorArgCompat` 只走
+  `promotesTo(actual→parameter)`，无 int↔long 双向对称（typesCompat 有
+  Int↔Long 特例）→ `new Box(int 构造)(1L)` 拒。
+- **修复**：①`promotesTo(long→double)`=1（long 是 64 位整数宽化到 double）；
+  ②`ctorArgCompat` promotesTo 失败时回落 typesCompat（覆盖 int↔long 双向）。
+  歧义构造器（Box(int)+Box(double) 对 1L/byte 双可行）仍拒（自举 "no matching"
+  / oracle "ambiguous"，消息不同但双端拒）。
+- **验证**：`double a=1L` / `f(1L)` / `new BoxD(1L)` / `new BoxI(1L)` / byte→
+  int/double 提升全部编译+运行正确；歧义双构造器仍拒；bootstrap 自举成立。
+- **回归**：正测试 `tests/@test/ctor_promotion.myp`（2 tests / 8 断言）；全量
+  400 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：promotesTo 数值提升表要逐源类型核对（byte/short/int/float 都有→
+  double，long 漏）；ctorArgCompat 与 typesCompat 的提升规则须一致（int↔long
+  双向在 typesCompat 有特例、ctor 路径漏）——「oracle 接受、自举拒绝」同属
+  parity 审计。
