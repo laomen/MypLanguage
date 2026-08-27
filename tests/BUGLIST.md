@@ -2975,3 +2975,24 @@ string)'"。
 - **教训**：tuple 初始化/赋值校验「字面量有、变量/调用无」是不对称盲区（BUG-093
   的 destructureTupleElems 已覆盖三形态可直接复用）；tuple 是结构化类型——
   typesCompat 按 kind 只到 "tuple"，变量声明与赋值语句两处都要逐元素比较。
+
+## BUG-117（已修复 🟩，v3.15.151）：tuple 返回类型不匹配漏校验 → opt 崩
+
+**非破坏性**（selfhost sema）。`(int, int) ret() { return (1, "a"); }` 自举
+此前静默 → codegen store 类型不匹配 → **opt-21 崩**（'%t2' defined with type
+'{ i32, ptr }' but expected '{ i32, i32 }'）。oracle 拒 "cannot return value
+of type '(byte, string)' from function returning '(int, int)'"。
+
+- **根因**：Return 检查用 typesCompat(currentRet_, rt)——tuple 只到 "tuple"，
+  元素类型不比较；且无当前函数返回 AstType 可查元素类型（只有 kind 字符串）。
+- **修复**：①新增字段 `AstType currentRetAst_`（5 处函数/方法声明点随
+  currentRet_ 同步设置）；②Return 检查加 tuple 分支——currentRet_==rt=="tuple"
+  时 `destructureTupleElems(s.value())` 与 `currentRetAst_.funcParamTypes()`
+  比对 arity + 逐元素 typesCompat；消息与 oracle 逐字一致。
+- **验证**：tuple 返回元素不匹配 `sev=error`（消息与 oracle 一致）；匹配形态
+  编译+运行正确；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/tuple_ret_type_mismatch.myp`；全量 429
+  通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：tuple 结构性校验须「当前函数返回 AstType」可查——只存 kind 字符串
+  不够，须另存 AstType（与 BUG-116 的声明/赋值路径补齐成 tuple 三路径：声明/
+  赋值/返回）；destructureTupleElems 三形态复用是统一手法。

@@ -27,6 +27,19 @@
 
 ## 编译器版本历史
 
+### v3.15.151 — 修 tuple 返回类型不匹配漏校验（BUG-117）
+
+**非破坏性**（selfhost sema）。`(int, int) ret() { return (1, "a"); }` 自举
+此前**接受** → codegen store 类型不匹配 → **opt-21 崩**（'%t2' defined with
+type '{ i32, ptr }' but expected '{ i32, i32 }'），oracle 拒。
+
+- **修复**：①新增字段 `currentRetAst_`（5 处声明点随 currentRet_ 同步设置）；
+  ②Return 检查加 tuple 分支——`destructureTupleElems(s.value())` 与
+  `currentRetAst_.funcParamTypes()` 比对 arity + 逐元素 typesCompat。消息与
+  oracle 逐字一致。
+- **测试**：负测试 `tests/negative/tuple_ret_type_mismatch.myp`；匹配形态编译
+  +运行正确；bootstrap 自举成立。
+
 ### v3.15.150 — 修 tuple 变量初始化/赋值类型不匹配漏校验（BUG-116）
 
 **非破坏性**（selfhost sema）。`(int, int) u = t`（t 为 `(int, string)` 元组

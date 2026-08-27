@@ -1,0 +1,11 @@
+// BUG-117 负向：tuple 返回类型不匹配漏校验 → opt-21 崩（'%t2' defined with
+// type '{ i32, ptr }' but expected '{ i32, i32 }'）。镜像 C++ return 类型检查
+// 对 tuple 结构性比较。
+// EXPECT ERROR: cannot return value of type '(byte, string)' from function returning '(int, int)'
+import env;
+(int, int) ret() { return (1, "a"); }
+class T2 {
+    action:
+        @constructor T2() { Console.writeString("A\n"); }
+}
+int main(){T2 t=new T2();return 0;}

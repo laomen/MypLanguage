@@ -377,6 +377,7 @@ class Sema {
             inMain_ = 0;
             inCatchDepth_ = 0;
             currentRet_ = "";
+            currentRetAst_ = null;
             loopDepth_ = 0;
             inCoro_ = 0;
             currentMethodName_ = "";
@@ -2106,6 +2107,7 @@ class Sema {
                 curGeneric_.clear();
                 for (int gi = 0; gi < f.typeParams().size(); gi = gi + 1) curGeneric_.add(f.typeParams().get(gi));
                 currentRet_ = typeToKind(f.ret());
+                currentRetAst_ = f.ret();
                 inCoro_ = f.coro() != 0 ? 1 : 0;
                 loopDepth_ = 0;
                 sym_.enterScope();
@@ -2271,6 +2273,7 @@ class Sema {
                     AstAction a = c.actions().get(ai);
                     if (a.body() == null) continue;
                     currentRet_ = typeToKind(a.ret());
+                    currentRetAst_ = a.ret();
                     inCoro_ = a.coro() != 0 ? 1 : 0;
                     currentMethodName_ = a.name();
                     loopDepth_ = 0;
@@ -2323,6 +2326,7 @@ class Sema {
                     AstFunction f = c.funcs().get(fi);
                     if (f.body() == null) continue;
                     currentRet_ = typeToKind(f.ret());
+                    currentRetAst_ = f.ret();
                     inCoro_ = f.coro() != 0 ? 1 : 0;
                     loopDepth_ = 0;
                     // F4-G2：叠加函数自身类型参数
@@ -2347,6 +2351,7 @@ class Sema {
                     AstAction a = c.staticActions().get(sai);
                     if (a.body() == null) continue;
                     currentRet_ = typeToKind(a.ret());
+                    currentRetAst_ = a.ret();
                     inCoro_ = a.coro() != 0 ? 1 : 0;
                     loopDepth_ = 0;
                     // F4-G2：叠加方法自身类型参数
@@ -2380,6 +2385,7 @@ class Sema {
                     inClass_ = 1;
                     inMain_ = 0;
                     currentRet_ = typeToKind(f.ret());
+                    currentRetAst_ = f.ret();
                     inCoro_ = f.coro() != 0 ? 1 : 0;
                     loopDepth_ = 0;
                     sym_.enterScope();
@@ -4236,6 +4242,29 @@ class Sema {
                         && Str.len(rt) != 0 && rt != "void" && typesCompat(currentRet_, rt) == 0) {
                         diag_.error(s.line(), s.col(), "cannot return value of type '" + rt
                             + "' from function returning '" + currentRet_ + "'");
+                    }
+                    // BUG-117：tuple 返回须逐元素类型匹配（typesCompat 只到
+                    // "tuple"）。(int,int) ret(){return (1,"a");} 此前静默 →
+                    // codegen store 类型不匹配 → opt-21 崩（'%t2' defined with
+                    // type '{ i32, ptr }' but expected '{ i32, i32 }'）。
+                    if (currentRet_ == "tuple" && rt == "tuple" && s.value() != null) {
+                        ArrayList<string> rte = destructureTupleElems(s.value());
+                        ArrayList<AstType> wts = currentRetAst_ != null ? currentRetAst_.funcParamTypes() : null;
+                        if (rte != null && wts != null && wts.size() != 0) {
+                            int rBad = 0;
+                            if (wts.size() != rte.size()) rBad = 1;
+                            else {
+                                for (int ri = 0; ri < rte.size(); ri = ri + 1) {
+                                    string wt3 = typeToKind(wts.get(ri));
+                                    if (typesCompat(wt3, rte.get(ri)) == 0) { rBad = 1; break; }
+                                }
+                            }
+                            if (rBad != 0) {
+                                diag_.error(s.line(), s.col(), "cannot return value of type '"
+                                    + tupleKindListName(rte) + "' from function returning '"
+                                    + tupleDeclName(wts) + "'");
+                            }
+                        }
                     }
                 } else {
                     // BUG-088：裸 `return;` 在 non-void 函数须拒（镜像 C++
@@ -7982,6 +8011,7 @@ class Sema {
         int inCatchDepth_;
         int autoMain_;
         string currentRet_;
+        AstType currentRetAst_;
         int loopDepth_;
         int inCoro_;
         string currentMethodName_;
