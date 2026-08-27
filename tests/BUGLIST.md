@@ -2873,3 +2873,41 @@ visitGpuTileStmt 校验 "requires an array type (e.g. float[32][32])"。
 - **教训**：@gpu tile 共享内存声明是「类型形状」校验点——须数组类型、维度编译
   期常量、48KB 上限三道；自举有 48KB、漏形状（非数组）；维度常量由 parser
   `float[n]` 拒（不可达）。
+
+## BUG-112（已修复 🟩，v3.15.146）：stream/resident 仅限 @gpu for 归属漏校验
+
+**非破坏性**（selfhost sema）。普通 `for (...) stream(s) {...}` 与
+`for (...) resident(...) {...}`（非 @gpu）此前自举静默忽略子句（应拒却接受）。
+oracle 当前源 "stream(...) is only valid on '@gpu for'" / "resident(...) is
+only valid on '@gpu for'"。
+
+- **根因**：自举 for 语句分支只校验 block() 的归属（"block only valid on
+  @gpu for"），stream/resident 子句归属漏（parser 允许普通 for 带子句）。
+- **修复**：for 分支补两道——`s.gpu()==0 && s.stream()!=null` →
+  "'stream(...)' is only valid on '@gpu for'"；`s.gpu()==0 && resident 非空` →
+  "'resident(...)' is only valid on '@gpu for'"。
+- **验证**：普通 for 带 stream / resident 双形态 `sev=error`；@gpu for 带
+  stream/resident 编译正常；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/stream_not_gpufor.myp` /
+  `resident_not_gpufor.myp`；全量 423 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：GPU 子句「归属」校验（仅 @gpu for/tile）与「类型」校验（grid/resident/
+  stream）是两组独立检查——block 已有归属检查、stream/resident 漏（不对称补齐）。
+
+## BUG-113（已修复 🟩，v3.15.147）：@gpu stream(s) 参数须 GpuStream 漏校验
+
+**非破坏性**（selfhost sema）。`@gpu for ... stream(s)`（s 为 int）此前自举
+静默接受（应拒却接受，非 opt 崩）→ GPU 运行时错。oracle 当前源 "stream(...)
+argument must be a 'GpuStream' (got '...')"。
+
+- **根因**：自举 GpuFor 循环形 + GpuTile 两处只 visit stream 表达式、不校验
+  其类型。GpuStream 是 stdlib/gpu/graph.myp 类。
+- **修复**：两处 stream 访问加校验——stream 表达式须 Identifier 且
+  `sym_.lookupClass(name)=="GpuStream"`，或 New 且 className=="GpuStream"；
+  否则报 "'stream(...)' argument must be a 'GpuStream' (got 'X')"。
+- **验证**：stream(int) `sev=error`；stream(GpuStream)（test_gpu_graph）编译
+  正常；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/gpu_stream_arg_type.myp`；全量 423 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：@gpu 子句参数类型校验须覆盖「类实例」形态（Identifier 查
+  lookupClass / New 查 className）——此前只 visit 不判型；GpuStream 是自举
+  超前（seed 无法解析）但 oracle 当前源有校验，须镜像。

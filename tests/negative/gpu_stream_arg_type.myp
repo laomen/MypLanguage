@@ -1,0 +1,16 @@
+// BUG-113 负向：@gpu for stream(s) 参数须 GpuStream 实例（stream(int) 静默
+// → GPU 运行时错）。镜像 C++ "'stream(...)' argument must be a 'GpuStream'"。
+// EXPECT ERROR: 'stream(...)' argument must be a 'GpuStream'
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            float[] a = new float[64];
+            int s = 5;
+            @gpu for (long k = 0L; k < 10L; k = k + 1L) stream(s) {
+                a[k] = a[k] + 1.0f;
+            }
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

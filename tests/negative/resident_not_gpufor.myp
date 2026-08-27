@@ -1,0 +1,16 @@
+// BUG-112 负向：resident(...) 仅限 @gpu for/tile（普通 for 带 resident 静默
+// 忽略）。镜像 C++ "'resident(...)' is only valid on '@gpu for'"。
+// EXPECT ERROR: 'resident(...)' is only valid on '@gpu for'
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            float[] a = new float[64];
+            long da = 0L;
+            for (long k = 0L; k < 10L; k = k + 1L) resident(a = da) {
+                a[k] = a[k] + 1.0f;
+            }
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

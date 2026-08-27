@@ -4117,10 +4117,31 @@ class Sema {
                         diag_.error(s.line(), s.col() + 5, "'block(...)' size exceeds maxThreadsPerBlock (1024)");
                     }
                 }
+                // BUG-112：resident(...)/stream(...) 仅限 @gpu for/tile（镜像
+                // C++ "'stream(...)' is only valid on '@gpu for'" / "'resident(...)'
+                // is only valid on '@gpu for'"）。普通 for / @parallel for 带
+                // stream/resident 子句此前静默忽略（应拒却接受）。
+                if (s.gpu() == 0 && s.stream() != null) {
+                    diag_.error(s.line(), s.col(), "'stream(...)' is only valid on '@gpu for'");
+                }
+                if (s.gpu() == 0 && s.resident() != null && s.resident().size() != 0) {
+                    diag_.error(s.line(), s.col(), "'resident(...)' is only valid on '@gpu for'");
+                }
                 int savedForGpu = inGpuFor_;
                 int savedForKernel = inGpuKernel_;
                 if (s.gpu() != 0 || s.parallel() != 0) {
-                    if (s.stream() != null) visitExpr(s.stream());
+                    if (s.stream() != null) {
+                        // BUG-113：stream(s) 参数须为 GpuStream 实例（镜像 C++
+                        // "'stream(...)' argument must be a 'GpuStream'"）。
+                        // stream(int) 此前静默 → GPU 运行时错（应拒却接受）。
+                        string streamK = visitExpr(s.stream());
+                        int isGpuStream = 0;
+                        if (s.stream().kind() == "Identifier" && sym_.lookupClass(s.stream().name()) == "GpuStream") isGpuStream = 1;
+                        else if (s.stream().kind() == "New" && s.stream().className() == "GpuStream") isGpuStream = 1;
+                        if (isGpuStream == 0) {
+                            diag_.error(s.stream().line(), s.stream().col(), "'stream(...)' argument must be a 'GpuStream' (got '" + (Str.len(streamK) != 0 ? streamK : "unknown") + "')");
+                        }
+                    }
                     inGpuFor_ = 1;
                 }
                 // BUG-109：@gpu for resident(arr = dev) 子句校验（镜像 C++
@@ -4581,7 +4602,17 @@ class Sema {
                         s.setGridVal(-1);
                     }
                 }
-                if (s.stream() != null) visitExpr(s.stream());
+                if (s.stream() != null) {
+                    // BUG-113：stream(s) 参数须为 GpuStream 实例（镜像 C++
+                    // "'stream(...)' argument must be a 'GpuStream'"）。
+                    string streamK2 = visitExpr(s.stream());
+                    int isGpuStream2 = 0;
+                    if (s.stream().kind() == "Identifier" && sym_.lookupClass(s.stream().name()) == "GpuStream") isGpuStream2 = 1;
+                    else if (s.stream().kind() == "New" && s.stream().className() == "GpuStream") isGpuStream2 = 1;
+                    if (isGpuStream2 == 0) {
+                        diag_.error(s.stream().line(), s.stream().col(), "'stream(...)' argument must be a 'GpuStream' (got '" + (Str.len(streamK2) != 0 ? streamK2 : "unknown") + "')");
+                    }
+                }
                 // BUG-109：@gpu tile resident(arr = dev) 子句校验（镜像 C++
                 // visitGpuTileStmt）——arr 须为作用域内数组；dev 须为 long。
                 ArrayList<AstPair> resPairs2 = s.resident();

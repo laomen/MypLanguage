@@ -39,6 +39,29 @@
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-098。
 
+### v3.15.147 — 修 @gpu stream(s) 参数须 GpuStream 漏校验（BUG-113）
+
+**非破坏性**（selfhost sema）。`@gpu for ... stream(s)`（s 为 int）自举此前
+**接受**（应拒却接受）→ GPU 运行时错。oracle 当前源校验 "must be a
+'GpuStream'"。
+
+- **修复**：GpuFor 循环形 + GpuTile 两处 stream 访问加校验——Identifier 查
+  `sym_.lookupClass(name)=="GpuStream"` / New 查 className；否则报错。
+- **测试**：负测试 `tests/negative/gpu_stream_arg_type.myp`；stream(GpuStream)
+  编译正常；bootstrap 自举成立。
+
+### v3.15.146 — 修 stream/resident 仅限 @gpu for 归属漏校验（BUG-112）
+
+**非破坏性**（selfhost sema）。普通 `for ... stream(s)` / `resident(...)`
+（非 @gpu）此前自举**静默忽略**子句（应拒却接受）。oracle 当前源拒
+"only valid on '@gpu for'"。
+
+- **修复**：for 分支补两道——`s.gpu()==0 && stream!=null` / `resident 非空` →
+  "'stream(...)' / 'resident(...)' is only valid on '@gpu for'"（block 已有
+  归属检查、stream/resident 漏）。
+- **测试**：负测试 `tests/negative/stream_not_gpufor.myp` /
+  `resident_not_gpufor.myp`；@gpu for 带子句编译正常；bootstrap 自举成立。
+
 ### v3.15.145 — 修 @gpu tile shared 须数组类型漏校验（BUG-111）
 
 **非破坏性**（selfhost sema）。`@gpu tile (float sm)`（标量 shared）自举此前
