@@ -761,13 +761,22 @@ int myp_release(string obj) {
         if (Live.strings > 0) Live.strings = Live.strings - 1;
         arenaReclaim(addr - 20);   // 字符串块 base0（含 8B total 前缀）
     } else {
-        // 类对象：先 MYP 弱通知（null 本注册表弱槽）。并发 weak_load 在锁内重新
-        // bump rc → 返回 0（对象存活，新持有者负责释放）。存活则移交
-        // myp_release_class_obj_ex 继续分发（其内部会再次 weak 通知，同 C 版语义）。
+        // 类对象：MYP 弱通知（快路径：弱表空直接返回 1=应释放）。返回 0 表示
+        // 并发 weak_load 在锁内重新 bump rc（对象存活，新持有者负责释放）。
+        // 存活则内联分发（不再委托 myp_release_class_obj_ex，消除其内部二次
+        // weak 通知）：查 release_table → destroy stub 或直接 myp_free_object。
         if (myp_weak_notify_death(obj) == 0) {
             return __myp_atomic_load_i32_addr(addr - 8);
         }
-        myp_release_class_obj_ex(obj);   // weak + release_table 分发 + free
+        if (tid > 0) {
+            long table = __myp_rtable_addr();
+            long stub = __myp_mem_load_i64(table + long(tid) * 8);
+            if (stub != 0) {
+                __myp_call_ptr(stub, obj);   // destroy stub（级联释放 + myp_free_object）
+                return 0;
+            }
+        }
+        myp_free_object(obj);
     }
     return 0;
 }

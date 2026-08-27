@@ -146,6 +146,11 @@ long myp_weak_load(long slot) {
 // 在锁内重新 bump rc（对象存活，新持有者释放）。
 int myp_weak_notify_death(string obj) {
     long addr = __myp_str_ptr(obj);
+    // v3.15.178 快路径：弱注册表空（绝大多数程序无 @weak）→ 无观察者，直接返回 1
+    // （应释放）。省 weakLock + weakFindEntry。并发安全：weak 添加前必须 retain
+    // 对象（防释放），故 rc→0 时对象不可能有正在添加的 weak 观察者；Weak.head
+    // 只在 weakLock 内变更，无锁读旧值若 !=0 则走慢路径，若 ==0 则恒无观察者。
+    if (Weak.head == 0) return 1;
     weakLock();
     if (__myp_atomic_load_i32_addr(addr - 8) != 0) { weakUnlock(); return 0; }
     long e = weakFindEntry(addr);

@@ -68,6 +68,24 @@
 - **测试**：全量 456/456 + parity 95/95 + 自举 MD5 一致；环收集回归
   `cyclecollect_multi`（2 tests）通过。
 
+### v3.15.178 — ARC 释放快路径优化（单对象分配提速 1.48x）
+
+**非破坏性**（纯 MYP 运行时）。定位混合负载性能瓶颈（对照 C++/Go 基准）：
+单对象 `new`+释放链是 ARC 最大开销（`weak_notify + release_table + destroy stub`
+调用链）。优化：
+- **`myp_weak_notify_death` 快路径（weak.myp）**：弱注册表空（`Weak.head==0`，
+  绝大多数程序无 `@weak`）→ 直接返回 1（无观察者，应释放）——省 `weakLock` +
+  `weakFindEntry`。并发安全：weak 添加前必先 retain 对象（防释放），故 rc→0 时
+  不可能有正在添加的观察者。
+- **合并冗余二次 weak 通知（alloc.myp）**：`myp_release` 类对象分支已调
+  `myp_weak_notify_death` 一次，原再委托 `myp_release_class_obj_ex`（内部又调一次
+  弱通知）→ 改为**内联分发**（查 release_table → destroy stub 或 `myp_free_object`），
+  消除二次弱通知 + 一次函数调用。
+- **效果**：单对象 `new`+释放 100 万次 **46ms → 31ms（1.48x）**；456/456 @test +
+  自举 MD5 一致。
+- **备注**：混合负载（`leak_long`）瓶颈另在 CC 环收集频率/副作用 + 容器，非本
+  次优化范围（后续 v3.15.179 系列）。
+
 ### v3.15.175 — 泛型数组元素释放修复 + 泛型环收集
 
 **非破坏性**（编译器 + 两运行时）。按「零用户操作 + 最少运行时内存操作」方向
