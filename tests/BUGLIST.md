@@ -2911,3 +2911,23 @@ argument must be a 'GpuStream' (got '...')"。
 - **教训**：@gpu 子句参数类型校验须覆盖「类实例」形态（Identifier 查
   lookupClass / New 查 className）——此前只 visit 不判型；GpuStream 是自举
   超前（seed 无法解析）但 oracle 当前源有校验，须镜像。
+
+## BUG-114（已修复 🟩，v3.15.148）：@gpu tile shared 数组名冲突 + block<dim 警告
+
+**非破坏性**（selfhost sema）。`@gpu tile (float[64] sm)` 与外层变量 `sm`
+同名——自举此前 sym_.declareElem 静默覆盖外变量（应拒却接受）。oracle 当前源
+visitGpuTileStmt 校验 "shared array name 'X' already declared" + block 小于
+共享数组最大维度时 warning。
+
+- **根因**：自举 GpuTile 声明共享数组不查外层同名；block 与维度关系不检查。
+- **修复**：①声明前 `sym_.lookupEntry(s.name()) != null` → "shared array name
+  'X' already declared"；②`block() > 0` 且小于最大维度（遍历 sharedType
+  arraySize 取 max）→ diag_.warn "'block(...)' size (N) is smaller than shared
+  array dimension (M); threads may not cover the array"（warning 记录到 dump，
+  非阻塞，与 oracle 警告性质一致）。
+- **验证**：外层同名 shared → `sev=error`；正确 tile 编译正常；bootstrap 成立。
+- **回归**：负测试 `tests/negative/gpu_tile_shared_dup.myp`；全量 424 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：@gpu tile 共享内存声明是最后一个未镜像点（形状 BUG-111 + 名字冲突
+  + block<dim 警告）——至此 oracle GPU 校验全镜像：reduce/scan/scatter/
+  tile/for/resident/stream/grid/block/shared 全覆盖。

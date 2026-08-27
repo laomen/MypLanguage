@@ -39,6 +39,18 @@
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-098。
 
+### v3.15.148 — 修 @gpu tile shared 数组名冲突 + block<dim 警告（BUG-114）
+
+**非破坏性**（selfhost sema）。`@gpu tile (float[64] sm)` 与外层变量 `sm`
+同名——自举此前静默覆盖外变量（应拒却接受）。oracle 当前源校验 "shared array
+name 'X' already declared" + block 小于共享数组最大维度时 warning。
+
+- **修复**：①声明前查外层同名 → error；②block < 最大维度 → diag_.warn
+  （warning 记录到 dump 非阻塞，与 oracle 一致）。至此 oracle GPU 校验全镜像
+  （reduce/scan/scatter/tile/for/resident/stream/grid/block/shared）。
+- **测试**：负测试 `tests/negative/gpu_tile_shared_dup.myp`；正确 tile 编译
+  正常；bootstrap 自举成立。
+
 ### v3.15.147 — 修 @gpu stream(s) 参数须 GpuStream 漏校验（BUG-113）
 
 **非破坏性**（selfhost sema）。`@gpu for ... stream(s)`（s 为 int）自举此前

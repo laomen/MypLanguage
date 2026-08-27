@@ -1,0 +1,15 @@
+// BUG-114 负向：@gpu tile shared 数组名与外层变量冲突漏校验（静默覆盖外变量）。
+// 镜像 C++ "shared array name 'X' already declared"。
+// EXPECT ERROR: shared array name 'sm' already declared
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            float[] sm = new float[64];
+            @gpu tile (float[64] sm) grid(4) block(64) {
+                sm[0] = sm[0] + 1.0f;
+            }
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

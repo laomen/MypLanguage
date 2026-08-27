@@ -4635,9 +4635,31 @@ class Sema {
                 inGpuFor_ = 1;
                 inGpuKernel_ = 1;
                 sym_.enterScope();
+                // BUG-114：shared 数组名不得与外层变量冲突（镜像 C++ "shared
+                // array name 'X' already declared"）。此前 sym_.declareElem 静默
+                // 覆盖外层同名变量 → 共享内存遮蔽外变量语义错。
+                if (sym_.lookupEntry(s.name()) != null) {
+                    diag_.error(s.line(), s.col(), "shared array name '" + s.name() + "' already declared");
+                }
                 AstType sharedElem = s.sharedType();
                 while (sharedElem != null && sharedElem.element() != null) sharedElem = sharedElem.element();
                 sym_.declareElem(s.name(), "array", sharedElem != null ? typeToKind(sharedElem) : "int");
+                // BUG-114：block 大小 < 共享数组最大维度 → 线程可能覆盖不全
+                //（镜像 C++ diag_.warn "'block(...)' size is smaller than shared
+                // array dimension"）。
+                if (s.block() > 0) {
+                    long maxDim = 1L;
+                    AstType sd2 = s.sharedType();
+                    while (sd2 != null && sd2.element() != null) {
+                        if (sd2.arraySize() > maxDim) maxDim = sd2.arraySize();
+                        sd2 = sd2.element();
+                    }
+                    if (s.block() < maxDim) {
+                        diag_.warn(s.line(), s.col(), "'block(...)' size (" + s.block()
+                            + ") is smaller than shared array dimension (" + maxDim
+                            + "); threads may not cover the array");
+                    }
+                }
                 if (s.body() != null) visitStmt(s.body());
                 sym_.leaveScope();
                 inGpuFor_ = savedTileGpu;
