@@ -2649,3 +2649,28 @@
   double，long 漏）；ctorArgCompat 与 typesCompat 的提升规则须一致（int↔long
   双向在 typesCompat 有特例、ctor 路径漏）——「oracle 接受、自举拒绝」同属
   parity 审计。
+
+## BUG-102（已修复 🟩，v3.15.136）：bitvector 比较/位运算/移位量缺同宽校验
+（应拒却接受）
+
+**非破坏性**（selfhost sema）。`bitvector<8> == bitvector<16>`、`bitvector<8> &
+bitvector<16>`、`bitvector<8> << bitvector<16>` 自举均接受并运行（非崩溃），但
+oracle 当前源（sema_expr.cpp visitBinaryOp）全部拒绝——「应拒却接受」的语义严格性
+差距（非 opt 崩）。
+
+- **根因**：比较分支直接返回 "bool" 不查 bitvector 宽度；`&`/`|`/`^` 分支
+  "bitvector" 无同宽校验；`<<`/`>>` 只有 BUG-079 的移位量类型检查、无同宽检查。
+  此前无「bitvector 变量宽度」记录，无法比对。
+- **修复**：①类字段 `StrHashMap<int> bitvectorWidths_`（名→N）+ 构造器初始化；
+  ②var 声明处（BUG-007 宽度合法性校验通过后）`bitvectorWidths_.put(v.name(), bw)`；
+  ③helper `bitvectorWidthOf(AstExpr)`：Convert toKind=="bitvector" 取节点 `bw()`
+  （`bitvector<N>(x)` 语法走 Convert，parser 已 setBw），Identifier 查
+  bitvectorWidths_，否则 0；④比较分支：任一侧 bitvector 则双端必须同宽；
+  ⑤`&`/`|`/`^`：双端同宽；⑥`<<`/`>>`：移位量为 bitvector 时与左操作数同宽。
+- **验证**：异宽比较/位运算/移位三形态全部 `sev=error`；同宽
+  `bitvector<8>==bitvector<8>` / `&` / `<<` 编译+运行正确；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/bitvector_comp_width.myp` /
+  `bitvector_bitwise_width.myp` / `bitvector_shift_width.myp`（各 EXPECT ERROR 子串）；
+  全量 403 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：bitvector 运算（比较/位运算/移位量）同宽校验依赖「变量宽度追踪」——
+  不能只靠 Convert 节点 bw；类型名只到 "bitvector"，宽度信息要另建映射表。

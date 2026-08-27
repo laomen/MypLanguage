@@ -39,6 +39,20 @@
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-098。
 
+### v3.15.136 — 修 bitvector 比较/位运算/移位量同宽校验漏（BUG-102）
+
+**非破坏性**（selfhost sema）。`bitvector<8> == bitvector<16>`、`bitvector<8> &
+bitvector<16>`、`bitvector<8> << bitvector<16>` 自举此前**接受并运行**（应拒却
+接受），oracle 当前源全部拒绝。
+
+- **修复**：①新字段 `bitvectorWidths_`（bitvector 变量名→宽度）；②var 声明处
+  记录宽度；③helper `bitvectorWidthOf`（Convert bitvector<N> 取节点 bw，
+  Identifier 查映射）；④比较任一侧 bitvector 须双端同宽；⑤`&`/`|`/`^` 双端同宽；
+  ⑥`<<`/`>>` 移位量为 bitvector 时须与左操作数同宽。
+- **测试**：负测试 `tests/negative/bitvector_comp_width.myp` /
+  `bitvector_bitwise_width.myp` / `bitvector_shift_width.myp`（EXPECT ERROR 子串）；
+  同宽形态编译+运行正确；bootstrap 自举成立。
+
 ### v3.15.135 — 修 long→double / int↔long 构造器提升漏（BUG-101）
 
 **非破坏性**（selfhost sema）。`double a = 1L;`（long→double 变量/实参）与

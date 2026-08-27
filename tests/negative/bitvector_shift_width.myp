@@ -1,0 +1,14 @@
+// BUG-102 负向：bitvector 移位量为 bitvector 时须与左操作数同宽（镜像 C++
+// sema_expr.cpp visitBinaryOp "bitvector shift amount bitvector must match operand width"）
+// EXPECT ERROR: bitvector shift amount bitvector must match operand width
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            bitvector<8> a = bitvector<8>(5);
+            bitvector<16> b = bitvector<16>(1);
+            bitvector<8> c = a << b;
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

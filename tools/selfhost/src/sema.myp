@@ -329,6 +329,7 @@ class Sema {
             enumIdx_ = new StrHashMap<int>();
             ifaceIdx_ = new StrHashMap<int>();
             funcIdx_ = new StrHashMap<int>();
+            bitvectorWidths_ = new StrHashMap<int>();
             methodSigIdx_ = new StrHashMap<int>();
             classTypeParams_ = new ArrayList<ArrayList<string>>();
             opSyms_ = new ArrayList<string>();
@@ -3837,6 +3838,8 @@ class Sema {
                             diag_.error(dl, dc, "bitvector<N> width must be one of 8, 16, 32, 64 (got " + bw + ")");
                             continue;
                         }
+                        // BUG-102：记录 bitvector 变量宽度（比较/位运算同宽校验用）
+                        bitvectorWidths_.put(v.name(), bw);
                     }
                     // void 变量检查（C++：cannot declare variable of type 'void' / unknown type）
                     if (vt3 != null && vt == "void") {
@@ -4754,6 +4757,20 @@ class Sema {
                             diag_.error(e.rhs().line(), e.rhs().col(), "expected boolean expression, got '" + exprTypeName(e.rhs(), r) + "'");
                         }
                     }
+                    // BUG-102：bitvector 比较须同宽（镜像 C++ "bitvector
+                    // comparison requires both operands to be bitvector<N> of
+                    // the same width"）。v8 == v16 此前静默 → 语义错。
+                    if (l == "bitvector" || r == "bitvector") {
+                        if (l != "bitvector" || r != "bitvector") {
+                            diag_.error(e.line(), e.col(), "bitvector comparison requires both operands to be bitvector<N> of the same width");
+                        } else {
+                            int lbw3 = bitvectorWidthOf(e.lhs());
+                            int rbw3 = bitvectorWidthOf(e.rhs());
+                            if (lbw3 != 0 && rbw3 != 0 && lbw3 != rbw3) {
+                                diag_.error(e.line(), e.col(), "bitvector comparison requires both operands to be bitvector<N> of the same width");
+                            }
+                        }
+                    }
                     e.setResolvedKind("bool");
                     return "bool";
                 }
@@ -4779,6 +4796,15 @@ class Sema {
                     return "int";
                 }
                 if ((op == "&" || op == "|" || op == "^") && l == "bitvector" && r == "bitvector") {
+                    // BUG-102：bitvector 位运算须同宽（镜像 C++ "bitvector
+                    // bitwise operations require both operands to be
+                    // bitvector<N> of the same width"）。v8 & v16 此前静默 →
+                    // 语义错（i8/i16 混算）。
+                    int lbw = bitvectorWidthOf(e.lhs());
+                    int rbw = bitvectorWidthOf(e.rhs());
+                    if (lbw != 0 && rbw != 0 && lbw != rbw) {
+                        diag_.error(e.line(), e.col(), "bitvector bitwise operations require both operands to be bitvector<N> of the same width");
+                    }
                     e.setLhsUnsigned(1);
                     e.setRhsUnsigned(1);
                     e.setResultUnsigned(1);
@@ -4794,6 +4820,16 @@ class Sema {
                         diag_.error(e.rhs().line(), e.rhs().col(), "bitvector shift requires a bitvector left operand and an integer or bitvector shift amount");
                         e.setResolvedKind("void");
                         return "void";
+                    }
+                    // BUG-102：移位量为 bitvector 时须与左操作数同宽（镜像 C++
+                    // "bitvector shift amount bitvector must match operand
+                    // width"）。
+                    if (r == "bitvector") {
+                        int lbw2 = bitvectorWidthOf(e.lhs());
+                        int rbw2 = bitvectorWidthOf(e.rhs());
+                        if (lbw2 != 0 && rbw2 != 0 && lbw2 != rbw2) {
+                            diag_.error(e.line(), e.col(), "bitvector shift amount bitvector must match operand width");
+                        }
                     }
                     e.setLhsUnsigned(1);
                     e.setRhsUnsigned(1);
@@ -6991,6 +7027,14 @@ class Sema {
             out = out + ") -> " + sig.get(0);
             return out;
         }
+        // BUG-102：bitvector 表达式宽度（0 = 非 bitvector/未知）。支持
+        // Convert bitvector<N>(x)（bw 在节点）与 bitvector 变量（bitvectorWidths_）。
+        int bitvectorWidthOf(AstExpr e) {
+            if (e == null) return 0;
+            if (e.kind() == "Convert" && e.toKind() == "bitvector") return e.bw();
+            if (e.kind() == "Identifier") return bitvectorWidths_.get(e.name(), 0);
+            return 0;
+        }
         // C++ satisfiesTraitConstraint：具体类型 AstType 是否满足约束 trait。
         int satisfiesTraitAst(AstType ct, string trait) {
             string k = ct != null ? typeToKind(ct) : "void";
@@ -7560,6 +7604,8 @@ class Sema {
         StrHashMap<int> enumIdx_;
         StrHashMap<int> ifaceIdx_;
         StrHashMap<int> funcIdx_;
+        // BUG-102：bitvector 变量宽度（名 → N），供比较/位运算同宽校验
+        StrHashMap<int> bitvectorWidths_;
         StrHashMap<int> methodSigIdx_;   // "cls.meth" → 1（hasMethod O(1)）
         ArrayList<ArrayList<string>> classTypeParams_;
         ArrayList<string> opSyms_;
