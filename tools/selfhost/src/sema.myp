@@ -5469,7 +5469,11 @@ class Sema {
                                 ArrayList<AstParam> topParams = findFuncParams(fn);
                                 if (topParams != null) {
                                     if (normalizeCallArgs(e, topParams) == 0) { topNormFailed = 1; ret = "void"; }
-                                    else e.setCallParamTypes(paramKinds(topParams));
+                                    else {
+                                        e.setCallParamTypes(paramKinds(topParams));
+                                        // BUG-100：函数类型形参签名（供实参校验对比）
+                                        e.setCallParamFuncSig(paramFuncSigs(topParams));
+                                    }
                                 }
                                 // @coro 顶层函数调用返回协程句柄（long）
                                 int isCor = 0;
@@ -5521,7 +5525,11 @@ class Sema {
                                             int normFailedA = 0;
                                             if (isEvent(currentClass_, fn) == 0 && mpsA != null) {
                                                 if (normalizeCallArgs(e, mpsA) == 0) { normFailedA = 1; ret = "void"; }
-                                                else e.setCallParamTypes(paramKinds(mpsA));
+                                                else {
+                                                    e.setCallParamTypes(paramKinds(mpsA));
+                                                    // BUG-100：函数类型形参签名
+                                                    e.setCallParamFuncSig(paramFuncSigs(mpsA));
+                                                }
                                             }
                                             if (normFailedA == 0 && mpsA != null) fillDefaultArgs(e, mpsA);
                                         } else {
@@ -5629,6 +5637,8 @@ class Sema {
                                         if (subPks != null) pks = subPks;
                                     }
                                     e.setCallParamTypes(pks);
+                                    // BUG-100：函数类型形参签名（供实参校验对比）
+                                    e.setCallParamFuncSig(paramFuncSigs(anyMps));
                                 }
                             }
                             string fr = findMethodRet(base3, callee.memberName(), e.args().size());
@@ -5754,7 +5764,11 @@ class Sema {
                                 int normFailedB = 0;
                                 if (isEvent(currentClass_, callee.memberName()) == 0 && mpsB != null) {
                                     if (normalizeCallArgs(e, mpsB) == 0) { normFailedB = 1; ret = "void"; }
-                                    else e.setCallParamTypes(paramKinds(mpsB));
+                                    else {
+                                        e.setCallParamTypes(paramKinds(mpsB));
+                                        // BUG-100：函数类型形参签名
+                                        e.setCallParamFuncSig(paramFuncSigs(mpsB));
+                                    }
                                 }
                                 if (normFailedB == 0 && mpsB != null) fillDefaultArgs(e, mpsB);
                             }
@@ -5794,6 +5808,7 @@ class Sema {
                         if (cpts.get(i) == "void" || cpts.get(i) == "assoc") { anyVoidParam = 1; break; }
                     }
                     if (anyVoidParam == 0) {
+                        ArrayList<ArrayList<string>> cpsig = e.callParamFuncSig();
                         for (int i = 0; i < e.args().size() && i < cpts.size(); i = i + 1) {
                             AstExpr argi = e.args().get(i);
                             string at = argi != null ? argi.resolvedKind() : "void";
@@ -5803,6 +5818,34 @@ class Sema {
                                 at = "function";
                             }
                             string pt = cpts.get(i);
+                            // BUG-100：函数类型形参 vs 函数引用实参的签名对比（镜像 C++
+                            // typesCompatible 的 Function 结构性比较）。此前自举 typesCompat
+                            // 对 "function"=="function" 恒放行 → apply(strFn,5)（形参
+                            // (int)->int 收 (string)->int 函数）静默过 → codegen 生成非法
+                            // 闭包/函数指针 IR → opt-21 崩（"defined with type 'i32' but
+                            // expected '{ ptr, ptr }'"）。
+                            if (pt == "function" && at == "function") {
+                                // 裸注册函数名作值：自举 codegen 不支持函数名→闭包转换
+                                //（仅 lambda / 函数类型变量受支持；seed 也拒
+                                // "undefined variable"）→ 干净拒绝而非 opt 崩。
+                                int bareFnRejected = 0;
+                                if (argi != null && argi.kind() == "Identifier") {
+                                    SymbolEntry ben = sym_.lookupEntry(argi.name());
+                                    if (funcIdx_.contains(argi.name()) != 0 && (ben == null || Str.len(ben.funcRet()) == 0)) {
+                                        int al = argi.line();
+                                        int ac = argi.col();
+                                        diag_.error(al, ac, "cannot use function name '" + argi.name() + "' as a value; wrap it in a lambda: (args) => " + argi.name() + "(args)");
+                                        bareFnRejected = 1;
+                                    }
+                                }
+                                ArrayList<string> psig = cpsig != null && i < cpsig.size() ? cpsig.get(i) : null;
+                                ArrayList<string> asig = argFuncSigOf(argi);
+                                if (bareFnRejected == 0 && psig != null && asig != null && sigsMatch(psig, asig) == 0) {
+                                    int al = argi != null ? argi.line() : 0;
+                                    int ac = argi != null ? argi.col() : 0;
+                                    diag_.error(al, ac, "argument " + (i + 1) + ": expected '" + funcSigStr(psig) + "', got '" + funcSigStr(asig) + "'");
+                                }
+                            }
                             if (Str.len(at) != 0 && Str.len(pt) != 0 && typesCompat(pt, at) == 0) {
                                 int al = argi != null ? argi.line() : 0;
                                 int ac = argi != null ? argi.col() : 0;
@@ -6872,6 +6915,75 @@ class Sema {
                 if (params.get(i).name() == tgt.name()) return tgt.name();
             }
             return "";
+        }
+        // BUG-100：函数类型形参签名列表（每个元素 = [ret, param1, param2...]；
+        // 非函数形参为 null）。供调用实参校验处对比函数类型实参签名。
+        ArrayList<ArrayList<string>> paramFuncSigs(ArrayList<AstParam> ps) {
+            ArrayList<ArrayList<string>> out = new ArrayList<ArrayList<string>>();
+            for (int i = 0; i < ps.size(); i = i + 1) {
+                AstType pt = ps.get(i).type();
+                if (pt != null && pt.funcReturn() != null) {
+                    ArrayList<string> sig = new ArrayList<string>();
+                    sig.add(typeToKind(pt.funcReturn()));
+                    for (int j = 0; j < pt.funcParamTypes().size(); j = j + 1) {
+                        sig.add(typeToKind(pt.funcParamTypes().get(j)));
+                    }
+                    out.add(sig);
+                } else out.add(null);
+            }
+            return out;
+        }
+        // BUG-100：函数类型实参签名（[ret, p1, p2...]；非函数引用返回 null）。
+        // 支持三类函数引用：①declareFunc 符号（函数类型变量/lambda）；②funcIdx_
+        // 注册的顶层/类/struct 函数名。
+        ArrayList<string> argFuncSigOf(AstExpr argi) {
+            if (argi == null) return null;
+            if (argi.kind() == "Identifier") {
+                SymbolEntry en = sym_.lookupEntry(argi.name());
+                if (en != null && Str.len(en.funcRet()) != 0) {
+                    ArrayList<string> sig = new ArrayList<string>();
+                    sig.add(en.funcRet());
+                    for (int j = 0; j < en.functionParamTypes().size(); j = j + 1) sig.add(en.functionParamTypes().get(j));
+                    return sig;
+                }
+                if (funcIdx_.contains(argi.name()) != 0) {
+                    int fi = funcIdx_.get(argi.name(), -1);
+                    if (fi >= 0 && fi < funcRet_.size()) {
+                        ArrayList<string> sig = new ArrayList<string>();
+                        AstType rty = funcRet_.get(fi);
+                        sig.add(rty != null ? typeToKind(rty) : "void");
+                        if (fi < funcParams_.size() && funcParams_.get(fi) != null) {
+                            ArrayList<AstParam> fps = funcParams_.get(fi);
+                            for (int j = 0; j < fps.size(); j = j + 1) {
+                                sig.add(fps.get(j).type() != null ? typeToKind(fps.get(j).type()) : "void");
+                            }
+                        }
+                        return sig;
+                    }
+                }
+            }
+            return null;
+        }
+        // BUG-100：函数签名（[ret, p1, p2...]）结构性比较（镜像 C++ typesCompatible
+        // Function：参数数 + 逐参 + 返回兼容）。
+        int sigsMatch(ArrayList<string> a, ArrayList<string> b) {
+            if (a == null || b == null) return 0;
+            if (a.size() != b.size()) return 0;
+            for (int i = 0; i < a.size(); i = i + 1) {
+                if (typesCompat(a.get(i), b.get(i)) == 0) return 0;
+            }
+            return 1;
+        }
+        // BUG-100：函数签名显示（"(int) -> int" 形式，镜像 C++ typeName(Function)）
+        string funcSigStr(ArrayList<string> sig) {
+            if (sig == null || sig.size() == 0) return "() -> void";
+            string out = "(";
+            for (int i = 1; i < sig.size(); i = i + 1) {
+                if (i > 1) out = out + ", ";
+                out = out + sig.get(i);
+            }
+            out = out + ") -> " + sig.get(0);
+            return out;
         }
         // C++ satisfiesTraitConstraint：具体类型 AstType 是否满足约束 trait。
         int satisfiesTraitAst(AstType ct, string trait) {

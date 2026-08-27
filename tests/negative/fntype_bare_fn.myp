@@ -1,0 +1,16 @@
+// EXPECT ERROR: cannot use function name 'dbl' as a value; wrap it in a lambda: (args) => dbl(args)
+// BUG-100 回归（负测试）：裸函数名不能作函数类型实参（自举 codegen 不支持
+// 函数名→闭包转换；seed 也拒 "undefined variable"）。此前自举 sema 放行 →
+// codegen 生成非法闭包 IR → opt-21 崩（"defined with type 'i32' but expected
+// '{ ptr, ptr }'"）。合法：lambda（apply((x)=>dbl(x), 5)）/ 函数类型变量。
+import env;
+
+int apply((int)->int fn, int v) { return fn(v); }
+int dbl(int x) { return x * 2; }
+class T2 {
+    action:
+        @constructor T2() {
+            int r = apply(dbl, 5);
+        }
+}
+int main(){return 0;}

@@ -1436,6 +1436,7 @@ class AstExpr {
             resolvedKind_ = "";
             argsVisited_ = 0;
             callParamTypes_ = null;
+            callParamFuncSig_ = null;
         }
         void setType(AstType v) { type_ = v; }
         void setResolvedKind(string v) { resolvedKind_ = v; }
@@ -1514,6 +1515,9 @@ class AstExpr {
         void setStringValue(string v) { stringValue_ = v; }
         ArrayList<string> callParamTypes() { return callParamTypes_; }
         void setCallParamTypes(ArrayList<string> v) { callParamTypes_ = v; }
+        // BUG-100：函数类型形参签名（每个元素为 [ret, param1, param2...]；非函数形参为 null）
+        ArrayList<ArrayList<string>> callParamFuncSig() { return callParamFuncSig_; }
+        void setCallParamFuncSig(ArrayList<ArrayList<string>> v) { callParamFuncSig_ = v; }
         void setBodyStmt(AstStmt v) { bodyStmt_ = v; }
         void setLhsUnsigned(int v) { lhsUnsigned_ = v; }
         void setRhsUnsigned(int v) { rhsUnsigned_ = v; }
@@ -1813,6 +1817,7 @@ class AstExpr {
         int argsVisited_;
         string resolvedKind_;
         ArrayList<string> callParamTypes_;
+        ArrayList<ArrayList<string>> callParamFuncSig_;
 }
 
 // ---- 通用 ----

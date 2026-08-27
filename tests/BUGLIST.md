@@ -2597,3 +2597,31 @@
   arity**（每层元素数）仍须镜像 oracle 的递归 walk；豁免导致嵌套 arity 错 →
   codegen 越界 → opt 崩。凡 C++ 有递归 walk（嵌套 arity/结构校验），自举不能
   整体豁免，须分层实现。
+
+## BUG-100（已修复 🟩，v3.15.134）：函数类型实参签名/裸函数名漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.134，selfhost sema.myp + ast.myp）
+- **背景**：`apply(strFn, 5)`（apply 形参 (int)->int，strFn 是 (string)->int）与
+  `apply(dbl, 5)`（dbl 是匹配的裸函数名）此前自举 sema 放行 → codegen 生成
+  非法闭包/函数指针 IR → **opt-21 崩**（"defined with type 'i32' but expected
+  '{ ptr, ptr }'"）。C++ 镜像：typesCompatible 的 Function 结构性签名比较 →
+  `argument 1: expected '(int) -> int', got '(string) -> int'`。
+- **根因**：自举 typesCompat 对 kind 字符串 "function"=="function" 恒放行
+  （无签名比较）；函数类型实参路径（lambda 除外）从不校验签名。且自举 codegen
+  不支持「裸注册函数名 → 闭包」转换（仅 lambda / 函数类型变量受支持）→ 即使
+  签名匹配也崩。
+- **修复**：①AstExpr 增 callParamFuncSig_（每函数类型形参 [ret, p1...]），4 处
+  AstParam 型 setCallParamTypes 同步设置；②arg-check 处当 pt=="function" &&
+  at=="function" 时：裸注册函数名（funcIdx_ 有、无 declareFunc 符号）→ 拒
+  "cannot use function name 'X' as a value; wrap it in a lambda"（防 codegen
+  崩）；函数类型变量/lambda → argFuncSigOf + sigsMatch 签名比较（expected '(T)
+  -> R', got ...）。
+- **验证**：裸函数名（匹配/不匹配）/函数类型变量不匹配干净拒绝；lambda/匹配
+  函数类型变量编译+运行正确（A r=10 / B r2=13）；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/fntype_bare_fn.myp` +
+  `tests/negative/fntype_var_mismatch.myp`；全量 397 通过 / 0 失败；oracle 对拍
+  95/0。
+- **教训**：函数类型是一等值但自举 codegen 只支持 lambda / 函数类型变量作值，
+  不支持裸函数名→闭包（seed 也拒）——「oracle 有 Function 结构性签名比较、自举
+  kind 二分」是漏检；同时 codegen 能力边界（裸函数名）须在 sema 干净拒绝而非
+  opt 崩。

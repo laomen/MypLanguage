@@ -1,0 +1,16 @@
+// EXPECT ERROR: argument 1: expected '(int) -> int', got '(string) -> int'
+// BUG-100 回归（负测试）：函数类型变量实参与形参签名须匹配（镜像 C++
+// typesCompatible Function 结构性比较）。此前自举 typesCompat 对
+// "function"=="function" 恒放行 → 不匹配静默过 → codegen 生成非法闭包 IR →
+// opt-21 崩。合法：apply((int)->int 变量, v) / 匹配签名 / lambda。
+import env;
+
+int apply((int)->int fn, int v) { return fn(v); }
+class T2 {
+    action:
+        @constructor T2() {
+            (string)->int strVar = (s) => 1;
+            int r = apply(strVar, 5);
+        }
+}
+int main(){return 0;}

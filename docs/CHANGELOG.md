@@ -39,6 +39,23 @@
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-098。
 
+### v3.15.134 — 修函数类型实参签名/裸函数名漏校验 → opt 崩（BUG-100）
+
+**非破坏性**（selfhost sema + ast）。`apply(strFn, 5)`（形参 (int)->int 收
+(string)->int）与 `apply(dbl, 5)`（裸函数名）此前自举放行 → codegen 非法闭包
+IR → **opt-21 崩**（`defined with type 'i32' but expected '{ ptr, ptr }'`）。
+
+- **修复**：①AstExpr 增 callParamFuncSig_（函数类型形参签名），4 处
+  setCallParamTypes 同步设置；②arg-check：裸注册函数名作函数类型实参 → 拒
+  `cannot use function name 'X' as a value; wrap it in a lambda`（自举 codegen
+  不支持函数名→闭包）；函数类型变量/lambda → `argFuncSigOf` + `sigsMatch`
+  签名比较（`argument 1: expected '(T) -> R', got ...`）。
+- **测试**：负测试 `tests/negative/fntype_bare_fn.myp` +
+  `tests/negative/fntype_var_mismatch.myp`；lambda/匹配函数类型变量编译+运行
+  正确。
+- 验证：bootstrap 自举成立；全量回归 **397 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-100。
+
 ### v3.15.133 — 修嵌套解构 arity 漏校验 → opt 崩（BUG-099）
 
 **非破坏性**（selfhost sema）。`((int a,int b,int d),int c) = getNested()`
