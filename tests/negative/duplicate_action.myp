@@ -1,0 +1,15 @@
+// EXPECT ERROR: duplicate action 'go' in class 'T2'
+// BUG-095 回归（负测试）：类内 action 名须唯一（同名即重，MYP 无 action 重载）。
+// 此前自举 addMethod 静默允许重复 → codegen 重定义同一 LLVM 函数 → opt-21 崩
+// （"invalid redefinition of function 'T2_go'"）。C++ visitClassDecl 镜像
+// "duplicate action 'X' in class 'Y'"。合法：@constructor 同名重载（豁免）/
+// 不同名 action / @static 同名不同签名（BUG-046 单独规则）。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() { }
+        int go() { return 1; }
+        int go() { return 2; }
+}
+int main(){return 0;}

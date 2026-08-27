@@ -27,6 +27,19 @@
 
 ## 编译器版本历史
 
+### v3.15.129 — 修类内重复 action/event/function/struct 方法漏校验 → opt 崩（BUG-095）
+
+**非破坏性**（selfhost sema）。`int go(){...} int go(){...}`（类内同名 action）
+此前自举静默接受 → codegen 重定义同一 LLVM 函数 → **opt-21 崩**（`invalid
+redefinition of function 'T2_go'`）。C++ visitClassDecl 镜像。
+
+- **修复**：四处方法注册点加重复检查（methodSigIdx_ 同名即重）——类 action /
+  类 function / 类 event / struct 方法；类+struct 构造器豁免（同名重载合法）。
+- **测试**：负测试 `tests/negative/duplicate_action.myp` +
+  `tests/negative/duplicate_event.myp`；构造器重载/合法 action 不受影响。
+- 验证：bootstrap 自举成立（自举源码无重复）；全量回归 **390 通过 / 0 失败**；
+  oracle 对拍 95/0。BUGLIST 记 BUG-095。
+
 ### v3.15.128 — 修 bitfield 重复名/字段漏校验（BUG-094）
 
 **非破坏性**（selfhost sema）。`bitfield Flags { bit a; bit a; }`（重复字段）与

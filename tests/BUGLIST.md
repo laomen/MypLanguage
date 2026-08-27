@@ -2479,3 +2479,30 @@
 - **教训**：声明收集循环（bitfield/struct/class/function）是重复校验的高频
   遗漏点——凡 oracle 有 duplicate 分支、自举收集处无比对，即「应拒却接受」；
   AstBitfield 无位置字段，诊断用 0,0（位置精度低但拒绝语义正确）。
+
+## BUG-095（已修复 🟩，v3.15.129）：类内重复 action/event/function/struct 方法漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.129，selfhost sema.myp）
+- **背景**：`int go(){...} int go(){...}`（类内同名 action）此前自举静默接受 →
+  codegen 重定义同一 LLVM 函数 → **opt-21 崩**（"invalid redefinition of
+  function 'T2_go'"）。同模式的类内 function/event/struct 方法重复也静默
+  last-wins。C++ 镜像：`duplicate action 'X' in class 'Y'` /
+  `duplicate function 'X' in class 'Y'` / `duplicate event 'X' in class 'Y'` /
+  `duplicate method 'X' in struct 'Y'`。顶层函数重复已有（duplicate function
+  name）；static action 由 BUG-046 单独规则（签名不同才报）。
+- **根因**：自举 addMethod/方法注册只 `methodSigIdx_.put`（key 已存在则跳过），
+  从不报重复——对比顶层函数、struct/class 名重复检查均有，类方法族全漏。
+- **修复**：四处注册点加重复检查（methodSigIdx_ 已含同名即重）：①类 action（
+  ctor 豁免——同名构造器重载合法）；②类 function；③类 event（AstEvent 无位置
+  字段 → 0,0）；④struct 方法（ctor 豁免——与 struct 同名构造器）。
+- **防回归**：struct 构造器方法（与 struct 同名）首版误伤 constructor.myp →
+  ctor 豁免修复。自举源码无重复 → bootstrap 成立。
+- **验证**：重复 action/event/struct 方法干净拒绝（文本与 oracle 一致）；构造器
+  重载（Box()/Box(int)）/合法 action 不受影响；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/duplicate_action.myp` +
+  `tests/negative/duplicate_event.myp`；全量 390 通过 / 0 失败；oracle 对拍
+  95/0。
+- **教训**：类方法注册（actions/functions/events/struct methods）是 duplicate
+  校验重灾区——oracle 用符号表 declare 返回值判重（类作用域单空间，同名即重），
+  自举方法注册全用「key 存在则跳过」的静默 put。构造器（类+struct）是豁免点，
+  同名重载合法。

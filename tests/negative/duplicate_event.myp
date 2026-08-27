@@ -1,0 +1,15 @@
+// EXPECT ERROR: duplicate event 'ev' in class 'T2'
+// BUG-095 回归（负测试）：类内 event 名须唯一。
+// 此前自举事件注册静默允许重复 → 同名事件二义性。C++ visitClassDecl 镜像
+// "duplicate event 'X' in class 'Y'"。合法：不同名 event。
+import env;
+
+class T2 {
+    event:
+        ev(int v);
+    action:
+        @constructor T2() { }
+    event:
+        ev(int v);
+}
+int main(){return 0;}

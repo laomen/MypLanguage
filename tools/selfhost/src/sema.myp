@@ -1717,8 +1717,13 @@ class Sema {
                     if (funcIdx_.contains(f.name()) == 0) funcIdx_.put(f.name(), funcNames_.size() - 1);
                     if (f.coro() != 0) coroNames_.add(f.name());
                     if (f.async() != 0) asyncFuncNames_.add(f.name());
-                    methods_.add(new MethodSig(st.name(), f.name(), f.ret() != null ? typeToKind(f.ret()) : "void", f.params().size(), f.params(), f.coro() != 0 ? 1 : 0, f.ret()));
+                    // BUG-095：struct 内重复方法（镜像 C++ "duplicate method 'X'
+                    // in struct 'Y'"）。构造器豁免（同名即 struct 名，重载合法）。
                     string mkey = st.name() + "." + f.name();
+                    if (f.ctor() == 0 && methodSigIdx_.contains(mkey) != 0) {
+                        diag_.error(f.line(), f.col(), "duplicate method '" + f.name() + "' in struct '" + st.name() + "'");
+                    }
+                    methods_.add(new MethodSig(st.name(), f.name(), f.ret() != null ? typeToKind(f.ret()) : "void", f.params().size(), f.params(), f.coro() != 0 ? 1 : 0, f.ret()));
                     if (methodSigIdx_.contains(mkey) == 0) methodSigIdx_.put(mkey, methods_.size() - 1);
                 }
             }
@@ -1935,6 +1940,17 @@ class Sema {
                         if (typeToKind(a.ret()) != "void")
                             diag_.error(a.line(), a.col(), "constructor '" + a.name() + "' must have void return type");
                     }
+                    // BUG-095：类内重复 action（同名即重，无重载；镜像 C++
+                    // "duplicate action 'X' in class 'Y'"）。构造器豁免（同名
+                    // 重载合法）。此前 addMethod 静默允许重复 → codegen 重定义
+                    // 同一 LLVM 函数 → opt-21 崩（"invalid redefinition of
+                    // function 'T2_go'"）。
+                    if (a.ctor() == 0) {
+                        string akey = c.name() + "." + a.name();
+                        if (methodSigIdx_.contains(akey) != 0) {
+                            diag_.error(a.line(), a.col(), "duplicate action '" + a.name() + "' in class '" + c.name() + "'");
+                        }
+                    }
                     addMethod(c.name(), a.name(), a.ret(), a.params().size(), a.params(), a.coro());
                     if (a.async() != 0) asyncMethodKeys_.add(c.name() + "." + a.name());
                     for (int pi = 0; pi < a.params().size(); pi = pi + 1) {
@@ -1976,6 +1992,12 @@ class Sema {
                 }
                 for (int j = 0; j < c.funcs().size(); j = j + 1) {
                     AstFunction f = c.funcs().get(j);
+                    // BUG-095：类内重复 function（镜像 C++ "duplicate function
+                    // 'X' in class 'Y'"）。
+                    string fkey = c.name() + "." + f.name();
+                    if (methodSigIdx_.contains(fkey) != 0) {
+                        diag_.error(f.line(), f.col(), "duplicate function '" + f.name() + "' in class '" + c.name() + "'");
+                    }
                     addMethod(c.name(), f.name(), f.ret(), f.params().size(), f.params(), f.coro());
                     if (f.async() != 0) asyncMethodKeys_.add(c.name() + "." + f.name());
                     if (f.ctor() != 0 && f.name() == "") {
@@ -1985,9 +2007,14 @@ class Sema {
                 // 事件也作为可调用方法（void 返回）
                 for (int j = 0; j < c.events().size(); j = j + 1) {
                     AstEvent ev = c.events().get(j);
+                    // BUG-095：类内重复 event（镜像 C++ "duplicate event 'X' in
+                    // class 'Y'"）。
+                    string ekey = c.name() + "." + ev.name();
+                    if (methodSigIdx_.contains(ekey) != 0) {
+                        diag_.error(0, 0, "duplicate event '" + ev.name() + "' in class '" + c.name() + "'");
+                    }
                     methods_.add(new MethodSig(c.name(), ev.name(), "void", 0, new ArrayList<AstParam>(), 0, null));
                     eventPairs_.add(c.name() + "." + ev.name());
-                    string ekey = c.name() + "." + ev.name();
                     if (methodSigIdx_.contains(ekey) == 0) methodSigIdx_.put(ekey, methods_.size() - 1);
                 }
             }
