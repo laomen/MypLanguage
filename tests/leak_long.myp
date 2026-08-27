@@ -1,0 +1,106 @@
+// leak_long: 长时间内存泄漏测试（30 分钟级）。
+// 混合负载循环（无环/有环/string/HashMap/嵌套容器），定期报告：
+//   Node/  total = 存活对象+字符串+数组计数（对象泄漏指标：应稳定有界）
+//   arenaR/arenaU = arena mmap 保留/累计 bump 字节（内存占用指标：应趋平）
+// 判断泄漏：
+//   - Node/total 随迭代持续增长 → 对象泄漏（ARC/环收集 bug）
+//   - arenaR 不趋平、持续线性增长 → 内存无限增长（bump 不复用）
+// 用法：timeout 1800 ./leak_long        （30 分钟）
+//       timeout 1800 bash tests/test_leak_long.sh
+// 已发现（v3.15.176）：对象无泄漏（Node/total 稳定）；混合负载 arenaR 最终趋平
+// （碎片化稳态 pool 偏大，非无限增长）。
+
+import memory;
+import collections;
+import rtti;
+import env;
+
+class Node {
+    action:
+        void setBox(Box<Node> b) { box = b; }
+        void setVal(int v) { v_ = v; }
+    property:
+        Box<Node> box;
+        int v_ = 0;
+}
+
+class Box<T> {
+    action:
+        void add(T v) {
+            if (data_ == null) { data_ = new T[8]; }
+            data_[cnt_] = v;
+            cnt_ = cnt_ + 1;
+        }
+    property:
+        T[] data_;
+        int cnt_ = 0;
+}
+
+class App {
+    action:
+        @constructor
+        App() {
+            int nodeTid = 0;
+            {
+                Node tmp = new Node();
+                nodeTid = Rtti.typeId(tmp);
+            }
+            long iter = 0;
+            long since = 0;
+            long lastNode = 0;
+            long lastArena = 0;
+            while (true) {
+                // 负载 1：无环 ArrayList<Node>（ARC 逐元素释放）
+                {
+                    ArrayList<Node> l = new ArrayList<Node>();
+                    for (int j = 0; j < 6; j = j + 1) {
+                        Node n = new Node();
+                        n.setVal(j);
+                        l.add(n);
+                    }
+                }
+                // 负载 2：有环 Box<Node>（依赖环收集）
+                {
+                    Node a = new Node();
+                    Box<Node> b = new Box<Node>();
+                    b.add(a);
+                    a.setBox(b);
+                }
+                // 负载 3：字符串拼接（ARC string）
+                string s = "leak-test-" + iter;
+                // 负载 4：HashMap<int,Node>（多参数泛型，V 数组逐元素释放）
+                {
+                    HashMap<int, Node> m = new HashMap<int, Node>();
+                    m.put(int(iter & 1023), new Node());
+                }
+                // 负载 5：直接类数组 + 嵌套泛型容器
+                {
+                    Node[] arr = new Node[4];
+                    arr[0] = new Node();
+                    ArrayList<ArrayList<Node>> nl = new ArrayList<ArrayList<Node>>();
+                    ArrayList<Node> inner = new ArrayList<Node>();
+                    inner.add(new Node());
+                    nl.add(inner);
+                }
+                Memory.collectCyclesIfNeeded();
+                iter = iter + 1;
+                if (iter - since >= 200000) {
+                    since = iter;
+                    long lv = Memory.liveObjectCountByType(nodeTid);
+                    long tot = Memory.liveTotalCount();
+                    long ar = Memory.arenaReservedBytes();
+                    long au = Memory.arenaUsedBytes();
+                    long deltaN = lv - lastNode;
+                    long deltaA = ar - lastArena;
+                    lastNode = lv;
+                    lastArena = ar;
+                    Console.writeString("iter=" + iter + " Node=" + lv
+                        + " dN=" + deltaN + " total=" + tot
+                        + " arenaR=" + ar + " dA=" + deltaA
+                        + " arenaU=" + au + "\n");
+                }
+            }
+        }
+}
+
+int main() { App app = new App(); return 0; }

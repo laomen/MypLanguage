@@ -27,6 +27,26 @@
 
 ## 编译器版本历史
 
+### v3.15.176 — 修复多环大规模漏收集 + 长时间泄漏测试工具
+
+**非破坏性**（纯 MYP 运行时）。长时间运行测试暴露 + 修复：
+- **修复多环漏收集（重要）**：`ccAddrOk`（v3.15.175 悬垂防御）从 `Arena.head`
+  （最旧 chunk）遍历 chunk 链——但 chunk 链表是**反向**的（`Arena.cur` 最新，
+  next 指旧；head 最旧且 next=0）→ 从 head 遍历只检查首 chunk，多 chunk 时新
+  对象全被误判为悬垂跳过 rc-- → **多环大规模漏收集**（实测 50 环全收、1000 环
+  只收 204；环数越大漏越多）。修复：从 `Arena.cur`（最新）遍历。验证：1000 环
+  显式收集 + 自动收集全部回收。
+- **预扩容防御**：collectCycles 前 `ccEnsureCap(nroot*2+256)` 预分配 CC 哈希表，
+  避免 trial 期扩容（`CC.keys = nk` 重赋值 ARC 释放旧数组 → trial 模式嵌套
+  ccInsert 污染表，历史 1000 环崩溃根因）。
+- **长时间泄漏测试工具**：`tests/leak_long.myp` + `tests/test_leak_long.sh`——
+  混合负载（无环/有环/string/HashMap/嵌套容器）循环 + 定期报告 Node/total 存活
+  计数（对象泄漏指标）与 arenaR（mmap 保留，内存占用指标）；脚本自动判断趋势。
+  验证 90s~数分钟：**对象无泄漏**（Node/total 稳定有界）；混合负载 arenaR 最终
+  趋平（碎片化稳态 pool 偏大但非无限增长，不会长时间 OOM）。
+- **测试**：`tests/@test/cyclecollect_multi.myp`（2 tests：1000 环显式收集 + 自动
+  收集下多环回收）。全量 456/456 + parity 95/95 + 自举 MD5 一致。
+
 ### v3.15.175 — 泛型数组元素释放修复 + 泛型环收集
 
 **非破坏性**（编译器 + 两运行时）。按「零用户操作 + 最少运行时内存操作」方向
