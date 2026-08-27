@@ -1,0 +1,81 @@
+// cyclecollect_auto: 环收集自动触发（v3.15.172）——分配水位 + 安全点自动收集
+// + @thread/@parallel 活动守卫。零用户操作：事件循环（myp_event_process_all，
+// coro 调度器也走它）空闲时若水位已到且无并发线程则自动收集。
+// 守卫：@thread 体存活 / @parallel for 进行中 → threadsActive>0 → 跳过收集。
+
+import test;
+import memory;
+import rtti;
+
+ffi void myp_event_process_all();
+ffi void myp_cc_thread_enter();
+ffi void myp_cc_thread_exit();
+
+class Node {
+    action:
+        void setNext(Node n) { next = n; }
+        void setPrev(Node p) { prev = p; }
+        void setSelf() { next = this; }
+    property:
+        Node next;
+        Node prev;
+}
+
+// 自动收集：低水位 + 事件循环安全点（myp_event_process_all）→ 环被回收。
+@test void test_auto_event_loop() {
+    Memory.setCollectThreshold(2);
+    int tid = 0;
+    long before = 0;
+    {
+        Node a = new Node();
+        Node b = new Node();
+        tid = Rtti.typeId(a);
+        before = Memory.liveObjectCountByType(tid);   // = 之前 + 2（a、b 存活）
+        a.setNext(b);
+        b.setPrev(a);
+    }
+    Test.assertLongEq(Memory.liveObjectCountByType(tid), before, "2-cycle alive before auto collect");
+    myp_event_process_all();   // 事件循环安全点 → 水位到 → 自动收集
+    Test.assertLongEq(Memory.liveObjectCountByType(tid), before - 2, "auto collected at event-loop safe point");
+    Memory.setCollectThreshold(100000);   // 恢复默认
+}
+
+// 线程守卫：活动 @thread 期间跳过自动收集（并发不安全）；线程结束才收集。
+@test void test_thread_guard() {
+    Memory.setCollectThreshold(2);
+    int tid = 0;
+    long before = 0;
+    {
+        Node a = new Node();
+        Node b = new Node();
+        tid = Rtti.typeId(a);
+        before = Memory.liveObjectCountByType(tid);
+        a.setNext(b);
+        b.setPrev(a);
+    }
+    myp_cc_thread_enter();   // 模拟 @thread 活跃
+    Memory.collectCyclesIfNeeded();
+    long mid = Memory.liveObjectCountByType(tid);
+    Test.assertLongEq(mid, before, "collect skipped while thread active");
+    myp_cc_thread_exit();    // 线程体结束
+    Memory.collectCyclesIfNeeded();
+    long after = Memory.liveObjectCountByType(tid);
+    Test.assertLongEq(after, before - 2, "collect after thread exit");
+    Memory.setCollectThreshold(100000);   // 恢复默认
+}
+
+// 自环也被自动收集（水位路径）。
+@test void test_auto_self_cycle() {
+    Memory.setCollectThreshold(1);
+    int tid = 0;
+    long before = 0;
+    {
+        Node n = new Node();
+        tid = Rtti.typeId(n);
+        before = Memory.liveObjectCountByType(tid);
+        n.setSelf();
+    }
+    Memory.collectCyclesIfNeeded();   // 自选安全点触发
+    Test.assertLongEq(Memory.liveObjectCountByType(tid), before - 1, "self-cycle auto collected");
+    Memory.setCollectThreshold(100000);   // 恢复默认
+}

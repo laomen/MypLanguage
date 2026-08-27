@@ -22,12 +22,15 @@ ffi long myp_arena_alloc(long size);
 }
 
 ffi void coroMarkMultiThread();   // coro.myp：@thread 出现 → 协程表转全局锁模式
+ffi void myp_cc_thread_enter();    // alloc.myp：自动收集守卫（@thread 活跃）
+ffi void myp_cc_thread_exit();     // alloc.myp：自动收集守卫（@thread 体结束）
 
 // pthread start routine：arg = 用户入口地址。本函数是普通函数（有完整栈帧），
 // 由 glibc 以标准 SysV 调用约定调用（栈/对齐/TLS 均已就绪）。返回 0 → 线程正常
 // 结束（glibc 清 TLS）。不再 syscall 60（那是 exit 整个进程）。
 long myp_thread_child_entry(long arg) {
     __myp_indirect_void(arg);     // 跑用户入口
+    myp_cc_thread_exit();         // v3.15.172：本 @thread 体结束 → 可自动收集
     return 0;
 }
 
@@ -35,8 +38,9 @@ long myp_thread_child_entry(long arg) {
 // 子线程跑 entry）。失败返回 -1（pthread_create 错误码）。
 long myp_thread_spawn(long entryAddr) {
     coroMarkMultiThread();        // 多线程模式开启（@thread 出现；M:1 快路径失效）
+    myp_cc_thread_enter();        // v3.15.172：@thread 活跃期间禁自动收集
     if (Thr.tidSlot == 0) Thr.tidSlot = myp_arena_alloc(8);
     long r = pthread_create(Thr.tidSlot, 0, __myp_fn_addr("myp_thread_child_entry"), entryAddr);
-    if (r != 0) return -1;
+    if (r != 0) { myp_cc_thread_exit(); return -1; }
     return 0;
 }

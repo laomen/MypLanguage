@@ -30,6 +30,7 @@ ffi long myp_arena_alloc(long size);
 ffi void myp_thread_spawn(long entryAddr);        // thread.myp（clone 原语）
 ffi long myp_now_ms();                            // time.myp
 ffi void __myp_coro_event_notify(long event_id);  // coro.myp（dispatch 后唤醒事件等待者）
+ffi void myp_cc_try_collect();                    // alloc.myp（v3.15.172 自动环收集安全点）
 
 // ---- 常量 ----
 // 64 线程槽（0=主）、队列 256、handler 512、timer 64、实例映射 128、scope 64
@@ -405,6 +406,9 @@ void myp_event_process_all() {
     int slot = evCurrentSlot();
     while (qPop(slot) != 0) evDispatch(slot);
     myp_timer_check();
+    // v3.15.172：事件循环安全点自动环收集（coro 调度器也走本函数）。
+    // 内部守卫：无活动 @thread/@parallel 才收集（并发下自动停用）。
+    myp_cc_try_collect();
 }
 
 int myp_event_process_one() {

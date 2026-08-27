@@ -226,12 +226,15 @@ long myp_pool_ensure_global() {
 }
 
 // ---- C: void myp_pool_parallel_for(pool, start, end, step, fn, arg) ----
+ffi void myp_cc_thread_enter();   // alloc.myp：自动收集守卫（并行体运行期禁收集）
+ffi void myp_cc_thread_exit();    // alloc.myp
 void myp_pool_parallel_for(long pool, int start, int end, int step, long fn, long arg) {
+    myp_cc_thread_enter();   // v3.15.172：@parallel for 进行中 → 自动收集跳过
     poolInit();
     int nt = int(PoolTab.nThreads);
     if (nt <= 0) { myp_pool_ensure_global(); nt = int(PoolTab.nThreads); }
     int n = (end - start + step - 1) / step;
-    if (n <= 0) return;
+    if (n <= 0) { myp_cc_thread_exit(); return; }
     PoolTab.workFn = fn;
     PoolTab.workArg = arg;
     int maxChunks = nt * 4;
@@ -267,6 +270,7 @@ void myp_pool_parallel_for(long pool, int start, int end, int step, long fn, lon
     while (__myp_mem_load_i32(PoolTab.doneCount) < __myp_mem_load_i32(PoolTab.totalChunks)) {
         __myp_syscall(202, PoolTab.barSeq, 128, s, 0, 0, 0);
     }
+    myp_cc_thread_exit();   // v3.15.172：并行体结束 → 可自动收集
 }
 
 // ---- C: int32_t myp_pool_worker_id(void) ----

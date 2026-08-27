@@ -248,6 +248,10 @@ string myp_alloc_object(long size, int type_id) {
     Live.objects = Live.objects + 1;
     myp_type_live_inc(type_id);   // 包 B：per-type 计数
     ccAllAdd(base + 8, type_id);   // 环收集根枚举登记
+    // v3.15.172 自动收集水位：每 N 次类对象分配置 pending（==threshold 恰好一次），
+    // 安全点 myp_cc_try_collect 消费。阈值<=0 关闭。热路径仅一次 add + 比较。
+    CC.allocSinceCollect = CC.allocSinceCollect + 1;
+    if (CC.threshold > 0 && CC.allocSinceCollect == CC.threshold) CC.pending = 1;
     return __myp_addr_to_str(base + 8);
 }
 
@@ -302,7 +306,40 @@ string myp_alloc_slice_backing(long count, int elem_size, int elem_kind) {
         long allCap = 0;   // ccAll 容量
         long allN = 0;     // 已登记类对象数
         long[] all;        // 类对象登记表：高 16 位 = type_id，低 48 位 = data 地址
+        long allocSinceCollect = 0;   // v3.15.172：距上次收集的类对象分配数（水位）
+        long threshold = 100000;      // 自动收集水位（每 N 次类对象分配；<=0 关闭）
+        int pending = 0;              // 水位已到，待安全点收集
+        long thrCount = 0;            // 活动 @thread/@parallel 计数地址（arena 4B，原子）
 }
+
+// 活动线程计数（原子，进程级，arena 4B 地址——mmap 零初始化）。⚠️ 空闲链表
+// 复用返回**脏内存**（非 bump 尾部的旧数据）→ 必须显式清零（cc_auto4 实测 thr=32
+// 导致守卫误判"有活动线程"而跳过收集）。
+// @thread 体存活 / @parallel for 进行中 → >0 → 自动收集跳过（并发安全守卫）。
+// 线程进入/退出经 myp_cc_thread_enter/exit（thread.myp / pool.myp 调）。
+long ccThrCountAddr() {
+    if (CC.thrCount == 0) {
+        CC.thrCount = myp_arena_alloc(4);
+        if (CC.thrCount != 0) __myp_mem_store_i32(CC.thrCount, 0);
+    }
+    return CC.thrCount;
+}
+void myp_cc_thread_enter() { __myp_atomic_add_i32_addr(ccThrCountAddr(), 1); }
+void myp_cc_thread_exit() { __myp_atomic_add_i32_addr(ccThrCountAddr(), -1); }
+int myp_cc_threads_active() { return __myp_atomic_load_i32_addr(ccThrCountAddr()); }
+
+// 安全点自动触发（v3.15.172）：水位已到（pending）且无活动线程/并行 → 收集。
+// 调用方（event_process_all / 显式 Memory.collectCyclesIfNeeded）须在安全点
+// （主线程、无并发引用变更）。收集后复位水位。
+void myp_cc_try_collect() {
+    if (CC.pending == 0) return;
+    if (myp_cc_threads_active() != 0) return;   // @thread/@parallel 活跃 → 跳过
+    myp_collect_cycles();
+    CC.pending = 0;
+    CC.allocSinceCollect = 0;
+}
+void myp_cc_set_threshold(long n) { CC.threshold = n; }
+long myp_cc_get_threshold() { return CC.threshold; }
 
 // 类对象登记：myp_alloc_object 每次分配 O(1) 追加（枚举根用，替代 arena walk——
 // walk 无法区分原始块（args/coro 的 myp_arena_alloc 无 type_id 头）→ 假根段错误）。

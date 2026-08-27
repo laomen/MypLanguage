@@ -56,6 +56,12 @@ ffi long myp_diag_get_strict();
 // （单线程、无并发引用变更）。进程退出时自动触发（myp_free_all）；
 // 本 FFI 供执行期显式调用（如事件循环空闲时）。
 ffi void myp_collect_cycles();
+// v3.15.172 自动触发：水位到（每 N 次类对象分配）且无活动 @thread/@parallel 时，
+// 在事件循环安全点（myp_event_process_all）自动收集。collectCyclesIfNeeded 供
+// 无事件循环的应用在自选安全点调用；setCollectThreshold 调水位（<=0 关闭）。
+ffi void myp_cc_try_collect();
+ffi void myp_cc_set_threshold(long n);
+ffi long myp_cc_get_threshold();
 
 // ============================================================
 // 动态内存分配器
@@ -116,6 +122,22 @@ class Memory {
             }
             Console.writeString("  total: " + total + "\n");
         }
+
+        // 环收集（v3.15.171）：回收引用环（自环/互引用）。安全点调用
+        // （单线程、无并发引用变更）。进程退出自动触发（myp_free_all）。
+        void collectCycles() {
+            myp_collect_cycles();
+        }
+
+        // ---- v3.15.172：自动环收集（零用户操作）----
+        // 每 N 次类对象分配（水位）在事件循环安全点自动收集。默认 100000，
+        // <=0 关闭。事件循环（mapping/@coro 调度）自动触发；无事件循环的
+        // 应用可在自选安全点调 collectCyclesIfNeeded()。
+        // 并发守卫：有活动 @thread 体或 @parallel for 进行中时自动跳过
+        // （此时收集不安全，回退显式 collectCycles 或退出自动）。
+        void setCollectThreshold(long n) { myp_cc_set_threshold(n); }
+        long collectThreshold() { return myp_cc_get_threshold(); }
+        void collectCyclesIfNeeded() { myp_cc_try_collect(); }
 
         // 非 ARC bump arena（进程级字符串/数组历史分配）reserved/used 字节
         long arenaReservedBytes() { return myp_diag_arena_reserved(); }

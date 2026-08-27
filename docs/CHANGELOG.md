@@ -27,6 +27,28 @@
 
 ## 编译器版本历史
 
+### v3.15.172 — 执行期自动环收集（分配水位 + 安全点 + 并发守卫）
+
+**非破坏性**（纯运行时 + stdlib，不碰编译器）。按「零用户操作 + 最少运行时内存
+操作」方向第三步：把环收集从「退出自动 + 显式调用」升级为**执行期自动**——
+长跑程序（事件循环/服务器）不再需要任何用户操作，环在执行期自动回收：
+- **分配水位**：`myp_alloc_object` 每类对象分配 +1 计数，到阈值（默认 100000，
+  `Memory.setCollectThreshold(n)` 可调，<=0 关闭）置 `pending`。热路径仅一次
+  add + 比较（==threshold 恰好触发一次，无重复写）。
+- **安全点自动触发**：`myp_event_process_all()`（事件循环派发 + 协程调度器都走
+  它）末尾调 `myp_cc_try_collect()`——水位到且无并发则收集。无事件循环的应用
+  可在自选安全点调 `Memory.collectCyclesIfNeeded()`。
+- **并发守卫**：进程级活动线程计数 `threadsActive`（原子，arena 4B 地址）。
+  `@thread` 体存活（`myp_thread_spawn` 进 / `myp_thread_child_entry` 出）与
+  `@parallel for` 进行中（`myp_pool_parallel_for` 全程）→ >0 → 自动收集跳过
+  （并发下引用变更不安全，回退显式 + 退出自动）。
+- `Memory.setCollectThreshold` / `collectThreshold` / `collectCyclesIfNeeded`
+  （stdlib）。
+- `tests/@test/cyclecollect_auto.myp`：事件循环自动收集 / 线程守卫 / 自环自动，
+  3 tests（453/453 全量通过，平价 95/95，bootstrap MD5 门通过）。
+- ⚠️ 计数器用 `myp_arena_alloc(4)` 后须**显式清零**——空闲链表复用返回脏内存
+  （实测 thr=32 导致守卫误判"有活动线程"而跳过收集，v1 曾漏回收）。
+
 ### v3.15.171 — 环收集器（ARC + trial-deletion，自动回收引用环）
 
 **非破坏性**（纯运行时 + stdlib，不碰编译器）。按「零用户操作 + 最少运行时内存
