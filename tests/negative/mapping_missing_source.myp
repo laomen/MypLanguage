@@ -1,0 +1,24 @@
+// BUG-130 负向：mapping 源事件不存在（`Src.nonexist -> Dst.onOut`）——自举此前
+// 静默接受 → codegen findEventClass 空 → handler 不生成 → 静默 no-op（语义错）；
+// oracle 在 LLVM verify 失败（Call parameter type does not match）。自举干净
+// 拒绝：源节点须为 src 类的**事件**。
+// EXPECT ERROR: mapping source 'Src.nonexist' is not an event on class 'Src'
+import env;
+class Src {
+    event:
+        output(int v);
+}
+class Dst {
+    action:
+        void onOut(int v) { }
+}
+class T2 {
+    action:
+        @constructor T2() {
+            mapping() {
+                Src.nonexist -> Dst.onOut;
+            }
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

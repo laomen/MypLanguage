@@ -1,0 +1,24 @@
+// BUG-130 负向：mapping 目标 action 不存在（`Src.output -> Dst.nonexist`）——
+// 自举此前 codegen 发 @Dst_nonexist 未定义 → opt-21 崩（use of undefined
+// value）；oracle 静默容忍（no-op）。自举干净拒绝：目标节点须为 src 类的
+// **action**。
+// EXPECT ERROR: mapping target 'Dst.nonexist' is not an action on class 'Dst'
+import env;
+class Src {
+    event:
+        output(int v);
+}
+class Dst {
+    action:
+        void onOut(int v) { }
+}
+class T2 {
+    action:
+        @constructor T2() {
+            mapping() {
+                Src.output -> Dst.nonexist;
+            }
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

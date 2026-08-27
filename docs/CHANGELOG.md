@@ -27,6 +27,19 @@
 
 ## 编译器版本历史
 
+### v3.15.164 — 修 mapping 源事件/目标 action 存在性漏校验（BUG-130）
+
+**非破坏性**（selfhost sema）。`mapping() { Src.nonexist -> Dst.onOut; }`（源
+事件不存在）自举此前**静默接受** → codegen findEventClass 空 → handler 不生成
+→ no-op（oracle LLVM verify 失败）；`Src.output -> Dst.nonexist`（目标 action
+不存在）→ codegen 发 @Dst_nonexist 未定义 → **opt-21 崩**（oracle 静默容忍）。
+
+- **修复**：analyzeMapping 加存在性校验——节点 0（源）须为 src 类的事件；
+  节点 1+（目标）isFunction → 顶层函数须存在、否则须为 src 类的 action。
+  类不在 tu_.classes()（导入/泛型实例）跳过（保守不误报）。
+- **测试**：负测试 `mapping_missing_source.myp` + `mapping_missing_target.myp`；
+  有效 mapping 编译+运行正确；bootstrap 自举成立。
+
 ### v3.15.163 — 修带数据枚举变体裸引用漏校验 → 垃圾数据（BUG-129）
 
 **非破坏性**（selfhost sema）。`Opt o = Opt.Some;`（带数据变体 `Some(int v)`

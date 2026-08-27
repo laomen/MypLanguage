@@ -7411,6 +7411,54 @@ class Sema {
                     }
                 }
             }
+            // BUG-130：mapping 源事件 / 目标 action 存在性校验。
+            // · 节点 0（源）：须为 src 类的**事件**——否则 codegen findEventClass 空
+            //   → handler 不生成 → 静默 no-op（oracle 在 LLVM verify 失败）。
+            // · 节点 1+（目标）：isFunction → 顶层函数须存在；否则须为 src 类的
+            //   **action**——否则 codegen 发 @<Cls>_<m> 未定义 → opt-21 崩
+            //   （use of undefined value，oracle 静默容忍 no-op）。
+            // 类不在 tu_.classes()（导入/泛型实例等）时跳过（保守不误报）。
+            for (int cj = 0; cj < mcs.size(); cj = cj + 1) {
+                ArrayList<AstMappingNode> ndm = mcs.get(cj).nodes();
+                for (int nk = 0; nk < ndm.size(); nk = nk + 1) {
+                    AstMappingNode nm = ndm.get(nk);
+                    if (nm.isLambda() != 0 || nm.isTransformer() != 0) continue;
+                    if (nk == 0) {
+                        if (nm.isFunction() != 0) continue;
+                        int sc0 = -1;
+                        for (int x = 0; x < tu_.classes().size(); x = x + 1)
+                            if (tu_.classes().get(x).name() == nm.src()) { sc0 = x; break; }
+                        if (sc0 >= 0) {
+                            int foundE = 0;
+                            ArrayList<AstEvent> evs0 = tu_.classes().get(sc0).events();
+                            for (int y = 0; y < evs0.size(); y = y + 1)
+                                if (evs0.get(y).name() == nm.member()) { foundE = 1; break; }
+                            if (foundE == 0)
+                                diag_.error(0, 0, "mapping source '" + nm.src() + "." + nm.member() + "' is not an event on class '" + nm.src() + "'");
+                        }
+                    } else {
+                        if (nm.isFunction() != 0) {
+                            int foundF = 0;
+                            for (int fi = 0; fi < funcNames_.size(); fi = fi + 1)
+                                if (funcNames_.get(fi) == nm.src()) { foundF = 1; break; }
+                            if (foundF == 0)
+                                diag_.error(0, 0, "mapping target function '" + nm.src() + "' not found");
+                        } else {
+                            int sc1 = -1;
+                            for (int x = 0; x < tu_.classes().size(); x = x + 1)
+                                if (tu_.classes().get(x).name() == nm.src()) { sc1 = x; break; }
+                            if (sc1 >= 0) {
+                                int foundA = 0;
+                                ArrayList<AstAction> acts1 = tu_.classes().get(sc1).actions();
+                                for (int y = 0; y < acts1.size(); y = y + 1)
+                                    if (acts1.get(y).name() == nm.member()) { foundA = 1; break; }
+                                if (foundA == 0)
+                                    diag_.error(0, 0, "mapping target '" + nm.src() + "." + nm.member() + "' is not an action on class '" + nm.src() + "'");
+                            }
+                        }
+                    }
+                }
+            }
             for (int cix = 0; cix < mcs.size(); cix = cix + 1) {
                 AstMappingChain ch = mcs.get(cix);
                 AstExpr wh = ch.whereClause();

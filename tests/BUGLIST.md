@@ -3268,3 +3268,29 @@ match `Opt.Some(x)` 提取**垃圾数据**（曾得 x=1730215984）。oracle 把
   Call(Member)）——自举 Call 分支处理带实参构造（BUG-115）、Member 分支漏
   数据变体裸引用；凡带数据变体须有实参（oracle 视裸引用为 Function 值）；
   枚举值「tag-only 无 payload」是隐式垃圾数据的来源。
+
+## BUG-130（已修复 🟩，v3.15.164）：mapping 源事件/目标 action 存在性漏校验
+
+**非破坏性**（selfhost sema）。`mapping() { Src.nonexist -> Dst.onOut; }`（源
+事件不存在）自举此前**静默接受** → codegen findEventClass 空 → handler 不生成
+→ no-op（语义错；oracle 在 LLVM verify 失败）；`Src.output -> Dst.nonexist`
+（目标 action 不存在）→ codegen 发 `@Dst_nonexist` 未定义 → **opt-21 崩**
+（use of undefined value；oracle 静默容忍 no-op）。
+
+- **根因**：自举 analyzeMapping 只做 BUG-011（实例名节点）+ where/lambda 访问，
+  从不校验源事件/目标 action 存在——源不存在 codegen 提前 return 静默；目标
+  不存在 codegen 发未定义函数引用 → opt 崩。
+- **修复**：analyzeMapping 加存在性校验——节点 0（源）须为 src 类的事件
+  （"mapping source 'X.Y' is not an event on class 'X'"）；节点 1+（目标）
+  isFunction → 顶层函数须存在（"mapping target function 'X' not found"）、否则
+  须为 src 类的 action（"mapping target 'X.Y' is not an action on class 'X'"）。
+  类不在 tu_.classes()（导入/泛型实例）跳过（保守不误报）；lambda/transformer
+  节点跳过。
+- **验证**：源事件不存在 / 目标 action 不存在 `sev=error`（不再静默 no-op /
+  opt-21 崩）；有效 mapping 编译+运行正确；bootstrap 自举成立。
+- **回归**：负测试 `mapping_missing_source.myp` + `mapping_missing_target.myp`；
+  全量 444 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：mapping 是「类名节点 = 源事件 + 目标 action」的声明式语句——校验
+  须按节点位置区分（节点 0=事件、1+=action）；oracle 自身无 sema 校验（源在
+  verify 崩、目标容忍），自举干净拒绝优于两端；`AstMappingNode` 无位置 →
+  诊断 0,0。
