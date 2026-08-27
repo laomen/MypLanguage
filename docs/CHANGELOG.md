@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.15.127 — 修 var 推断元组 / 直接调用元组成员访问缺失（BUG-093）
+
+**非破坏性**（selfhost sema）。`var r = pair()`（pair 返回 (int,bool)）后 `r.0`、
+`pair().0` 直接成员访问——oracle 均支持，自举此前**拒绝合法代码**（var 推断元组
+无 tupleTypes、成员访问只处理 Identifier 基）。
+
+- **修复**：①var 推断元组分支：init 为 Call → findFuncRetType 取返回 tuple 的
+  funcParamTypes → declareTuple（带元素类型）；②元组成员访问加 Call 基分支
+  （越界报 tuple index N out of range）。tuple 字面量 var（`var tl=(7,false)`）
+  codegen 布局未支持 → 保持回落（sema 拒，不崩），仅 Call 形态修复。
+- **测试**：正测试 `tests/@test/tuple_var_infer.myp`（1 test / 6 断言）；
+  `var r = pair()`/`pair().0`/`tri().1`/显式类型均编译运行正确。
+- 验证：bootstrap 自举成立；全量回归 **388 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-093。
+
 ### v3.15.126 — 修 pipe 目标无 transform / lhs 类型不兼容漏校验（BUG-092）
 
 **非破坏性**（selfhost sema）。`5 |> Foo`（目标类无 transform action）、

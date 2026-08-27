@@ -1,0 +1,30 @@
+// tuple_var_infer: var 推断元组 + 直接调用元组成员访问（BUG-093 正向回归）
+// 覆盖：var r = pair() 后 r.0/r.1（此前无 tupleTypes → 解析 void 拒绝）/
+//       pair().0 直接成员访问（此前只支持 Identifier 基）/
+//       越界 pair().5 → 编译期拒（负向已覆盖）/
+//       var 元组字面量回落（sema 干净拒，不崩——codegen 未支持，见 BUGLIST）
+import test;
+
+(int, bool) pair() { return (42, true); }
+(int, int, int) tri() { return (1, 2, 3); }
+
+@test void test_var_infer_tuple() {
+    // 1) var 推断元组 + .N 访问
+    var r = pair();
+    int v = r.0;
+    bool ok = r.1;
+    Test.assertEq(v, 42, "var tuple .0");
+    Test.assert(ok, "var tuple .1");
+    // 2) 直接调用成员访问 pair().0 / .1
+    int v2 = pair().0;
+    bool ok2 = pair().1;
+    Test.assertEq(v2, 42, "call tuple .0");
+    Test.assert(ok2, "call tuple .1");
+    // 3) 三元素元组调用 + 中间元素
+    int m = tri().1;
+    Test.assertEq(m, 2, "triple .1");
+    // 4) 显式类型（既有行为，不回归）
+    (int, bool) t = (7, true);
+    Test.assertEq(t.0, 7, "explicit tuple .0");
+    Test.report("test_var_infer_tuple", true);
+}

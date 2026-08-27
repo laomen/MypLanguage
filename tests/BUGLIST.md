@@ -2428,3 +2428,31 @@
 - **教训**：pipe 是表达式级运算符——目标非法时须显式报错而非「保留 lhs 静默
   透传」；transform 的 1 参限定 + lhs/形参兼容是 C++ findTransform 的两道校验，
   自举此前全漏。
+
+## BUG-093（已修复 🟩，v3.15.127）：var 推断元组 / 直接调用元组成员访问缺失
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.127，selfhost sema.myp）
+- **背景**：`var r = pair()`（pair 返回 (int,bool)）后 `r.0`，以及 `pair().0`
+  直接成员访问——oracle 均正确支持（v=42 v2=42），自举此前**拒绝合法代码**：
+  var 推断元组无 tupleTypes → `r.0` 解析 void → "cannot initialize ... with
+  value of type 'void'"；元组成员访问只处理 Identifier 基 → `pair().0` 同样
+  void。tuple.myp 用显式类型 `(int,int) t` 所以从未暴露。
+- **根因**：①VarDecl 的 var 推断分支对元组只 `sym_.declare(name,"tuple")`（不带
+  tupleTypes；显式类型路径 declareTuple 正常）；②元组成员访问 `.N` 的
+  isIntegerStr 分支只查 `arr.kind()=="Identifier"` 的符号表 tupleTypes，Call
+  基不处理。
+- **修复**：①var 推断元组分支：init 为 Call（Identifier callee）→
+  findFuncRetType 取返回 tuple 的 funcParamTypes → declareTuple（带元素类型）；
+  其他形态回落原 declare（sema 干净拒）；②元组成员访问加 Call 基分支（callee
+  Identifier → findFuncRetType → isTuple → 取元素 kind；越界报
+  "tuple index N out of range"）。
+- **防回归**：tuple 字面量 var（`var tl = (7,false)`）codegen 布局未支持（opt
+  崩 i32/i8）→ 保持回落（sema 拒，不声明 tupleTypes），仅 Call 形态修复；
+  显式类型/`var r = pair()`/`pair().0` 全部正常。
+- **验证**：`var r = pair(); r.0/r.1`、`pair().0/.1`、`tri().1`、显式类型均编译
+  运行正确；越界 `pair().5` 干净拒；bootstrap 自举成立。
+- **回归**：正测试 `tests/@test/tuple_var_infer.myp`（1 test / 6 断言）；全量
+  388 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：与「应拒却接受」相反——这是「oracle 接受、自举拒绝」的功能缺口，
+  同属 parity 审计范围。var 推断与显式类型两条声明路径必须一致（declareTuple）；
+  成员访问的基表达式形态（Identifier/Call）要全覆盖。

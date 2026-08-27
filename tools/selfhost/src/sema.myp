@@ -3889,6 +3889,25 @@ class Sema {
                             sym_.declareElem(v.name(), "array", elemK);
                         } else if (it == "function") {
                             sym_.declare(v.name(), "function");
+                        } else if (it == "tuple") {
+                            // BUG-093：var 推断元组（`var r = pair()`）须带元素类型
+                            // 声明（declareTuple），否则 r.0/r.1 无 tupleTypes →
+                            // 成员访问解析 void → 合法代码被拒。此前只 declare
+                            // "tuple" 无 tupleTypes（显式类型路径 declareTuple 正常）。
+                            // 注意：tuple 字面量 var（`var tl = (7,false)`）codegen
+                            // 布局未支持（opt 崩 i32/i8），保持回落（sema 拒）不声明
+                            // tupleTypes——仅 Call 返回元组形态修复。
+                            ArrayList<AstType> tt2 = null;
+                            AstExpr tinit = v.init();
+                            if (tinit != null && tinit.kind() == "Call") {
+                                AstExpr tcal = tinit.callee();
+                                if (tcal != null && tcal.kind() == "Identifier") {
+                                    AstType trt = findFuncRetType(tcal.name(), tinit.args().size());
+                                    if (trt != null && trt.isTuple() != 0) tt2 = trt.funcParamTypes();
+                                }
+                            }
+                            if (tt2 != null) sym_.declareTuple(v.name(), "tuple", tt2);
+                            else sym_.declare(v.name(), "tuple");
                         } else {
                             sym_.declare(v.name(), it);
                         }
@@ -5725,6 +5744,22 @@ class Sema {
                             if (idx >= 0 && idx < en.tupleTypes().size()) t = en.tupleTypes().get(idx);
                             else {
                                 diag_.error(e.line(), e.col(), "tuple index " + e.memberName() + " out of range (" + en.tupleTypes().size() + " elements)");
+                            }
+                        }
+                    } else if (arr != null && arr.kind() == "Call") {
+                        // BUG-093：元组返回调用直接成员访问 pair().0（镜像 C++
+                        // 对 tuple-returning call 的 .N 支持）。此前只处理
+                        // Identifier 基 → pair().0 解析 void → 合法代码被拒。
+                        AstExpr cal = arr.callee();
+                        if (cal != null && cal.kind() == "Identifier") {
+                            AstType rt = findFuncRetType(cal.name(), arr.args().size());
+                            if (rt != null && rt.isTuple() != 0) {
+                                ArrayList<AstType> wts = rt.funcParamTypes();
+                                int idx = myp_str_to_long(e.memberName());
+                                if (idx >= 0 && idx < wts.size()) t = typeToKind(wts.get(idx));
+                                else {
+                                    diag_.error(e.line(), e.col(), "tuple index " + e.memberName() + " out of range (" + wts.size() + " elements)");
+                                }
                             }
                         }
                     }
