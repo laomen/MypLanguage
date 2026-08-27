@@ -5618,6 +5618,23 @@ class Sema {
                                             for (int gi = 0; gi < e.args().size(); gi = gi + 1) {
                                                 if (Str.len(e.args().get(gi).resolvedKind()) == 0) visitExpr(e.args().get(gi));
                                             }
+                                            // BUG-119：泛型实例函数实参类型校验（镜像
+                                            // C++ resolveGenericCall 逐参 typesCompatible）。
+                                            // id<string>(5)（显式 type-arg string、实参
+                                            // byte）此前静默 → 实参类型与替换后形参不匹配
+                                            // → 运行时垃圾。inst.params 已替换具体类型。
+                                            for (int gi2 = 0; gi2 < e.args().size() && gi2 < inst.params().size(); gi2 = gi2 + 1) {
+                                                AstType gpt = inst.params().get(gi2).type();
+                                                if (gpt != null) {
+                                                    string gpk = typeToKind(gpt);
+                                                    string gat = e.args().get(gi2).resolvedKind();
+                                                    if (Str.len(gat) != 0 && Str.len(gpk) != 0
+                                                        && gpk != "void" && gpk != "assoc"
+                                                        && typesCompat(gpk, gat) == 0) {
+                                                        diag_.error(e.args().get(gi2).line(), e.args().get(gi2).col(), "argument " + (gi2 + 1) + ": expected '" + gpk + "', got '" + gat + "'");
+                                                    }
+                                                }
+                                            }
                                         }
                                         AstType sret = substituteType(inst.ret(), genericFn.typeParams(), concrete);
                                         string rk = sret != null ? typeToKind(sret) : "void";

@@ -1,0 +1,14 @@
+// BUG-119 负向：泛型实例函数实参类型不匹配漏校验（id<string>(5) 显式 type-arg
+// string、实参 byte 静默 → 运行时垃圾）。镜像 C++ resolveGenericCall 逐参
+// typesCompatible。
+// EXPECT ERROR: argument 1: expected 'string', got 'byte'
+import env;
+R id<R>(R v) { return v; }
+class T2 {
+    action:
+        @constructor T2() {
+            string s = id<string>(5);
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

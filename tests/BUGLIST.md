@@ -3016,3 +3016,23 @@ got 'Vec2'"（visitBinaryOp Lt/Gt/Le/Ge 的 expectNumeric(lhs)）。
 - **教训**：比较运算符（< > <= >=）与算术运算符同样需要 expectNumeric——自举
   算术分支有、比较分支漏（不对称）；`==`/`!=` 双端 sema 均宽松（struct==int
   oracle 也接受、struct==struct 双端后端崩）不属本类缺口。
+
+## BUG-119（已修复 🟩，v3.15.153）：泛型实例函数实参类型不匹配漏校验
+
+**非破坏性**（selfhost sema）。`id<string>(5)`（显式 type-arg string、实参
+byte）此前自举静默接受 → 实参类型与替换后形参不匹配 → 运行时垃圾（应拒却接受，
+非 opt 崩）。oracle 拒 "argument 1: expected 'string', got 'byte'"。
+
+- **根因**：泛型函数调用路径 `normalizeCallArgs(e, inst.params())` 只校验实参
+  数量，不校验类型——形参经 instantiateGenericFunction 已替换具体类型，但
+  实参类型未逐参比对。
+- **修复**：normalizeCallArgs 成功后加逐参校验——`inst.params().get(i).type()`
+  的 typeToKind 与 `e.args().get(i).resolvedKind()` typesCompat；不匹配报
+  "argument N: expected 'X', got 'Y'"（guard gpk!="void"/"assoc" 防泛型占位）。
+- **验证**：`id<string>(5)` `sev=error`（消息与 oracle 一致）；推导 `id("a")` /
+  正确显式 `id<string>("hi")` 编译+运行正确；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/generic_fn_arg_type.myp`；全量 431 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：泛型函数「显式 type-arg」路径的实参类型校验独立于推导路径——推导
+  路径 inferConcrete 天然匹配、显式路径须显式逐参比较；BUG-067 修了泛型方法、
+  BUG-069 修了泛型 static、本 bug 补泛型函数显式实参（三处调用路径逐一核对）。

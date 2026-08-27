@@ -27,6 +27,17 @@
 
 ## 编译器版本历史
 
+### v3.15.153 — 修泛型实例函数实参类型不匹配漏校验（BUG-119）
+
+**非破坏性**（selfhost sema）。`id<string>(5)`（显式 type-arg string、实参
+byte）自举此前**接受**（应拒却接受）→ 实参类型与替换后形参不匹配 → 运行时
+垃圾。oracle 拒 "argument 1: expected 'string', got 'byte'"。
+
+- **修复**：泛型函数调用 normalizeCallArgs 成功后加逐参类型校验（inst.params
+  已替换具体类型，与实参 resolvedKind typesCompat）。
+- **测试**：负测试 `tests/negative/generic_fn_arg_type.myp`；推导/正确显式形态
+  编译+运行正确；bootstrap 自举成立。
+
 ### v3.15.152 — 修关系比较 < > <= >= 左操作数类型漏校验（BUG-118）
 
 **非破坏性**（selfhost sema）。`a < 5`（a 为 struct，@op 不匹配）自举此前
