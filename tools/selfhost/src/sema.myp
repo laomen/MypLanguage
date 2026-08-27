@@ -6267,10 +6267,18 @@ class Sema {
                                 callee.setResolvedKind("int");
                                 ret = "void";
                                 callFailed = 1;
-                            } else if (lamParams != null) {
-                                // 同宽后续实参类型校验（镜像 oracle 逐参 typesCompatible）
-                                e.setCallParamTypes(paramKinds(lamParams));
-                                e.setCallParamFuncSig(paramFuncSigs(lamParams));
+                            } else {
+                                // BUG-120：lambda 直调（正确计数）自举 codegen 无法
+                                // 发射——生成 `call void @(...)`（空函数名）→ opt-21
+                                // 崩（expected value token）。oracle codegen 拒
+                                // "cannot call expression"（codegen_expr.cpp:2510）。
+                                // (x)=>{...}(5) 作语句此前静默过 sema → 崩；此处
+                                // sema 干净拒绝。lambda 仅可作实参/赋给函数类型变量。
+                                diag_.error(e.line(), e.col(), "cannot call expression");
+                                e.setResolvedKind("void");
+                                callee.setResolvedKind("int");
+                                ret = "void";
+                                callFailed = 1;
                             }
                         }
                     }

@@ -1,0 +1,15 @@
+// BUG-120 负向：lambda 直调在 @parallel 体内同样自举 opt-21 崩（oracle 接受但
+// 直调本就该拒）。lambda 仅可作实参/赋给函数类型变量，不可直调。
+// EXPECT ERROR: cannot call expression
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            int[] a = new int[10];
+            @parallel for (int i = 0; i < 10; i = i + 1) {
+                (int x) => { return x + 1; } (i);
+            }
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

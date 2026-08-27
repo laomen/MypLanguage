@@ -1,0 +1,13 @@
+// BUG-120 负向：lambda 直调（正确计数）自举 codegen 无法发射 → opt-21 崩
+//（call void @(...) expected value token）。oracle codegen 拒 "cannot call
+// expression"。lambda 仅可作实参/赋给函数类型变量，不可直调。
+// EXPECT ERROR: cannot call expression
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            (int x) => { return x + 1; } (5);
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

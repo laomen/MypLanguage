@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.154 — 修 lambda 直调（正确计数）codegen 崩（BUG-120）
+
+**非破坏性**（selfhost sema）。`(int x) => { return x + 1; } (5)`（lambda 直调
+作语句）自举此前**接受** → codegen 生成 `call void @(...)`（空函数名）→
+**opt-21 崩**（expected value token）。oracle codegen 拒 "cannot call
+expression"（干净拒绝不崩）。
+
+- **修复**：fallback 分支 lambda callee——计数不匹配仍报 BUG-103 消息；计数匹
+  配改为拒绝 "cannot call expression"（镜像 oracle codegen 消息）。lambda 仅可
+  作实参/赋给函数类型变量。
+- **测试**：负测试 `tests/negative/lambda_direct_call.myp` /
+  `lambda_direct_call_parallel.myp`；lambda 作实参/函数类型变量调用编译+运行
+  正确；bootstrap 自举成立。
+
 ### v3.15.153 — 修泛型实例函数实参类型不匹配漏校验（BUG-119）
 
 **非破坏性**（selfhost sema）。`id<string>(5)`（显式 type-arg string、实参

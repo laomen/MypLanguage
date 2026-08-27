@@ -3036,3 +3036,26 @@ byte）此前自举静默接受 → 实参类型与替换后形参不匹配 → 
 - **教训**：泛型函数「显式 type-arg」路径的实参类型校验独立于推导路径——推导
   路径 inferConcrete 天然匹配、显式路径须显式逐参比较；BUG-067 修了泛型方法、
   BUG-069 修了泛型 static、本 bug 补泛型函数显式实参（三处调用路径逐一核对）。
+
+## BUG-120（已修复 🟩，v3.15.154）：lambda 直调（正确计数）自举 codegen 无法
+发射 → opt 崩
+
+**非破坏性**（selfhost sema）。`(int x) => { return x + 1; } (5)`（lambda 直调
+作语句）自举此前静默过 sema → codegen 生成 `call void @(...)`（空函数名）→
+**opt-21 崩**（expected value token）。oracle codegen 拒 "cannot call
+expression"（codegen_expr.cpp:2510，干净拒绝不崩）。@parallel 体内同理崩。
+
+- **根因**：BUG-103 只校验 lambda 直调实参数（正确计数放行、设 callParamTypes），
+  但自举 codegen 根本无法发射「直接 lambda 调用」（lambda 仅可作实参/赋给函数
+  类型变量后经变量调用）——正确计数直调落到 `call void @(...)` 空名 → opt 崩。
+- **修复**：fallback 分支 lambda callee 处理——计数不匹配仍报 BUG-103 消息
+  （保留负测试）；计数匹配改为拒绝 "cannot call expression"（镜像 oracle
+  codegen 消息），callFailed=1 避免 codegen。@parallel 体同路径覆盖。
+- **验证**：普通语句直调 / @parallel 体内直调 双形态 `sev=error` "cannot call
+  expression"（与 oracle 消息一致）；lambda 作实参 / 函数类型变量调用仍编译+
+  运行正确；BUG-103 多参负测试保留；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/lambda_direct_call.myp` /
+  `lambda_direct_call_parallel.myp`；全量 433 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：codegen 能力边界（自举无法发射直接 lambda 调用）须在 sema 干净拒绝
+  ——BUG-103 只修了「多参」形态、漏「正确计数」直调（codegen 崩）；oracle 的
+  "cannot call expression" 在 codegen 层（不崩）→ 自举应在 sema 层提前拒。
