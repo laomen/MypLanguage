@@ -1,0 +1,14 @@
+// BUG-107 负向：@gpu scan init 类型不匹配漏校验 → opt-21 崩。镜像 C++
+// visitGpuScanStmt "'@gpu scan' init must be ..."。
+// EXPECT ERROR: '@gpu scan' init must be 'float' (got 'string')
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            float[] a = new float[10];
+            float[] b = new float[10];
+            @gpu scan (acc, x) => { return acc + x; } init "str" over a[0..10) -> b;
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

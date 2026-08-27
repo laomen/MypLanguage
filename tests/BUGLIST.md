@@ -2767,3 +2767,27 @@ codegen 发 `define internal i32 @f(i32 %a, i32 %a)`（LLVM 参数重名）→ *
   容忍重名，自举 codegen 按名引用即崩；同类盲区（BUG-085 局部变量、BUG-095
   方法、BUG-094 bitfield 字段）逐个补齐。方向相反（oracle 接受、自举崩）——
   编译期干净拒绝优于 codegen 崩。
+
+## BUG-107（已修复 🟩，v3.15.141）：@gpu reduce/scan 声明式校验漏 → opt 崩
+
+**非破坏性**（selfhost sema）。`@gpu reduce ... init "str"`（init 与元素类型
+不匹配）自举此前静默过 → codegen 把 string 当 float 常量 → **opt-21 崩**
+（constant expression type mismatch: got 'ptr' but expected 'float'）。oracle
+当前源 visitGpuReduceStmt/visitGpuScanStmt 有全套校验（数组/元素类型/输出/
+init/range/op return）。
+
+- **根因**：自举 GpuReduce/GpuScan 语句处理只「标记/访问表达式 + 提取 op
+  return」，从不校验（GpuScatter 已有校验、reduce/scan 漏——不对称）。
+- **修复**：镜像 oracle 六道校验——①输入数组须 T[] 动态数组（reduce 用 arr()、
+  scan 用 inName()）；②元素类型 float/double/int；③输出（reduce 标量 / scan
+  数组）类型匹配；④init 类型 == 元素类型（先 visit 存 kind）；⑤begin/end
+  isNumKind；⑥op 体须含 return 表达式（提取后 opExpr==null 报错）。校验失败
+  时 markAll 各子树并 return；通过后按元素类型声明 acc/x 再访问 op 体。
+- **验证**：reduce init 错型/数组不存在/op 无 return/输出错型 + scan init 错型/
+  输出错型 六形态全部 `sev=error`；正确 reduce/scan 仍编译；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/gpu_reduce_init_type.myp` /
+  `gpu_reduce_op_noreturn.myp` / `gpu_scan_init_type.myp`；全量 413 通过 / 0
+  失败；oracle 对拍 95/0。
+- **教训**：GPU 声明式语句（reduce/scan/scatter）是校验盲区——GpuScatter 已镜
+  像、reduce/scan 漏（不对称）；「声明式语法 + 匿名 lambda op」的校验须在访问
+  op 体前完成（数组/init/range），op return 提取后校验。

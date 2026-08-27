@@ -4553,8 +4553,79 @@ class Sema {
                 inGpuFor_ = savedTileGpu;
                 inGpuKernel_ = savedTileKernel;
             } else if (k == "GpuReduce" || k == "GpuScan") {
+                // BUG-107：@gpu reduce/scan 声明式校验（镜像 C++ visitGpuReduceStmt/
+                // visitGpuScanStmt）。此前自举只标记/访问不校验 → init "str"（元素
+                // 应为 float）静默过 → codegen 把 string 当 float 常量 → opt-21 崩
+                //（constant expression type mismatch: got 'ptr' but expected 'float'）。
+                // GpuScatter 已有校验（先例），reduce/scan 漏。
+                int isScan = k == "GpuScan" ? 1 : 0;
+                string gpuKind = isScan != 0 ? "scan" : "reduce";
+                string gpuArrName = isScan != 0 ? s.inName() : s.arr();
+                int gpuOK = 1;
+                SymbolEntry gpuIn = sym_.lookupEntry(gpuArrName);
+                if (gpuIn == null || gpuIn.type() != "array" || Str.len(gpuIn.elementType()) == 0) {
+                    diag_.error(0, 0, "'@gpu " + gpuKind + "' " + (isScan != 0 ? "input" : "array") + " '" + gpuArrName
+                        + "' must be a 'T[]' dynamic array");
+                    gpuOK = 0;
+                }
+                string gpuEt = gpuIn != null ? gpuIn.elementType() : "";
+                if (gpuOK != 0 && gpuEt != "float" && gpuEt != "double" && gpuEt != "int") {
+                    diag_.error(0, 0, "'@gpu " + gpuKind + "' element type must be float/double/int (got '"
+                        + gpuEt + "')");
+                    gpuOK = 0;
+                }
+                if (gpuOK != 0) {
+                    SymbolEntry gpuOut = sym_.lookupEntry(s.out());
+                    if (isScan != 0) {
+                        if (gpuOut == null || gpuOut.type() != "array" || gpuOut.elementType() != gpuEt) {
+                            diag_.error(0, 0, "'@gpu scan' output '" + s.out()
+                                + "' must be a '" + gpuEt + "[]' array");
+                            gpuOK = 0;
+                        }
+                    } else {
+                        if (gpuOut == null || gpuOut.type() != gpuEt) {
+                            diag_.error(0, 0, "'@gpu reduce' output '" + s.out()
+                                + "' must be a '" + gpuEt + "' scalar");
+                            gpuOK = 0;
+                        }
+                    }
+                }
+                string initKind2 = "int";
+                if (gpuOK != 0 && s.initExpr() != null) {
+                    initKind2 = visitExpr(s.initExpr());
+                    if (initKind2 != gpuEt) {
+                        diag_.error(s.initExpr().line(), s.initExpr().col(), "'@gpu " + gpuKind
+                            + "' init must be '" + gpuEt + "' (got '" + initKind2 + "')");
+                        gpuOK = 0;
+                    }
+                }
+                if (gpuOK != 0 && s.beginExpr() != null) {
+                    string bk2 = visitExpr(s.beginExpr());
+                    if (isNumKind(bk2) == 0) {
+                        diag_.error(s.beginExpr().line(), s.beginExpr().col(), "'@gpu " + gpuKind
+                            + "' range bound must be an integer");
+                        gpuOK = 0;
+                    }
+                }
+                if (gpuOK != 0 && s.endExpr() != null) {
+                    string ek2 = visitExpr(s.endExpr());
+                    if (isNumKind(ek2) == 0) {
+                        diag_.error(s.endExpr().line(), s.endExpr().col(), "'@gpu " + gpuKind
+                            + "' range bound must be an integer");
+                        gpuOK = 0;
+                    }
+                }
+                if (gpuOK == 0) {
+                    if (s.opBody() != null) markAllStmt(s.opBody());
+                    if (s.opExpr() != null) markAllExpr(s.opExpr());
+                    if (s.initExpr() != null) markAllExpr(s.initExpr());
+                    if (s.beginExpr() != null) markAllExpr(s.beginExpr());
+                    if (s.endExpr() != null) markAllExpr(s.endExpr());
+                    if (s.body() != null) markAllStmt(s.body());
+                    return;
+                }
                 sym_.enterScope();
-                string opKind = s.initExpr() != null ? visitExpr(s.initExpr()) : "int";
+                string opKind = gpuEt;
                 sym_.declare(s.acc(), opKind);
                 sym_.declare(s.x(), opKind);
                 if (s.opBody() != null) visitStmt(s.opBody());
@@ -4569,6 +4640,15 @@ class Sema {
                             break;
                         }
                     }
+                }
+                // BUG-107：op 体须含 return 表达式（镜像 C++ "op body must contain
+                // a 'return <expr>;'"）。(acc,x)=>{acc+x} 无 return 静默过 → codegen
+                // op_expr 空 → 崩。
+                if (s.opExpr() == null) {
+                    diag_.error(0, 0, "'@gpu " + gpuKind + "' op body must contain a 'return <expr>;'");
+                    sym_.leaveScope();
+                    if (s.body() != null) markAllStmt(s.body());
+                    return;
                 }
                 if (s.opExpr() != null) visitExpr(s.opExpr());
                 if (s.initExpr() != null) visitExpr(s.initExpr());

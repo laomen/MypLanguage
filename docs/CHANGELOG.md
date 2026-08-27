@@ -39,6 +39,19 @@
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-098。
 
+### v3.15.141 — 修 @gpu reduce/scan 声明式校验漏（BUG-107）
+
+**非破坏性**（selfhost sema）。`@gpu reduce ... init "str"`（init 与元素类型
+不匹配）自举此前**接受** → codegen 把 string 当 float 常量 → **opt-21 崩**
+（constant expression type mismatch），oracle 当前源有全套校验。
+
+- **修复**：镜像 oracle visitGpuReduceStmt/visitGpuScanStmt 六道校验——输入
+  数组 T[]/元素类型 float/double/int/输出类型匹配/init 类型匹配/range 整型/
+  op 体须含 return（GpuScatter 已有校验、reduce/scan 漏，补齐对称）。
+- **测试**：负测试 `tests/negative/gpu_reduce_init_type.myp` /
+  `gpu_reduce_op_noreturn.myp` / `gpu_scan_init_type.myp`；正确 reduce/scan
+  编译正常；bootstrap 自举成立。
+
 ### v3.15.140 — 修重复形参名漏校验（BUG-106）
 
 **非破坏性**（selfhost sema）。`int f(int a, int a)` 重复形参名自举此前**接受**

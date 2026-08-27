@@ -1,0 +1,15 @@
+// BUG-107 负向：@gpu reduce init 类型不匹配漏校验 → opt-21 崩（constant
+// expression type mismatch: got 'ptr' but expected 'float'）。镜像 C++
+// visitGpuReduceStmt "'@gpu reduce' init must be ..."。
+// EXPECT ERROR: '@gpu reduce' init must be 'float' (got 'string')
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            float[] a = new float[10];
+            float s;
+            @gpu reduce (acc, x) => { return acc + x; } init "str" over a[0..10) -> s;
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

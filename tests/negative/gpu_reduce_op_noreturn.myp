@@ -1,0 +1,14 @@
+// BUG-107 负向：@gpu reduce op 体无 return 漏校验 → codegen op_expr 空崩。
+// 镜像 C++ visitGpuReduceStmt "'@gpu reduce' op body must contain a 'return <expr>;'"。
+// EXPECT ERROR: '@gpu reduce' op body must contain a 'return <expr>;'
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            float[] a = new float[10];
+            float s;
+            @gpu reduce (acc, x) => { acc = acc + x; } init 0.0f over a[0..10) -> s;
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}
