@@ -27,17 +27,28 @@
 
 ## 编译器版本历史
 
-### v3.15.132 — 修 `var x;` 无初始化器漏校验（BUG-098）
+### v3.15.150 — 修 tuple 变量初始化类型不匹配漏校验（BUG-116）
 
-**非破坏性**（selfhost sema）。`var x;`（无初始化器）此前自举静默当 `int x = 0`
-→ 语义错。C++ visitVarDecl 镜像 `'var' declaration requires an initializer`。
+**非破坏性**（selfhost sema）。`(int, int) u = t`（t 为 `(int, string)` 元组
+变量）自举此前**接受** → codegen store 类型不匹配 → **opt-21 崩**（'%t9'
+defined with type '{ i32, ptr }' but expected '{ i32, i32 }'），oracle 拒。
 
-- **修复**：VarDecl 处理在推断前加校验（isInferred && init==null → 报错 +
-  continue）。
-- **测试**：负测试 `tests/negative/var_no_init.myp`；`var x = 5;`/`var s = "hi";`
-  不受影响。
-- 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
-  BUGLIST 记 BUG-098。
+- **修复**：复用 `destructureTupleElems`（字面量/Identifier/Call 三形态取元素
+  kind）扩展 tuple 变量初始化检查——arity + 逐元素 typesCompat，消息与 oracle
+  逐字一致。
+- **测试**：负测试 `tests/negative/tuple_var_type_mismatch.myp`；匹配形态编译
+  +运行正确；bootstrap 自举成立。
+
+### v3.15.149 — 修枚举变体数据实参数漏校验（BUG-115）
+
+**非破坏性**（selfhost sema）。`Opt.Some(1, 2)`（多参）与 `Opt.Some()`（少参）
+自举此前**接受**（应拒却接受）→ 多余/缺失数据被忽略。oracle 拒 "expected 1
+arguments, got 2/0"。
+
+- **修复**：枚举变体构造分支加实参数校验（按变体 params().size() 与实参数比
+  对）；无数据变体带参也拒（oracle 报 "not callable"，消息不同双端拒）。
+- **测试**：负测试 `tests/negative/enum_variant_argc.myp` /
+  `enum_variant_argc_few.myp`；`Opt.Some(5)` 正确；bootstrap 自举成立。
 
 ### v3.15.148 — 修 @gpu tile shared 数组名冲突 + block<dim 警告（BUG-114）
 
@@ -244,6 +255,18 @@ IR → **opt-21 崩**（`defined with type 'i32' but expected '{ ptr, ptr }'`）
   （tuple.myp 25 行）不受影响。
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-099。
+
+### v3.15.132 — 修 `var x;` 无初始化器漏校验（BUG-098）
+
+**非破坏性**（selfhost sema）。`var x;`（无初始化器）此前自举静默当 `int x = 0`
+→ 语义错。C++ visitVarDecl 镜像 `'var' declaration requires an initializer`。
+
+- **修复**：VarDecl 处理在推断前加校验（isInferred && init==null → 报错 +
+  continue）。
+- **测试**：负测试 `tests/negative/var_no_init.myp`；`var x = 5;`/`var s = "hi";`
+  不受影响。
+- 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-098。
 
 ### v3.15.131 — 修集合类缺 get/size 或元素是数组漏校验 → opt 崩（BUG-097）
 

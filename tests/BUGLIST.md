@@ -2931,3 +2931,45 @@ visitGpuTileStmt 校验 "shared array name 'X' already declared" + block 小于
 - **教训**：@gpu tile 共享内存声明是最后一个未镜像点（形状 BUG-111 + 名字冲突
   + block<dim 警告）——至此 oracle GPU 校验全镜像：reduce/scan/scatter/
   tile/for/resident/stream/grid/block/shared 全覆盖。
+
+## BUG-115（已修复 🟩，v3.15.149）：枚举变体数据实参数漏校验
+
+**非破坏性**（selfhost sema）。`Opt.Some(1, 2)`（多参）与 `Opt.Some()`（少参）
+此前自举静默接受 → 多余/缺失数据被忽略（应拒却接受，非 opt 崩）。oracle 拒
+"expected 1 arguments, got 2" / "expected 1 arguments, got 0"。
+
+- **根因**：自举枚举变体构造（Enum.Variant(args)）分支只 visit 实参、不校验
+  数量。oracle 把带数据变体视为 Function 类型（param_types），normalizeCallArgs
+  严格计数。
+- **修复**：变体构造分支加实参数校验——按变体名取 params().size() 与
+  e.args().size() 比对，不匹配报 "expected N arguments, got M"。无数据变体带
+  实参（Opt.None(5)）报 "expected 0 arguments, got 1"（oracle 报 "not
+  callable"，消息不同但双端拒）。
+- **验证**：多参/少参/无数据带参三形态 `sev=error`；Opt.Some(5) 正确编译+运行；
+  bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/enum_variant_argc.myp` /
+  `enum_variant_argc_few.myp`；全量 427 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：枚举带数据变体是「函数式构造」——实参数校验与普通调用同（oracle
+  统一走 Function normalizeCallArgs）；自举变体分支只 visit 不计数是盲点。
+
+## BUG-116（已修复 🟩，v3.15.150）：tuple 变量初始化类型不匹配漏校验 → opt 崩
+
+**非破坏性**（selfhost sema）。`(int, int) u = t`（t 为 `(int, string)` 元组
+变量）此前自举静默 → codegen store 类型不匹配 → **opt-21 崩**（'%t9' defined
+with type '{ i32, ptr }' but expected '{ i32, i32 }'）。oracle 拒 "cannot
+initialize variable 'u' of type '(int, int)' with value of type '(int,
+string)'"。
+
+- **根因**：自举 tuple arity/元素检查只处理 `tie.kind()=="Tuple"`（字面量）
+  形态；tuple 变量/调用返回元组 形态漏（init 解析为 "tuple" 无元素比较）。
+- **修复**：复用 `destructureTupleElems`（Tuple 字面量/Identifier/Call 三形态
+  取元素 kind 列表）扩展变量初始化检查——与 `v.type().funcParamTypes()` 比对
+  arity + 逐元素 typesCompat；不匹配报 "(int, int)" vs "(int, string)" 风格
+  消息（与 oracle 逐字一致）。
+- **验证**：tuple 变量元素不匹配/arity 错双形态 `sev=error`（消息与 oracle
+  一致）；匹配形态编译+运行正确；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/tuple_var_type_mismatch.myp`；全量 427
+  通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：tuple 初始化校验「字面量有、变量/调用无」是不对称盲区（BUG-093 的
+  destructureTupleElems 已覆盖三形态，变量初始化检查可直接复用）；tuple 是
+  结构化类型——typesCompat 按 kind 只到 "tuple"，须逐元素比较。

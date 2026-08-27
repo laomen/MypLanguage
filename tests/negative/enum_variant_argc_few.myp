@@ -1,0 +1,13 @@
+// BUG-115 负向：枚举变体数据实参数漏校验（Opt.Some() 少参静默被忽略）。
+// 镜像 C++ "expected 1 arguments, got 0"。
+// EXPECT ERROR: expected 1 arguments, got 0
+import env;
+enum Opt { Some(int value); None; }
+class T2 {
+    action:
+        @constructor T2() {
+            Opt o = Opt.Some();
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

@@ -1,0 +1,14 @@
+// BUG-116 负向：tuple 变量初始化类型不匹配漏校验 → opt-21 崩（'%t9' defined
+// with type '{ i32, ptr }' but expected '{ i32, i32 }'）。镜像 C++ typesCompatible
+// 对 tuple 结构性比较。
+// EXPECT ERROR: cannot initialize variable 'u' of type '(int, int)' with value of type '(int, string)'
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            (int, string) t = (1, "a");
+            (int, int) u = t;
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

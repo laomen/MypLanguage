@@ -3992,6 +3992,38 @@ class Sema {
                                 diag_.error(dl, dc, "cannot initialize variable '" + v.name()
                                     + "' of type '" + declName + "' with value of type '" + valName + "'");
                             }
+                        } else if (tie != null) {
+                            // BUG-116：tuple 变量/调用返回元组 初始化类型校验（镜像
+                            // C++ typesCompatible 对 tuple 结构性比较）。
+                            // (int,int) u = t（t 为 (int,string)）此前静默 → codegen
+                            // store 类型不匹配 → opt-21 崩（'%t9' defined with type
+                            // '{ i32, ptr }' but expected '{ i32, i32 }'）。
+                            ArrayList<string> tieElems = destructureTupleElems(tie);
+                            ArrayList<AstType> wtysB = v.type().funcParamTypes();
+                            if (tieElems != null && wtysB.size() != 0) {
+                                int badB = 0;
+                                if (wtysB.size() != tieElems.size()) badB = 1;
+                                else {
+                                    for (int eiB = 0; eiB < tieElems.size(); eiB = eiB + 1) {
+                                        string wt2B = typeToKind(wtysB.get(eiB));
+                                        if (typesCompat(wt2B, tieElems.get(eiB)) == 0) { badB = 1; break; }
+                                    }
+                                }
+                                if (badB != 0) {
+                                    int dlB = v.nameLine();
+                                    int dcB = v.nameCol();
+                                    if (dlB == 0) { dlB = s.line(); dcB = s.col(); }
+                                    StringBuilder valSb = new StringBuilder();
+                                    valSb.append("(");
+                                    for (int eiC = 0; eiC < tieElems.size(); eiC = eiC + 1) {
+                                        if (eiC != 0) valSb.append(", ");
+                                        valSb.append(tieElems.get(eiC));
+                                    }
+                                    valSb.append(")");
+                                    diag_.error(dlB, dcB, "cannot initialize variable '" + v.name()
+                                        + "' of type '" + tupleDeclName(wtysB) + "' with value of type '" + valSb.toString() + "'");
+                                }
+                            }
                         }
                     }
                     AstType vt2 = v.type();
@@ -5407,6 +5439,21 @@ class Sema {
                                 if (variants.get(vi).name() == callee.memberName()) { isVariant = 1; break; }
                         }
                         if (isVariant != 0) {
+                            // BUG-115：枚举变体数据实参数校验（镜像 C++——带数据
+                            // 变体是 Function 类型，normalizeCallArgs 严格按数量
+                            // 匹配）。Opt.Some(1,2) / Opt.Some() 此前静默 → 多余/
+                            // 缺失数据被忽略（应拒却接受）；无数据变体带实参同理。
+                            int variantParamCount = 0;
+                            ArrayList<AstEnumVariant> variants3 = tu_.enums().get(enumIndex).variants();
+                            for (int vi3 = 0; vi3 < variants3.size(); vi3 = vi3 + 1) {
+                                if (variants3.get(vi3).name() == callee.memberName()) {
+                                    variantParamCount = variants3.get(vi3).params().size();
+                                    break;
+                                }
+                            }
+                            if (variantParamCount != e.args().size()) {
+                                diag_.error(e.line(), e.col(), "expected " + variantParamCount + " arguments, got " + e.args().size());
+                            }
                             for (int i = 0; i < e.args().size(); i = i + 1) visitExpr(e.args().get(i));
                             e.setArgsVisited(1);
                             enumObject.setResolvedKind("enum");
