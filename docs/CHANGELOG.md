@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.126 — 修 pipe 目标无 transform / lhs 类型不兼容漏校验（BUG-092）
+
+**非破坏性**（selfhost sema）。`5 |> Foo`（目标类无 transform action）、
+`5 |> Foo.helper`（MemberAccess 非算子）与 `5 |> ScaleOp`（transform(double[])
+与 int lhs 不兼容）此前自举静默透传 lhs → 语义错。C++ visitPipe 镜像。
+
+- **修复**：①目标类/实例无 1 参 transform action → `pipe '|>' requires an
+  operator component with a single-argument 'transform' method`；②目标非类名/
+  类实例（MemberAccess 等）→ 同一报错；③transform 找到时校验 lhs 与形参类型
+  兼容 → `pipe: cannot apply 'X.transform' to operand of type 'Y'`。
+- **测试**：负测试 `tests/negative/pipe_no_transform.myp` +
+  `tests/negative/pipe_type_mismatch.myp`；`double[] A |> ScaleOp`/实例管道/链式
+  不受影响（pipe 回归 PASS）。
+- 验证：bootstrap 自举成立；全量回归 **385 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-092。
+
 ### v3.15.125 — 修内建实参校验缺失 → opt 崩（parse/位操作/bytes 族，BUG-091）
 
 **非破坏性**（selfhost sema）。isNoVisitIntr 拦截名单内建（不 visit 实参）中

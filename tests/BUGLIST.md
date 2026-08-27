@@ -2403,3 +2403,28 @@
 - **教训**：isNoVisitIntr（拦截名单内建不 visit 实参）是校验盲区——凡内建收
   特定类型实参，必须在该分支显式 visit+校验；类型不匹配的「回落普通函数解析」
   （非崩溃 undefined）也要镜像，否则自举会把非法参数当内建 → codegen 崩。
+
+## BUG-092（已修复 🟩，v3.15.126）：pipe 目标无 transform / lhs 类型不兼容漏校验
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.126，selfhost sema.myp）
+- **背景**：`5 |> Foo`（目标类无 transform action）与 `5 |> Foo.helper`
+  （MemberAccess 非算子）此前自举静默透传 lhs → 语义错（运行 a=5 而非报错）；
+  `5 |> ScaleOp`（ScaleOp.transform(double[]) 与 int lhs 不兼容）同样静默透传。
+  C++ visitPipe 镜像：`pipe '|>' requires an operator component with a
+  single-argument 'transform' method` / `pipe: cannot apply 'X.transform' to
+  operand of type 'Y'`。
+- **根因**：自举 pipe 处理只解析目标类名/实例、查 findMethodRet（返回类型），
+  transform 未找到或类型不兼容时静默保留 lhs 类型继续——没有「无 transform 即
+  非法算子」的拒绝，也没有 lhs/形参兼容校验。
+- **修复**：①目标类/实例但无 1 参 transform action → 报 requires ... single-
+  argument 'transform' method；②目标非类名/类实例（MemberAccess 等）→ 同一报
+  错；③transform 找到时校验 lhs 与形参类型兼容（typesCompat），不兼容 →
+  pipe: cannot apply。
+- **验证**：无 transform/MemberAccess/类型不兼容三形态干净拒绝；`double[] A |>
+  ScaleOp` / 实例管道 / 链式均不受影响（pipe 回归 PASS）；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/pipe_no_transform.myp` +
+  `tests/negative/pipe_type_mismatch.myp`；全量 385 通过 / 0 失败；oracle 对拍
+  95/0。
+- **教训**：pipe 是表达式级运算符——目标非法时须显式报错而非「保留 lhs 静默
+  透传」；transform 的 1 参限定 + lhs/形参兼容是 C++ findTransform 的两道校验，
+  自举此前全漏。

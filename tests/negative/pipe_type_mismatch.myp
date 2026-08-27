@@ -1,0 +1,20 @@
+// EXPECT ERROR: pipe: cannot apply 'ScaleOp.transform' to operand of type 'byte'
+// BUG-092 回归（负测试）：pipe lhs 类型须与 transform 形参兼容。
+// 此前自举只查 target 有无 transform，不校验 lhs → `5 |> ScaleOp`
+//（ScaleOp.transform(double[])）静默透传 int → 语义错。C++ visitPipe 镜像
+// "pipe: cannot apply 'X.transform' to operand of type 'Y'"。合法：
+// double[] A |> ScaleOp。
+import env;
+
+class ScaleOp {
+    action:
+        @constructor ScaleOp() { }
+        double[] transform(double[] A) { return A; }
+}
+class T2 {
+    action:
+        @constructor T2() {
+            int a = 5 |> ScaleOp;
+        }
+}
+int main(){return 0;}

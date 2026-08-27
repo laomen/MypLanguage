@@ -1,0 +1,19 @@
+// EXPECT ERROR: pipe '|>' requires an operator component with a single-argument 'transform' method
+// BUG-092 回归（负测试）：pipe (|>) 目标须为有 1 参 transform action 的算子类名/
+// 类实例；否则编译期拒。此前自举 pipe 目标无 transform（如 Foo.helper 或只有
+// helper(int) 的 Foo）→ 静默透传 lhs → 语义错（A a=5 而非报错）。C++ visitPipe
+// 镜像同错误。合法：A |> ScaleOp（transform(double[])）/ A |> scale（实例）。
+import env;
+
+class Foo {
+    action:
+        @constructor Foo() { }
+        int helper(int x) { return x + 1; }
+}
+class T2 {
+    action:
+        @constructor T2() {
+            int a = 5 |> Foo;
+        }
+}
+int main(){return 0;}
