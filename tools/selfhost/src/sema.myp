@@ -4989,6 +4989,17 @@ class Sema {
                         return common;
                     }
                 }
+                // BUG-104：非数值双分支须类型兼容（镜像 C++ visitTernary 的
+                // typesCompatible 检查）。p ? 5 : "str" 此前静默 → codegen 把
+                // string 当 byte 存 → opt-21 崩（constant expression type
+                // mismatch）。oracle 拒 "ternary branches have incompatible
+                // types: 'byte' and 'string'"。
+                if (typesCompat(t, f) == 0) {
+                    diag_.error(e.line(), e.col(), "ternary branches have incompatible types: '"
+                        + exprTypeName(e.trueExpr(), t) + "' and '" + exprTypeName(e.falseExpr(), f) + "'");
+                    e.setResolvedKind("void");
+                    return "void";
+                }
                 e.setResolvedKind(t);
                 return t;
             }
@@ -5544,8 +5555,23 @@ class Sema {
                                         // F4-L：函数类型变量调用 f(21) → 用声明的返回类型
                                         SymbolEntry fve = sym_.lookupEntry(fn);
                                         if (fve != null && Str.len(fve.funcRet()) != 0) {
-                                            ret = fve.funcRet();
-                                            e.setCallParamTypes(fve.functionParamTypes());
+                                            // BUG-103：函数类型变量调用实参数校验（镜像
+                                            // C++ normalizeCallArgs 函数值路径——无命名/默认
+                                            // 元数据 → 严格按数量匹配）。f(5,6)（f:(int)->int）
+                                            // 此前多参静默过 → 多余实参被忽略、语义错（oracle 拒
+                                            // "expected 1 arguments, got 2"）。
+                                            ArrayList<string> fveParams = fve.functionParamTypes();
+                                            if (fveParams != null && e.args().size() != fveParams.size()) {
+                                                diag_.error(e.line(), e.col(), "expected " + fveParams.size()
+                                                    + " arguments, got " + e.args().size());
+                                                e.setResolvedKind("void");
+                                                callee.setResolvedKind("int");
+                                                ret = "void";
+                                                callFailed = 1;
+                                            } else {
+                                                ret = fve.funcRet();
+                                                e.setCallParamTypes(fveParams);
+                                            }
                                         } else if (inClass_ != 0) {
                                         string mr = findMethodRet(currentClass_, fn, e.args().size());
                                         if (Str.len(mr) != 0) {
@@ -5817,6 +5843,26 @@ class Sema {
                         }
                     } else {
                         visitExpr(callee);
+                        // BUG-103：lambda 直调实参数校验（镜像 C++ visitCall 的
+                        // normalizeCallArgs 函数值路径——严格按数量匹配）。
+                        // (x)=>{...}(5,6) 此前多参静默过 → codegen 生成
+                        // `call void @(i32 5, i32 6)` → opt-21 崩（expected value
+                        // token）。oracle 拒 "expected 1 arguments, got 2"。
+                        if (callee.kind() == "Lambda") {
+                            ArrayList<AstParam> lamParams = callee.params();
+                            if (lamParams != null && e.args().size() != lamParams.size()) {
+                                diag_.error(e.line(), e.col(), "expected " + lamParams.size()
+                                    + " arguments, got " + e.args().size());
+                                e.setResolvedKind("void");
+                                callee.setResolvedKind("int");
+                                ret = "void";
+                                callFailed = 1;
+                            } else if (lamParams != null) {
+                                // 同宽后续实参类型校验（镜像 oracle 逐参 typesCompatible）
+                                e.setCallParamTypes(paramKinds(lamParams));
+                                e.setCallParamFuncSig(paramFuncSigs(lamParams));
+                            }
+                        }
                     }
                 }
                 if (e.argsVisited() == 0 && callFailed == 0) {

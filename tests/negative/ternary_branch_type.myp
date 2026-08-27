@@ -1,0 +1,14 @@
+// BUG-104 负向：三元分支类型不兼容漏校验（镜像 C++ visitTernary 的
+// typesCompatible 检查）。p ? 5 : "str" 此前静默 → codegen 把 string 当 byte
+// 存 → opt-21 崩（constant expression type mismatch）。
+// EXPECT ERROR: ternary branches have incompatible types: 'byte' and 'string'
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            bool p = true;
+            int r = p ? 5 : "str";
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

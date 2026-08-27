@@ -2674,3 +2674,52 @@ oracle 当前源（sema_expr.cpp visitBinaryOp）全部拒绝——「应拒却�
   全量 403 通过 / 0 失败；oracle 对拍 95/0。
 - **教训**：bitvector 运算（比较/位运算/移位量）同宽校验依赖「变量宽度追踪」——
   不能只靠 Convert 节点 bw；类型名只到 "bitvector"，宽度信息要另建映射表。
+
+## BUG-103（已修复 🟩，v3.15.137）：函数类型实参数量漏校验 → opt 崩 / 应拒却接受
+
+**非破坏性**（selfhost sema）。两类函数值调用实参数漏校验：
+①`(int x)=>{...}(5,6)`（lambda 直调多参）静默过 → codegen `call void @(i32 5,
+i32 6)` → **opt-21 崩**（expected value token）；②`f(5,6)`（f:(int)->int 函数
+类型变量多参）静默过 → 多余实参被忽略、**语义错**（应拒却接受）。oracle 两处都
+拒 "expected 1 arguments, got 2"。
+
+- **根因**：自举 Call 处理函数值 callee 有两条路径——①函数类型变量（Identifier
+  callee 的 fve.funcRet() 分支）只 setCallParamTypes 不校验数量；②lambda 直调
+  （非 Identifier/Member 的 fallback `else { visitExpr(callee); }`）不设
+  callParamTypes、不校验数量。oracle visitCall 对 Function TypeInfo callee 调
+  normalizeCallArgs（无命名/默认元数据 → 严格按数量匹配）。
+- **修复**：①函数类型变量分支——`fve.functionParamTypes()`（ArrayList<string>
+  kinds）数量比对，不匹配报错并 callFailed=1；②fallback 分支——callee 是
+  Lambda 时用 `callee.params()`（ArrayList<AstParam>）数量比对，不匹配报错；
+  匹配时 setCallParamTypes(paramKinds(lamParams)) + setCallParamFuncSig，复用
+  现有逐参类型校验。
+- **验证**：lambda 直调多参/少参 + 函数类型变量多参三形态全部 `sev=error`
+  "expected N arguments, got M"；正确调用（f(5)、语句级 lambda 直调）仍编译+运行；
+  lambda 直调作值表达式双端同拒（oracle "cannot call expression"）；bootstrap 成立。
+- **回归**：负测试 `tests/negative/lambda_call_argc.myp` / `fntype_var_call_argc.myp`；
+  全量 406 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：函数值是「有参数量约束」的类型——凡函数类型 callee（变量/lambda
+  直调）都须按数量严格匹配（oracle 函数值路径无命名/默认元数据 → 严格计数）；
+  自举两处函数值调用路径都漏计数校验。
+
+## BUG-104（已修复 🟩，v3.15.138）：三元分支类型不兼容漏校验 → opt 崩
+
+**非破坏性**（selfhost sema）。`p ? 5 : "str"` 静默过 → codegen 把 string 当
+byte 存 → **opt-21 崩**（constant expression type mismatch: got type 'ptr' but
+expected 'i8'）。oracle 拒 "ternary branches have incompatible types: 'byte'
+and 'string'"。
+
+- **根因**：visitTernary 只在「双数值」分支用 ternaryCommon 提升；非数值双分支
+  直接返回 true 分支类型 t，从不校验 t/f 兼容。oracle visitTernary 数值路径
+  外还有 `typesCompatible(true_type, false_type)` 检查。
+- **修复**：非数值路径加 `typesCompat(t, f)` 检查（镜像 oracle typesCompatible）；
+  不兼容报错 "ternary branches have incompatible types: 'X' and 'Y'"（exprTypeName
+  取显示名）。null 分支（p ? "a" : null）也拒——与 oracle 同文（oracle 的
+  typesCompatible 只放行 null↔class，string 与 null 不放行）。
+- **验证**：不匹配（int/string、string/null）拒；匹配（int/int、string/string、
+  数值混合提升 1 与 int）编译+运行正确；bootstrap 成立。
+- **回归**：负测试 `tests/negative/ternary_branch_type.myp`；全量 406 通过 / 0
+  失败；oracle 对拍 95/0。
+- **教训**：三元是「表达式级类型合并点」——双分支须数值可提升或类型兼容；自举
+  只镜像了数值提升路径、漏了非数值兼容检查（与 BUG-074 的三元条件 bool 检查
+  互补）。null 与 string 不兼容是 oracle 既有语义（非自举新加）。

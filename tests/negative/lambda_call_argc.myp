@@ -1,0 +1,13 @@
+// BUG-103 负向：lambda 直调实参数漏校验（镜像 C++ visitCall 的
+// normalizeCallArgs 函数值路径——严格按数量匹配）。(x)=>{...}(5,6) 此前多参
+// 静默过 → codegen `call void @(i32 5, i32 6)` → opt-21 崩（expected value token）。
+// EXPECT ERROR: expected 1 arguments, got 2
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            (int x) => { return x + 1; } (5, 6);
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

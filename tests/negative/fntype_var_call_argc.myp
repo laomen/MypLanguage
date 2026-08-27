@@ -1,0 +1,14 @@
+// BUG-103 负向：函数类型变量调用实参数漏校验（镜像 C++ normalizeCallArgs
+// 函数值路径——无命名/默认元数据 → 严格按数量匹配）。f:(int)->int 但 f(5,6)
+// 此前多参静默过 → 多余实参被忽略、语义错（oracle 拒 "expected 1 arguments, got 2"）。
+// EXPECT ERROR: expected 1 arguments, got 2
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            (int)->int f = (int x) => { return x + 1; };
+            int r = f(5, 6);
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

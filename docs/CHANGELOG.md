@@ -39,6 +39,32 @@
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-098。
 
+### v3.15.138 — 修三元分支类型不兼容漏校验（BUG-104）
+
+**非破坏性**（selfhost sema）。`p ? 5 : "str"` 自举此前**接受并运行**（应拒却
+接受）→ codegen 把 string 当 byte 存 → opt-21 崩（constant expression type
+mismatch），oracle 拒。
+
+- **修复**：visitTernary 非数值双分支加 `typesCompat(t, f)` 检查（镜像 oracle
+  typesCompatible），不兼容报 "ternary branches have incompatible types: 'X'
+  and 'Y'"。null 分支（string vs null）也拒——与 oracle 同文（typesCompatible
+  只放行 null↔class）。
+- **测试**：负测试 `tests/negative/ternary_branch_type.myp`；匹配/数值提升形态
+  编译+运行正确；bootstrap 自举成立。
+
+### v3.15.137 — 修函数类型实参数量漏校验（BUG-103）
+
+**非破坏性**（selfhost sema）。`(int x)=>{...}(5,6)`（lambda 直调多参）自举
+此前**接受** → codegen `call void @(i32 5, i32 6)` → **opt-21 崩**（expected
+value token）；`f(5,6)`（f:(int)->int 函数类型变量多参）静默多参被忽略（应拒却
+接受）。oracle 都拒 "expected 1 arguments, got 2"。
+
+- **修复**：①函数类型变量调用分支——`fve.functionParamTypes()` 数量比对，不匹配
+  报错；②lambda 直调 fallback 分支——用 `callee.params()` 数量比对，匹配时
+  setCallParamTypes + setCallParamFuncSig 复用逐参类型校验。
+- **测试**：负测试 `tests/negative/lambda_call_argc.myp` / `fntype_var_call_argc.myp`；
+  正确调用形态仍编译+运行；lambda 直调作值表达式双端同拒；bootstrap 自举成立。
+
 ### v3.15.136 — 修 bitvector 比较/位运算/移位量同宽校验漏（BUG-102）
 
 **非破坏性**（selfhost sema）。`bitvector<8> == bitvector<16>`、`bitvector<8> &
