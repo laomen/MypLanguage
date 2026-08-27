@@ -39,6 +39,30 @@
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-098。
 
+### v3.15.145 — 修 @gpu tile shared 须数组类型漏校验（BUG-111）
+
+**非破坏性**（selfhost sema）。`@gpu tile (float sm)`（标量 shared）自举此前
+**接受**（应拒却接受）→ 静默当数组处理语义错。oracle 当前源拒 "requires an
+array type"。
+
+- **修复**：GpuTile 分支校验 `sharedType().element()==null` → "@gpu tile
+  requires an array type (e.g. float[32][32])"；维度常量由 parser `float[n]`
+  拒（不可达）；48KB 上限已有。
+- **测试**：负测试 `tests/negative/gpu_tile_shared_nonarray.myp`；正确
+  `float[64] sm` 编译正常；bootstrap 自举成立。
+
+### v3.15.144 — 修 @gpu scatter 区间界类型漏校验（BUG-110）
+
+**非破坏性**（selfhost sema）。`@gpu scatter(unique) a["x"..10)`（a 区间下界
+string）自举此前**接受** → codegen 把 ptr 当 i64 索引 → **opt-21 崩**（constant
+expression type mismatch）。oracle 当前源拒 "range bound must be an integer"。
+
+- **修复**：GpuScatter 分支访问区间界前加 isNumKind 校验（aBegin/aEnd →
+  range bound；idxBegin/idxEnd → index range bound）；失败 body markAll。
+  冲突模式 parser 已限定。
+- **测试**：负测试 `tests/negative/gpu_scatter_bound_type.myp` /
+  `gpu_scatter_idx_bound_type.myp`；正确 scatter 编译正常；bootstrap 自举成立。
+
 ### v3.15.143 — 修 @gpu for/tile resident 子句校验漏（BUG-109）
 
 **非破坏性**（selfhost sema）。`@gpu for ... resident(a = da)`（da 非 long

@@ -1,0 +1,15 @@
+// BUG-111 负向：@gpu tile shared 须数组类型漏校验（`float sm` 标量 shared 静默
+// 当数组）。镜像 C++ "requires an array type (e.g. float[32][32])"。
+// EXPECT ERROR: @gpu tile requires an array type
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            float[] a = new float[64];
+            @gpu tile (float sm) grid(4) block(64) {
+                sm = a[0];
+            }
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

@@ -4535,6 +4535,15 @@ class Sema {
                 AstMapping mp2 = s.mappingDecl();
                 if (mp2 != null) analyzeMapping(mp2);
             } else if (k == "GpuTile") {
+                // BUG-111：@gpu tile shared 须数组类型（镜像 C++ "requires an
+                // array type (e.g. float[32][32])"）。`float sm`（标量 shared）
+                // 此前静默当数组 → 语义错。
+                if (s.sharedType() == null || s.sharedType().element() == null) {
+                    diag_.error(0, 0, "@gpu tile requires an array type (e.g. float[32][32])");
+                    if (s.body() != null) markAllStmt(s.body());
+                    if (s.stream() != null) markAllExpr(s.stream());
+                    return;
+                }
                 long sharedCount = 1L;
                 AstType sharedDim = s.sharedType();
                 while (sharedDim != null && sharedDim.element() != null) {
@@ -4742,11 +4751,45 @@ class Sema {
                     if (s.idxEnd() != null) markAllExpr(s.idxEnd());
                     return;
                 }
-                if (s.aBegin() != null) visitExpr(s.aBegin());
-                if (s.aEnd() != null) visitExpr(s.aEnd());
-                if (s.idxBegin() != null) visitExpr(s.idxBegin());
-                if (s.idxEnd() != null) visitExpr(s.idxEnd());
-                if (s.body() != null) visitStmt(s.body());
+                // BUG-110：@gpu scatter 区间界须整型（镜像 C++ "range bound must
+                // be an integer" / "index range bound must be an integer"）。
+                // a["x"..10) 此前静默 → codegen 把 ptr 当 i64 索引 → opt-21 崩
+                //（constant expression type mismatch: got 'ptr' but expected
+                // 'i64'）。冲突模式 parser 已限定（scatter(foo) 解析拒）。
+                if (scatterOK != 0 && s.aBegin() != null) {
+                    string abk2 = visitExpr(s.aBegin());
+                    if (isNumKind(abk2) == 0) {
+                        diag_.error(s.aBegin().line(), s.aBegin().col(), "'@gpu scatter' range bound must be an integer");
+                        scatterOK = 0;
+                    }
+                }
+                if (scatterOK != 0 && s.aEnd() != null) {
+                    string aek2 = visitExpr(s.aEnd());
+                    if (isNumKind(aek2) == 0) {
+                        diag_.error(s.aEnd().line(), s.aEnd().col(), "'@gpu scatter' range bound must be an integer");
+                        scatterOK = 0;
+                    }
+                }
+                if (scatterOK != 0 && s.idxBegin() != null) {
+                    string ibk2 = visitExpr(s.idxBegin());
+                    if (isNumKind(ibk2) == 0) {
+                        diag_.error(s.idxBegin().line(), s.idxBegin().col(), "'@gpu scatter' index range bound must be an integer");
+                        scatterOK = 0;
+                    }
+                }
+                if (scatterOK != 0 && s.idxEnd() != null) {
+                    string iek2 = visitExpr(s.idxEnd());
+                    if (isNumKind(iek2) == 0) {
+                        diag_.error(s.idxEnd().line(), s.idxEnd().col(), "'@gpu scatter' index range bound must be an integer");
+                        scatterOK = 0;
+                    }
+                }
+                if (scatterOK != 0 && s.aBegin() != null) visitExpr(s.aBegin());
+                if (scatterOK != 0 && s.aEnd() != null) visitExpr(s.aEnd());
+                if (scatterOK != 0 && s.idxBegin() != null) visitExpr(s.idxBegin());
+                if (scatterOK != 0 && s.idxEnd() != null) visitExpr(s.idxEnd());
+                if (scatterOK != 0 && s.body() != null) visitStmt(s.body());
+                if (scatterOK == 0 && s.body() != null) markAllStmt(s.body());
             } else if (k == "GpuFor") {
                 int savedGpu = inGpuFor_;
                 int savedKernel = inGpuKernel_;

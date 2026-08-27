@@ -2834,3 +2834,42 @@ device 指针）与 `resident(b = db)`（b 未声明数组）此前自举静默�
 - **教训**：GPU 子句族（grid/block/shared/stream/resident）是校验盲区——逐一
   核对 oracle visitGpuForStmt/visitGpuTileStmt 的每个子句分支；resident 的
   device 指针须 long（GPU 运行时按 long 传）在编译期即可验。
+
+## BUG-110（已修复 🟩，v3.15.144）：@gpu scatter 区间界类型漏校验 → opt 崩
+
+**非破坏性**（selfhost sema）。`@gpu scatter(unique) a["x"..10) ...`（a 区间
+下界为 string）自举此前静默过 → codegen 把 ptr 当 i64 索引 → **opt-21 崩**
+（constant expression type mismatch: got 'ptr' but expected 'i64'）。oracle
+当前源 visitGpuScatterStmt 校验 "range bound must be an integer" / "index
+range bound must be an integer"。
+
+- **根因**：自举 GpuScatter 校验 input/output/index 数组，但区间界（aBegin/
+  aEnd/idxBegin/idxEnd）只 visit 不校验类型。冲突模式 parser 已限定（scatter
+  (foo) 解析拒），无需 sema。
+- **修复**：GpuScatter 分支在访问区间界前加 isNumKind 校验——aBegin/aEnd →
+  "range bound must be an integer"；idxBegin/idxEnd → "index range bound must
+  be an integer"；任一失败 scatterOK=0 → body markAll（避免半访问）。
+- **验证**：a 区间界 string / idx 区间界 string 双形态 `sev=error`；正确
+  scatter 编译正常；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/gpu_scatter_bound_type.myp` /
+  `gpu_scatter_idx_bound_type.myp`；全量 420 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：GPU 声明式语句的「区间界」是独立校验点（reduce/scan 的 begin/end
+  已修、scatter 的 a/idx 界漏）——所有 `[lo..hi)` 界都须整型。
+
+## BUG-111（已修复 🟩，v3.15.145）：@gpu tile shared 须数组类型漏校验
+
+**非破坏性**（selfhost sema）。`@gpu tile (float sm) ...`（标量 shared 内存
+声明）自举此前静默当数组处理 → 语义错（应拒却接受，非 opt 崩）。oracle 当前源
+visitGpuTileStmt 校验 "requires an array type (e.g. float[32][32])"。
+
+- **根因**：自举 GpuTile 共享内存处理把 sharedType 当数组遍历（element() 循环），
+  非数组类型不报错、静默当 int 元素。
+- **修复**：GpuTile 分支开头校验 `sharedType().element()==null` → "@gpu tile
+  requires an array type (e.g. float[32][32])"，body/stream markAll 后 return。
+- **验证**：`float sm`（标量）`sev=error`；正确 `float[64] sm` 编译正常；
+  bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/gpu_tile_shared_nonarray.myp`；全量 420
+  通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：@gpu tile 共享内存声明是「类型形状」校验点——须数组类型、维度编译
+  期常量、48KB 上限三道；自举有 48KB、漏形状（非数组）；维度常量由 parser
+  `float[n]` 拒（不可达）。

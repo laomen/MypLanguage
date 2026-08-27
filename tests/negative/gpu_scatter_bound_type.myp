@@ -1,0 +1,16 @@
+// BUG-110 负向：@gpu scatter 区间界须整型漏校验 → opt-21 崩（a["x"..10) 把
+// ptr 当 i64 索引 → constant expression type mismatch）。镜像 C++ "range bound
+// must be an integer"。
+// EXPECT ERROR: '@gpu scatter' range bound must be an integer
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            float[] a = new float[10];
+            float[] b = new float[10];
+            int[] idx = new int[10];
+            @gpu scatter(unique) a["x"..10) to b by idx[0..10);
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

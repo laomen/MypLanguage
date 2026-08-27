@@ -1,0 +1,15 @@
+// BUG-110 负向：@gpu scatter 索引区间界须整型漏校验 → opt-21 崩。镜像 C++
+// "index range bound must be an integer"。
+// EXPECT ERROR: '@gpu scatter' index range bound must be an integer
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            float[] a = new float[10];
+            float[] b = new float[10];
+            int[] idx = new int[10];
+            @gpu scatter(unique) a[0..10) to b by idx["x"..10);
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}
