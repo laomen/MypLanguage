@@ -27,6 +27,17 @@
 
 ## 编译器版本历史
 
+### v3.15.158 — 修实例化接口 new IC() 漏校验（BUG-124）
+
+**非破坏性**（selfhost sema）。`IC ic = new IC()`（实例化接口）自举此前
+**接受**（应拒却接受）→ 无实现类、无 vtable 的接口实例 → 运行时错。oracle 拒
+"unknown class 'IC'"。
+
+- **修复**：New 处理加接口检查——`inInterface(className)` → "cannot
+  instantiate interface 'X'"；接口实例须 `new 实现类` 再转接口。
+- **测试**：负测试 `tests/negative/new_interface.myp`；接口正常用法（new MyC →
+  接口）编译+运行正确；bootstrap 自举成立。
+
 ### v3.15.157 — 修 struct == 比较无 @op("==") → opt 崩（BUG-123）
 
 **非破坏性**（selfhost sema）。`Vec2 == 5` 与 `Vec2 == Vec2`（无 @op）自举此前

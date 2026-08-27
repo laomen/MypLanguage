@@ -1,0 +1,15 @@
+// BUG-124 负向：实例化接口 new IC() 漏校验（无实现类，无 vtable → 运行时错）。
+// 镜像 C++ "unknown class 'IC'"——接口实例须 new 实现类再转接口（View v = new Label()）。
+// EXPECT ERROR: cannot instantiate interface 'IC'
+import env;
+interface IC {
+    int go();
+}
+class T2 {
+    action:
+        @constructor T2() {
+            IC ic = new IC();
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

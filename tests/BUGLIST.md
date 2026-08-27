@@ -3127,3 +3127,22 @@ codegen verify 崩；manual §operators 要求 struct 比较走 @op("==")。
 - **教训**：`==`/`!=` 对非数字非字符串类型的操作数（struct）是 codegen 崩盲区
   ——oracle 宽松接受（垃圾/后端崩），自举须干净拒绝（manual 要求 @op("==")）；
   类/接口引用比较是合法语义（指针相等），struct 值比较须显式 @op。
+
+## BUG-124（已修复 🟩，v3.15.158）：实例化接口 new IC() 漏校验
+
+**非破坏性**（selfhost sema）。`IC ic = new IC()`（实例化接口）自举此前静默
+接受 → 无实现类、无 vtable 的接口实例 → 运行时错（应拒却接受，非 opt 崩）。
+oracle 拒 "unknown class 'IC'" + "cannot initialize 'IC' with 'IC'"。
+
+- **根因**：自举 New 处理按类名查构造器——接口名不在 tu_.classes()（接口独立
+  存储），无构造器 → 落 legacy 默认 → 静默接受。
+- **修复**：New 处理 slice 分支后加接口检查——`inInterface(e.className())!=0`
+  → "cannot instantiate interface 'X' (create a class implementing it
+  instead)"。接口实例须 `new 实现类` 再转接口（View v = new Label()）。
+- **验证**：`new IC()`（含/不含实现类）`sev=error`；接口正常用法（new MyC →
+  接口，ic.go()=42）编译+运行正确；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/new_interface.myp`；全量 437 通过 / 0
+  失败；oracle 对拍 95/0。
+- **教训**：`new` 目标类型须核对「可实例化」——接口/抽象不可 new（无实现）；
+  自举 New 处理按「查构造器」间接判断，接口无构造器落默认 → 静默；须显式检查
+  接口名（inInterface）。

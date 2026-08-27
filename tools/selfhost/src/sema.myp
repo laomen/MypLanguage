@@ -6828,6 +6828,15 @@ class Sema {
                     e.setResolvedKind("slice");
                     return "slice";
                 }
+                // BUG-124：不能实例化接口（new IC() 无实现类）。此前自举静默接受
+                // → 无 vtable 的接口实例 → 运行时错（oracle 拒 "unknown class
+                // 'IC'"）。接口实例须 new 实现类再转接口（View v = new Label()）。
+                if (Str.len(e.className()) != 0 && inInterface(e.className()) != 0) {
+                    diag_.error(e.line(), e.col(), "cannot instantiate interface '" + e.className()
+                        + "' (create a class implementing it instead)");
+                    e.setResolvedKind("void");
+                    return "void";
+                }
                 // 泛型类实例化（C++ typeNodeToTypeInfo 单态化 → 生成 _inst 类）
                 if (e.typeArgs().size() > 0) tryInstantiate(e.className(), e.typeArgs());
                 // 解析构造器名（类中 ctor 标记的 action/function）
