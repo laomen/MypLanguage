@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.167 — 修 interface←class 转换未验实现接口 → opt 崩（BUG-133）
+
+**非破坏性**（selfhost sema）。`IC ic = new NotImpl()`（类不实现接口）自举此前
+typesCompat("interface","class") 无条件放行 → codegen 引用
+`@__myp_vtable_IC_NotImpl` 未定义 → **opt-21 崩**。oracle 拒（4 处转换点：
+var init / 赋值 / 实参 / 返回）。
+
+- **修复**：`classImplementsIface`（类体 `interface class <Iface>;`）+ 
+  `exprConcreteClass`（表达式具体类）+ `ifaceConversionOK` + `callIfaceParamName`
+  （实参接口名解析），4 处转换点（var init / Assign / 实参 / Return）按类名
+  校验接口实现；消息带具体接口名/类名（对齐 oracle）。
+- **测试**：负测试 `tests/negative/iface_notimpl_assign.myp`；实现类 4 种转换
+  编译+运行正确（v=42）；bootstrap 自举成立。
+
 ### v3.15.166 — 修事件成员访问/调用漏校验 → opt 崩（BUG-132）
 
 **非破坏性**（selfhost sema）。`this.fire(...)` / `s.ev(...)`（事件作为成员

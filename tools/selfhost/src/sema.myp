@@ -2649,9 +2649,80 @@ class Sema {
             }
             if (a == "null" && b == "class") return 1;
             if (a == "class" && b == "null") return 1;
-            // 接口变量可赋实现类实例
+            // 接口变量可赋实现类实例（typesCompat 只看 kind；具体类是否实现接口
+            // 由 BUG-133 的 ifaceConversionOK 在 4 处转换点（var init/赋值/实参/
+            // 返回）按名字校验）。
             if (a == "interface" && b == "class") return 1;
             return 0;
+        }
+        // BUG-133：类是否实现接口（类体 `interface class <Iface>;`）。镜像 C++
+        // typesCompatible 的 `cls.interface_class_name == lhs.class_name`。
+        int classImplementsIface(string cls, string iface) {
+            if (Str.len(cls) == 0 || Str.len(iface) == 0) return 0;
+            for (int x = 0; x < tu_.classes().size(); x = x + 1) {
+                AstClass cl = tu_.classes().get(x);
+                if (cl.name() == cls && cl.iface() == iface) return 1;
+            }
+            return 0;
+        }
+        // 表达式具体类名（new X() → className；Identifier 变量 → 符号表类名；
+        // 方法调用/属性/下标 → valueClass；this → 当前类）。未知返回 ""。
+        string exprConcreteClass(AstExpr e) {
+            if (e == null) return "";
+            string k = e.kind();
+            if (k == "New") return e.className();
+            if (k == "Identifier") {
+                if (e.name() == "this") return currentClass_;
+                string cn = sym_.lookupClass(e.name());
+                if (Str.len(cn) != 0) return cn;
+                return e.resolvedClassName();
+            }
+            if (k == "Member" || k == "Call" || k == "Subscript") {
+                string vc = e.valueClass();
+                if (Str.len(vc) != 0) return vc;
+                return e.resolvedClassName();
+            }
+            return e.resolvedClassName();
+        }
+        // BUG-133：interface ← class 转换是否合法（类须实现接口）。无法确定具体
+        // 类（空名）→ 保守放行。
+        int ifaceConversionOK(string ifaceName, AstExpr classExpr) {
+            if (Str.len(ifaceName) == 0) return 1;
+            string ccn = exprConcreteClass(classExpr);
+            if (Str.len(ccn) == 0) return 1;
+            return classImplementsIface(ccn, ifaceName);
+        }
+        // BUG-133：实参校验用——解析 callee 第 i 形参的接口名（形参类型是接口时
+        // 返回接口名；否则 ""）。Member 基座（obj.method / Class.method）与
+        // Identifier 基座（类内未限定 / 顶层函数）双路径。
+        string callIfaceParamName(AstExpr callee, int i) {
+            if (callee == null || i < 0) return "";
+            if (callee.kind() == "Member") {
+                AstExpr obj = callee.array();
+                string cls = "";
+                if (obj != null && obj.kind() == "Identifier") cls = sym_.lookupClass(obj.name());
+                if (Str.len(cls) == 0) cls = callee.resolvedClass();
+                ArrayList<AstParam> ps = findMethodParams(cls, callee.memberName());
+                if (ps == null && Str.len(cls) != 0) ps = findIfaceMethodParams(cls, callee.memberName());
+                if (ps != null && i < ps.size()) {
+                    AstType pt = ps.get(i).type();
+                    if (pt != null && inInterface(pt.className()) != 0) return pt.className();
+                }
+            } else if (callee.kind() == "Identifier") {
+                if (inClass_ != 0) {
+                    ArrayList<AstParam> ps = findMethodParams(currentClass_, callee.name());
+                    if (ps != null && i < ps.size()) {
+                        AstType pt = ps.get(i).type();
+                        if (pt != null && inInterface(pt.className()) != 0) return pt.className();
+                    }
+                }
+                ArrayList<AstParam> fps = findFuncParams(callee.name());
+                if (fps != null && i < fps.size()) {
+                    AstType pt = fps.get(i).type();
+                    if (pt != null && inInterface(pt.className()) != 0) return pt.className();
+                }
+            }
+            return "";
         }
         // C++ Sema::isNarrowing 等价（kind 字符串版）：实参 from → 形参 to 有损窄化。
         // typesCompat 已放行 Int↔Long 双向 / int→double 提升；此处捕获位宽收窄
@@ -3995,6 +4066,12 @@ class Sema {
                         int bad = 0;
                         if (reported == 0 && it == "void") bad = 1;
                         else if (it != "void" && typesCompat(vt, it) == 0) bad = 1;
+                        // BUG-133：interface ← class 转换须实现接口——`IC ic = new
+                        // NotImpl()`（NotImpl 无 `interface class IC;`）自举此前
+                        // typesCompat 放行 → codegen 引用 @__myp_vtable_IC_NotImpl
+                        // 未定义 → opt-21 崩（oracle 拒 "cannot initialize ..."）。
+                        else if (vt == "interface" && it == "class"
+                                 && ifaceConversionOK(v.type().className(), v.init()) == 0) bad = 1;
                         // BUG-054：struct 初始化须比较具体 struct 名（typesCompat 只比
                         // kind "struct"；`A a = b;`（b 为 B）静默过 sema → LLVM opt 报错）。
                         else if (it == "struct" && vt == "struct") {
@@ -4012,6 +4089,11 @@ class Sema {
                                 itn = exprStructName(v.init());
                                 vtn = Str.len(v.type().className()) != 0 ? v.type().className() : v.type().basicName();
                                 if (Str.len(itn) == 0) itn = "struct";
+                            } else if (vt == "interface" && it == "class") {
+                                // 消息带具体接口名/类名（对齐 oracle）
+                                itn = exprConcreteClass(v.init());
+                                vtn = Str.len(v.type().className()) != 0 ? v.type().className() : "interface";
+                                if (Str.len(itn) == 0) itn = "class";
                             }
                             diag_.error(dl, dc, "cannot initialize variable '" + v.name()
                                 + "' of type '" + typeNameOf(vtn, v.type()) + "' with value of type '" + typeNameOf(itn, null) + "'");
@@ -4270,10 +4352,26 @@ class Sema {
                 if (s.value() != null) {
                     string rt = visitExpr(s.value());
                     // 返回类型检查（C++：cannot return value ...，位置 = return 语句）
+                    // BUG-133：interface ← class 返回须实现接口——`return new
+                    // NotImpl()`（函数返 IC）自举此前 typesCompat 放行 → codegen
+                    // @__myp_vtable_IC_NotImpl 未定义 → opt-21 崩（oracle 拒）。
+                    int rBad2 = 0;
                     if (Str.len(currentRet_) != 0 && currentRet_ != "void"
-                        && Str.len(rt) != 0 && rt != "void" && typesCompat(currentRet_, rt) == 0) {
-                        diag_.error(s.line(), s.col(), "cannot return value of type '" + rt
-                            + "' from function returning '" + currentRet_ + "'");
+                        && Str.len(rt) != 0 && rt != "void" && typesCompat(currentRet_, rt) == 0) rBad2 = 1;
+                    if (rBad2 == 0 && currentRet_ == "interface" && rt == "class" && s.value() != null) {
+                        string ifaceName = currentRetAst_ != null ? currentRetAst_.className() : "";
+                        if (ifaceConversionOK(ifaceName, s.value()) == 0) rBad2 = 1;
+                    }
+                    if (rBad2 != 0) {
+                        string rtn = rt;
+                        string rvn = currentRet_;
+                        if (currentRet_ == "interface" && rt == "class") {
+                            rtn = exprConcreteClass(s.value());
+                            rvn = currentRetAst_ != null && Str.len(currentRetAst_.className()) != 0 ? currentRetAst_.className() : "interface";
+                            if (Str.len(rtn) == 0) rtn = "class";
+                        }
+                        diag_.error(s.line(), s.col(), "cannot return value of type '" + rtn
+                            + "' from function returning '" + rvn + "'");
                     }
                     // BUG-117：tuple 返回须逐元素类型匹配（typesCompat 只到
                     // "tuple"）。(int,int) ret(){return (1,"a");} 此前静默 →
@@ -5407,6 +5505,15 @@ class Sema {
                         }
                     }
                 }
+                // BUG-133：interface ← class 赋值须实现接口（`ic = new NotImpl()`）
+                // ——此前 typesCompat 放行 → codegen @__myp_vtable_IC_NotImpl 未定义
+                // → opt-21 崩（oracle 拒 "cannot assign value of type ..."）。
+                if (badAssign == 0 && l == "interface" && r == "class"
+                    && e.lhs() != null && e.rhs() != null) {
+                    string ifn2 = "";
+                    if (e.lhs().kind() == "Identifier") ifn2 = sym_.lookupClass(e.lhs().name());
+                    if (ifaceConversionOK(ifn2, e.rhs()) == 0) badAssign = 1;
+                }
                 if (badAssign != 0) {
                     string lm = l;
                     string rm = r;
@@ -5420,6 +5527,12 @@ class Sema {
                         ArrayList<string> rte2 = destructureTupleElems(e.rhs());
                         if (lte2 != null) lm = tupleKindListName(lte2);
                         if (rte2 != null) rm = tupleKindListName(rte2);
+                    } else if (l == "interface" && r == "class") {
+                        string ifn3 = "";
+                        if (e.lhs().kind() == "Identifier") ifn3 = sym_.lookupClass(e.lhs().name());
+                        lm = Str.len(ifn3) != 0 ? ifn3 : "interface";
+                        rm = exprConcreteClass(e.rhs());
+                        if (Str.len(rm) == 0) rm = "class";
                     }
                     diag_.error(e.line(), e.col(), "cannot assign value of type '" + rm
                         + "' to variable of type '" + lm + "'");
@@ -6464,6 +6577,20 @@ class Sema {
                                 int al = argi != null ? argi.line() : 0;
                                 int ac = argi != null ? argi.col() : 0;
                                 diag_.error(al, ac, "argument " + (i + 1) + ": expected '" + pt + "', got '" + at + "'");
+                            } else if (pt == "interface" && at == "class" && Str.len(at) != 0 && Str.len(pt) != 0) {
+                                // BUG-133：interface ← class 实参须实现接口——`takeI(
+                                // new NotImpl())`（形参 IC、实参 NotImpl 不实现）自举
+                                // 此前 typesCompat 放行 → codegen @__myp_vtable_IC_
+                                // NotImpl 未定义 → opt-21 崩（oracle 拒 "argument 1:
+                                // expected 'IC', got 'NotImpl'"）。
+                                string ifnI = callIfaceParamName(e.callee(), i);
+                                if (Str.len(ifnI) != 0 && ifaceConversionOK(ifnI, argi) == 0) {
+                                    int al2 = argi != null ? argi.line() : 0;
+                                    int ac2 = argi != null ? argi.col() : 0;
+                                    string an = exprConcreteClass(argi);
+                                    if (Str.len(an) == 0) an = at;
+                                    diag_.error(al2, ac2, "argument " + (i + 1) + ": expected '" + ifnI + "', got '" + an + "'");
+                                }
                             } else if (Str.len(at) != 0 && Str.len(pt) != 0 && isNarrowingKind(at, pt) != 0) {
                                 // C++ visitCall 的 narrowing warning 等价（selfhost 无参名
                                 // 元数据 → 不带形参名；仅比 dump 不比 stderr，不影响对拍）。

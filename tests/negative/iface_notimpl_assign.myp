@@ -1,0 +1,22 @@
+// BUG-133 负向：interface ← class 转换须实现接口——`IC ic = new NotImpl()`（
+// NotImpl 无 `interface class IC;`）自举此前 typesCompat 放行 → codegen 引用
+// @__myp_vtable_IC_NotImpl 未定义 → opt-21 崩。oracle 拒 "cannot initialize
+// variable 'ic' of type 'IC' with value of type 'NotImpl'"。4 处转换点（var
+// init / 赋值 / 实参 / 返回）按类名校验接口实现。
+// EXPECT ERROR: cannot initialize variable 'ic' of type 'IC' with value of type 'NotImpl'
+import env;
+interface IC {
+    int go();
+}
+class NotImpl {
+    action:
+        void other() { }
+}
+class T2 {
+    action:
+        @constructor T2() {
+            IC ic = new NotImpl();
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

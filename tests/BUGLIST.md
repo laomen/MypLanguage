@@ -3343,3 +3343,29 @@ oracle 拒 "cannot call expression"（即使实参正确）。fire 应走裸名 
 - **教训**：事件是「裸名 fire 触发 / await 专用 / mapping 专用」——Member 访问
   事件必非法；但**专用路径（await）要先短路**，否则新校验误伤合法用法；`this`
   基座（cn 空落 inClass_ 分支）与 Identifier 基座两条路径都要补同样的检查。
+
+## BUG-133（已修复 🟩，v3.15.167）：interface←class 转换未验实现接口 → opt 崩
+
+**非破坏性**（selfhost sema）。`IC ic = new NotImpl()`（类不实现接口）自举此前
+`typesCompat("interface","class")` 无条件放行 → codegen 引用
+`@__myp_vtable_IC_NotImpl` 未定义 → **opt-21 崩**（use of undefined value）。
+oracle 拒 4 处转换点：var init "cannot initialize ..." / 赋值 "cannot assign
+value of type ..." / 实参 "argument 1: expected 'IC', got 'NotImpl'" / 返回
+"cannot return value of type ..."。
+
+- **根因**：typesCompat 只看 kind（interface+class → 1），不验具体类是否实现
+  接口；接口 vtable（@__myp_vtable_<Iface>_<Cls>）只为声明 `interface class
+  IC;` 的类生成 → 未实现类转换引用未定义 vtable → 崩。
+- **修复**：4 个助手——`classImplementsIface`（类体 `interface class <Iface>;`
+  ，镜像 C++ `cls.interface_class_name == lhs.class_name`）、`exprConcreteClass`
+  （new/Identifier/this/方法调用/属性/下标 → 具体类名）、`ifaceConversionOK`、
+  `callIfaceParamName`（实参接口名解析）；4 处转换点（var init / Assign /
+  实参 / Return）加校验，消息带具体接口名/类名（对齐 oracle）。
+- **验证**：4 种非法转换 `sev=error`（消息与 oracle 逐字一致）；实现类 4 种
+  转换编译+运行正确（v=42）；bootstrap 自举成立。注意：sema.myp 不能用
+  codegen.myp 的 varAstType（跨文件编译作用域）——用 sym_.lookupClass。
+- **回归**：负测试 `tests/negative/iface_notimpl_assign.myp`；全量 448 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：接口 fat pointer 的「vtable 只为声明 interface class 的类生成」是
+  codegen 崩盲区——凡具体类 → 接口上下文（声明/赋值/实参/返回）都须按类名校验
+  实现；typesCompat 的 interface+class 无条件放行只覆盖 kind、须上层补名字检查。
