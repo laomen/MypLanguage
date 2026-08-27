@@ -2306,6 +2306,11 @@ class Sema {
                                 break;
                             }
                         }
+                        // BUG-126：named lambda __call body 上下文置 inLambda_（镜像
+                        // C++ `if (named_lambda) in_lambda_body_++`）——nonlocal 语句
+                        // 仅 lambda body 内合法（oracle "'nonlocal' is only allowed
+                        // inside a lambda body"）。
+                        inLambda_ = 1;
                     }
                     checkDupParamNames(a.params(), a.line(), a.col());
                     for (int j = 0; j < a.params().size(); j = j + 1) {
@@ -2317,6 +2322,7 @@ class Sema {
                         // BUG-088：类 action non-void 缺 return → 拒
                         checkMissingReturn(a.line(), a.col(), a.body());
                     }
+                    inLambda_ = 0;
                     lambdaSelfName_ = "";
                     lambdaSelfClass_ = "";
                     sym_.leaveScope();
@@ -4632,7 +4638,13 @@ class Sema {
                     }
                 }
             } else if (k == "Nonlocal") {
-                // 无表达式
+                // BUG-126：nonlocal 仅 lambda body 内合法（镜像 C++ visitNonlocalStmt
+                // `if (in_lambda_body_ == 0)`）——普通函数/类方法/顶层非 lambda 上下文
+                // 的 nonlocal 静默忽略（应拒却接受）。变量解析校验在 lambda 创建时
+                // （BUG-077 collectStmtNonlocal 已做），此处只查上下文。
+                if (inLambda_ == 0) {
+                    diag_.error(s.line(), s.col(), "'nonlocal' is only allowed inside a lambda body");
+                }
             } else if (k == "MappingStmt") {
                 // 处理 mapping 链的 where 子句（声明源事件参数后 visit）与 lambda 节点
                 AstMapping mp2 = s.mappingDecl();
@@ -8089,6 +8101,7 @@ class Sema {
         string currentRet_;
         AstType currentRetAst_;
         int inStatic_;
+        int inLambda_;
         int loopDepth_;
         int inCoro_;
         string currentMethodName_;

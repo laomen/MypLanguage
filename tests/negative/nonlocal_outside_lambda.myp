@@ -1,0 +1,19 @@
+// BUG-126 负向：nonlocal 仅 lambda body 内合法——普通函数/类方法里 `nonlocal x;`
+// 自举此前静默忽略并运行（应拒却接受），oracle 拒 "'nonlocal' is only allowed
+// inside a lambda body"。镜像 C++ visitNonlocalStmt 的 in_lambda_body_ 检查
+//（named lambda __call body 上下文置 inLambda_）；变量解析校验在 lambda 创建时
+// 已做（BUG-077）。
+// EXPECT ERROR: 'nonlocal' is only allowed inside a lambda body
+import env;
+void foo() {
+    int x = 5;
+    nonlocal x;
+    Console.writeString("A\n");
+}
+class T2 {
+    action:
+        @constructor T2() {
+            foo();
+        }
+}
+int main(){T2 t=new T2();return 0;}

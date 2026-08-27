@@ -3168,3 +3168,27 @@ oracle 拒 "unknown class 'IC'" + "cannot initialize 'IC' with 'IC'"。
 - **教训**：match 枚举臂的绑定数量是独立校验点（oracle 有 arity 报错分支、
   自举只截断声明）——凡「绑定/实参数量 vs 声明数量」不一致须显式报错；MYP
   int→string 拼接用 `"..." + n` 直接可行。
+
+## BUG-126（已修复 🟩，v3.15.160）：nonlocal 仅 lambda body 内合法漏校验
+
+**非破坏性**（selfhost sema）。普通函数/类方法里 `nonlocal x;`（非 lambda
+上下文）自举此前静默忽略并运行（应拒却接受，语义无意义），oracle 拒
+"'nonlocal' is only allowed inside a lambda body"。
+
+- **根因**：自举 Nonlocal 语句处理是空壳（`// 无表达式`），从不校验上下文；
+  oracle visitNonlocalStmt 有 `if (in_lambda_body_ == 0)` 报错分支（named
+  lambda __call body 访问时置位）。
+- **修复**：①新增 `int inLambda_` 字段；②Pass B 类 action 循环的 named lambda
+  `__call`（`__lambda_` 前缀 + c.lambda() 非空 + 方法名 __call，与既有 nonlocal
+  槽声明条件一致）body visit 前置 1/后置 0；③Nonlocal 语句处理加
+  `inLambda_==0` → "'nonlocal' is only allowed inside a lambda body"（变量解析
+  校验 lambda 创建时已做 BUG-077，此处只查上下文）。
+- **验证**：普通函数 nonlocal `sev=error`（消息与 oracle 逐字一致）；named
+  lambda 内 nonlocal（tests/@test/nonlocal.myp 5 断言）编译+运行全 PASS；
+  anonymous lambda 内 nonlocal 双端仍拒（消息不同非崩）；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/nonlocal_outside_lambda.myp`；全量 439
+  通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：上下文限制类校验（nonlocal 仅 lambda、await 仅 @coro、throw 仅
+  catch）靠「访问体时置位/复位」的上下文标志（inLambda_/inCoro_/
+  inCatchDepth_ 同族）——自举语句处理空壳处是盲点；nonlocal 语句处理此前完全
+  空、oracle 有 in_lambda_body_ 兜底检查。

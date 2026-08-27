@@ -27,6 +27,17 @@
 
 ## 编译器版本历史
 
+### v3.15.160 — 修 nonlocal 仅 lambda body 内合法漏校验（BUG-126）
+
+**非破坏性**（selfhost sema）。普通函数/类方法里 `nonlocal x;`（非 lambda
+上下文）自举此前**接受**（应拒却接受）→ 静默忽略、语义无意义。oracle 拒
+"'nonlocal' is only allowed inside a lambda body"。
+
+- **修复**：新增 `inLambda_` 上下文标志（named lambda `__call` body 访问置位）+
+  Nonlocal 语句处理加 `inLambda_==0` 检查；变量解析校验 lambda 创建时已有。
+- **测试**：负测试 `tests/negative/nonlocal_outside_lambda.myp`；named lambda
+  nonlocal 全 PASS（tests/@test/nonlocal.myp 5 断言）；bootstrap 自举成立。
+
 ### v3.15.159 — 修 match 枚举变体绑定 arity 漏校验（BUG-125）
 
 **非破坏性**（selfhost sema）。`Opt.Some(x, y)`（变体 1 字段绑 2）/`Opt.Some(x)`
