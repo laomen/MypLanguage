@@ -1,0 +1,16 @@
+// BUG-108 负向：@gpu tile grid(nb) 块数类型漏校验 → opt-21 崩（grid("x")
+// 把 string 当 i64 → constant expression type mismatch）。镜像 C++ "grid must
+// be an integer (block count)"。
+// EXPECT ERROR: grid must be an integer (block count)
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            float[] a = new float[64];
+            @gpu tile (float[64] sm) grid("x") block(64) {
+                sm[0] = a[0];
+            }
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

@@ -2791,3 +2791,25 @@ init/range/op return）。
 - **教训**：GPU 声明式语句（reduce/scan/scatter）是校验盲区——GpuScatter 已镜
   像、reduce/scan 漏（不对称）；「声明式语法 + 匿名 lambda op」的校验须在访问
   op 体前完成（数组/init/range），op return 提取后校验。
+
+## BUG-108（已修复 🟩，v3.15.142）：@gpu tile grid(nb) 块数校验漏 → opt 崩
+
+**非破坏性**（selfhost sema）。`@gpu tile ... grid("x")`（grid 非整数）自举
+此前静默过 → codegen 把 string 当 i64 → **opt-21 崩**（constant expression
+type mismatch: got 'ptr' but expected 'i64'）；`grid(0)` 静默接受（应拒却接受）。
+oracle 当前源 visitGpuTileStmt 检查 "grid must be an integer (block count)" /
+"grid must be a positive block count"。
+
+- **根因**：自举 GpuTile grid 处理只 visit gridExpr 并设 gridVal，不校验类型/
+  正数（原逻辑 `kind=="Integer" || gridLiteral>0` 非正字面量落到 -1 分支静默）。
+- **修复**：镜像 oracle——①gridExpr 非数字 → "grid must be an integer (block
+  count)"，gridVal=-1；②Integer 字面量 ≤0 → "grid must be a positive block
+  count"；③非字面量（运行时表达式如 conv3d nTiles）→ gridVal=-1 标记 host
+  求值（保持原行为）。
+- **验证**：grid("x") / grid(0) 双形态 `sev=error`；grid(4) 编译正常；bootstrap
+  自举成立。
+- **回归**：负测试 `tests/negative/gpu_tile_grid_type.myp` /
+  `gpu_tile_grid_positive.myp`；全量 415 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：@gpu tile 子句（grid/block/shared/stream）逐一核对 oracle——grid
+  有类型+正数两道校验；自举原逻辑「非正字面量→-1」掩盖了校验缺失。stream(s)
+  须 GpuStream 实例校验为非崩缺口（自举超前，seed 无法解析，低优先待办）。

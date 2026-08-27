@@ -1,0 +1,15 @@
+// BUG-108 负向：@gpu tile grid(nb) 块数须为正整数（grid(0) 静默接受）。
+// 镜像 C++ "grid must be a positive block count"。
+// EXPECT ERROR: grid must be a positive block count
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            float[] a = new float[64];
+            @gpu tile (float[64] sm) grid(0) block(64) {
+                sm[0] = a[0];
+            }
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

@@ -4533,11 +4533,25 @@ class Sema {
                         + " bytes) exceeds the 48KB limit (NV sm_75)");
                 }
                 if (s.gridExpr() != null) {
-                    visitExpr(s.gridExpr());
-                    long gridLiteral = s.gridExpr().integerValue();
-                    if (s.gridExpr().kind() == "Integer" || gridLiteral > 0) {
-                        s.setGridVal(int(gridLiteral));
-                    } else s.setGridVal(-1);
+                    // BUG-108：@gpu tile grid(nb) 须正整数块数（镜像 C++ "grid
+                    // must be an integer (block count)" / "grid must be a
+                    // positive block count"）。grid("x") 此前静默 → codegen 把
+                    // string 当 i64 → opt-21 崩（constant expression type
+                    // mismatch）；grid(0) 静默接受。字面量 → grid_val；运行时
+                    // 表达式（如 conv3d nTiles）→ -1 标记 host 求值。
+                    string gridKind = visitExpr(s.gridExpr());
+                    if (isNumKind(gridKind) == 0) {
+                        diag_.error(s.gridExpr().line(), s.gridExpr().col(), "grid must be an integer (block count)");
+                        s.setGridVal(-1);
+                    } else if (s.gridExpr().kind() == "Integer") {
+                        long gridLit2 = s.gridExpr().integerValue();
+                        s.setGridVal(int(gridLit2));
+                        if (gridLit2 <= 0L) {
+                            diag_.error(s.gridExpr().line(), s.gridExpr().col(), "grid must be a positive block count");
+                        }
+                    } else {
+                        s.setGridVal(-1);
+                    }
                 }
                 if (s.stream() != null) visitExpr(s.stream());
                 int savedTileGpu = inGpuFor_;

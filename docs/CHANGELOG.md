@@ -39,6 +39,18 @@
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-098。
 
+### v3.15.142 — 修 @gpu tile grid(nb) 块数校验漏（BUG-108）
+
+**非破坏性**（selfhost sema）。`@gpu tile ... grid("x")` 自举此前**接受** →
+codegen 把 string 当 i64 → **opt-21 崩**（constant expression type
+mismatch）；`grid(0)` 静默接受。oracle 当前源有类型+正数两道校验。
+
+- **修复**：镜像 oracle——①gridExpr 非数字 → "grid must be an integer (block
+  count)"；②Integer 字面量 ≤0 → "grid must be a positive block count"；③运行时
+  表达式 → gridVal=-1 标记 host 求值（保持原行为）。
+- **测试**：负测试 `tests/negative/gpu_tile_grid_type.myp` /
+  `gpu_tile_grid_positive.myp`；grid(4) 编译正常；bootstrap 自举成立。
+
 ### v3.15.141 — 修 @gpu reduce/scan 声明式校验漏（BUG-107）
 
 **非破坏性**（selfhost sema）。`@gpu reduce ... init "str"`（init 与元素类型
