@@ -2455,6 +2455,31 @@ class Sema {
             }
             return 0;
         }
+        // BUG-099：递归校验嵌套解构 arity（镜像 C++ destructure walk 的
+        // "destructure: nested tuple arity mismatch"）。t 是某父节点的子节点：
+        // 叶子（elements 空）直接返回；嵌套节点须值与 target 元素数一致。
+        // ve 是值表达式（Tuple 字面量）、tv 是值 AstType（Call 返回 tuple）——
+        // 二者给出嵌套结构。reported 防跨层重复报。
+        void checkNestedDestructureArity(AstDestructureTarget t, AstExpr ve, AstType tv, int line, int col, ArrayList<int> reported) {
+            if (t == null || t.elements().size() == 0) return;
+            int valArity = -1;
+            if (tv != null && tv.isTuple() != 0) valArity = tv.funcParamTypes().size();
+            else if (ve != null && ve.kind() == "Tuple") valArity = ve.elements().size();
+            if (valArity != t.elements().size()) {
+                if (reported.get(0) == 0) {
+                    diag_.error(line, col, "destructure: nested tuple arity mismatch");
+                    reported.set(0, 1);
+                }
+                return;
+            }
+            for (int i = 0; i < t.elements().size(); i = i + 1) {
+                AstType subTv = null;
+                AstExpr subVe = null;
+                if (tv != null && tv.isTuple() != 0 && i < tv.funcParamTypes().size()) subTv = tv.funcParamTypes().get(i);
+                if (ve != null && ve.kind() == "Tuple" && i < ve.elements().size()) subVe = ve.elements().get(i);
+                checkNestedDestructureArity(t.elements().get(i), subVe, subTv, line, col, reported);
+            }
+        }
         // BUG-080：解构 target 叶子逐个校验类型（镜像 C++ destructure walk）。
         // idx 是可变下标（ArrayList<int> 作指针），消耗元组槽位；`_` 忽略符跳过
         // 不校验。声明式报 "variable 'X' declared as 'T' but element is 'E'"；
@@ -3828,6 +3853,17 @@ class Sema {
                     }
                     string it = "void";
                     int errBefore = diag_.errorCount();
+                    // BUG-098：`var x;`（无初始化器）须拒绝（镜像 C++
+                    // visitVarDecl "'var' declaration requires an initializer"）。
+                    // 此前自举静默当 int x = 0（isInferred 但无 init → it 保持
+                    // void、按默认 int 声明）→ 语义错。
+                    if (v.isInferred() != 0 && v.init() == null) {
+                        int dl = v.nameLine();
+                        int dc = v.nameCol();
+                        if (dl == 0) { dl = s.line(); dc = s.col(); }
+                        diag_.error(dl, dc, "'var' declaration requires an initializer");
+                        continue;
+                    }
                     if (v.init() != null) {
                         // MYP 注意：链式字段访问（v.init_.kind_）产生垃圾 → 先用局部变量。
                         AstExpr initLocal = v.init();
@@ -4389,8 +4425,25 @@ class Sema {
                                 int dstLine = s.endLine() != 0 ? s.endLine() : s.line();
                                 int dstCol = s.endCol() != 0 ? s.endCol() : s.col();
                                 diag_.error(dstLine, dstCol, "destructure: tuple has " + valN + " elements but target binds " + tgtN);
+                            } else if (hasNestedDestructure(s.target()) != 0) {
+                                // BUG-099：顶层 arity 匹配但嵌套 arity 不匹配 →
+                                // codegen extractvalue 越界 → opt 崩（"invalid
+                                // indices for extractvalue"）。此前 hasNestedDestructure
+                                // 豁免嵌套完全不做结构校验。
+                                ArrayList<int> rep = new ArrayList<int>();
+                                rep.add(0);
+                                for (int ti = 0; ti < s.target().elements().size(); ti = ti + 1) {
+                                    checkNestedDestructureArity(s.target().elements().get(ti), null, frt.funcParamTypes().get(ti), s.line(), s.col(), rep);
+                                }
                             }
                         }
+                    }
+                } else if (dv != null && dv.kind() == "Tuple" && hasNestedDestructure(s.target()) != 0) {
+                    // BUG-099：元组字面量 rhs 的嵌套 arity 校验
+                    ArrayList<int> rep2 = new ArrayList<int>();
+                    rep2.add(0);
+                    for (int ti2 = 0; ti2 < s.target().elements().size() && ti2 < dv.elements().size(); ti2 = ti2 + 1) {
+                        checkNestedDestructureArity(s.target().elements().get(ti2), dv.elements().get(ti2), null, s.line(), s.col(), rep2);
                     }
                 }
                 if (s.isDecl() != 0) declareDestructureTarget(s.target());

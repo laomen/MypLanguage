@@ -1,0 +1,15 @@
+// EXPECT ERROR: 'var' declaration requires an initializer
+// BUG-098 回归（负测试）：`var x;`（无初始化器）须编译期拒。
+// 此前自举静默当 `int x = 0`（isInferred 但无 init → it 保持 void、按默认 int
+// 声明）→ 语义错。C++ visitVarDecl 镜像 "'var' declaration requires an
+// initializer"。合法：`var x = 5;` / `var s = "hi";` 等带初始化器。
+import env;
+
+class T2 {
+    action:
+        @constructor T2() {
+            var x;
+            Console.writeString("A x=" + x + "\n");
+        }
+}
+int main(){return 0;}

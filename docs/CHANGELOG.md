@@ -27,6 +27,32 @@
 
 ## 编译器版本历史
 
+### v3.15.132 — 修 `var x;` 无初始化器漏校验（BUG-098）
+
+**非破坏性**（selfhost sema）。`var x;`（无初始化器）此前自举静默当 `int x = 0`
+→ 语义错。C++ visitVarDecl 镜像 `'var' declaration requires an initializer`。
+
+- **修复**：VarDecl 处理在推断前加校验（isInferred && init==null → 报错 +
+  continue）。
+- **测试**：负测试 `tests/negative/var_no_init.myp`；`var x = 5;`/`var s = "hi";`
+  不受影响。
+- 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-098。
+
+### v3.15.133 — 修嵌套解构 arity 漏校验 → opt 崩（BUG-099）
+
+**非破坏性**（selfhost sema）。`((int a,int b,int d),int c) = getNested()`
+（内层值 2 元素绑 3 个）此前自举静默过 → codegen extractvalue 越界 → **opt-21
+崩**（`invalid indices for extractvalue`）。C++ destructure walk 镜像。
+
+- **修复**：新增 checkNestedDestructureArity（递归 walk：嵌套节点值须 tuple 且
+  arity 一致；reported 防跨层重复），接入 Destructure 处理——Call rhs（嵌套
+  AstType）与元组字面量 rhs（嵌套 expr）两形态；仅在顶层 arity 匹配后走。
+- **测试**：负测试 `tests/negative/destructure_nested_arity.myp`；合法嵌套解构
+  （tuple.myp 25 行）不受影响。
+- 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-099。
+
 ### v3.15.131 — 修集合类缺 get/size 或元素是数组漏校验 → opt 崩（BUG-097）
 
 **非破坏性**（selfhost sema）。`for (int x in ng)`（ng 是只有 size() 无 get(int)

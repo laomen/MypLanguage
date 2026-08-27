@@ -1,0 +1,18 @@
+// EXPECT ERROR: destructure: nested tuple arity mismatch
+// BUG-099 回归（负测试）：嵌套解构每一层 arity 须匹配。
+// 此前自举 hasNestedDestructure 完全豁免嵌套解构 → `((int a,int b,int d),int c)
+// = getNested()`（内层值 (int,int) 绑 3 个）静默过 → codegen extractvalue 越界
+// → opt-21 崩（"invalid indices for extractvalue"）。C++ destructure walk 镜像
+// "destructure: nested tuple arity mismatch" / "expected a nested tuple here"。
+// 合法：((int a,int b),int c) = ((1,2),3)（各层 arity 匹配）。
+import env;
+
+((int, int), int) getNested() { return ((1, 2), 3); }
+class T2 {
+    action:
+        @constructor T2() {
+            ((int a, int b, int d), int c) = getNested();
+            Console.writeString("a=" + a + "\n");
+        }
+}
+int main(){return 0;}

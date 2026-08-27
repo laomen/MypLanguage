@@ -2554,3 +2554,46 @@
   但兜底有解析时序盲区（resolvedKind 未及时设）→ 静默 → codegen 崩。凡 oracle
   有专门消息（is not iterable + 原因 / element is an array），自举须显式发而非
   依赖 generic。
+
+## BUG-098（已修复 🟩，v3.15.132）：`var x;` 无初始化器漏校验（应拒绝却接受）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.132，selfhost sema.myp）
+- **背景**：`var x;`（无初始化器）此前自举静默当 `int x = 0`（isInferred 但无
+  init → it 保持 void、按默认 int 声明）→ 语义错。C++ visitVarDecl 镜像：
+  `'var' declaration requires an initializer`。
+- **根因**：自举 VarDecl 处理对 isInferred 但 init==null 不设防——BUG-016 注释
+  明言「无 init 由 C++ 拒绝」但自举未实现。
+- **修复**：VarDecl 处理在推断前加校验——`v.isInferred()!=0 && v.init()==null`
+  → "'var' declaration requires an initializer"（continue 不声明变量，后续引用
+  报 undefined symbol，与 oracle 级联一致）。
+- **验证**：`var x;` 干净拒绝（含 undefined symbol 级联，与 oracle 一致）；
+  `var x = 5;` / `var s = "hi";` 不受影响；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/var_no_init.myp`；全量 395 通过 / 0 失败；
+  oracle 对拍 95/0。
+- **教训**：注释标注的「oracle 行为自举未实现」就是待办缺口——凡 C++ 有
+  is_inferred && !init 分支、自举有 isInferred() 但不用，即「应拒却接受」。
+
+## BUG-099（已修复 🟩，v3.15.133）：嵌套解构 arity 漏校验 → opt 崩
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.133，selfhost sema.myp）
+- **背景**：`((int a,int b,int d),int c) = getNested()`（getNested 返回
+  ((int,int),int)，内层值 2 元素绑 3 个）此前自举静默过 → codegen
+  extractvalue 越界 → **opt-21 崩**（"invalid indices for extractvalue"）。
+  C++ destructure walk 镜像：`destructure: nested tuple arity mismatch` /
+  `destructure: expected a nested tuple here`。
+- **根因**：BUG-080 用 hasNestedDestructure 豁免嵌套解构（扁平 kind 列表无法
+  表示子 tuple）→ 嵌套层 arity/结构完全不校验；顶层 arity 检查只比
+  target.elements().size() vs 值外层元素数，内层不查。
+- **修复**：新增 checkNestedDestructureArity（递归 walk：嵌套节点值须 tuple 且
+  arity 与 target 元素数一致；reported 防跨层重复报），接入 Destructure 处理
+  ——Call rhs（用 findFuncRetType 的 frt 嵌套 AstType）与元组字面量 rhs（用
+  dv.elements() 嵌套 expr）两形态，且仅在顶层 arity 匹配后才走（避免与顶层
+  "tuple has N" 重复）。
+- **验证**：嵌套 arity 错（Call + 字面量）干净拒；合法嵌套解构
+  （tuple.myp 25 行 ((int p,int q),int z)）不受影响；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/destructure_nested_arity.myp`；全量 395 通过
+  / 0 失败；oracle 对拍 95/0。
+- **教训**：BUG-080 的「嵌套豁免」是权宜——只豁免了扁平类型检查，但**结构
+  arity**（每层元素数）仍须镜像 oracle 的递归 walk；豁免导致嵌套 arity 错 →
+  codegen 越界 → opt 崩。凡 C++ 有递归 walk（嵌套 arity/结构校验），自举不能
+  整体豁免，须分层实现。
