@@ -47,6 +47,31 @@
 - **测试**：`tests/@test/cyclecollect_multi.myp`（2 tests：1000 环显式收集 + 自动
   收集下多环回收）。全量 456/456 + parity 95/95 + 自举 MD5 一致。
 
+### v3.15.179 — 类对象独立 arena + 环收集 walk 免登记（混合负载提速 4.3x）
+
+**非破坏性**（纯 MYP 运行时）。方案 A：彻底移除每次 `new` 类对象的 `ccAllAdd`
+登记（v3.15.177 已去重压缩，但每分配仍有登记成本 + 收集期 allN 大遍历）。
+- **根因**：`myp_alloc_object` 每 `new` 类对象把 `地址|type_id` 追加进 `CC.all`
+  登记表（环收集枚举根用）——混排 arena 无法 walk 区分类对象与原始块（args/
+  coro 的 `myp_arena_alloc` 无 type_id 头 → 假根段错误），故必须登记。登记每
+  百万分配 ~5ms（实测禁用 24→20ms）+ 收集期遍历 allN（混合负载 20 万迭代 × 6
+  Node = 120 万条登记）。
+- **方案（alloc.myp）**：新增**独立 class arena `CArena`**（bump + size-class
+  复用 + 自旋锁 + chunk used@16 维护，与 `Arena` 并行）；`myp_alloc_object`/
+  `myp_free_object` 改走 `CArena`（字符串/数组/raw 块仍在 `Arena`）。环收集找根
+  从"遍历 CC.all 登记表"改为 **walk `CArena`**（全是类对象，无原始块污染 → 无
+  假根）：chunk 链表（新→旧）+ 块序列（活块 total∈[16,2^30) →
+  rc@base0+8/tid@base0+12/data=base0+16；空闲块 next 指针大地址 → 原 total@+8），
+  精确到 chunk used@16 边界（免扫未用区）。**删除 `ccAllAdd` + `CC.all/allCap/
+  allN`**。`ccAddrOk`（trial 悬垂防御）同时查 `Arena` + `CArena`；`myp_arena_
+  free_all` 复位两个 arena。
+- **效果**：纯分配 `new`+存数组 **25→21ms**（省登记 4ms）；**混合负载
+  （`tests/leak_long.myp`）240k/s → 1025k/s（4.3x）**（收集期从遍历 120 万登记
+  → walk ~2700 活对象）；Node 存活稳定 ~6300（无泄漏），arenaR 稳定 2.4MB
+  （内存复用不变）。
+- **测试**：全量 456/456 + parity 95/95 + 自举 MD5 一致；环收集系列
+  （cyclecollect/_arr/_auto/_generic/_multi/memreport）全 PASS。
+
 ### v3.15.177 — 修复 CC.all 登记表膨胀（混合负载内存降 1300x + 提速 3x）
 
 **非破坏性**（纯 MYP 运行时）。定位并修复长时混合负载（`tests/leak_long.myp`）

@@ -103,6 +103,122 @@ void arenaReclaim(long base0) {
     }
     arenaUnlock();
 }
+// ---- class arena（方案 A v3.15.179：类对象独立 arena，环收集 walk 免登记）----
+// 与 Arena 并行的第二个 bump+size-class arena，**只**服务类对象
+// （myp_alloc_object/free_object）。字符串/数组/raw 块仍在 Arena。
+// 环收集 walk CArena 即可枚举全部类对象根——全是类对象无原始块污染（原始块
+// 无 type_id 头，混在 Arena 里 walk 会出假根），免去 ccAllAdd 每次分配的登记
+// （实测 5ms/百万）+ 收集期 allN 大遍历。
+@static class CArena {
+    property:
+        long cur = 0;
+        long head = 0;
+        long cur_used = 0;
+        long cur_cap = 0;
+        long total_used = 0;
+        long last_base = 0;
+        long last_aligned = 0;
+        long freeHead = 0;
+        long lockS = 0;
+        long[16] freeLists;
+}
+void cArenaLockInit() {
+    if (CArena.lockS == 0) {
+        long p = __myp_syscall(9, 0, 4, 3, 0x22, -1, 0);
+        if (p != -1 && p != 0) {
+            __myp_mem_store_i32(p, 0);
+            CArena.lockS = p;
+        }
+    }
+}
+void cArenaLock() {
+    cArenaLockInit();
+    if (CArena.lockS == 0) return;
+    while (__myp_atomic_add_i32_addr(CArena.lockS, 1) != 0) { }
+}
+void cArenaUnlock() {
+    if (CArena.lockS == 0) return;
+    __myp_atomic_store_i32_addr(CArena.lockS, 0);
+}
+
+// 类对象分配：同 myp_arena_alloc_ex 但用 CArena（类对象无需 grow=2x，参数保留
+// 结构一致）。返回 header base（base0+8）。
+long myp_class_arena_alloc_ex(long size, int grow) {
+    if (size < 1) size = 1;
+    long req = size + 8 + 15;
+    req = req - (req % 16);
+    long cap = req;
+    if (grow != 0) cap = req * 2;
+    cArenaLock();
+    long idx = classOf(req);
+    while (idx < 16) {
+        long prev = 0;
+        long cur = CArena.freeLists[idx];
+        while (cur != 0) {
+            long stored = __myp_mem_load_i64(cur + 8);
+            if (stored >= req) {
+                long nxt = __myp_mem_load_i64(cur);
+                if (prev == 0) CArena.freeLists[idx] = nxt;
+                else __myp_mem_store_i64(prev, nxt);
+                __myp_mem_store_i64(cur, stored);
+                CArena.last_base = 0;
+                CArena.last_aligned = 0;
+                cArenaUnlock();
+                return cur + 8;
+            }
+            prev = cur;
+            cur = __myp_mem_load_i64(cur);
+        }
+        idx = idx + 1;
+    }
+    if (CArena.cur == 0 || CArena.cur_used + cap > CArena.cur_cap) {
+        long chunk = cap;
+        if (chunk < 65536) chunk = 65536;
+        long c = __myp_syscall(9, 0, 32 + chunk, 3, 0x22, -1, 0);
+        if (c == -1 || c == 0) { cArenaUnlock(); return 0; }
+        __myp_mem_store_i64(c, CArena.cur);
+        __myp_mem_store_i64(c + 8, chunk);
+        __myp_mem_store_i64(c + 16, 0);
+        if (CArena.cur == 0) CArena.head = c;
+        CArena.cur = c;
+        CArena.cur_used = 0;
+        CArena.cur_cap = chunk;
+    }
+    long p = CArena.cur + 32 + CArena.cur_used;
+    __myp_mem_store_i64(p, cap);
+    CArena.last_base = p + 8;
+    CArena.last_aligned = cap;
+    CArena.cur_used = CArena.cur_used + cap;
+    CArena.total_used = CArena.total_used + cap;
+    __myp_mem_store_i64(CArena.cur + 16, CArena.cur_used);   // chunk used@16（walk 精确边界）
+    cArenaUnlock();
+    return p + 8;
+}
+long myp_class_arena_alloc(long size) { return myp_class_arena_alloc_ex(size, 0); }
+
+// 类对象块回收：同 arenaReclaim 但用 CArena（LIFO 死代码同原：统一走空闲链表）。
+void cArenaReclaim(long base0) {
+    cArenaLock();
+    if (CArena.last_base == base0) {
+        if (CArena.cur_used >= CArena.last_aligned) {
+            CArena.cur_used = CArena.cur_used - CArena.last_aligned;
+            if (CArena.total_used >= CArena.last_aligned)
+                CArena.total_used = CArena.total_used - CArena.last_aligned;
+        }
+        CArena.last_base = 0;
+        CArena.last_aligned = 0;
+    } else {
+        long total = __myp_mem_load_i64(base0);
+        if (total > 0) {
+            long fidx = classOf(total);
+            __myp_mem_store_i64(base0 + 8, total);
+            __myp_mem_store_i64(base0, CArena.freeLists[fidx]);
+            CArena.freeLists[fidx] = base0;
+        }
+    }
+    cArenaUnlock();
+}
+
 @static class Live {
     property:
         long strings = 0;
@@ -258,14 +374,16 @@ string myp_alloc_str_grow(long size) {
 }
 
 // C: void* myp_alloc_object(size_t size, uint32_t type_id)
+// v3.15.179 方案 A：从独立 class arena（CArena）分配 + **免 ccAllAdd 登记**
+// （环收集改 walk CArena 找根，全是类对象无假根）。省登记 5ms/百万 +
+// 收集期 allN 遍历。
 string myp_alloc_object(long size, int type_id) {
-    long base = myp_arena_alloc(8 + size);
+    long base = myp_class_arena_alloc_ex(8 + size, 0);
     if (base == 0) return "";   // OOM
     __myp_mem_store_i32(base, 0);          // rc=0（return retain-on-return → 1）
     __myp_mem_store_i32(base + 4, type_id);
     Live.objects = Live.objects + 1;
     myp_type_live_inc(type_id);   // 包 B：per-type 计数
-    ccAllAdd(base + 8, type_id);   // 环收集根枚举登记
     // v3.15.172 自动收集水位：每 N 次类对象分配置 pending（==threshold 恰好一次），
     // 安全点 myp_cc_try_collect 消费。阈值<=0 关闭。热路径仅一次 add + 比较。
     CC.allocSinceCollect = CC.allocSinceCollect + 1;
@@ -321,9 +439,6 @@ string myp_alloc_slice_backing(long count, int elem_size, int elem_kind) {
         long n = 0;        // 已用槽
         long[] keys;       // 对象 data 地址（0=空槽）
         int[] colors;      // 0=空, 1=灰, 2=黑, 3=白
-        long allCap = 0;   // ccAll 容量
-        long allN = 0;     // 已登记类对象数
-        long[] all;        // 类对象登记表：高 16 位 = type_id，低 48 位 = data 地址
         long allocSinceCollect = 0;   // v3.15.172：距上次收集的类对象分配数（水位）
         long threshold = 100000;      // 自动收集水位（每 N 次类对象分配；<=0 关闭）
         int pending = 0;              // 水位已到，待安全点收集
@@ -361,22 +476,6 @@ void myp_cc_try_collect() {
 }
 void myp_cc_set_threshold(long n) { CC.threshold = n; }
 long myp_cc_get_threshold() { return CC.threshold; }
-
-// 类对象登记：myp_alloc_object 每次分配 O(1) 追加（枚举根用，替代 arena walk——
-// walk 无法区分原始块（args/coro 的 myp_arena_alloc 无 type_id 头）→ 假根段错误）。
-// 打包 tid 进高 16 位（x86-64 用户 mmap 地址 < 2^48）。收集时校验"当前 type_id ==
-// 记录值"：被释放后被原始块复用的旧条目（当前 tid ≠ 记录 tid）被跳过。
-void ccAllAdd(long o, int tid) {
-    if (CC.allN >= CC.allCap) {
-        long nc = CC.allCap == 0 ? 4096 : CC.allCap * 2;
-        long[] na = new long[nc];
-        for (long i = 0; i < CC.allN; i = i + 1) na[i] = CC.all[i];
-        CC.allCap = nc;
-        CC.all = na;
-    }
-    CC.all[CC.allN] = o | (long(tid) << 48);
-    CC.allN = CC.allN + 1;
-}
 
 void ccReset() {
     CC.n = 0;
@@ -498,8 +597,15 @@ int myp_cc_active() {
 // v3.15.176: 从 Arena.cur（最新 chunk）遍历——chunk 链表是反向的（cur 最新，
 // next 指旧；head 最旧且 next=0），从 head 遍历只能到首 chunk，新 chunk 的对象
 // 全被误判为悬垂 → 多环/多 chunk 时大规模漏收集（1000 环只收 204）。
+// v3.15.179: 类对象现在在 CArena（字符串/数组/raw 仍在 Arena）→ 两处都查。
 int ccAddrOk(long addr) {
     long h = Arena.cur;
+    while (h != 0) {
+        long cap = __myp_mem_load_i64(h + 8);
+        if (addr >= h + 32 && addr < h + 32 + cap) return 1;
+        h = __myp_mem_load_i64(h);   // next
+    }
+    h = CArena.cur;
     while (h != 0) {
         long cap = __myp_mem_load_i64(h + 8);
         if (addr >= h + 32 && addr < h + 32 + cap) return 1;
@@ -549,77 +655,56 @@ void ccCascade(long addr, string obj) {
 // C: void myp_collect_cycles(void) —— 回收引用环。安全点调用（无并发引用变更）：
 // 显式 Memory.collectCycles() 或 myp_free_all（退出，工作线程已 join）。
 void myp_collect_cycles() {
-    // v3.15.177: 压缩 + 去重 CC.all 登记表——去掉死条目（rc==0/复用/非活块）且
-    // **按地址去重**（同一地址被多次分配（复用）→ all 表按分配事件膨胀：混合负载
-    // 20 万迭代×6 Node = 120 万登记 → 收集器处理 120 万假根 → keys 表 32MB+ 且慢）。
-    // 用 CC.keys 哈希标记已见地址（收集前 keys 空）。校验与下方找根同款。
-    if (CC.allCap > 0) {
-        if (CC.cap < 4096) ccEnsureCap(4096);
-        long w = 0;
-        for (long i = 0; i < CC.allN; i = i + 1) {
-            long e = CC.all[i];
-            if (e == 0) continue;
-            long o = e & 0xFFFFFFFFFFFF;   // 低 48 位 = data 地址
-            int rtid = int(e >> 48);       // 高 16 位 = 记录 type_id
-            int ctid = __myp_mem_load_i32(o - 4);
-            if (ctid != rtid) continue;
-            if (ccClassOk(ctid) == 0) continue;
-            int rcv = __myp_atomic_load_i32_addr(o - 8);
-            if (rcv < 1) continue;   // rc==0：已死
-            long t = __myp_mem_load_i64(o - 16);
-            if (t < 16 || t >= (1 << 30)) continue;   // 非活块
-            if (ccLookup(o) != 0) continue;   // 地址已登记 → 去重
-            ccInsert(o, 1);   // 标记已见
-            CC.all[w] = e;
-            w = w + 1;
-        }
-        CC.allN = w;
-        ccReset();   // 清 keys 去重标记
-        if (CC.allCap > 4096 && CC.allCap > w * 4) {
-            long nc = w * 2;
-            if (nc < 4096) nc = 4096;
-            long[] na = new long[nc];
-            for (long i = 0; i < w; i = i + 1) na[i] = CC.all[i];
-            CC.allCap = nc;
-            CC.all = na;
-        }
-    }
-    // 快照 class 根：迭代 ccAll 登记表（myp_alloc_object 每分配追加），校验
-    // "当前 type_id == 记录 type_id" 过滤假根——被释放/复用的旧条目（当前 tid ≠
-    // 记录 tid，或 rc==0 / base0 total 非活块）被跳过。⚠️ 不持 arenaLock：收集器
-    // 内部 `new`（哈希扩容）会走 myp_arena_alloc_ex → 嵌套自旋锁 → 死锁；收集器
-    // 要求安全点（单线程）→ 无锁安全。
+    // v3.15.179 方案 A：找根 = walk CArena（全是类对象，无原始块污染 → 无假根，
+    // 免去 ccAllAdd 登记 + 收集期 allN 遍历）。块序列：base0=chunk+32，块首 8B
+    // total 前缀，16 对齐顺序 bump。活块（total∈[16,2^30)）→ 类对象：
+    // rc@base0+8, tid@base0+12, data=base0+16。空闲块（base0+0=next 指针，大地址
+    // 或 0）→ 原 total 在 base0+8。⚠️ 不持锁：收集器内部 `new`（哈希扩容）会走
+    // 分配器 → 嵌套自旋锁 → 死锁；收集器要求安全点（单线程）→ 无锁安全。
     long[] roots = new long[1024];
     long rootsCap = 1024;
     long nroot = 0;
-    for (long i = 0; i < CC.allN; i = i + 1) {
-        long e = CC.all[i];
-        if (e == 0) continue;
-        long o = e & 0xFFFFFFFFFFFF;   // 低 48 位 = data 地址
-        int rtid = int(e >> 48);       // 高 16 位 = 记录 type_id
-        // 当前 tid 须等于记录 tid（防释放后被原始块复用 → 假根）
-        int ctid = __myp_mem_load_i32(o - 4);
-        if (ctid != rtid) continue;
-        if (ccClassOk(ctid) == 0) continue;
-        int rcv = __myp_atomic_load_i32_addr(o - 8);
-        if (rcv < 1) continue;   // rc==0：已死
-        long t = __myp_mem_load_i64(o - 16);   // base0 total
-        if (t < 16 || t >= (1 << 30)) continue;   // 非活块（空闲链表 base0+0=next 指针）
-        if (nroot >= rootsCap) {
-            rootsCap = rootsCap * 2;
-            long[] nr = new long[rootsCap];
-            for (long j = 0; j < nroot; j = j + 1) nr[j] = roots[j];
-            roots = nr;
+    long h = CArena.cur;
+    while (h != 0) {
+        long cap = __myp_mem_load_i64(h + 8);
+        long used = __myp_mem_load_i64(h + 16);   // bump 到哪（CArena 每次 bump 更新）
+        if (used < 0 || used > cap) used = cap;   // 兜底
+        long p = h + 32;
+        long end = h + 32 + used;
+        while (p < end) {
+            long t0 = __myp_mem_load_i64(p);
+            long total;
+            if (t0 >= 16 && t0 < (1 << 30)) {
+                total = t0;   // 活块
+                int ctid = __myp_mem_load_i32(p + 12);
+                if (ccClassOk(ctid) != 0) {
+                    int rcv = __myp_atomic_load_i32_addr(p + 8);
+                    if (rcv >= 1) {
+                        if (nroot >= rootsCap) {
+                            rootsCap = rootsCap * 2;
+                            long[] nr = new long[rootsCap];
+                            for (long j = 0; j < nroot; j = j + 1) nr[j] = roots[j];
+                            roots = nr;
+                        }
+                        roots[nroot] = p + 16;   // data
+                        nroot = nroot + 1;
+                    }
+                }
+            } else {
+                total = __myp_mem_load_i64(p + 8);   // 空闲块原 total
+                if (total < 16 || total >= (1 << 30)) total = 16;   // 兜底
+            }
+            p = p + total;
         }
-        roots[nroot] = o;   // data
-        nroot = nroot + 1;
+        h = __myp_mem_load_i64(h);   // next（更旧 chunk）
     }
     if (nroot == 0) return;
 
     // v3.15.176: 预扩容（trial 期不扩容，防嵌套污染）。trial 插入对象数 = 根 +
-    // 级联字段/数组/字符串，可能远超根数；用 ccAllN（登记类对象）4 倍 + 余量，
-    // 保证 ccInsert 的 `n*2 >= cap` 在 trial 全程不触发（实测 nroot*2 预估不足，
-    // 1000 环只收 204）。
+    // 级联字段/数组/字符串，可能远超根数；用 nroot（walk CArena 活类对象）2 倍 +
+    // 余量，保证 ccInsert 的 `n*2 >= cap` 在 trial 全程不触发（实测 nroot*2 预估
+    // 不足，1000 环只收 204；walk 根数精确后 nroot*2+256 通常足够，极端深链仍由
+    // ccInsert 自身扩容兜底——trial 期扩容有嵌套污染风险，故预留足够余量）。
     ccEnsureCap(nroot * 2 + 256);
     ccReset();
     // markGray（trial=1：rc-- + 级联，不释放）
@@ -791,7 +876,7 @@ void myp_free_object(string obj) {
     int tid = __myp_mem_load_i32(addr - 4);
     if (Live.objects > 0) Live.objects = Live.objects - 1;
     myp_type_live_dec(tid);   // 包 B：per-type 计数回落
-    arenaReclaim(addr - 16);   // 类对象块 base0（含 8B total 前缀：data-8 头 base，base0=data-16）
+    cArenaReclaim(addr - 16);   // 类对象块回 class arena（base0=data-16）
 }
 
 // C: void myp_release_class_obj_ex(void* obj) —— 类对象 rc→0 后的分发（原 C helper，
@@ -837,6 +922,16 @@ void myp_arena_free_all() {
     Arena.last_aligned = 0;
     Arena.freeHead = 0;
     for (int i = 0; i < 16; i = i + 1) Arena.freeLists[i] = 0;   // size-class
+    // v3.15.179: class arena 一并复位
+    CArena.cur = 0;
+    CArena.head = 0;
+    CArena.cur_used = 0;
+    CArena.cur_cap = 0;
+    CArena.total_used = 0;
+    CArena.last_base = 0;
+    CArena.last_aligned = 0;
+    CArena.freeHead = 0;
+    for (int i = 0; i < 16; i = i + 1) CArena.freeLists[i] = 0;
 }
 
 // C: void myp_free_all(void) —— codegen 在 main() 退出 epilogue 调用；释放进程级
