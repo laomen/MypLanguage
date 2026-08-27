@@ -1,0 +1,19 @@
+// BUG-118 负向：关系比较 < > <= >= 左操作数须数字漏校验（struct<int 静默当
+// bool → codegen 异构比较 → opt-21 崩 integer constant must have integer
+// type）。镜像 C++ visitBinaryOp Lt/Gt/Le/Ge 的 expectNumeric(lhs)。
+// EXPECT ERROR: expected numeric type, got 'Vec2'
+import env;
+struct Vec2 {
+    int x;
+    operator:
+        @op("<") bool lt(Vec2 o) { return x < o.x; }
+}
+class T2 {
+    action:
+        @constructor T2() {
+            Vec2 a; Vec2 b;
+            bool r = a < 5;
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

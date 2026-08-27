@@ -5089,6 +5089,17 @@ class Sema {
                             }
                         }
                     }
+                    // BUG-118：关系比较 < > <= >= 左操作数须数字（镜像 C++
+                    // visitBinaryOp Lt/Gt/Le/Ge 的 expectNumeric(lhs)）。
+                    // a < 5（a 为 struct，@op 不匹配）此前静默当 bool → codegen
+                    // 比较异构类型 → opt-21 崩（integer constant must have
+                    // integer type）。==/!= 双端 sema 均宽松（后端崩）不属缺口。
+                    if ((op == "<" || op == ">" || op == "<=" || op == ">=")
+                        && Str.len(l) != 0 && l != "string" && l != "bool"
+                        && l != "bit" && l != "bitvector" && l != "null"
+                        && isNumKind(l) == 0) {
+                        diag_.error(e.lhs().line(), e.lhs().col(), "expected numeric type, got '" + exprTypeName(e.lhs(), l) + "'");
+                    }
                     e.setResolvedKind("bool");
                     return "bool";
                 }

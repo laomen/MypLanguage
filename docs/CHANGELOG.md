@@ -27,6 +27,18 @@
 
 ## 编译器版本历史
 
+### v3.15.152 — 修关系比较 < > <= >= 左操作数类型漏校验（BUG-118）
+
+**非破坏性**（selfhost sema）。`a < 5`（a 为 struct，@op 不匹配）自举此前
+**接受** → codegen 比较异构类型 → **opt-21 崩**（integer constant must have
+integer type），oracle 拒 "expected numeric type"。
+
+- **修复**：比较分支加 expectNumeric(lhs)（`<`/`>`/`<=`/`>=` 且 lhs 非
+  string/bool/bit/bitvector/null/数字）；@op 匹配路径不受影响。算术分支已有、
+  比较分支漏（不对称补齐）。
+- **测试**：负测试 `tests/negative/relop_nonnumeric_lhs.myp`；@op 匹配/数字
+  比较编译+运行正确；bootstrap 自举成立。
+
 ### v3.15.151 — 修 tuple 返回类型不匹配漏校验（BUG-117）
 
 **非破坏性**（selfhost sema）。`(int, int) ret() { return (1, "a"); }` 自举

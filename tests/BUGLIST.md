@@ -2996,3 +2996,23 @@ of type '(byte, string)' from function returning '(int, int)'"。
 - **教训**：tuple 结构性校验须「当前函数返回 AstType」可查——只存 kind 字符串
   不够，须另存 AstType（与 BUG-116 的声明/赋值路径补齐成 tuple 三路径：声明/
   赋值/返回）；destructureTupleElems 三形态复用是统一手法。
+
+## BUG-118（已修复 🟩，v3.15.152）：关系比较 < > <= >= 左操作数类型漏校验 → opt 崩
+
+**非破坏性**（selfhost sema）。`a < 5`（a 为 struct，@op("<") 类型不匹配时
+resolveOp 返回空）此前自举静默当 bool → codegen 比较异构类型 → **opt-21 崩**
+（integer constant must have integer type）。oracle 拒 "expected numeric type,
+got 'Vec2'"（visitBinaryOp Lt/Gt/Le/Ge 的 expectNumeric(lhs)）。
+
+- **根因**：自举比较分支 resolveOp 不匹配后直接 setResolvedKind("bool")
+  返回，无 expectNumeric 检查（`+`/`-` 等算术分支有、比较分支漏——不对称）。
+- **修复**：比较分支加 expectNumeric(lhs)——`<`/`>`/`<=`/`>=` 且 lhs 非
+  string/bool/bit/bitvector/null/数字 → "expected numeric type, got 'X'"
+  （exprTypeName 取显示名）。@op 匹配路径（resolveOp 返回非空）不受影响。
+- **验证**：struct<int 关系比较 `sev=error`（消息与 oracle 一致）；@op 匹配
+  （Vec2<Vec2）/ 数字比较编译+运行正确；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/relop_nonnumeric_lhs.myp`；全量 430 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：比较运算符（< > <= >=）与算术运算符同样需要 expectNumeric——自举
+  算术分支有、比较分支漏（不对称）；`==`/`!=` 双端 sema 均宽松（struct==int
+  oracle 也接受、struct==struct 双端后端崩）不属本类缺口。
