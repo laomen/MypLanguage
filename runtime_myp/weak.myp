@@ -21,6 +21,7 @@
 // 跨模块调用：alloc.myp 的进程 arena（节点分配）与 myp_retain（弱→强升级）
 ffi long myp_arena_alloc(long size);
 ffi void myp_retain(string obj);
+ffi int myp_cc_active();   // alloc.myp 环收集守卫（trial/restore）
 
 @static class Weak {
     property:
@@ -122,6 +123,7 @@ void myp_weak_store(long slot, long obj) {
 
 // C: void myp_weak_clear(void** slot) —— 持有者销毁：注销弱槽并置空
 void myp_weak_clear(long slot) {
+    if (myp_cc_active() == 1) return;   // 环收集 trial/restore 期不扰动弱注册表（finalize 期允许真实清槽）
     weakLock();
     long old = __myp_mem_load_i64(slot);
     __myp_mem_store_i64(slot, 0);

@@ -247,6 +247,7 @@ string myp_alloc_object(long size, int type_id) {
     __myp_mem_store_i32(base + 4, type_id);
     Live.objects = Live.objects + 1;
     myp_type_live_inc(type_id);   // 包 B：per-type 计数
+    ccAllAdd(base + 8, type_id);   // 环收集根枚举登记
     return __myp_addr_to_str(base + 8);
 }
 
@@ -279,6 +280,206 @@ string myp_alloc_slice_backing(long count, int elem_size, int elem_kind) {
     return __myp_addr_to_str(base + 24);
 }
 
+// ---- 环收集器（ARC + trial-deletion，Bacon-Rajan；v3.15.171）----
+// 哲学：零用户操作 + 最少运行时内存操作——**零每次分配/释放开销**（无 alloc list、
+// 无紫色追踪），仅在 myp_collect_cycles()（显式调用或 myp_free_all 退出自动）一次
+// O(n) 扫描。
+// 枚举（MYP arena 无 alloc list）：遍历 chunk 链表（新→旧，next@0）+ 每 chunk 内
+// 块序列（base0 = chunk+32，块首 8B total 前缀，16 对齐顺序 bump）。空闲链表块
+// base0+0 被 next 指针覆盖（total 移到 base0+8）→ 以 `total ∈ [16, chunk_cap]`
+// 判别活块（活块 total 小对齐；空闲块 next 是 mmap 大地址，末节点为 0）。
+// 模式：trial(markGray：rc--+cascade) / restore(scanBlack：rc+++cascade) /
+// finalize(collectWhite：字段零操作+真实释放)。与 C 运行时语义一致。
+@static class CC {
+    property:
+        int trial = 0;
+        int restore = 0;
+        int finalize = 0;
+        long cap = 0;      // 哈希容量（2 的幂）
+        long n = 0;        // 已用槽
+        long[] keys;       // 对象 data 地址（0=空槽）
+        int[] colors;      // 0=空, 1=灰, 2=黑, 3=白
+        long allCap = 0;   // ccAll 容量
+        long allN = 0;     // 已登记类对象数
+        long[] all;        // 类对象登记表：高 16 位 = type_id，低 48 位 = data 地址
+}
+
+// 类对象登记：myp_alloc_object 每次分配 O(1) 追加（枚举根用，替代 arena walk——
+// walk 无法区分原始块（args/coro 的 myp_arena_alloc 无 type_id 头）→ 假根段错误）。
+// 打包 tid 进高 16 位（x86-64 用户 mmap 地址 < 2^48）。收集时校验"当前 type_id ==
+// 记录值"：被释放后被原始块复用的旧条目（当前 tid ≠ 记录 tid）被跳过。
+void ccAllAdd(long o, int tid) {
+    if (CC.allN >= CC.allCap) {
+        long nc = CC.allCap == 0 ? 4096 : CC.allCap * 2;
+        long[] na = new long[nc];
+        for (long i = 0; i < CC.allN; i = i + 1) na[i] = CC.all[i];
+        CC.allCap = nc;
+        CC.all = na;
+    }
+    CC.all[CC.allN] = o | (long(tid) << 48);
+    CC.allN = CC.allN + 1;
+}
+
+void ccReset() {
+    CC.n = 0;
+    for (long i = 0; i < CC.cap; i = i + 1) {
+        CC.keys[i] = 0;
+        CC.colors[i] = 0;
+    }
+}
+
+int ccLookup(long key) {
+    if (CC.cap == 0) return 0;
+    long mask = CC.cap - 1;
+    long i = (key >> 4) & mask;
+    while (CC.keys[i] != 0) {
+        if (CC.keys[i] == key) return CC.colors[i];
+        i = (i + 1) & mask;
+    }
+    return 0;
+}
+
+void ccSetColor(long key, int color) {
+    if (CC.cap == 0) return;
+    long mask = CC.cap - 1;
+    long i = (key >> 4) & mask;
+    while (CC.keys[i] != 0) {
+        if (CC.keys[i] == key) { CC.colors[i] = color; return; }
+        i = (i + 1) & mask;
+    }
+}
+
+void ccInsert(long key, int color) {
+    if (CC.n * 2 >= CC.cap) {
+        long nc = CC.cap == 0 ? 256 : CC.cap * 2;
+        long[] nk = new long[nc];
+        int[] ncol = new int[nc];
+        long nmask = nc - 1;
+        for (long i = 0; i < CC.cap; i = i + 1) {
+            if (CC.keys[i] == 0) continue;
+            long j = (CC.keys[i] >> 4) & nmask;
+            while (nk[j] != 0) j = (j + 1) & nmask;
+            nk[j] = CC.keys[i];
+            ncol[j] = CC.colors[i];
+        }
+        // ⚠️ 必须先置 CC.cap 再重赋值 CC.keys/CC.colors：重赋值会 ARC 释放旧数组
+        // backing → trial 模式 myp_release(旧数组) → 嵌套 ccInsert；若 cap 未更新
+        // 会再扩容 → 又释放 → 无限递归栈溢出（1000 环实测崩溃）。
+        CC.cap = nc;
+        CC.keys = nk;
+        CC.colors = ncol;
+    }
+    long mask = CC.cap - 1;
+    long i = (key >> 4) & mask;
+    while (CC.keys[i] != 0) i = (i + 1) & mask;
+    CC.keys[i] = key;
+    CC.colors[i] = color;
+    CC.n = CC.n + 1;
+}
+
+// 合法类 type_id？防 __myp_release_table 越界（STR=-2 / ARR=-1 是叶子，永不下表）。
+int ccClassOk(int tid) {
+    if (tid <= 0) return 0;
+    if (tid > 1024) return 0;   // TLive 同界，防超大/脏 id
+    long mx = __myp_fn_addr("__myp_max_type_id");
+    if (mx == 0) return 0;
+    int maxv = __myp_mem_load_i32(mx);
+    if (tid <= maxv) return 1;
+    return 0;
+}
+
+// 弱注册表守卫：trial/restore 期不扰动（finalize 期允许真实清槽）。weak.myp 用。
+int myp_cc_active() {
+    if (CC.trial == 1 || CC.restore == 1) return 1;
+    return 0;
+}
+
+// 调 destroy stub（行为由 CC.trial/restore/finalize 模式决定）。
+void ccCallStub(long addr, string obj) {
+    int tid = __myp_mem_load_i32(addr - 4);
+    if (ccClassOk(tid) == 0) return;
+    long table = __myp_rtable_addr();
+    long stub = __myp_mem_load_i64(table + long(tid) * 8);
+    if (stub != 0) __myp_call_ptr(stub, obj);
+}
+
+// C: void myp_collect_cycles(void) —— 回收引用环。安全点调用（无并发引用变更）：
+// 显式 Memory.collectCycles() 或 myp_free_all（退出，工作线程已 join）。
+void myp_collect_cycles() {
+    // 快照 class 根：迭代 ccAll 登记表（myp_alloc_object 每分配追加），校验
+    // "当前 type_id == 记录 type_id" 过滤假根——被释放/复用的旧条目（当前 tid ≠
+    // 记录 tid，或 rc==0 / base0 total 非活块）被跳过。⚠️ 不持 arenaLock：收集器
+    // 内部 `new`（哈希扩容）会走 myp_arena_alloc_ex → 嵌套自旋锁 → 死锁；收集器
+    // 要求安全点（单线程）→ 无锁安全。
+    long[] roots = new long[1024];
+    long rootsCap = 1024;
+    long nroot = 0;
+    for (long i = 0; i < CC.allN; i = i + 1) {
+        long e = CC.all[i];
+        if (e == 0) continue;
+        long o = e & 0xFFFFFFFFFFFF;   // 低 48 位 = data 地址
+        int rtid = int(e >> 48);       // 高 16 位 = 记录 type_id
+        // 当前 tid 须等于记录 tid（防释放后被原始块复用 → 假根）
+        int ctid = __myp_mem_load_i32(o - 4);
+        if (ctid != rtid) continue;
+        if (ccClassOk(ctid) == 0) continue;
+        if (__myp_atomic_load_i32_addr(o - 8) < 1) continue;   // rc==0：已死
+        long t = __myp_mem_load_i64(o - 16);   // base0 total
+        if (t < 16 || t >= (1 << 30)) continue;   // 非活块（空闲链表 base0+0=next 指针）
+        if (nroot >= rootsCap) {
+            rootsCap = rootsCap * 2;
+            long[] nr = new long[rootsCap];
+            for (long j = 0; j < nroot; j = j + 1) nr[j] = roots[j];
+            roots = nr;
+        }
+        roots[nroot] = o;   // data
+        nroot = nroot + 1;
+    }
+    if (nroot == 0) return;
+
+    ccReset();
+    // markGray（trial=1：rc-- + 级联，不释放）
+    CC.trial = 1;
+    for (long i = 0; i < nroot; i = i + 1) {
+        long o = roots[i];
+        if (ccLookup(o) == 0) {
+            ccInsert(o, 1);   // 灰
+            ccCallStub(o, __myp_addr_to_str(o));
+        }
+    }
+    CC.trial = 0;
+    // scan（restore=1：rc>0 者 rc++ + 级联标黑；rc==0 标白）
+    CC.restore = 1;
+    for (long i = 0; i < CC.cap; i = i + 1) {
+        if (CC.keys[i] == 0 || CC.colors[i] != 1) continue;
+        long o = CC.keys[i];
+        if (__myp_atomic_load_i32_addr(o - 8) > 0) {
+            ccSetColor(o, 2);   // 黑
+            ccCallStub(o, __myp_addr_to_str(o));   // restore 级联
+        } else {
+            ccSetColor(o, 3);   // 白
+        }
+    }
+    CC.restore = 0;
+    // collectWhite（finalize=1：字段零操作，真实释放白类对象；白字符串直接回收）
+    CC.finalize = 1;
+    for (long i = 0; i < CC.cap; i = i + 1) {
+        if (CC.keys[i] == 0 || CC.colors[i] != 3) continue;
+        long o = CC.keys[i];
+        int tid = __myp_mem_load_i32(o - 4);
+        if (tid == -2) {
+            // 白字符串：仅垃圾引用 → 直接回收
+            if (Live.strings > 0) Live.strings = Live.strings - 1;
+            arenaReclaim(o - 20);
+        } else if (ccClassOk(tid) != 0) {
+            ccCallStub(o, __myp_addr_to_str(o));   // finalize：清 weak + 释放
+        }
+        // MYP_ARR(-1)：v1 保守保留
+    }
+    CC.finalize = 0;
+    ccReset();
+}
+
 // ---- 释放 ----
 // C: uint32_t myp_release(void* obj) —— fetch_sub 返回旧值；rc→0 按 type_id 分发。
 // 类对象分支委托 C helper（weak 通知 + release_table + myp_free_object，
@@ -286,6 +487,28 @@ string myp_alloc_slice_backing(long count, int elem_size, int elem_kind) {
 int myp_release(string obj) {
     long addr = __myp_str_ptr(obj);
     if (addr == 0) return 0;
+    // 环收集模式（见 myp_collect_cycles）。
+    if (CC.finalize == 1) return 0;   // collectWhite：字段零操作（trial+restore 记账已含垃圾引用）
+    if (CC.restore == 1) {            // scanBlack：撤销 trial 递减
+        int col = ccLookup(addr);
+        if (col == 0 || col == 2) return 0;   // 不在表 / 已黑
+        __myp_atomic_add_i32_addr(addr - 8, 1);   // rc++
+        if (col == 1) {               // 灰 → 黑 + 级联
+            ccSetColor(addr, 2);
+            ccCallStub(addr, obj);
+        } else if (col == 3) {        // 白 → 黑（活对象可达）
+            ccSetColor(addr, 2);
+        }
+        return 0;
+    }
+    if (CC.trial == 1) {              // markGray：rc-- + 级联，不释放
+        __myp_atomic_sub_i32_addr(addr - 8, 1);   // rc--
+        if (ccLookup(addr) == 0) {
+            ccInsert(addr, 1);        // 灰
+            ccCallStub(addr, obj);
+        }
+        return 0;
+    }
     int old = __myp_atomic_sub_i32_addr(addr - 8, 1);  // fetch_sub
     if (old == 0) { __myp_atomic_store_i32_addr(addr - 8, 0); return 0; }  // underflow 安全
     int nv = old - 1;
@@ -332,6 +555,7 @@ int myp_release(string obj) {
 void myp_free_object(string obj) {
     long addr = __myp_str_ptr(obj);
     if (addr == 0) return;
+    if (CC.trial == 1 || CC.restore == 1) return;   // 收集期 trial/restore 不真实释放
     int tid = __myp_mem_load_i32(addr - 4);
     if (Live.objects > 0) Live.objects = Live.objects - 1;
     myp_type_live_dec(tid);   // 包 B：per-type 计数回落
@@ -393,6 +617,9 @@ ffi void myp_region_free_all();                             // region.myp
 ffi void myp_restore_term();                                // term.myp（raw 模式还原）
 ffi void myp_mem_report();                                  // diag.myp（MYP_MEM_REPORT=1）
 void myp_free_all() {
+    // 先回收引用环（退出时安全点：工作线程已 join，main 局部 ARC 槽已释放）——
+    // 之后 myp_mem_report 才只报真泄漏（环不算泄漏）。
+    myp_collect_cycles();
     // MYP_MEM_REPORT=1 时先打泄漏报告（此时 main 局部 ARC 槽已释放 → 只剩泄漏/
     // 程序期对象；arena 尚未 reset，myp_type_name 的计数拷贝仍可分配）。
     myp_mem_report();

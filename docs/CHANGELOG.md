@@ -27,6 +27,29 @@
 
 ## 编译器版本历史
 
+### v3.15.171 — 环收集器（ARC + trial-deletion，自动回收引用环）
+
+**非破坏性**（纯运行时 + stdlib，不碰编译器）。按「零用户操作 + 最少运行时内存
+操作」方向第二步：ARC 无法释放的**引用环**（自环/互引用）由收集器自动回收——
+**零每次分配/释放开销**，仅收集时一次 O(n) 扫描（Bacon-Rajan trial-deletion）：
+- **C 运行时**（`src/runtime/runtime.c`）：`myp_collect_cycles()` 快照分配链表
+  的 class 根 → markGray（trial=1：rc-- + 级联，不释放）→ scan（restore=1：
+  rc>0 者 rc++ + 级联标黑；rc==0 标白）→ collectWhite（finalize=1：字段零操作，
+  真实释放白类对象；白字符串直接回收；数组 v1 保守保留）。模式钩子接入
+  `myp_release` / `myp_free_object` / `myp_weak_clear`（trial/restore 期不扰动
+  弱注册表、不真实释放）。共享子对象经「trial 递减 + scanBlack 恢复」记账精确
+  保活（不误释放、不泄漏）。
+- **MYP 运行时**（`runtime_myp/alloc.myp` + `weak.myp`）：同名 `myp_collect_cycles`
+  移植。**根枚举用类对象登记表 `ccAll`**（`myp_alloc_object` 每分配 O(1) 追加
+  `(data, type_id)`，打包进 48 位地址 + 16 位 type_id）——替代 arena walk
+  （walk 无法区分原始块如 args/coro 的 `myp_arena_alloc` 无 type_id 头 → 假根
+  段错误）；收集时校验「当前 type_id == 记录 type_id」过滤被释放/复用的旧条目。
+- **自动触发**：进程退出时 `myp_free_all` 开头自动收集（工作线程已 join、main
+  局部已释放 → 安全点），随后 `MYP_MEM_REPORT` 只报**真泄漏**（环不算泄漏）。
+- `Memory.collectCycles()`（stdlib）：执行期安全点（单线程阶段/空闲时）显式触发。
+- `tests/@test/cyclecollect.myp`：2 节点互引用环 / 自环 / 活对象保留 / 共享子
+  对象保活 / 幂等，5 tests（452/452 全量通过，平价 95/95，bootstrap MD5 门通过）。
+
 ### v3.15.170 — MYP_MEM_REPORT 泄漏报告（按 type_id 分组打印存活对象）
 
 **非破坏性**（纯运行时 + stdlib，不碰编译器）。按「零用户操作」的内存管理方向

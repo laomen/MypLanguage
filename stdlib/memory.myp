@@ -52,6 +52,10 @@ ffi void myp_fail_alloc_disable();
 ffi long myp_fail_alloc_get();
 ffi void myp_diag_set_strict(long on);
 ffi long myp_diag_get_strict();
+// 环收集（ARC trial-deletion）：回收引用环（自环/互引用）。安全点调用
+// （单线程、无并发引用变更）。进程退出时自动触发（myp_free_all）；
+// 本 FFI 供执行期显式调用（如事件循环空闲时）。
+ffi void myp_collect_cycles();
 
 // ============================================================
 // 动态内存分配器
@@ -116,6 +120,16 @@ class Memory {
         // 非 ARC bump arena（进程级字符串/数组历史分配）reserved/used 字节
         long arenaReservedBytes() { return myp_diag_arena_reserved(); }
         long arenaUsedBytes() { return myp_diag_arena_used(); }
+
+        // ---- 环收集（v3.15.171）----
+        // 回收引用环（自环/互引用环），ARC 无法处理的内存泄漏。零每次分配/释放
+        // 开销；仅收集时一次 O(n) 扫描。进程退出时 myp_free_all 自动触发
+        // （MYP_MEM_REPORT 报告此时只含真泄漏）；执行期可在安全点显式调用。
+        // ⚠️ 须在无并发引用变更处调用（单线程阶段/空闲时）。
+        void collectCycles() {
+            myp_collect_cycles();
+        }
+
         // @region arena reserved/used 字节（region 结束时回落）
         long regionReservedBytes() { return myp_diag_region_reserved(); }
         long regionUsedBytes() { return myp_diag_region_used(); }

@@ -1,0 +1,115 @@
+// cyclecollect: 环收集器（Memory.collectCycles，v3.15.171）——回收引用环
+// （ARC 无法处理的自环/互引用），保留活对象与共享子对象。零每次分配/释放开销，
+// 仅收集时一次 O(n) 扫描。退出时 myp_free_all 自动触发（MYP_MEM_REPORT 报告
+// 只含真泄漏）。安全点调用（单线程）。
+
+import test;
+import memory;
+import rtti;
+
+class Node {
+    action:
+        void setNext(Node n) { next = n; }
+        void setPrev(Node p) { prev = p; }
+        void setSelf() { next = this; }
+        void setName(string s) { name = s; }
+        int getVal() { return val; }
+    property:
+        Node next;
+        Node prev;
+        string name;
+        int val = 0;
+}
+
+// 2 节点互引用环：出作用域后 rc 各 1、互指 → 环收集前计数不回落；
+// collectCycles 后两节点均回收（计数回落 2，相对测量）。
+@test void test_2node_cycle() {
+    int tid = 0;
+    long before = 0;
+    {
+        Node a = new Node();
+        Node b = new Node();
+        tid = Rtti.typeId(a);
+        before = Memory.liveObjectCountByType(tid);   // = 之前 + 2（a、b 存活）
+        a.setNext(b);
+        b.setPrev(a);
+    }
+    long mid = Memory.liveObjectCountByType(tid);
+    Test.assertLongEq(mid, before, "2-node cycle keeps both alive (before collect)");
+    Memory.collectCycles();
+    long after = Memory.liveObjectCountByType(tid);
+    Test.assertLongEq(after, before - 2, "2-node cycle collected");
+}
+
+// 自环：Node.next = 自身。collectCycles 后回收（计数回落 1）。
+@test void test_self_cycle() {
+    int tid = 0;
+    long before = 0;
+    {
+        Node n = new Node();
+        tid = Rtti.typeId(n);
+        before = Memory.liveObjectCountByType(tid);
+        n.setSelf();
+    }
+    Memory.collectCycles();
+    long after = Memory.liveObjectCountByType(tid);
+    Test.assertLongEq(after, before - 1, "self-cycle collected");
+}
+
+// 活对象不被误回收：App（@test 持有）在收集后计数不变。
+@test void test_live_preserved() {
+    Node live = new Node();
+    int tid = Rtti.typeId(live);
+    long before = Memory.liveObjectCountByType(tid);
+    {
+        Node c = new Node();
+        c.setSelf();   // 垃圾自环
+    }
+    Memory.collectCycles();
+    long after = Memory.liveObjectCountByType(tid);
+    Test.assertLongEq(after, before, "live object preserved by collector");
+    Test.assertLongEq(live.getVal(), 0, "live object intact");
+}
+
+// 共享子对象：字符串同时被垃圾环节点与活对象引用 → 收集后不误释放（仍可读）。
+class Holder {
+    action:
+        @constructor Holder(string s) { s_ = s; }
+        string get() { return s_; }
+    property:
+        string s_;
+}
+
+@test void test_shared_subobject() {
+    string shared = "SHARED-LIVE";
+    Holder h = new Holder(shared);
+    {
+        Node a = new Node();
+        Node b = new Node();
+        a.setNext(b);
+        b.setNext(a);
+        a.setName(shared);   // 环节点 → shared
+    }
+    Memory.collectCycles();
+    Test.assertStrEq(h.get(), "SHARED-LIVE", "shared string alive after collect");
+}
+
+// 重复收集幂等：第二次 collectCycles 不再有可回收对象（计数稳定）。
+@test void test_idempotent() {
+    int tid = 0;
+    long before = 0;
+    {
+        Node a = new Node();
+        Node b = new Node();
+        tid = Rtti.typeId(a);
+        before = Memory.liveObjectCountByType(tid);
+        a.setNext(b);
+        b.setNext(a);
+    }
+    Memory.collectCycles();
+    long after1 = Memory.liveObjectCountByType(tid);
+    Memory.collectCycles();
+    long after2 = Memory.liveObjectCountByType(tid);
+    Test.assertLongEq(after1, before - 2, "cycle collected once");
+    Test.assertLongEq(after2, after1, "second collect is a no-op");
+}

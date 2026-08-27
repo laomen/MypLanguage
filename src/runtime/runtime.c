@@ -1374,6 +1374,15 @@ static int myp_header_type_id_ok(uint32_t tid) {
     if (tid > 0 && &__myp_max_type_id && (int)tid <= __myp_max_type_id) return 1;
     return 0;
 }
+// Cycle-collector guard: is this a class type_id with a real destroy stub in
+// __myp_release_table? STR (0xFFFFFFFE) / ARR (0xFFFFFFFF) are leaves — never
+// indexed into the release table. NOTE: a bare `tid > 0 && (int)tid <= max`
+// check is NOT enough — 0xFFFFFFFE/0xFFFFFFFF as uint32 are > 0 and as int are
+// negative (<= max), so STR/ARR would pass and index out of bounds.
+static int myp_cc_has_stub(uint32_t tid) {
+    if (tid == MYP_STR_TYPE_ID || tid == MYP_ARR_TYPE_ID) return 0;
+    return tid > 0 && &__myp_max_type_id && (int)tid <= __myp_max_type_id;
+}
 static void myp_strict_abort_header(void* obj, uint32_t tid) {
     fprintf(stderr, "MYP runtime [strict]: corrupted object header at %p "
                     "(illegal type_id 0x%x)\n", obj, (unsigned)tid);
@@ -1519,9 +1528,71 @@ void myp_weak_store(void** slot, void* obj) {
     pthread_spin_unlock(&myp_weak_lock);
 }
 
+// ======================
+// Cycle collector support (ARC + trial-deletion, Bacon-Rajan style)
+// ======================
+// See myp_collect_cycles below for the algorithm. These mode flags and the
+// visited color map are shared with myp_release / myp_free_object /
+// myp_weak_clear, so they must be declared before those functions.
+
+#define MYP_CC_GRAY   1
+#define MYP_CC_BLACK  2
+#define MYP_CC_WHITE  3
+
+static __thread int myp_cc_trial = 0;      // markGray: decrement + cascade, no free
+static __thread int myp_cc_restore = 0;    // scanBlack: rc++, no free/clear
+static __thread int myp_cc_finalize = 0;   // collectWhite: weak_clear + free, rc untouched
+
+// open-addressing hash map: object ptr -> color (capacity is a power of two)
+typedef struct { void* key; uint8_t color; } myp_cc_entry_t;
+static myp_cc_entry_t* myp_cc_tab = NULL;
+static size_t myp_cc_cap = 0;
+static size_t myp_cc_n = 0;
+
+static void myp_cc_reset(void) {
+    myp_cc_n = 0;
+    if (myp_cc_tab) memset(myp_cc_tab, 0, myp_cc_cap * sizeof(myp_cc_entry_t));
+}
+static uint8_t* myp_cc_lookup(void* key) {
+    if (!myp_cc_tab || myp_cc_cap == 0) return NULL;
+    size_t mask = myp_cc_cap - 1;
+    size_t i = ((uintptr_t)key >> 4) & mask;
+    while (myp_cc_tab[i].key) {
+        if (myp_cc_tab[i].key == key) return &myp_cc_tab[i].color;
+        i = (i + 1) & mask;
+    }
+    return NULL;
+}
+static void myp_cc_insert(void* key, uint8_t color) {
+    if (myp_cc_n * 2 >= myp_cc_cap) {
+        size_t nc = myp_cc_cap ? myp_cc_cap * 2 : 256;
+        myp_cc_entry_t* nt = (myp_cc_entry_t*)calloc(nc, sizeof(myp_cc_entry_t));
+        if (!nt) return;
+        size_t mask = nc - 1;
+        for (size_t i = 0; i < myp_cc_cap; i++) {
+            if (!myp_cc_tab[i].key) continue;
+            size_t j = ((uintptr_t)myp_cc_tab[i].key >> 4) & mask;
+            while (nt[j].key) j = (j + 1) & mask;
+            nt[j] = myp_cc_tab[i];
+        }
+        free(myp_cc_tab);
+        myp_cc_tab = nt;
+        myp_cc_cap = nc;
+    }
+    size_t mask = myp_cc_cap - 1;
+    size_t i = ((uintptr_t)key >> 4) & mask;
+    while (myp_cc_tab[i].key) i = (i + 1) & mask;
+    myp_cc_tab[i].key = key;
+    myp_cc_tab[i].color = color;
+    myp_cc_n++;
+}
+
+void myp_collect_cycles(void);   // defined after myp_release_class_obj_ex
+
 // The HOLDER is being destroyed: unregister this weak slot and null it. Called
 // from the holder's destroy stub before the holder's memory is freed.
 void myp_weak_clear(void** slot) {
+    if (myp_cc_trial || myp_cc_restore) return;   // don't mutate weak registry during trial/restore
     myp_weak_lock_ensure();
     pthread_spin_lock(&myp_weak_lock);
     void* old = *slot;
@@ -1586,6 +1657,39 @@ static void myp_free_class_array(void* data);
 
 uint32_t myp_release(void* obj) {
     if (!obj) return 0;
+    // Cycle collector modes (see myp_collect_cycles).
+    // collectWhite: no-op. The trial (markGray) decrement + scanBlack restore
+    // already account for every edge: a live sub-object shared with garbage has
+    // its rc = number of BLACK (live) incoming refs, and freeing the garbage
+    // must NOT decrement further (that ref was trial-decremented and never
+    // restored). White targets die together — decrementing would double free.
+    if (myp_cc_finalize) return 0;
+    if (myp_cc_restore) {            // scanBlack: undo the trial decrement
+        uint8_t* cp = myp_cc_lookup(obj);
+        if (!cp || *cp == MYP_CC_BLACK) return 0;
+        myp_obj_header_t* rh = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
+        atomic_fetch_add_explicit(&rh->rc, 1, memory_order_relaxed);
+        if (*cp == MYP_CC_GRAY) {
+            *cp = MYP_CC_BLACK;
+            uint32_t rtid = rh->type_id;
+            if (myp_cc_has_stub(rtid))
+                __myp_release_table[rtid](obj);   // cascade restore
+        } else if (*cp == MYP_CC_WHITE) {
+            *cp = MYP_CC_BLACK;   // reachable from a live object → not garbage
+        }
+        return 0;
+    }
+    if (myp_cc_trial) {            // markGray: decrement + cascade, never free
+        myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
+        uint32_t old = atomic_fetch_sub_explicit(&h->rc, 1, memory_order_relaxed);
+        if (!myp_cc_lookup(obj)) {
+            myp_cc_insert(obj, MYP_CC_GRAY);
+            uint32_t tid = h->type_id;
+            if (myp_cc_has_stub(tid))
+                __myp_release_table[tid](obj);   // cascade trial (no free)
+        }
+        return old ? old - 1 : 0;
+    }
     myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
     if (myp_strict_checks) {
         if (!myp_header_type_id_ok(h->type_id))
@@ -1657,6 +1761,7 @@ uint32_t myp_release(void* obj) {
 
 void myp_free_object(void* obj) {
     if (!obj) return;
+    if (myp_cc_trial || myp_cc_restore) return;   // trial/restore: don't free
     char* base = (char*)obj - MYP_OBJ_HEADER_SIZE;
     myp_obj_header_t* h = (myp_obj_header_t*)base;
     int tid = (int)h->type_id;
@@ -1686,6 +1791,121 @@ void myp_release_class_obj_ex(void* obj) {
         __myp_release_table[tid](obj);
     else
         myp_free_object(obj);
+}
+
+// ======================
+// Cycle collector (ARC + trial-deletion, Bacon-Rajan style)
+// ======================
+// ARC reclaims acyclic graphs deterministically, but reference cycles
+// (A→B→A, self-cycles) never reach rc==0 and leak. This collector reclaims
+// them via trial deletion, REUSING the per-class destroy stubs (which know the
+// reference fields) by running them in three internal modes:
+//   trial     (markGray):  decrement rc of everything reachable, no free;
+//   restore   (scanBlack): increment rc back (undo), no free;
+//   finalize  (collectWhite): clear weak slots + free, rc left untouched.
+// After markGray on every live class object (conservative roots — every
+// object is also a child, so cycle members get their in-cycle back-references
+// decremented), scan restores subtrees still reachable from outside (rc>0);
+// objects left with rc==0 are referenced only from within the garbage and are
+// freed.
+//
+// SAFETY: must run at a safe point (no other thread mutating references):
+// explicit myp_collect_cycles() / Memory.collectCycles() from a single-threaded
+// phase, or at process exit after all workers are joined.
+//
+// v1 limitations (conservative — never frees a live object, may leave some
+// garbage behind): array/slice backings are treated as leaves in the trial
+// (cycles through them are not detected; their class elements are untouched),
+// and white array backings are left in place.
+
+// Collect all reference cycles reachable from the process-global alloc list.
+// Must run at a safe point (single-threaded mutation of references).
+void myp_collect_cycles(void) {
+    // Snapshot live class-object data pointers from the alloc list (under the
+    // lock), so the list is stable during markGray/scan/collect.
+    myp_alloc_lock_ensure();
+    pthread_spin_lock(&myp_alloc_lock);
+    size_t cap = 1024, nroot = 0;
+    void** roots = (void**)malloc(cap * sizeof(void*));
+    for (myp_alloc_node_t* node = myp_alloc_head; node && roots; node = node->next) {
+        // Class-object data pointer = node + 24 (node{next,prev}@0 + rc@16 +
+        // type_id@20). Discriminate by type_id at node+20 (robust — STR/ARR are
+        // 0xFFFFFFFE/0xFFFFFFFF, valid class ids are dense 1..max); reading the
+        // data bytes instead is fragile for small objects (out-of-bounds into
+        // the adjacent block).
+        const char* p = (const char*)node;
+        uint32_t n20 = *(const uint32_t*)(p + 20);   // type_id
+        if (n20 == MYP_ARR_TYPE_ID || n20 == MYP_STR_TYPE_ID) continue;
+        if (!myp_cc_has_stub(n20)) continue;          // not a live class id
+        if (*(const uint32_t*)(p + 16) < 1) continue; // rc==0: defensive skip
+        if (nroot == cap) { cap *= 2; roots = (void**)realloc(roots, cap * sizeof(void*)); }
+        roots[nroot++] = (void*)(p + 24);   // data pointer (after rc/type_id)
+    }
+    pthread_spin_unlock(&myp_alloc_lock);
+    if (!roots) return;
+    if (nroot == 0) { free(roots); return; }
+
+    myp_cc_reset();
+
+    // markGray on every root (visited guard makes each component processed once).
+    myp_cc_trial = 1;
+    for (size_t i = 0; i < nroot; i++) {
+        void* o = roots[i];
+        if (!myp_cc_lookup(o)) {
+            myp_cc_insert(o, MYP_CC_GRAY);
+            myp_obj_header_t* h = (myp_obj_header_t*)((char*)o - MYP_OBJ_HEADER_SIZE);
+            uint32_t tid = h->type_id;
+            if (myp_cc_has_stub(tid))
+                __myp_release_table[tid](o);   // trial: releases children (decrement + cascade)
+        }
+    }
+    myp_cc_trial = 0;
+
+    // scan: restore live subtrees (rc>0 → black via restore mode), mark garbage white.
+    myp_cc_restore = 1;
+    for (size_t i = 0; i < myp_cc_cap && myp_cc_tab; i++) {
+        if (!myp_cc_tab[i].key || myp_cc_tab[i].color != MYP_CC_GRAY) continue;
+        myp_obj_header_t* h = (myp_obj_header_t*)((char*)myp_cc_tab[i].key - MYP_OBJ_HEADER_SIZE);
+        if (atomic_load_explicit(&h->rc, memory_order_relaxed) > 0) {
+            myp_cc_tab[i].color = MYP_CC_BLACK;
+            uint32_t tid = h->type_id;
+            if (myp_cc_has_stub(tid))
+                __myp_release_table[tid](myp_cc_tab[i].key);   // restore: rc++ + cascade
+            // Leaves (STR/ARR): their rc is restored via the live parent's
+            // black-cascade (myp_release restore path). A gray leaf left with
+            // rc>0 carries invisible (stack/global) refs — keep it gray, never
+            // freed (safe: collectWhite only frees WHITE).
+        } else {
+            myp_cc_tab[i].color = MYP_CC_WHITE;
+        }
+    }
+    myp_cc_restore = 0;
+
+    // collectWhite: free garbage (class via finalize stub; strings directly).
+    myp_cc_finalize = 1;
+    for (size_t i = 0; i < myp_cc_cap && myp_cc_tab; i++) {
+        if (!myp_cc_tab[i].key || myp_cc_tab[i].color != MYP_CC_WHITE) continue;
+        void* o = myp_cc_tab[i].key;
+        myp_obj_header_t* h = (myp_obj_header_t*)((char*)o - MYP_OBJ_HEADER_SIZE);
+        uint32_t tid = h->type_id;
+        if (tid == MYP_STR_TYPE_ID) {
+            // white counted string: free directly (only garbage references it).
+            char* base = (char*)o - MYP_STR_HEADER_SIZE;
+            myp_alloc_node_t* node = (myp_alloc_node_t*)(base - sizeof(myp_alloc_node_t));
+            myp_alloc_list_remove(node);
+            if (myp_live_strings > 0) myp_live_strings--;
+            free(node);
+        } else if (myp_cc_has_stub(tid)) {
+            __myp_release_table[tid](o);   // finalize: clear weak + free, refs' rc untouched
+        } else if (tid > 0) {
+            myp_free_object(o);            // no stub (shouldn't happen): plain free
+        }
+        // MYP_ARR: left in place (v1 conservative).
+    }
+    myp_cc_finalize = 0;
+
+    free(roots);
+    myp_cc_reset();
 }
 
 // ---- Ref-counted class arrays (§五-1): allocation + element release ----
