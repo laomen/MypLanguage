@@ -4123,6 +4123,25 @@ class Sema {
                     if (s.stream() != null) visitExpr(s.stream());
                     inGpuFor_ = 1;
                 }
+                // BUG-109：@gpu for resident(arr = dev) 子句校验（镜像 C++
+                // visitGpuForStmt）——arr 须为作用域内数组变量；dev 须为 long
+                // 变量。resident(a = s, b = db)（s:int / b 未声明）此前静默 →
+                // GPU 运行时错误；oracle 编译期拒。
+                ArrayList<AstPair> resPairs = s.resident();
+                for (int ri = 0; ri < resPairs.size(); ri = ri + 1) {
+                    string rArr = resPairs.get(ri).k();
+                    string rDev = resPairs.get(ri).v();
+                    SymbolEntry rAt = sym_.lookupEntry(rArr);
+                    if (rAt == null) {
+                        diag_.error(s.line(), s.col(), "resident array '" + rArr + "' not found in scope");
+                    } else if (rAt.type() != "array") {
+                        diag_.error(s.line(), s.col(), "resident '" + rArr + "' is not an array (got '" + rAt.type() + "')");
+                    }
+                    SymbolEntry rDt = sym_.lookupEntry(rDev);
+                    if (rDt == null || rDt.type() != "long") {
+                        diag_.error(s.line(), s.col(), "resident device-pointer variable '" + rDev + "' must be 'long' (got '" + (rDt != null ? rDt.type() : "(not found)") + "')");
+                    }
+                }
                 // 字符串仅 GPU 内核禁用（NVPTX 无 string runtime）；@parallel for
                 // 是 CPU 线程池 body（普通 CPU 函数，可安全用字符串/字面量）。
                 if (s.gpu() != 0) inGpuKernel_ = 1;
@@ -4554,6 +4573,23 @@ class Sema {
                     }
                 }
                 if (s.stream() != null) visitExpr(s.stream());
+                // BUG-109：@gpu tile resident(arr = dev) 子句校验（镜像 C++
+                // visitGpuTileStmt）——arr 须为作用域内数组；dev 须为 long。
+                ArrayList<AstPair> resPairs2 = s.resident();
+                for (int ri2 = 0; ri2 < resPairs2.size(); ri2 = ri2 + 1) {
+                    string rArr2 = resPairs2.get(ri2).k();
+                    string rDev2 = resPairs2.get(ri2).v();
+                    SymbolEntry rAt2 = sym_.lookupEntry(rArr2);
+                    if (rAt2 == null) {
+                        diag_.error(s.line(), s.col(), "resident array '" + rArr2 + "' not found in scope");
+                    } else if (rAt2.type() != "array") {
+                        diag_.error(s.line(), s.col(), "resident '" + rArr2 + "' is not an array (got '" + rAt2.type() + "')");
+                    }
+                    SymbolEntry rDt2 = sym_.lookupEntry(rDev2);
+                    if (rDt2 == null || rDt2.type() != "long") {
+                        diag_.error(s.line(), s.col(), "resident device-pointer variable '" + rDev2 + "' must be 'long' (got '" + (rDt2 != null ? rDt2.type() : "(not found)") + "')");
+                    }
+                }
                 int savedTileGpu = inGpuFor_;
                 int savedTileKernel = inGpuKernel_;
                 inGpuFor_ = 1;

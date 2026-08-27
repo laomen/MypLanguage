@@ -2813,3 +2813,24 @@ oracle 当前源 visitGpuTileStmt 检查 "grid must be an integer (block count)"
 - **教训**：@gpu tile 子句（grid/block/shared/stream）逐一核对 oracle——grid
   有类型+正数两道校验；自举原逻辑「非正字面量→-1」掩盖了校验缺失。stream(s)
   须 GpuStream 实例校验为非崩缺口（自举超前，seed 无法解析，低优先待办）。
+
+## BUG-109（已修复 🟩，v3.15.143）：@gpu for/tile resident 子句校验漏
+
+**非破坏性**（selfhost sema）。`@gpu for ... resident(a = da)`（da 非 long
+device 指针）与 `resident(b = db)`（b 未声明数组）此前自举静默接受 → GPU 运行
+时错误（应拒却接受，非 opt 崩）。oracle 当前源 visitGpuForStmt/visitGpuTileStmt
+校验 "resident array 'X' not found in scope" / "resident 'X' is not an array" /
+"resident device-pointer variable 'X' must be 'long'"。
+
+- **根因**：自举 GpuFor（for 循环形）/GpuTile 语句处理只 visit stream、不校验
+  resident 子句（resident() 返回 ArrayList<AstPair>，k=数组名/v=device 名）。
+- **修复**：镜像 oracle——两处（GpuFor 循环形 + GpuTile）遍历 resident 子句：
+  ①数组名须在作用域（lookupEntry 非空）且 type=="array"；②device 名须存在且
+  type=="long"。诊断用语句行号。
+- **验证**：dev 非 long / arr 未声明 双形态 `sev=error`（for 与 tile 两处）；
+  正确 resident(a=da, b=db)（long）编译正常；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/gpu_resident_dev_type.myp` /
+  `gpu_resident_arr_missing.myp`；全量 417 通过 / 0 失败；oracle 对拍 95/0。
+- **教训**：GPU 子句族（grid/block/shared/stream/resident）是校验盲区——逐一
+  核对 oracle visitGpuForStmt/visitGpuTileStmt 的每个子句分支；resident 的
+  device 指针须 long（GPU 运行时按 long 传）在编译期即可验。

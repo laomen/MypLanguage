@@ -39,6 +39,17 @@
 - 验证：bootstrap 自举成立；全量回归 **395 通过 / 0 失败**；oracle 对拍 95/0。
   BUGLIST 记 BUG-098。
 
+### v3.15.143 — 修 @gpu for/tile resident 子句校验漏（BUG-109）
+
+**非破坏性**（selfhost sema）。`@gpu for ... resident(a = da)`（da 非 long
+device 指针）与 `resident(b = db)`（b 未声明）此前自举**接受**（应拒却接受，
+非 opt 崩）→ GPU 运行时错误。oracle 当前源校验 resident 子句。
+
+- **修复**：镜像 oracle——GpuFor（for 循环形）与 GpuTile 两处遍历 resident
+  子句：①数组名须在作用域且为数组；②device 名须存在且为 long。
+- **测试**：负测试 `tests/negative/gpu_resident_dev_type.myp` /
+  `gpu_resident_arr_missing.myp`；正确 resident 编译正常；bootstrap 自举成立。
+
 ### v3.15.142 — 修 @gpu tile grid(nb) 块数校验漏（BUG-108）
 
 **非破坏性**（selfhost sema）。`@gpu tile ... grid("x")` 自举此前**接受** →

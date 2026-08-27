@@ -1,0 +1,16 @@
+// BUG-109 负向：@gpu for resident(arr = dev) 数组须存在漏校验。镜像 C++
+// visitGpuForStmt "resident array 'X' not found in scope"。
+// EXPECT ERROR: resident array 'b' not found in scope
+import env;
+class T2 {
+    action:
+        @constructor T2() {
+            float[] a = new float[64];
+            long db = 0L;
+            @gpu for (long k = 0L; k < 10L; k = k + 1L) resident(b = db) {
+                a[k] = a[k] + 1.0f;
+            }
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}
