@@ -3146,3 +3146,25 @@ oracle 拒 "unknown class 'IC'" + "cannot initialize 'IC' with 'IC'"。
 - **教训**：`new` 目标类型须核对「可实例化」——接口/抽象不可 new（无实现）；
   自举 New 处理按「查构造器」间接判断，接口无构造器落默认 → 静默；须显式检查
   接口名（inInterface）。
+
+## BUG-125（已修复 🟩，v3.15.159）：match 枚举变体绑定 arity 漏校验
+
+**非破坏性**（selfhost sema）。`match (o) { Opt.Some(x, y) => ... }`（变体 1
+个数据字段、绑 2 个）与 `Opt.Some(x)`（变体 2 个字段、绑 1 个）自举此前静默
+接受并运行（绑定被截断/多余绑定未声明）→ 应拒却接受。oracle 拒 "variant
+'Some' expects 1 data fields, got 2"（few 方向 "expects 2 data fields, got
+1"）。
+
+- **根因**：自举 Match 处理找变体后只按 `bi < bindings.size() && bi <
+  params.size()` 截断声明绑定、从不比对数量（oracle visitMatchStmt 有
+  `arm.bindings.size() != variant.params.size()` 报错分支）。
+- **修复**：arm.setIndex + 取 variant 后加 arity 校验——绑定数 != 数据字段数
+  → "variant 'X' expects N data fields, got M"。oracle 报错后仍按 min 声明
+  绑定并访问 body（此处同，不 continue，防级联）。
+- **验证**：many/few 双方向 `sev=error`（消息与 oracle 逐字一致）；正确 arity
+  （Opt.Some(x) → got=5）编译+运行正确双端；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/match_bind_arity.myp`；全量 438 通过 / 0
+  失败；oracle 对拍 95/0。
+- **教训**：match 枚举臂的绑定数量是独立校验点（oracle 有 arity 报错分支、
+  自举只截断声明）——凡「绑定/实参数量 vs 声明数量」不一致须显式报错；MYP
+  int→string 拼接用 `"..." + n` 直接可行。

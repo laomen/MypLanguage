@@ -4469,6 +4469,13 @@ class Sema {
                         }
                         arm.setIndex(variantIndex);
                         AstEnumVariant variant = variants.get(variantIndex);
+                        // BUG-125: 镜像 C++ visitMatchStmt 绑定 arity 校验——
+                        // 变体绑定数须与数据字段数一致（oracle "variant 'X' expects
+                        // N data fields, got M"）；oracle 报错后仍按 min 声明绑定并访问
+                        // body（此处同）。
+                        if (arm.bindings().size() != variant.params().size()) {
+                            diag_.error(s.line(), s.col(), "variant '" + arm.variant() + "' expects " + variant.params().size() + " data fields, got " + arm.bindings().size());
+                        }
                         sym_.enterScope();
                         for (int bi = 0; bi < arm.bindings().size() && bi < variant.params().size(); bi = bi + 1) {
                             AstType bt = variant.params().get(bi).type();

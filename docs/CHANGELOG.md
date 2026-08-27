@@ -27,6 +27,17 @@
 
 ## 编译器版本历史
 
+### v3.15.159 — 修 match 枚举变体绑定 arity 漏校验（BUG-125）
+
+**非破坏性**（selfhost sema）。`Opt.Some(x, y)`（变体 1 字段绑 2）/`Opt.Some(x)`
+（变体 2 字段绑 1）自举此前**接受**（应拒却接受）→ 绑定截断/多余绑定未声明。
+oracle 拒 "variant 'Some' expects 1 data fields, got 2"。
+
+- **修复**：Match 枚举臂加绑定数量校验（绑定数 != 数据字段数 → 报错）；oracle
+  报错后仍按 min 声明绑定并访问 body（防级联）。
+- **测试**：负测试 `tests/negative/match_bind_arity.myp`；正确 arity 编译+运行
+  正确；bootstrap 自举成立。
+
 ### v3.15.158 — 修实例化接口 new IC() 漏校验（BUG-124）
 
 **非破坏性**（selfhost sema）。`IC ic = new IC()`（实例化接口）自举此前

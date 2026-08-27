@@ -1,0 +1,20 @@
+// BUG-125 负向：match 枚举变体绑定 arity 漏校验——`Opt.Some(x, y)`（变体 1 个
+// 数据字段、绑 2 个）自举静默接受并运行（绑定被截断/多余绑定未声明），oracle
+// 拒 "variant 'Some' expects 1 data fields, got 2"。镜像 C++ visitMatchStmt
+// 绑定数 == 数据字段数校验；oracle 报错后仍按 min 声明绑定并访问 body（此处同）。
+// EXPECT ERROR: variant 'Some' expects 1 data fields, got 2
+import env;
+enum Opt { Some(int v); None; }
+class T2 {
+    action:
+        @constructor T2() {
+            Opt o = Opt.Some(5);
+            int got = 0;
+            match (o) {
+                Opt.Some(x, y) => { got = 1; }
+                Opt.None => { got = 2; }
+            }
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}
