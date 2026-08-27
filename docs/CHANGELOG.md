@@ -27,6 +27,17 @@
 
 ## 编译器版本历史
 
+### v3.15.161 — 修 `this` 仅类 action 内合法漏校验 → opt 崩（BUG-127）
+
+**非破坏性**（selfhost sema）。顶层函数里 `this.x`（非类/struct/lambda）自举
+此前**接受** → codegen 对 %Object 值 GEP → **opt-21 崩**。oracle 干净拒
+"'this' can only be used inside a class action"。
+
+- **修复**：ThisExpr 处理加 `inClass_==0 && inStruct_==0` 检查（镜像 oracle
+  visitThisExpr 双上下文标志）；struct 方法/类 action/lambda __call 放行。
+- **测试**：负测试 `tests/negative/this_in_top_function.myp`；struct 方法 this
+  与类 action this 编译+运行正确；bootstrap 自举成立。
+
 ### v3.15.160 — 修 nonlocal 仅 lambda body 内合法漏校验（BUG-126）
 
 **非破坏性**（selfhost sema）。普通函数/类方法里 `nonlocal x;`（非 lambda

@@ -4995,6 +4995,16 @@ class Sema {
                     e.setResolvedKind("void");
                     return "void";
                 }
+                // BUG-127：`this` 仅类 action / struct 方法 / lambda __call 内
+                // 合法（镜像 C++ visitThisExpr `!in_class_method_ && !in_struct_
+                // method_`）——顶层函数里 `this.x` 自举此前静默当 class → codegen
+                // 对 %Object GEP → opt-21 崩（base element of getelementptr
+                // must be sized）。struct 方法 inStruct_=1 且 inClass_=1 放行。
+                if (inClass_ == 0 && inStruct_ == 0) {
+                    diag_.error(e.line(), e.col(), "'this' can only be used inside a class action");
+                    e.setResolvedKind("void");
+                    return "void";
+                }
                 e.setResolvedKind("class");
                 return "class";
             }

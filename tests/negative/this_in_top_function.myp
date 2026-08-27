@@ -1,0 +1,17 @@
+// BUG-127 负向：`this` 仅类 action / struct 方法 / lambda __call 内合法——顶层
+// 函数里 `this.x` 自举此前静默当 class → codegen 对 %Object GEP → opt-21 崩
+// （base element of getelementptr must be sized），oracle 拒 "'this' can only
+// be used inside a class action"。镜像 C++ visitThisExpr 的
+// `!in_class_method_ && !in_struct_method_` 检查（inClass_/inStruct_ 双 0 拒）。
+// EXPECT ERROR: 'this' can only be used inside a class action
+import env;
+int g() {
+    return this.x;
+}
+class T2 {
+    action:
+        @constructor T2() {
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

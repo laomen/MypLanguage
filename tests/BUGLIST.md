@@ -3192,3 +3192,25 @@ oracle 拒 "unknown class 'IC'" + "cannot initialize 'IC' with 'IC'"。
   catch）靠「访问体时置位/复位」的上下文标志（inLambda_/inCoro_/
   inCatchDepth_ 同族）——自举语句处理空壳处是盲点；nonlocal 语句处理此前完全
   空、oracle 有 in_lambda_body_ 兜底检查。
+
+## BUG-127（已修复 🟩，v3.15.161）：`this` 仅类 action 内合法漏校验 → opt 崩
+
+**非破坏性**（selfhost sema）。顶层函数里 `this.x`（非类/struct/lambda 上下
+文）自举此前静默当 class → codegen 对 %Object 值 GEP → **opt-21 崩**（base
+element of getelementptr must be sized），oracle 干净拒 "'this' can only be
+used inside a class action"。
+
+- **根因**：自举 ThisExpr 处理只查 inStatic_（BUG-121），不查 inClass_/
+  inStruct_——顶层函数（inClass_=0）落默认 class → codegen 崩。
+- **修复**：ThisExpr 处理 inStatic_ 检查后加 `inClass_==0 && inStruct_==0` →
+  "'this' can only be used inside a class action"（镜像 C++ visitThisExpr
+  `!in_class_method_ && !in_struct_method_`）；struct 方法（inStruct_=1 且
+  inClass_=1）/ 类 action / lambda __call 放行。
+- **验证**：顶层函数 this `sev=error`（消息与 oracle 逐字一致）；struct 方法
+  this（p.x=42）与类 action this（k=7）编译+运行正确；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/this_in_top_function.myp`；全量 440 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：`this` 的「上下文合法性」是 codegen 崩盲区——oracle visitThisExpr
+  有 in_class_method_/in_struct_method_ 双检查；自举 ThisExpr 曾只设 resolved
+  Kind 不校验上下文（与 BUG-121 inStatic_ 同族、比其更宽）；@static/顶层函数
+  两条路径都在 ThisExpr 前置检查。
