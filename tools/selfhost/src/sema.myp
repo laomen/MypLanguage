@@ -1654,11 +1654,30 @@ class Sema {
             runConstEval(tu);
             for (int bi = 0; bi < tu.bitfields().size(); bi = bi + 1) {
                 AstBitfield bf = tu.bitfields().get(bi);
+                // BUG-094：重复 bitfield 名（镜像 C++ declareBitfieldName
+                // "duplicate bitfield name 'X'"）。此前静默 last-wins。
+                int dupName = 0;
+                for (int dbi = 0; dbi < bitfieldNames_.size(); dbi = dbi + 1) {
+                    if (bitfieldNames_.get(dbi) == bf.name()) { dupName = 1; break; }
+                }
+                if (dupName != 0) {
+                    diag_.error(0, 0, "duplicate bitfield name '" + bf.name() + "'");
+                }
                 bitfieldNames_.add(bf.name());
                 ArrayList<string> names = new ArrayList<string>();
                 ArrayList<int> widths = new ArrayList<int>();
                 for (int fi = 0; fi < bf.fields().size(); fi = fi + 1) {
                     AstBitfieldField field = bf.fields().get(fi);
+                    // BUG-094：bitfield 内重复字段（镜像 C++ visitBitfieldDecl
+                    // "duplicate bitfield field 'X' in 'Y'"）。此前静默 last-wins
+                    // → 字段访问取最后定义（位偏移错）→ 语义错。
+                    int dupField = 0;
+                    for (int dfi = 0; dfi < names.size(); dfi = dfi + 1) {
+                        if (names.get(dfi) == field.name()) { dupField = 1; break; }
+                    }
+                    if (dupField != 0) {
+                        diag_.error(0, 0, "duplicate bitfield field '" + field.name() + "' in '" + bf.name() + "'");
+                    }
                     names.add(field.name());
                     widths.add(field.width());
                 }

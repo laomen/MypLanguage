@@ -1,0 +1,20 @@
+// EXPECT ERROR: duplicate bitfield name 'Flags'
+// BUG-094 回归（负测试）：bitfield 声明名须唯一。
+// 此前自举静默 last-wins（第二定义覆盖第一）。C++ declareBitfieldName 镜像
+// "duplicate bitfield name 'X'"。合法：不同 bitfield 名（Flags/ControlWord）。
+import env;
+
+bitfield Flags {
+    bit a;
+    bit b;
+}
+bitfield Flags {
+    bit c;
+}
+class T2 {
+    action:
+        @constructor T2() {
+            Console.writeString("A\n");
+        }
+}
+int main(){return 0;}

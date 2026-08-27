@@ -1,0 +1,18 @@
+// EXPECT ERROR: duplicate bitfield field 'a' in 'Flags'
+// BUG-094 回归（负测试）：bitfield 内字段名须唯一。
+// 此前自举 bitfield 注册只收集字段/宽度、不查重复 → `bit a; bit a;` 静默
+// last-wins → 字段访问取最后定义（位偏移错）→ 语义错。C++ visitBitfieldDecl
+// 镜像 "duplicate bitfield field 'X' in 'Y'"。合法：字段名互异（bit a; bit b;）。
+import env;
+
+bitfield Flags {
+    bit a;
+    bit a;
+}
+class T2 {
+    action:
+        @constructor T2() {
+            Console.writeString("A\n");
+        }
+}
+int main(){return 0;}

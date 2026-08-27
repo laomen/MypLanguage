@@ -2456,3 +2456,26 @@
 - **教训**：与「应拒却接受」相反——这是「oracle 接受、自举拒绝」的功能缺口，
   同属 parity 审计范围。var 推断与显式类型两条声明路径必须一致（declareTuple）；
   成员访问的基表达式形态（Identifier/Call）要全覆盖。
+
+## BUG-094（已修复 🟩，v3.15.128）：bitfield 重复名/字段漏校验（应拒绝却接受）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.128，selfhost sema.myp）
+- **背景**：`bitfield Flags { bit a; bit a; }`（bitfield 内重复字段）与两次
+  `bitfield Flags { ... }`（重复声明名）此前自举静默 last-wins → 字段访问取
+  最后定义（位偏移错）→ 语义错。C++ 镜像：declareBitfieldName →
+  `duplicate bitfield name 'X'`；visitBitfieldDecl → `duplicate bitfield field
+  'X' in 'Y'`。
+- **根因**：自举 bitfield 注册（tu.bitfields 收集循环）只收集名/字段/宽度，
+  从不查重复（对比 struct/class/function 的 duplicate 检查均已有）。
+- **修复**：收集循环加两道校验——①bitfield 名与已收集的 bitfieldNames_ 比对
+  → duplicate bitfield name；②字段名与当前 bitfield 已收集的 names 比对 →
+  duplicate bitfield field。位置：无位置字段（AstBitfield/AstBitfieldField
+  不存 line/col）→ 诊断 0,0（同 pipe 处理）。
+- **验证**：重复名/重复字段干净拒绝；合法 bitfield（bitfield.myp 回归）不受
+  影响；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/bitfield_dup_field.myp` +
+  `tests/negative/bitfield_dup_name.myp`；全量 390 通过 / 0 失败；oracle 对拍
+  95/0。
+- **教训**：声明收集循环（bitfield/struct/class/function）是重复校验的高频
+  遗漏点——凡 oracle 有 duplicate 分支、自举收集处无比对，即「应拒却接受」；
+  AstBitfield 无位置字段，诊断用 0,0（位置精度低但拒绝语义正确）。

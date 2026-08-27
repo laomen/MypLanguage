@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.128 — 修 bitfield 重复名/字段漏校验（BUG-094）
+
+**非破坏性**（selfhost sema）。`bitfield Flags { bit a; bit a; }`（重复字段）与
+两次 `bitfield Flags { ... }`（重复声明名）此前自举静默 last-wins → 字段访问取
+最后定义（位偏移错）→ 语义错。C++ declareBitfieldName/visitBitfieldDecl 镜像。
+
+- **修复**：bitfield 收集循环加两道校验——重复声明名 → `duplicate bitfield
+  name 'X'`；bitfield 内重复字段 → `duplicate bitfield field 'X' in 'Y'`。
+- **测试**：负测试 `tests/negative/bitfield_dup_field.myp` +
+  `tests/negative/bitfield_dup_name.myp`；合法 bitfield（bitfield.myp 回归）
+  不受影响。
+- 验证：bootstrap 自举成立；全量回归 **390 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-094。
+
 ### v3.15.127 — 修 var 推断元组 / 直接调用元组成员访问缺失（BUG-093）
 
 **非破坏性**（selfhost sema）。`var r = pair()`（pair 返回 (int,bool)）后 `r.0`、
