@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.168 — 修 ffi 声明 void 形参漏校验 → opt 崩（BUG-134）
+
+**非破坏性**（selfhost sema）。`ffi int cadd(void v);`（ffi 声明 void 形参）
+自举此前静默过 sema → codegen 发 `declare i32 @cadd(void)` → **opt-21 崩**
+（void type only allowed for function results；oracle LLVM verify 也失败）。
+
+- **根因**：ffi 收集循环只登记 funcNames_/funcRet_/funcParams_，不走
+  declareParam（BUG-078 的 void 参数检查只在常规函数声明路径）→ ffi void 形参
+  漏校验。
+- **修复**：ffi 收集循环加 void 形参检查（镜像 BUG-078 判定：typeToKind=="void"
+  && basicName=="void" && className 空）。
+- **测试**：负测试 `tests/negative/ffi_void_param.myp`；有效 ffi 编译+运行正常；
+  bootstrap 自举成立。
+
 ### v3.15.167 — 修 interface←class 转换未验实现接口 → opt 崩（BUG-133）
 
 **非破坏性**（selfhost sema）。`IC ic = new NotImpl()`（类不实现接口）自举此前

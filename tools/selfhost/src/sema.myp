@@ -2057,6 +2057,16 @@ class Sema {
             // 收集 ffi 声明（也是可调用函数，返回类型来自声明）
             for (int i = 0; i < tu.ffis().size(); i = i + 1) {
                 AstFFI f = tu.ffis().get(i);
+                // BUG-134：ffi 声明 void 形参须拒（镜像 BUG-078 declareParam
+                // 检查）——否则 codegen 发 `declare i32 @cadd(void)` → opt-21 崩
+                // （void type only allowed for function results）。
+                for (int pi = 0; pi < f.params().size(); pi = pi + 1) {
+                    AstType pt = f.params().get(pi).type();
+                    if (pt != null && typeToKind(pt) == "void"
+                        && pt.basicName() == "void" && Str.len(pt.className()) == 0) {
+                        diag_.error(pt.line(), pt.col(), "cannot declare parameter of type 'void'");
+                    }
+                }
                 funcNames_.add(f.name());
                 funcRet_.add(f.ret());
                 funcParams_.add(f.params());

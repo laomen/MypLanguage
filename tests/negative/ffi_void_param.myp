@@ -1,0 +1,14 @@
+// BUG-134 负向：ffi 声明 void 形参漏校验——`ffi int cadd(void v);` 自举此前静默
+// 过 sema → codegen 发 `declare i32 @cadd(void)` → opt-21 崩（void type only
+// allowed for function results；oracle LLVM verify 也失败）。镜像 BUG-078
+// declareParam 的 void 参数检查到 ffi 收集循环。
+// EXPECT ERROR: cannot declare parameter of type 'void'
+import env;
+ffi int cadd(void v);
+class T2 {
+    action:
+        @constructor T2() {
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

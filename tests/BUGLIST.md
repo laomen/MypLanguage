@@ -3369,3 +3369,23 @@ value of type ..." / 实参 "argument 1: expected 'IC', got 'NotImpl'" / 返回
 - **教训**：接口 fat pointer 的「vtable 只为声明 interface class 的类生成」是
   codegen 崩盲区——凡具体类 → 接口上下文（声明/赋值/实参/返回）都须按类名校验
   实现；typesCompat 的 interface+class 无条件放行只覆盖 kind、须上层补名字检查。
+
+## BUG-134（已修复 🟩，v3.15.168）：ffi 声明 void 形参漏校验 → opt 崩
+
+**非破坏性**（selfhost sema）。`ffi int cadd(void v);`（ffi 声明 void 形参）
+自举此前静默过 sema → codegen 发 `declare i32 @cadd(void)` → **opt-21 崩**
+（void type only allowed for function results）。oracle LLVM verify 也失败
+（"Function arguments must have first-class types"）——两端都崩、无干净拒绝。
+
+- **根因**：ffi 收集循环（tu.ffis()）只登记 funcNames_/funcRet_/funcParams_，
+  不走 declareParam——BUG-078 的 void 参数检查只在常规函数/方法声明路径 → ffi
+  void 形参漏校验。
+- **修复**：ffi 收集循环加 void 形参检查（镜像 BUG-078 判定：typeToKind=="void"
+  && basicName=="void" && className 空；AstFFI 无位置 → 用 AstType 位置）。
+- **验证**：`ffi int cadd(void v)` `sev=error`（不再 opt 崩）；有效 ffi（普通
+  形参）编译正常；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/ffi_void_param.myp`；全量 449 通过 / 0 失败；
+  oracle 对拍 95/0。
+- **教训**：ffi 声明是「只登记不校验」路径（不走 declareParam）——凡常规声明
+  路径（declareParam）有的检查（void 参数、重复参数等），ffi 收集循环须镜像；
+  BUG-078 只覆盖常规函数，ffi/事件等独立收集点易漏。
