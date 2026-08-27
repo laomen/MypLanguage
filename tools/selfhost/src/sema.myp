@@ -5114,6 +5114,16 @@ class Sema {
                         && isNumKind(l) == 0) {
                         diag_.error(e.lhs().line(), e.lhs().col(), "expected numeric type, got '" + exprTypeName(e.lhs(), l) + "'");
                     }
+                    // BUG-123：struct 比较须 @op("==")——无匹配 @op 时
+                    // struct==struct / struct==int 自举 opt-21 崩（icmp requires
+                    // integer operands / integer constant must have integer
+                    // type）。oracle struct==struct codegen verify 崩、struct==int
+                    // 接受-垃圾（语义无意义）；manual §operators 要求 struct 比较
+                    // 走 @op("==")。@op 匹配路径在 resolveOp 已提前返回，此处仅
+                    // 无 @op 时触发 → 干净拒绝。
+                    if ((op == "==" || op == "!=") && (l == "struct" || r == "struct")) {
+                        diag_.error(e.line(), e.col(), "struct comparison requires an '@op(\"==\")' operator (structs are not comparable by value)");
+                    }
                     e.setResolvedKind("bool");
                     return "bool";
                 }

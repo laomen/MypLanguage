@@ -27,6 +27,17 @@
 
 ## 编译器版本历史
 
+### v3.15.157 — 修 struct == 比较无 @op("==") → opt 崩（BUG-123）
+
+**非破坏性**（selfhost sema）。`Vec2 == 5` 与 `Vec2 == Vec2`（无 @op）自举此前
+**接受** → codegen icmp 异构类型 → **opt-21 崩**（icmp requires integer
+operands）。oracle 接受-垃圾或后端崩；manual 要求 struct 比较走 @op("==")。
+
+- **修复**：`==`/`!=` 分支加 struct 检查（无 @op 匹配时）→ "struct comparison
+  requires an '@op("==")' operator"。@op 匹配/class/interface 引用比较不受影响。
+- **测试**：负测试 `tests/negative/struct_eq_no_op.myp`；@op 比较/引用比较编译
+  +运行正确；bootstrap 自举成立。
+
 ### v3.15.156 — 修 `const` 局部变量 parser 误拒（BUG-122）
 
 **非破坏性**（selfhost parser）。`const int x = 5;`（函数体/类 action/for-init

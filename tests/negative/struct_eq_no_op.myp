@@ -1,0 +1,15 @@
+// BUG-123 负向：struct == 比较无 @op("==") 自举 opt-21 崩（icmp requires
+// integer operands / integer constant must have integer type）。manual §operators
+// 要求 struct 比较走 @op("==")；@op 匹配路径不受影响。
+// EXPECT ERROR: struct comparison requires an '@op(\"==\")' operator
+import env;
+struct Vec2 { int x; }
+class T2 {
+    action:
+        @constructor T2() {
+            Vec2 a;
+            bool r = a == 5;
+            Console.writeString("A\n");
+        }
+}
+int main(){T2 t=new T2();return 0;}

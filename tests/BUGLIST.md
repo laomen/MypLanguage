@@ -3104,3 +3104,26 @@ return this.k; } }`——`this` 在 @static 方法内自举此前静默过 sema 
 - **教训**：parser 关键字修饰符（var/const）的消费点要分清——`var` 走
   parseType（类型 token 占位）、`const` 走显式 advance；改动前先确认该 token
   的既有消费路径（防双消费/漏消费）。
+
+## BUG-123（已修复 🟩，v3.15.157）：struct == 比较无 @op("==") → opt 崩
+
+**非破坏性**（selfhost sema）。`Vec2 == 5`（struct 与 int 比较）与 `Vec2 ==
+Vec2`（同 struct 无 @op）此前自举静默过 sema → codegen icmp 异构类型 →
+**opt-21 崩**（icmp requires integer operands / integer constant must have
+integer type）。oracle struct==int 接受-垃圾（语义无意义）、struct==struct
+codegen verify 崩；manual §operators 要求 struct 比较走 @op("==")。
+
+- **根因**：`==`/`!=` 比较分支对 struct 操作数不做任何检查——resolveOp 无 @op
+  匹配后直接 setResolvedKind("bool")，codegen icmp struct → 崩。
+- **修复**：`==`/`!=` 分支加 struct 检查——任一侧 struct 且（无 @op 匹配时）
+  → "struct comparison requires an '@op(\"==\")' operator (structs are not
+  comparable by value)"。@op 匹配路径在 resolveOp 已提前返回不受影响；
+  class/interface ==（引用比较）不受影响。
+- **验证**：struct==int / struct==struct 双形态 `sev=error`（不再 opt 崩）；
+  @op("==") struct 比较 / class==class 引用比较编译+运行正确；bootstrap 成立。
+- **回归**：负测试 `tests/negative/struct_eq_no_op.myp`；全量 436 通过 / 0
+  失败；oracle 对拍 95/0。注意：诊断消息带 `\"` 转义，EXPECT ERROR 行须用
+  转义形式匹配。
+- **教训**：`==`/`!=` 对非数字非字符串类型的操作数（struct）是 codegen 崩盲区
+  ——oracle 宽松接受（垃圾/后端崩），自举须干净拒绝（manual 要求 @op("==")）；
+  类/接口引用比较是合法语义（指针相等），struct 值比较须显式 @op。
