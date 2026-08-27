@@ -27,6 +27,19 @@
 
 ## 编译器版本历史
 
+### v3.15.130 — 修重复 interface 名漏校验（BUG-096）
+
+**非破坏性**（selfhost sema）。两次 `interface I1 { ... }`（重复声明名）此前
+自举静默 last-wins → 接口二义。C++ visitInterfaceDecl 镜像 `duplicate
+interface name 'X'`（对比：重复 class/enum 自举已拒；重复 struct oracle 用
+declared_struct_names_ 静默跳过、自举保持一致不报）。
+
+- **修复**：interface 收集循环加重复检查（与已收集 interfaceNames_ 比对）。
+- **测试**：负测试 `tests/negative/duplicate_interface.myp`；合法 interface
+  （manual_ch6_class 回归）不受影响。
+- 验证：bootstrap 自举成立；全量回归 **392 通过 / 0 失败**；oracle 对拍 95/0。
+  BUGLIST 记 BUG-096。
+
 ### v3.15.129 — 修类内重复 action/event/function/struct 方法漏校验 → opt 崩（BUG-095）
 
 **非破坏性**（selfhost sema）。`int go(){...} int go(){...}`（类内同名 action）

@@ -1,0 +1,20 @@
+// EXPECT ERROR: duplicate interface name 'I1'
+// BUG-096 回归（负测试）：interface 声明名须唯一。
+// 此前自举 interface 收集无条件 interfaceNames_.add → 重复 interface 静默
+// last-wins → 实现类二义。C++ visitInterfaceDecl 镜像 "duplicate interface
+// name 'X'"。合法：不同 interface 名。
+import env;
+
+interface I1 {
+    double area();
+}
+interface I1 {
+    double area();
+}
+class T2 {
+    action:
+        @constructor T2() {
+            Console.writeString("A\n");
+        }
+}
+int main(){return 0;}

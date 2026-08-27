@@ -2506,3 +2506,23 @@
   校验重灾区——oracle 用符号表 declare 返回值判重（类作用域单空间，同名即重），
   自举方法注册全用「key 存在则跳过」的静默 put。构造器（类+struct）是豁免点，
   同名重载合法。
+
+## BUG-096（已修复 🟩，v3.15.130）：重复 interface 名漏校验（应拒绝却接受）
+
+- **状态**：🟩 已修复（2026-08-27，v3.15.130，selfhost sema.myp）
+- **背景**：两次 `interface I1 { ... }`（重复声明名）此前自举静默 last-wins →
+  接口二义。C++ visitInterfaceDecl 镜像：`duplicate interface name 'X'`。
+  对比：重复 class/enum 自举已拒（duplicate class name / duplicate enum name）；
+  重复 struct oracle 用 declared_struct_names_ 静默跳过（非硬错）→ 自举保持
+  一致不报。
+- **根因**：自举 interface 收集（tu.interfaces 循环）无条件 interfaceNames_.add，
+  从不查重复——class/enum 有 duplicate 检查、interface 漏。
+- **修复**：interface 收集循环加重复检查（与已收集的 interfaceNames_ 比对 →
+  duplicate interface name）。AstInterface 无位置字段 → 诊断 0,0。
+- **验证**：重复 interface 干净拒绝；合法 interface（manual_ch6_class 回归）不
+  受影响；bootstrap 自举成立。
+- **回归**：负测试 `tests/negative/duplicate_interface.myp`；全量 392 通过 /
+  0 失败；oracle 对拍 95/0。
+- **教训**：声明收集循环的 duplicate 校验覆盖不均——class/enum 有、interface/
+  bitfield 漏（bitfield 已 BUG-094）。凡 oracle 有 duplicate 分支、自举收集处
+  无比对，即「应拒却接受」。

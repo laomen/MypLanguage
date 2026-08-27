@@ -1748,6 +1748,16 @@ class Sema {
             // 收集接口（方法签名）
             for (int ii = 0; ii < tu.interfaces().size(); ii = ii + 1) {
                 AstInterface ifc = tu.interfaces().get(ii);
+                // BUG-096：重复 interface 名（镜像 C++ visitInterfaceDecl
+                // "duplicate interface name 'X'"）。此前 interfaceNames_.add
+                // 无条件追加 → 重复 interface 静默 last-wins。
+                int dupIface = 0;
+                for (int dii = 0; dii < interfaceNames_.size(); dii = dii + 1) {
+                    if (interfaceNames_.get(dii) == ifc.name()) { dupIface = 1; break; }
+                }
+                if (dupIface != 0) {
+                    diag_.error(0, 0, "duplicate interface name '" + ifc.name() + "'");
+                }
                 interfaceNames_.add(ifc.name());
                 if (ifaceIdx_.contains(ifc.name()) == 0) ifaceIdx_.put(ifc.name(), interfaceNames_.size() - 1);
                 ArrayList<AstAction> iacts = ifc.actions();
