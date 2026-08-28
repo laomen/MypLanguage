@@ -261,6 +261,20 @@ bool CodeGen::isArcReturnType(const TypeNode& tn) {
     return false;
 }
 
+// 动态数组 new T[N]（常量维度 + 元素非 ARC）→ 可栈上化（alloca backing，
+// 跳过 ARC 头释放）。维度须为 IntegerLiteral 常量（alloca 固定大小）；元素
+// 非 ARC（int/long/double/float/bool/char 等值类型——ARC 元素需作用域末逐元素
+// 释放，第一版保守排除）。
+bool CodeGen::isStackArrayCandidate(const Expr* e) {
+    if (!e || e->kind != ExprKind::NewArrayExpr) return false;
+    auto& na = static_cast<const NewArrayExpr&>(*e);
+    if (na.dimensions.empty()) return false;
+    for (auto& d : na.dimensions)
+        if (!d || d->kind != ExprKind::IntegerLiteral) return false;
+    if (isArcReturnType(na.element_type)) return false;
+    return true;
+}
+
 // M8 structs: a struct field that holds an ARC reference (class/interface/
 // slice/dynamic-array/string), OR is a nested struct that transitively holds
 // one. Such fields need retain/release whenever the struct value is copied or

@@ -60,6 +60,10 @@ static bool exprEscapes(const Expr* e, const std::string& v) {
         }
         case ExprKind::Subscript: {
             auto& s = static_cast<const SubscriptExpr&>(*e);
+            // 数组元素访问 v[i]：array 是 v 本身 → 允许（第二版数组逃逸分析）。
+            if (s.array && s.array->kind == ExprKind::Identifier &&
+                static_cast<const IdentifierExpr*>(s.array.get())->name == v)
+                return exprEscapes(s.index.get(), v);
             return exprEscapes(s.array.get(), v) || exprEscapes(s.index.get(), v);
         }
         case ExprKind::NewExpr: {
@@ -363,7 +367,10 @@ static void collectCandidates(const Stmt* s, std::map<std::string, const VarDecl
             for (auto& d : vd.decls) {
                 if (d.has_thread_annotation || d.has_threadpool_annotation) continue;
                 if (d.is_const) continue;
-                if (d.init_expr && d.init_expr->kind == ExprKind::NewExpr)
+                // 类对象候选（new T()）；数组候选（new T[N]，生成时 isStackArrayCandidate
+                // 过滤——维度常量 + 元素非 ARC）。
+                if (d.init_expr && (d.init_expr->kind == ExprKind::NewExpr ||
+                                    d.init_expr->kind == ExprKind::NewArrayExpr))
                     out[d.name] = &d;
             }
             return;

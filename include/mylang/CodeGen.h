@@ -242,6 +242,7 @@ private:
     // 逃逸分析：当前正在生成的 `new` 是否栈上分配（generateVarDecl 对栈上变量
     // 置 true，generateNewExpr 检测 → alloca 替代 myp_alloc_object）。
     bool stack_new_ = false;
+    bool stack_new_array_ = false;  // 第二版：动态数组 new T[N] 栈上分配（alloca backing）
     // 当前函数的可栈上分配局部变量名集合（函数体生成前由逃逸分析设置）。
     std::set<std::string> current_escape_stack_vars_;
     void arcPushTemp(llvm::Value* v);
@@ -741,6 +742,9 @@ private:
     // M8: any type whose value is a counted/ARC reference that flows through
     // retain-at-return: class, interface, slice, dynamic T[], and string.
     bool isArcReturnType(const TypeNode& tn);
+    // 动态数组 new T[N]（常量维度 + 元素非 ARC）→ 可栈上化（alloca backing，
+    // 跳过 ARC 头释放；ARC 元素需逐元素释放 → 第一版保守排除）。
+    bool isStackArrayCandidate(const Expr* e);
     // M8 structs: a struct FIELD that holds an ARC reference (or is a nested
     // struct that transitively does) — needs retain/release on struct copies.
     bool isArcFieldType(const TypeNode& tn);

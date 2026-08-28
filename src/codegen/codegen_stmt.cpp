@@ -788,12 +788,18 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     if (is_struct)
         var_struct_map_[d.name] = dt.class_name;
     // 逃逸分析：`let v = new T()` 且 v 不逃逸 → 栈上分配（generateNewExpr 的
-    // stack_new_ 分支），跳过 ARC 槽注册（栈自动回收，无 release）。
-    bool is_stack_escape = d.init_expr && d.init_expr->kind == ExprKind::NewExpr &&
-                           current_escape_stack_vars_.count(d.name) != 0 &&
-                           !::getenv("MYP_NO_STACK_NEW") &&
-                           !d.type.class_name.empty() &&
-                           !classHasArcProps(d.type.class_name);
+    // stack_new_ 分支），跳过 ARC 槽注册（栈自动回收，无 release）。第二版支持
+    // 动态数组 `let v = new T[N]`（常量维度 + 元素非 ARC，isStackArrayCandidate）
+    // → stack_new_array_ 分支（alloca backing）。
+    bool is_stack_escape = false;
+    if (current_escape_stack_vars_.count(d.name) != 0 && !::getenv("MYP_NO_STACK_NEW")) {
+        if (d.init_expr && d.init_expr->kind == ExprKind::NewExpr &&
+            !d.type.class_name.empty() && !classHasArcProps(d.type.class_name))
+            is_stack_escape = true;
+        else if (d.init_expr && d.init_expr->kind == ExprKind::NewArrayExpr &&
+                 isStackArrayCandidate(d.init_expr.get()))
+            is_stack_escape = true;
+    }
     if (is_stack_escape && current_is_coro_) is_stack_escape = false;  // coro 帧不栈上
     // ARC: a local class reference is released when its scope exits.
     if (arc_decl_class && !is_stack_escape) registerArcSlot(a, 0);
@@ -833,9 +839,14 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
 
     if (d.init_expr) {
         bool saved_stack_new = stack_new_;
-        if (is_stack_escape) stack_new_ = true;
+        bool saved_stack_new_array = stack_new_array_;
+        if (is_stack_escape) {
+            if (d.init_expr->kind == ExprKind::NewArrayExpr) stack_new_array_ = true;
+            else stack_new_ = true;
+        }
         auto* v = generateExpr(*d.init_expr);
         stack_new_ = saved_stack_new;
+        stack_new_array_ = saved_stack_new_array;
         if (v->getType() != lt)
             v = convertIntegerValue(builder_, v, lt, d.init_expr.get());
         // ARC: fresh (new / call) transfers into the slot; an alias (var/prop)

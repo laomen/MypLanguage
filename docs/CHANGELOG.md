@@ -47,6 +47,34 @@
 - **测试**：`tests/@test/cyclecollect_multi.myp`（2 tests：1000 环显式收集 + 自动
   收集下多环回收）。全量 456/456 + parity 95/95 + 自举 MD5 一致。
 
+### v3.15.183 — 逃逸分析第二版：动态数组栈上分配（分配基准追平 Go）
+
+**非破坏性**（编译器 codegen 优化，语义不变）。触发：300 万次 `new int[8]`
+分配基准 MYP **81ms vs Go 0ms**——Go 逃逸分析把 `make([]int,8)`（常量大小 + 本地
+不逃逸）栈上化，MYP 每次都真分配 + 释放。第一版逃逸分析只处理 `new T()` 类对象，
+**不处理 `new T[N]` 动态数组** → 补上。
+- **数组候选**：`int[] a = new int[8]`（NewArrayExpr init，维度全为整数常量 +
+  元素非 ARC）。ARC 元素（`Node[]`）需作用域末逐元素释放 → 第一版保守排除；
+  非常量维度（`new int[n]`）→ 排除。
+- **分析器放宽**：`escExprE`/`exprEscapes` 的 Subscript——`a[i]` 的 array 是候选
+  变量 v 本身 → 允许（类似 MemberAccess object）；数组传参/返回/存容器/赋值 →
+  逃逸（堆）。`escCollect`/`collectCandidates` 收集数组候选；生成时
+  `isStackArrayCandidate` 复检。
+- **codegen**：独立标志 `stackNewArray_`（与类对象 `stackNew_` 隔离，防构造器实参
+  里嵌套 NewArray 误栈上化）；NewArray 栈上分支 alloca `[24 头 + N*elem_size]`，
+  写头（count/i64@0、elem_size/i32@8、pad@12、rc=1@16、tid=ARR@20），data=+24，
+  memset 数据区；不注册 ARC 释放槽（栈自动回收）。oracle + selfhost 双镜像。
+- **效果**：分配基准 300 万次 `new int[8]` **81ms → 0ms**（追平 Go；`--emit-llvm`
+  确认 0 个 `myp_alloc_slice_backing` 调用）；`MYP_MEM_REPORT` arrays=0（无泄漏）；
+  新回归 `tests/@test/esc_escape.myp`（3 tests/6 assertions）；全量 456/456 +
+  自举 MD5 一致。
+- **基准全景（重要）**：`bench/run_compare.sh` 55 项计算基准 MYP 已**接近/超过
+  C++(-O2)**——hashmap 2.44x、iface_dispatch 2.5x、raytracer 1.21x 快；纯计算
+  基本持平（sieve 1.00/montepi 1.03/nbody 1.00）；落后项 sha256 0.83/alphabeta
+  0.79/sobel 0.86（纯计算 codegen 细节，后续可查）。计算层面"达到 Go 水平"已
+  达成；分配层面本次追平。剩余：leak_long 混合负载（ARC 密集，对象多逃逸）仍
+  ~1097k/s——下一步方向：编译器内联 ARC/数组 release 路径。
+
 ### v3.15.182 — 修复栈上化对象 ARC 属性泄漏 + 逃逸分析混合负载实测
 
 **非破坏性**（编译器 codegen 修复，语义修正）。逃逸分析（v3.15.181）的

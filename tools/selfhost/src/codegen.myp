@@ -100,6 +100,11 @@ class CodeGen {
             if (k == "Unary") return escExprE(e.operand(), v);
             if (k == "Convert") return escExprE(e.operand(), v);
             if (k == "Subscript") {
+                // 数组元素访问 v[i]：array 是 v 本身 → 允许（类似 MemberAccess
+                // object；第二版数组逃逸分析放宽）。
+                AstExpr sarr = e.array();
+                if (sarr != null && sarr.kind() == "Identifier" && sarr.name() == v)
+                    return escExprE(e.index(), v);
                 if (escExprE(e.array(), v) != 0) return 1;
                 return escExprE(e.index(), v);
             }
@@ -213,9 +218,12 @@ class CodeGen {
             if (k == "VarDecl") {
                 for (int i = 0; i < s.decls().size(); i = i + 1) {
                     AstVar d = s.decls().get(i);
-                    // 排除含 ARC 属性的类（栈上化不释放属性 → 泄漏）。
+                    // 类对象：排除含 ARC 属性的类（栈上化不释放属性 → 泄漏）。
                     if (d.init() != null && d.init().kind() == "New" && d.thread() == 0
                             && classHasArcProps(d.init().className()) == 0) cands.add(d.name());
+                    // 动态数组：常量维度 + 元素非 ARC → 可栈上化（alloca backing）。
+                    if (d.init() != null && d.init().kind() == "NewArray" && d.thread() == 0
+                            && isStackArrayCandidate(d.init()) != 0) cands.add(d.name());
                 }
                 return;
             }
@@ -401,6 +409,20 @@ class CodeGen {
             return 0;
         }
 
+        // 动态数组 `new T[N]`（常量维度 + 元素非 ARC）→ 可栈上化（alloca backing，
+        // 跳过 ARC 头释放）。ARC 元素（Node[]）需作用域末逐元素释放 → 第一版保守排除。
+        int isStackArrayCandidate(AstExpr e) {
+            if (e == null || e.kind() != "NewArray") return 0;
+            for (int i = 0; i < e.dimensions().size(); i = i + 1) {
+                AstExpr dim = e.dimensions().get(i);
+                if (dim == null || dim.kind() != "Integer") return 0;
+            }
+            AstType et = e.elemType();
+            if (et == null) return 0;
+            if (isArcType(et) != 0) return 0;
+            return 1;
+        }
+
         // 类是否含 ARC 属性（含嵌套 struct 字段）。
         int classHasArcProps(string cls) {
             if (tu_ == null) return 1;   // 无 TU → 保守
@@ -456,6 +478,7 @@ class CodeGen {
             curFnCoro_ = 0;
             curFnIsCtor_ = 0;
             stackNew_ = 0;                      // 当前 new 是否栈上分配（逃逸分析）
+            stackNewArray_ = 0;                 // 当前 new T[N] 是否栈上分配（第二版）
             escapeStackVars_ = new ArrayList<string>();  // 当前函数可栈上分配变量
             gpuCpuFallback_ = 0;
             gpuCpuLoopVarA_ = "";
@@ -7701,10 +7724,12 @@ class CodeGen {
                         // 代替 myp_alloc_object；不注册 ARC 槽（函数末不 release，
                         // 栈自动回收）；协程函数禁用（协程帧跨挂起存活）。
                         int isStackEscape = 0;
-                        if (v.init() != null && v.init().kind() == "New"
-                                && escListHas(escapeStackVars_, v.name()) != 0 && curFnCoro_ == 0
+                        if (escListHas(escapeStackVars_, v.name()) != 0 && curFnCoro_ == 0
                                 && Str.len(Console.getEnv("MYP_NO_STACK_NEW")) == 0) {
-                            isStackEscape = 1;
+                            if (v.init() != null && v.init().kind() == "New"
+                                    && classHasArcProps(v.init().className()) == 0) isStackEscape = 1;
+                            else if (v.init() != null && v.init().kind() == "NewArray"
+                                    && isStackArrayCandidate(v.init()) != 0) isStackEscape = 1;
                         }
                         if (isStackEscape == 0) arcSlotNames_.add(va);
                         if (lt == "{ ptr, ptr }") {
@@ -7725,13 +7750,23 @@ class CodeGen {
                                     // 逃逸分析栈上分配：new 走栈分支（alloca 而非
                                     // myp_alloc_object），普通 store（不 retain，
                                     // 不注册 release 槽；栈对象不可进 mapping 全局/
-                                    // 协程帧——作用域末栈回收）。
-                                    stackNew_ = 1;
-                                    string siv = genExpr(v.init());
-                                    stackNew_ = 0;
-                                    string sit = exprLlvmType(v.init());
-                                    siv = convertValue(siv, sit, "ptr");
-                                    sb_.append("  store ptr " + siv + ", ptr " + va + "\n");
+                                    // 协程帧——作用域末栈回收）。数组走 stackNewArray_
+                                    // （NewArray 栈上分支），类对象走 stackNew_。
+                                    if (v.init().kind() == "NewArray") {
+                                        stackNewArray_ = 1;
+                                        string sav = genExpr(v.init());
+                                        stackNewArray_ = 0;
+                                        string sat = exprLlvmType(v.init());
+                                        sav = convertValue(sav, sat, "ptr");
+                                        sb_.append("  store ptr " + sav + ", ptr " + va + "\n");
+                                    } else {
+                                        stackNew_ = 1;
+                                        string siv = genExpr(v.init());
+                                        stackNew_ = 0;
+                                        string sit = exprLlvmType(v.init());
+                                        siv = convertValue(siv, sit, "ptr");
+                                        sb_.append("  store ptr " + siv + ", ptr " + va + "\n");
+                                    }
                                 } else {
                                     string iv = genExpr(v.init());
                                     string it = exprLlvmType(v.init());
@@ -9761,6 +9796,36 @@ class CodeGen {
                 string elemLt = llvmType(e.elemType());
                 int elemSize = typeByteSize(e.elemType());
                 int elemKind = arrayElemKind(e.elemType());
+                if (stackNewArray_ != 0) {
+                    // 逃逸分析栈上数组：alloca [24 头 + N*elemSize]，写头（count/
+                    // elem_size/pad/rc/tid），data=+24；不 addFreshTemp（栈自动
+                    // 回收，无 release）。维度常量（isStackArrayCandidate 保证）。
+                    long stotal = 1;
+                    for (int si = 0; si < e.dimensions().size(); si = si + 1)
+                        stotal = stotal * e.dimensions().get(si).value();
+                    string sArr = "[" + (24 + stotal * elemSize) + " x i8]";
+                    string sRaw = newTmp();
+                    sb_.append("  " + sRaw + " = alloca " + sArr + ", align 8\n");
+                    string cg = newTmp();
+                    sb_.append("  " + cg + " = getelementptr " + sArr + ", ptr " + sRaw + ", i64 0, i64 0\n");
+                    sb_.append("  store i64 " + stotal + ", ptr " + cg + ", align 8\n");       // count
+                    string eg = newTmp();
+                    sb_.append("  " + eg + " = getelementptr " + sArr + ", ptr " + sRaw + ", i64 0, i64 8\n");
+                    sb_.append("  store i32 " + elemSize + ", ptr " + eg + ", align 4\n");      // elem_size
+                    string pg = newTmp();
+                    sb_.append("  " + pg + " = getelementptr " + sArr + ", ptr " + sRaw + ", i64 0, i64 12\n");
+                    sb_.append("  store i32 " + elemKind + ", ptr " + pg + ", align 4\n");      // pad=elem_kind
+                    string rg = newTmp();
+                    sb_.append("  " + rg + " = getelementptr " + sArr + ", ptr " + sRaw + ", i64 0, i64 16\n");
+                    sb_.append("  store i32 1, ptr " + rg + ", align 4\n");                      // rc=1（栈上唯一所有权）
+                    string tg = newTmp();
+                    sb_.append("  " + tg + " = getelementptr " + sArr + ", ptr " + sRaw + ", i64 0, i64 20\n");
+                    sb_.append("  store i32 -1, ptr " + tg + ", align 4\n");                     // tid=ARR
+                    string t = newTmp();
+                    sb_.append("  " + t + " = getelementptr " + sArr + ", ptr " + sRaw + ", i64 0, i64 24\n");  // data
+                    sb_.append("  call void @llvm.memset.p0.i64(ptr " + t + ", i8 0, i64 " + (stotal * elemSize) + ", i1 false)\n");
+                    return t;
+                }
                 string totalV = "1";
                 for (int i = 0; i < e.dimensions().size(); i = i + 1) {
                     AstExpr dim = e.dimensions().get(i);
@@ -12307,7 +12372,9 @@ class CodeGen {
         int curFnIsCtor_;
         // 逃逸分析（第一版）：stackNew_=当前 new 栈上分配；escapeStackVars_=
         // 当前函数/action 可栈上分配的局部变量名集合（函数体生成前分析设置）。
+        // stackNewArray_=当前动态数组 new T[N] 栈上分配（alloca backing，第二版）。
         int stackNew_;
+        int stackNewArray_;
         ArrayList<string> escapeStackVars_;
         int curFnRegion_;
         string curRegionMark_;

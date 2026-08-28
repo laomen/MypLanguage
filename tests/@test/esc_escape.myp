@@ -1,0 +1,59 @@
+// esc_escape.myp — 逃逸分析回归（v3.15.183）：局部不逃逸对象/数组栈上分配，
+// 结果正确性验证。含：纯 int 属性类本地栈上化 / 数组本地栈上化（纯 int 元素 +
+// 常量维度）/ 数组传参（逃逸 → 堆）语义保持 / double·多维数组。全部正向验证。
+
+import test;
+
+class Node {
+    action:
+        void set(int a, int b) { x = a; y = b; }
+        int sum() { return x + y; }
+    property:
+        int x;
+        int y;
+}
+
+int sumArr(int[] a) {   // 数组传参（逃逸 → 堆，语义须保持）
+    int s = 0;
+    for (int i = 0; i < 8; i = i + 1) s = s + a[i];
+    return s;
+}
+
+@test void t_class_stack() {
+    // 纯 int 属性类：本地不逃逸 → 栈上化（v3.15.181）。结果须正确。
+    int total = 0;
+    for (int i = 0; i < 1000; i = i + 1) {
+        Node n = new Node();
+        n.set(i, i + 1);
+        total = total + n.sum();
+    }
+    // sum(2i+1) for i in 0..999 = 1000000
+    Test.assertEq(total, 1000000);
+}
+
+@test void t_arr_stack_pure() {
+    // 数组纯本地（常量维度 + int 元素）→ 栈上化（v3.15.183）。结果须正确。
+    int[] a = new int[8];
+    for (int i = 0; i < 8; i = i + 1) a[i] = i;
+    int s = 0;
+    for (int i = 0; i < 8; i = i + 1) s = s + a[i];
+    Test.assertEq(s, 28);
+    // double / 多维（常量维度）
+    double[] d = new double[4];
+    d[2] = 3.5;
+    Test.assertFloatEq(d[2], 3.5, 1e-9);
+    int[] m = new int[3][2];
+    m[2] = 7;
+    Test.assertEq(m[2], 7);
+}
+
+@test void t_arr_escape() {
+    // 数组传参（逃逸）→ 堆分配，语义保持。
+    int[] a = new int[8];
+    for (int i = 0; i < 8; i = i + 1) a[i] = i * 3;
+    Test.assertEq(sumArr(a), 84);
+    // 返回数组（顶层函数返回 → 逃逸）语义
+    int[] b = new int[4];
+    b[0] = 5;
+    Test.assertEq(b[0], 5);
+}

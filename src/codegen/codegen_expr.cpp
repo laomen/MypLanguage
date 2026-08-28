@@ -3662,6 +3662,32 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
 }
 
 llvm::Value* CodeGen::generateNewArrayExpr(const NewArrayExpr& e) {
+    // 逃逸分析栈上数组（第二版）：alloca [24 头 + N*elem_size]，写头（count/
+    // elem_size/pad/rc/tid），data=+24；维度常量（isStackArrayCandidate 保证），
+    // 元素非 ARC。不 arcPushTemp（栈自动回收，无 release）。
+    if (stack_new_array_) {
+        int64_t stotal = 1;
+        for (auto& dim : e.dimensions)
+            stotal *= static_cast<const IntegerLiteralExpr&>(*dim).value;
+        uint64_t selem_size =
+            module_->getDataLayout().getTypeAllocSize(typeNodeToLLVMType(e.element_type));
+        auto* sarr = llvm::ArrayType::get(llvm::Type::getInt8Ty(ctx_), 24 + stotal * selem_size);
+        auto* raw = builder_.CreateAlloca(sarr, nullptr, "stack_arr");
+        auto* cg = builder_.CreateGEP(sarr, raw, {builder_.getInt64(0), builder_.getInt64(0)});
+        builder_.CreateStore(llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), stotal), cg);   // count
+        auto* eg = builder_.CreateGEP(sarr, raw, {builder_.getInt64(0), builder_.getInt64(8)});
+        builder_.CreateStore(llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), selem_size), eg); // elem_size
+        auto* pg = builder_.CreateGEP(sarr, raw, {builder_.getInt64(0), builder_.getInt64(12)});
+        builder_.CreateStore(builder_.getInt32(0), pg);                                            // pad
+        auto* rg = builder_.CreateGEP(sarr, raw, {builder_.getInt64(0), builder_.getInt64(16)});
+        builder_.CreateStore(builder_.getInt32(1), rg);                                            // rc=1
+        auto* tg = builder_.CreateGEP(sarr, raw, {builder_.getInt64(0), builder_.getInt64(20)});
+        builder_.CreateStore(builder_.getInt32(-1), tg);                                           // tid=ARR
+        auto* data = builder_.CreateGEP(sarr, raw, {builder_.getInt64(0), builder_.getInt64(24)});
+        if (selem_size > 0)
+            builder_.CreateMemSet(data, builder_.getInt8(0), stotal * selem_size, llvm::Align(8));
+        return data;
+    }
     llvm::Value* total = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 1);
     for (auto& dim : e.dimensions) {
         // M3: each dimension is a signed length — reject negative at runtime.
