@@ -1,0 +1,20 @@
+import test;
+
+class LargeFixedField {
+    action:
+        @constructor LargeFixedField() { }
+
+        int check() {
+            values_[0] = 7;
+            return values_[0] + values_[4095];
+        }
+
+    property:
+        int[4096] values_;
+}
+
+@test
+void large_fixed_field_zero_init() {
+    LargeFixedField value = new LargeFixedField();
+    Test.assertEq(value.check(), 7, "large fixed field zero init");
+}

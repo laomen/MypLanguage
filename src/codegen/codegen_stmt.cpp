@@ -297,8 +297,6 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             auto* obj = builder_.CreateCall(alloc_fn,
                 {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz > 0 ? sz : 1),
                  llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), tid)});
-            if (sz > 0)
-                builder_.CreateMemSet(obj, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), sz, llvm::Align(8));
 
             // Store in array
             auto* idx = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), i);

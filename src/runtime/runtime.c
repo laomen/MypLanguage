@@ -1416,6 +1416,9 @@ void* myp_alloc_object(size_t size, uint32_t type_id) {
     myp_obj_header_t* h = (myp_obj_header_t*)base;
     h->rc = 1;
     h->type_id = type_id;
+    // 契约：类对象数据区由分配器清零（codegen 不再发 memset——巨型定长数组
+    // 字段的 llvm.memset 会致 opt InstCombine 指数爆炸）。
+    memset(base + MYP_OBJ_HEADER_SIZE, 0, size);
     myp_alloc_list_push(node);
     myp_live_objects++;
     myp_type_live_inc((int)type_id);   // M9

@@ -1,0 +1,37 @@
+// manual_opt_fixedarray.myp — opt InstCombine 爆炸回归（分配器清零契约）
+// 背景：类属性含巨型定长数组时，`new` 后的 llvm.memset 曾致 opt-21
+// InstCombinePass 指数爆炸（单文件 2m33s，其中 InstCombine 155s）。
+// 修复：对象数据区清零下沉到 myp_alloc_object（C + MYP 双运行时），
+// codegen 不再对堆分配发 memset。
+// 本用例双重守卫：
+//   1) 编译耗时：run_tests.sh 单测 10s 超时——若 opt 爆炸复现，本用例即超时失败；
+//   2) 清零契约：未显式初始化的属性与定长数组字段必须归零。
+import test;
+
+class BigArray {
+    property:
+        string[1024] names_;
+        string[1024] dtypes_;
+        double[1024] data_;
+        double[1024] shapes_;
+        int flag_;
+
+    action:
+        @constructor BigArray() {}
+
+        int checkZero() {
+            if (flag_ != 0) return 1;
+            int i = 0;
+            while (i < 1024) {
+                if (data_[i] != 0.0) return 2;
+                if (shapes_[i] != 0.0) return 3;
+                i = i + 1;
+            }
+            return 0;
+        }
+}
+
+@test void t_bigarray_zero() {
+    BigArray b = new BigArray();
+    Test.assertEq(b.checkZero(), 0);
+}

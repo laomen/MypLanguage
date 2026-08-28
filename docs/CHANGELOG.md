@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.197 — opt InstCombine 爆炸修复（对象清零下沉分配器，2m33s → 亚秒）
+
+**非破坏性**（oracle/selfhost codegen + C/MYP 双运行时）。类属性含巨型定长数组
+（如 `string[1024]`/`double[1024]`）时，`new` 的对象清零以 codegen 侧
+`llvm.memset` + selfhost 栈分配 `store zeroinitializer` 形式出现，opt-21 `-O2`
+InstCombinePass 对其指数爆炸（单文件 2m33s，其中 InstCombine 155s）。
+修复：把堆对象数据区清零下沉到 `myp_alloc_object`（C `runtime.c` +
+`runtime_myp/alloc.myp`，`memset`/`__myp_memset`），oracle/selfhost 删除
+`myp_alloc_object` 后的冗余 memset；selfhost 栈分配改裸 alloca
+（`entryAllocaRaw`，数据区仍 memset、头部显式 store），移除 `[N x i8]`
+`store zeroinitializer`。行为不变（未显式初始化属性仍归零），编译耗时
+2m33s → 0.04s（约 940×）。回归：`tests/@test/manual_opt_fixedarray.myp`
+（巨型定长数组类 + 清零断言，run_tests.sh 10s 超时即编译时间守卫）。
+
 ### v3.15.196 — 协程创建与 Go 同级（22ms → 14ms）
 
 **非破坏性**（MYP runtime + oracle/selfhost codegen + 基准公平性修复）。调查

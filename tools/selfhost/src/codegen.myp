@@ -1266,6 +1266,17 @@ class CodeGen {
             return va;
         }
 
+        // 裸 alloca（无零初始化）：逃逸分析栈上分配的类对象缓冲 [8+sz x i8] 用。
+        // 对象头部 rc/type_id 由调用方显式 store、数据区由 memset 清零——无需
+        // zeroinitializer。巨型定长数组字段的 store zeroinitializer 会致 opt
+        // InstCombine 爆炸（C++ createEntryBlockAlloca 同样只 alloca 不清零）。
+        string entryAllocaRaw(string lt) {
+            string va = newTmp();
+            int al = IrEmit.alignOf(lt);
+            entryAllocas_.append("  " + va + " = alloca " + lt + ", align " + al + "\n");
+            return va;
+        }
+
         // §五-1 收尾: 协程帧 ARC 镜像。@coro 函数体里 class/string 局部槽的
         // 存活对象镜像进运行时帧表（__myp_coro_frame_set/clear），
         // Coro.destroy / 未捕获异常时由 trampoline 统一释放（无泄漏、无
@@ -3637,7 +3648,6 @@ class CodeGen {
                 if (lsz < 1) lsz = 1;
                 string lin = newTmp();
                 regCalls.append("  " + lin + " = call ptr @myp_alloc_object(i64 " + lsz + ", i32 0)\n");
-                regCalls.append("  call void @llvm.memset.p0.i64(ptr " + lin + ", i8 0, i64 " + lsz + ", i1 false)\n");
                 regCalls.append("  store ptr " + lin + ", ptr @" + gname + "\n");
             }
 
@@ -8516,7 +8526,6 @@ class CodeGen {
             for (int i = 0; i < poolSize; i = i + 1) {
                 string obj = newTmp();
                 sb_.append("  " + obj + " = call ptr @myp_alloc_object(i64 " + sz + ", i32 " + tid + ")\n");
-                sb_.append("  call void @llvm.memset.p0.i64(ptr " + obj + ", i8 0, i64 " + sz + ", i1 false)\n");
                 string gep = newTmp();
                 sb_.append("  " + gep + " = getelementptr " + arrLt + ", ptr " + arrA + ", i32 0, i32 " + i + "\n");
                 sb_.append("  store ptr " + obj + ", ptr " + gep + "\n");
@@ -10124,19 +10133,18 @@ class CodeGen {
                 if (stackNew_ != 0) {
                     // 0x7ffffffe 标记允许析构桩释放 ARC 字段，同时禁止 free 栈存储。
                     string arrLt = "[" + (8 + sz) + " x i8]";
-                    string raw = entryAlloca(arrLt);
+                    string raw = entryAllocaRaw(arrLt);
                     sb_.append("  store i32 2147483646, ptr " + raw + ", align 4\n");
                     string tg = newTmp();
                     sb_.append("  " + tg + " = getelementptr " + arrLt + ", ptr " + raw + ", i64 0, i64 4\n");
                     sb_.append("  store i32 " + tid + ", ptr " + tg + ", align 4\n");  // tid
                     sb_.append("  " + t + " = getelementptr " + arrLt + ", ptr " + raw + ", i64 0, i64 8\n");  // data
+                    // 栈上分配须显式清零（myp_alloc_object 只清零堆分配）
+                    sb_.append("  call void @llvm.memset.p0.i64(ptr " + t + ", i8 0, i64 " + sz + ", i1 false)\n");
                 } else {
                     sb_.append("  " + t + " = call ptr @myp_alloc_object(i64 " + sz + ", i32 " + tid + ")\n");
                     addFreshTemp(t);
                 }
-                // 零初始化对象（同 C++ generateNewExpr 的 CreateMemSet——未显式
-                // 初始化的属性必须为 0，否则 malloc 垃圾值）
-                sb_.append("  call void @llvm.memset.p0.i64(ptr " + t + ", i8 0, i64 " + sz + ", i1 false)\n");
                 // 属性默认值（new 时 store；构造器可覆写）
                 if (tu_ != null) {
                     for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {

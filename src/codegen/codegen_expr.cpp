@@ -3565,8 +3565,6 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
             {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz > 0 ? sz : 1),
              llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), tid)});
         arcPushTemp(obj);   // statement-end temp release (consumed by stores)
-        if (sz > 0)
-            builder_.CreateMemSet(obj, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), sz, llvm::Align(8));
     }
 
     // Apply declared property default values (`int x = 5;`, class-level

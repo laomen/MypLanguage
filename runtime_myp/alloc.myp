@@ -382,6 +382,9 @@ string myp_alloc_object(long size, int type_id) {
     if (base == 0) return "";   // OOM
     __myp_mem_store_i32(base, 0);          // rc=0（return retain-on-return → 1）
     __myp_mem_store_i32(base + 4, type_id);
+    // 契约：数据区由分配器清零（同 C myp_alloc_object；codegen 不再发 memset，
+    // 避免巨型定长数组字段的 llvm.memset 致 opt InstCombine 爆炸）。
+    __myp_memset(base + 8, 0, size);
     Live.objects = Live.objects + 1;
     myp_type_live_inc(type_id);   // 包 B：per-type 计数
     // v3.15.172 自动收集水位：每 N 次类对象分配置 pending（==threshold 恰好一次），
