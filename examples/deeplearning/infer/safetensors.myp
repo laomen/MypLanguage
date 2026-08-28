@@ -3,6 +3,7 @@
 // 仅解析 header 元数据；按张量读数据时 seek 到绝对偏移 + 按 dtype 转 float。
 // 支持 dtype：F32 / BF16 / F16（BF16→F32 = bits<<16；F16 用标准 half 解码）。
 // 读取 API：readF32All(i) / readF32AllByName(name) 整张量读入新 float[]；
+//          readF32Into(i, dst, dstOff) 整张量读入调用方数组指定偏移（模型装配直写 arena）；
 //          readF32Range(i, start, out, count) 部分读；readF32(i, out, maxN) 起读。
 // 用途：直接加载 HuggingFace 权重（如 qwen2-0.5b-instruct/model.safetensors），
 //       替代 extract_*.py 转自定义 .bin 的流程。
@@ -100,9 +101,24 @@ class SafeTensors {
         // 读张量 [startElem, startElem+count) 元素到 out（F32/BF16/F16→float）。
         // 返回读入元素数（失败 0）；startElem 越界或 dtype 不支持返回 0。
         int readF32Range(int i, int startElem, float[] out, int count) {
+            return readF32RangeAt(i, startElem, out, 0, count);
+        }
+
+        // 读整个张量到 dst[dstOff..dstOff+n)（F32/BF16/F16→float）。返回读入元素数。
+        // 供模型装配直接写入 arena 指定偏移（免中间数组拷贝）。
+        int readF32Into(int i, float[] dst, int dstOff) {
+            int n = tensorElemCount(i);
+            if (i < 0 || i >= count_ || n <= 0 || dstOff < 0) return 0;
+            string dt = dtype_[i];
+            if (dt != "F32" && dt != "BF16" && dt != "F16") return 0;
+            return readF32RangeAt(i, 0, dst, dstOff, n);
+        }
+
+        // 核心：读 [startElem, startElem+count) 到 out[outOff + j]（F32/BF16/F16→float）
+        int readF32RangeAt(int i, int startElem, float[] out, int outOff, int count) {
             if (i < 0 || i >= count_) return 0;
             int n = tensorElemCount(i);
-            if (n <= 0 || startElem < 0 || startElem >= n || count <= 0) return 0;
+            if (n <= 0 || startElem < 0 || startElem >= n || count <= 0 || outOff < 0) return 0;
             string dt = dtype_[i];
             if (dt != "F32" && dt != "BF16" && dt != "F16") return 0;
             int elemSize = 2;
@@ -120,7 +136,7 @@ class SafeTensors {
                     int b2 = __myp_io_read_byte(); int b3 = __myp_io_read_byte();
                     if (b3 < 0) break;
                     int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-                    out[j] = float(F32.toDouble(bits));
+                    out[outOff + j] = float(F32.toDouble(bits));
                     j = j + 1;
                 }
             } else if (dt == "BF16") {
@@ -129,7 +145,7 @@ class SafeTensors {
                     if (b1 < 0) break;
                     int bf = (b0 | (b1 << 8)) & 65535;
                     int bits = bf << 16;   // BF16 位型左移 16 位 = 同值 F32 位型
-                    out[j] = float(F32.toDouble(bits));
+                    out[outOff + j] = float(F32.toDouble(bits));
                     j = j + 1;
                 }
             } else {   // F16
@@ -137,7 +153,7 @@ class SafeTensors {
                     int b0 = __myp_io_read_byte(); int b1 = __myp_io_read_byte();
                     if (b1 < 0) break;
                     int h = (b0 | (b1 << 8)) & 65535;
-                    out[j] = float(F32.toDouble(halfToF32Bits(h)));
+                    out[outOff + j] = float(F32.toDouble(halfToF32Bits(h)));
                     j = j + 1;
                 }
             }

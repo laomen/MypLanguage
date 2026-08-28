@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-08-28 — safetensors 直连 Qwen2 推理（免 extract_qwen2.py）
+
+### `llm/qwen2_safetensors_forward.myp`：模型直接从 model.safetensors 跑起来
+- **背景**：safetensors 只有权重、无网络结构（结构在 config.json + 架构代码）——
+  不能像 ONNX 那样由 onnx_loader 自动建图；装配层必须按架构手写（或按 config
+  参数化），graph.myp 帮不上这个场景。
+- **实现**：`infer/safetensors.myp` 新增 `readF32Into(i, dst, dstOff)`（整张量读入
+  调用方数组指定偏移，免中间数组拷贝）；`readF32Range` 重构为 `readF32RangeAt`
+  （核心带 outOff）+ 薄包装（签名不变）。
+- **前向**：与 qwen2_forward.myp 相同的 24 层装配，唯一区别是权重逐张量从
+  `model.safetensors`（290 张量 BF16）按名读入 arena（`loadT` 逐张量
+  findTensor + readF32Into，按 HF state_dict 命名映射到 .bin 同款布局）。
+  BF16→F32 = bits<<16，与 .bin 的 fp32 值 bit-exact。
+- **验证**：权重加载 **6.3s**（BF16 272MB，vs .bin fp32 1.98GB 的 ~18s）；前向
+  logits maxAbsDiff=0.26（bf16 量化噪声），**argmax=785 == transformers 参考**，
+  `QWEN2 SAFETENSORS FORWARD OK`。全程无需 extract_qwen2.py。
+- 结论：Qwen2 已可从 HuggingFace safetensors 直接推理；下一步可把生成/对话入口
+  （qwen2_generate/qwen2_talk）同样切到 safetensors 直读。
+
+---
+
 ## 2026-08-28 — safetensors 整张量读取（readF32All / readF32Range）
 
 ### 完善 `infer/safetensors.myp`：解除「只能读 4096」的限制
