@@ -9,6 +9,7 @@ import "./link.myp";
 import io;
 import process;
 import fs;
+import env;   // Console.getEnv（逃逸分析 MYP_NO_STACK_NEW 调试开关）
 
 // double → LLVM %e 文本（与 mypc --emit-llvm 的 double 常量格式一致）。
 ffi string myp_fmt_double_e(double v, int precision);
@@ -57,8 +58,328 @@ class FinallyCtx {
         int inFinally_;
 }
 
+
+
+
+
+
+
+
+
 class CodeGen {
     action:
+        // ── 逃逸分析（第一版，MYP 版；与 C++ escape_analysis.cpp 对拍）──
+        // 判定函数内 `let v = new T()` 的局部变量是否可栈上分配（不逃逸）：
+        // v 只允许 MemberAccess object（v.field）+ 方法调用接收者（v.method()）；
+        // 赋其他变量 / f(v) 实参 / 存容器 / 返回 / v=other / lambda / 并发 / 异常 → 逃逸。
+        // 注：放在类内（而非顶层）——selfhost sema 对顶层函数里的泛型容器
+        // ArrayList<T>.get() 返回类型推断为 int（类方法内正常）。
+        int escExprE(AstExpr e, string v) {
+            if (e == null) return 0;
+            string k = e.kind();
+            if (k == "Identifier") { if (e.name() == v) return 1; return 0; }
+            if (k == "Member") {
+                AstExpr o = e.array();
+                while (o != null && o.kind() == "Member") o = o.array();
+                if (o != null && o.kind() == "Identifier" && o.name() == v) return 0;
+                return escExprE(e.array(), v);
+            }
+            if (k == "Call") {
+                for (int i = 0; i < e.args().size(); i = i + 1)
+                    if (escExprE(e.args().get(i), v) != 0) return 1;
+                return escExprE(e.callee(), v);
+            }
+            if (k == "Assign") {
+                if (escExprE(e.lhs(), v) != 0) return 1;
+                return escExprE(e.rhs(), v);
+            }
+            if (k == "Binary") {
+                if (escExprE(e.lhs(), v) != 0) return 1;
+                return escExprE(e.rhs(), v);
+            }
+            if (k == "Unary") return escExprE(e.operand(), v);
+            if (k == "Convert") return escExprE(e.operand(), v);
+            if (k == "Subscript") {
+                if (escExprE(e.array(), v) != 0) return 1;
+                return escExprE(e.index(), v);
+            }
+            if (k == "New") {
+                for (int i = 0; i < e.args().size(); i = i + 1)
+                    if (escExprE(e.args().get(i), v) != 0) return 1;
+                return 0;
+            }
+            if (k == "NewArray") {
+                for (int i = 0; i < e.dimensions().size(); i = i + 1)
+                    if (escExprE(e.dimensions().get(i), v) != 0) return 1;
+                return 0;
+            }
+            if (k == "Ternary") {
+                if (escExprE(e.condition(), v) != 0) return 1;
+                if (escExprE(e.trueExpr(), v) != 0) return 1;
+                return escExprE(e.falseExpr(), v);
+            }
+            if (k == "Range") {
+                if (escExprE(e.start(), v) != 0) return 1;
+                return escExprE(e.end(), v);
+            }
+            if (k == "EnumVariant" || k == "Tuple") {
+                for (int i = 0; i < e.args().size(); i = i + 1)
+                    if (escExprE(e.args().get(i), v) != 0) return 1;
+                return 0;
+            }
+            if (k == "NamedArg") return escExprE(e.namedValue(), v);
+            if (k == "Pipe") {
+                if (escExprE(e.lhs(), v) != 0) return 1;
+                return escExprE(e.rhs(), v);
+            }
+            if (k == "TryExpr") {
+                if (escExprE(e.tryExpr(), v) != 0) return 1;
+                return escExprE(e.catchExpr(), v);
+            }
+            if (k == "Await") {
+                if (escExprE(e.operand(), v) != 0) return 1;
+                return escExprE(e.timeout(), v);
+            }
+            if (k == "Lambda") return 1;   // 提及即逃逸（保守）
+            return 0;
+        }
+
+        int escStmtE(AstStmt s, string v) {
+            if (s == null) return 0;
+            string k = s.kind();
+            if (k == "Block") {
+                for (int i = 0; i < s.bodyStmts().size(); i = i + 1)
+                    if (escStmtE(s.bodyStmts().get(i), v) != 0) return 1;
+                return 0;
+            }
+            if (k == "VarDecl") {
+                for (int i = 0; i < s.decls().size(); i = i + 1) {
+                    AstVar d = s.decls().get(i);
+                    if (d.name() != v && d.init() != null && escExprE(d.init(), v) != 0) return 1;
+                }
+                return 0;
+            }
+            if (k == "ExprStmt") return escExprE(s.expr(), v);
+            if (k == "If") {
+                if (escExprE(s.condition(), v) != 0) return 1;
+                if (escStmtE(s.then(), v) != 0) return 1;
+                return escStmtE(s.elseBranch(), v);
+            }
+            if (k == "While") {
+                if (escExprE(s.condition(), v) != 0) return 1;
+                return escStmtE(s.body(), v);
+            }
+            if (k == "For") {
+                if (escStmtE(s.init(), v) != 0) return 1;
+                if (escExprE(s.condition(), v) != 0) return 1;
+                if (escExprE(s.step(), v) != 0) return 1;
+                return escStmtE(s.body(), v);
+            }
+            if (k == "ForIn") {
+                if (escExprE(s.iterable(), v) != 0) return 1;
+                return escStmtE(s.body(), v);
+            }
+            if (k == "Return") return escExprE(s.value(), v);
+            if (k == "Try") {
+                if (escStmtE(s.tryBlock(), v) != 0) return 1;
+                for (int i = 0; i < s.catches().size(); i = i + 1)
+                    if (escStmtE(s.catches().get(i).block(), v) != 0) return 1;
+                return escStmtE(s.finallyBlock(), v);
+            }
+            if (k == "Throw") return escExprE(s.expr(), v);
+            if (k == "Await") {
+                if (escExprE(s.expr(), v) != 0) return 1;
+                return escExprE(s.timeout(), v);
+            }
+            if (k == "Match") {
+                if (escExprE(s.subject(), v) != 0) return 1;
+                for (int i = 0; i < s.arms().size(); i = i + 1)
+                    if (escStmtE(s.arms().get(i).body(), v) != 0) return 1;
+                return 0;
+            }
+            if (k == "Destructure" || k == "MappingStmt" || k == "Nonlocal" ||
+                k == "GpuTile" || k == "GpuReduce" || k == "GpuScan" || k == "GpuScatter")
+                return 1;
+            return 0;
+        }
+
+        void escCollect(AstStmt s, ArrayList<string> cands) {
+            if (s == null) return;
+            string k = s.kind();
+            if (k == "Block") {
+                for (int i = 0; i < s.bodyStmts().size(); i = i + 1) escCollect(s.bodyStmts().get(i), cands);
+                return;
+            }
+            if (k == "VarDecl") {
+                for (int i = 0; i < s.decls().size(); i = i + 1) {
+                    AstVar d = s.decls().get(i);
+                    if (d.init() != null && d.init().kind() == "New" && d.thread() == 0) cands.add(d.name());
+                }
+                return;
+            }
+            if (k == "If") { escCollect(s.then(), cands); escCollect(s.elseBranch(), cands); return; }
+            if (k == "While") { escCollect(s.body(), cands); return; }
+            if (k == "For") { escCollect(s.init(), cands); escCollect(s.body(), cands); return; }
+            if (k == "ForIn") { escCollect(s.body(), cands); return; }
+            if (k == "Try") {
+                escCollect(s.tryBlock(), cands);
+                for (int i = 0; i < s.catches().size(); i = i + 1) escCollect(s.catches().get(i).block(), cands);
+                escCollect(s.finallyBlock(), cands);
+                return;
+            }
+            if (k == "Match") {
+                for (int i = 0; i < s.arms().size(); i = i + 1) escCollect(s.arms().get(i).body(), cands);
+                return;
+            }
+        }
+
+        // 分配内省检测：函数/action 是否调用 Memory.liveObjectCount[ByType]——
+        // 这类函数观测 arena 堆对象数量，栈上化会使计数断言失真 → 整函数不
+        // 栈上化（保守；回归 arc/cyclecollect/mem_diag/weak_multi_sub 依赖）。
+        int callIsLiveCount(AstExpr c) {
+            if (c == null) return 0;
+            if (c.kind() == "Identifier") return (c.name() == "liveObjectCount") ? 1 : 0;
+            if (c.kind() == "Member") {
+                // 注意：成员名用 memberName()（name() 对 Member 返回空）。
+                if (c.memberName() == "liveObjectCount" || c.memberName() == "liveObjectCountByType") return 1;
+            }
+            return 0;
+        }
+
+        int exprHasLiveCall(AstExpr e) {
+            if (e == null) return 0;
+            string k = e.kind();
+            if (k == "Call") {
+                if (callIsLiveCount(e.callee()) != 0) return 1;
+                for (int i = 0; i < e.args().size(); i = i + 1)
+                    if (exprHasLiveCall(e.args().get(i)) != 0) return 1;
+                return exprHasLiveCall(e.callee());
+            }
+            if (k == "Member") return exprHasLiveCall(e.array());
+            if (k == "Assign" || k == "Binary" || k == "Pipe") {
+                if (exprHasLiveCall(e.lhs()) != 0) return 1;
+                return exprHasLiveCall(e.rhs());
+            }
+            if (k == "Unary" || k == "Convert") return exprHasLiveCall(e.operand());
+            if (k == "Subscript") {
+                if (exprHasLiveCall(e.array()) != 0) return 1;
+                return exprHasLiveCall(e.index());
+            }
+            if (k == "New") {
+                for (int i = 0; i < e.args().size(); i = i + 1)
+                    if (exprHasLiveCall(e.args().get(i)) != 0) return 1;
+                return 0;
+            }
+            if (k == "NewArray") {
+                for (int i = 0; i < e.dimensions().size(); i = i + 1)
+                    if (exprHasLiveCall(e.dimensions().get(i)) != 0) return 1;
+                return 0;
+            }
+            if (k == "Ternary") {
+                if (exprHasLiveCall(e.condition()) != 0) return 1;
+                if (exprHasLiveCall(e.trueExpr()) != 0) return 1;
+                return exprHasLiveCall(e.falseExpr());
+            }
+            if (k == "Range") {
+                if (exprHasLiveCall(e.start()) != 0) return 1;
+                return exprHasLiveCall(e.end());
+            }
+            if (k == "EnumVariant" || k == "Tuple") {
+                for (int i = 0; i < e.args().size(); i = i + 1)
+                    if (exprHasLiveCall(e.args().get(i)) != 0) return 1;
+                return 0;
+            }
+            if (k == "NamedArg") return exprHasLiveCall(e.namedValue());
+            if (k == "TryExpr") {
+                if (exprHasLiveCall(e.tryExpr()) != 0) return 1;
+                return exprHasLiveCall(e.catchExpr());
+            }
+            if (k == "Await") {
+                if (exprHasLiveCall(e.operand()) != 0) return 1;
+                return exprHasLiveCall(e.timeout());
+            }
+            if (k == "Lambda") return 0;   // lambda body 由语句层遍历
+            return 0;
+        }
+
+        int stmtHasLiveCall(AstStmt s) {
+            if (s == null) return 0;
+            string k = s.kind();
+            if (k == "Block") {
+                for (int i = 0; i < s.bodyStmts().size(); i = i + 1)
+                    if (stmtHasLiveCall(s.bodyStmts().get(i)) != 0) return 1;
+                return 0;
+            }
+            if (k == "VarDecl") {
+                for (int i = 0; i < s.decls().size(); i = i + 1) {
+                    AstVar d = s.decls().get(i);
+                    if (d.init() != null && exprHasLiveCall(d.init()) != 0) return 1;
+                }
+                return 0;
+            }
+            if (k == "ExprStmt") return exprHasLiveCall(s.expr());
+            if (k == "If") {
+                if (exprHasLiveCall(s.condition()) != 0) return 1;
+                if (stmtHasLiveCall(s.then()) != 0) return 1;
+                return stmtHasLiveCall(s.elseBranch());
+            }
+            if (k == "While") {
+                if (exprHasLiveCall(s.condition()) != 0) return 1;
+                return stmtHasLiveCall(s.body());
+            }
+            if (k == "For") {
+                if (stmtHasLiveCall(s.init()) != 0) return 1;
+                if (exprHasLiveCall(s.condition()) != 0) return 1;
+                if (exprHasLiveCall(s.step()) != 0) return 1;
+                return stmtHasLiveCall(s.body());
+            }
+            if (k == "ForIn") {
+                if (exprHasLiveCall(s.iterable()) != 0) return 1;
+                return stmtHasLiveCall(s.body());
+            }
+            if (k == "Return") return exprHasLiveCall(s.value());
+            if (k == "Try") {
+                if (stmtHasLiveCall(s.tryBlock()) != 0) return 1;
+                for (int i = 0; i < s.catches().size(); i = i + 1)
+                    if (stmtHasLiveCall(s.catches().get(i).block()) != 0) return 1;
+                return stmtHasLiveCall(s.finallyBlock());
+            }
+            if (k == "Throw") return exprHasLiveCall(s.expr());
+            if (k == "Await") {
+                if (exprHasLiveCall(s.expr()) != 0) return 1;
+                return exprHasLiveCall(s.timeout());
+            }
+            if (k == "Match") {
+                if (exprHasLiveCall(s.subject()) != 0) return 1;
+                for (int i = 0; i < s.arms().size(); i = i + 1)
+                    if (stmtHasLiveCall(s.arms().get(i).body()) != 0) return 1;
+                return 0;
+            }
+            return 0;
+        }
+
+        // 主入口：返回函数/action body 中可栈上分配的局部变量名列表。
+        ArrayList<string> analyzeEscapeStackVars(AstStmt body) {
+            ArrayList<string> res = new ArrayList<string>();
+            if (body == null) return res;
+            // 分配内省函数（Memory.liveObjectCount[ByType]）→ 不栈上化（见上）。
+            if (stmtHasLiveCall(body) != 0) return res;
+            ArrayList<string> cands = new ArrayList<string>();
+            escCollect(body, cands);
+            for (int i = 0; i < cands.size(); i = i + 1) {
+                if (escStmtE(body, cands.get(i)) == 0) res.add(cands.get(i));
+            }
+            return res;
+        }
+
+        // ArrayList<string> 线性包含测试（stdlib ArrayList 无 contains；集合很小）。
+        int escListHas(ArrayList<string> l, string s) {
+            for (int i = 0; i < l.size(); i = i + 1) {
+                if (l.get(i) == s) return 1;
+            }
+            return 0;
+        }
+
         @constructor CodeGen() {
             sb_ = new StringBuilder();
             tmp_ = 0;
@@ -99,6 +420,8 @@ class CodeGen {
             freestanding_ = 0;
             curFnCoro_ = 0;
             curFnIsCtor_ = 0;
+            stackNew_ = 0;                      // 当前 new 是否栈上分配（逃逸分析）
+            escapeStackVars_ = new ArrayList<string>();  // 当前函数可栈上分配变量
             gpuCpuFallback_ = 0;
             gpuCpuLoopVarA_ = "";
             gpuCpuLoopVarLt_ = "";
@@ -3968,6 +4291,14 @@ class CodeGen {
             loopContinue_ = new ArrayList<string>();
             isMainFunc_ = 0;
             if (fn == "main") isMainFunc_ = 1;
+            // 逃逸分析：函数/action 体可栈上分配的局部变量（new Cls() 且不逃逸）。
+            // VarDecl/new 生成据此走栈上分配（alloca，不注册 ARC 槽）；协程函数
+            // 内栈对象禁用（isStackEscape 条件含 curFnCoro_==0）。
+            escapeStackVars_ = analyzeEscapeStackVars(body);
+            if (Str.len(Console.getEnv("MYP_ESCAPE_DEBUG")) != 0) {
+                Console.writeLine("[escape] " + fn + ": stackVars=" + escapeStackVars_.size()
+                    + " hasLiveCall=" + stmtHasLiveCall(body));
+            }
             string retLt = llvmType(retT);
             curRetLt_ = retLt;
             // BUG-034: 记录返回接口名——返回类型是接口时，`return new X()`（具体类
@@ -7331,7 +7662,16 @@ class CodeGen {
                         continue;
                     }
                     if (isArc != 0) {
-                        arcSlotNames_.add(va);
+                        // 逃逸分析栈上分配：new Cls() 局部且不在栈外逃逸 → alloca
+                        // 代替 myp_alloc_object；不注册 ARC 槽（函数末不 release，
+                        // 栈自动回收）；协程函数禁用（协程帧跨挂起存活）。
+                        int isStackEscape = 0;
+                        if (v.init() != null && v.init().kind() == "New"
+                                && escListHas(escapeStackVars_, v.name()) != 0 && curFnCoro_ == 0
+                                && Str.len(Console.getEnv("MYP_NO_STACK_NEW")) == 0) {
+                            isStackEscape = 1;
+                        }
+                        if (isStackEscape == 0) arcSlotNames_.add(va);
                         if (lt == "{ ptr, ptr }") {
                             // 函数值局部：fat pointer {closure, call_fn}，闭包
                             // 对象计数引用；作用域末 release index 0。
@@ -7346,27 +7686,40 @@ class CodeGen {
                             // 引用局部（string/类/动态数组）：拥有槽，函数末释放
                             sb_.append("  store ptr null, ptr " + va + "\n");
                             if (v.init() != null) {
-                                string iv = genExpr(v.init());
-                                string it = exprLlvmType(v.init());
-                                iv = convertValue(iv, it, "ptr");
-                                storeNew(va, iv, isFreshTemp(iv));
-                                // §五-1 收尾: class/string 局部镜像进协程帧（destroy/异常释放）
-                                if (isCoroFrameTrackedDecl(rvt) != 0) {
-                                    string cv = newTmp();
-                                    sb_.append("  " + cv + " = load ptr, ptr " + va + "\n");
-                                    emitCoroFrameSet(va, cv);
-                                }
-                                // mapping 实例全局：new Cls() 存进 __myp_inst_Cls / __myp_inst_<var>
-                                if (v.init().kind() == "New") {
-                                    string cn = v.init().className();
-                                    if (Str.len(v.init().resolvedClass()) != 0) cn = v.init().resolvedClass();
-                                    string gname = "";
-                                    if (hasInstanceGlobal(cn) != 0) gname = cn;
-                                    else if (hasInstanceGlobal(v.name()) != 0) gname = v.name();
-                                    if (Str.len(gname) != 0) {
-                                        string loaded = newTmp();
-                                        sb_.append("  " + loaded + " = load ptr, ptr " + va + "\n");
-                                        sb_.append("  store ptr " + loaded + ", ptr @__myp_inst_" + gname + "\n");
+                                if (isStackEscape != 0) {
+                                    // 逃逸分析栈上分配：new 走栈分支（alloca 而非
+                                    // myp_alloc_object），普通 store（不 retain，
+                                    // 不注册 release 槽；栈对象不可进 mapping 全局/
+                                    // 协程帧——作用域末栈回收）。
+                                    stackNew_ = 1;
+                                    string siv = genExpr(v.init());
+                                    stackNew_ = 0;
+                                    string sit = exprLlvmType(v.init());
+                                    siv = convertValue(siv, sit, "ptr");
+                                    sb_.append("  store ptr " + siv + ", ptr " + va + "\n");
+                                } else {
+                                    string iv = genExpr(v.init());
+                                    string it = exprLlvmType(v.init());
+                                    iv = convertValue(iv, it, "ptr");
+                                    storeNew(va, iv, isFreshTemp(iv));
+                                    // §五-1 收尾: class/string 局部镜像进协程帧（destroy/异常释放）
+                                    if (isCoroFrameTrackedDecl(rvt) != 0) {
+                                        string cv = newTmp();
+                                        sb_.append("  " + cv + " = load ptr, ptr " + va + "\n");
+                                        emitCoroFrameSet(va, cv);
+                                    }
+                                    // mapping 实例全局：new Cls() 存进 __myp_inst_Cls / __myp_inst_<var>
+                                    if (v.init().kind() == "New") {
+                                        string cn = v.init().className();
+                                        if (Str.len(v.init().resolvedClass()) != 0) cn = v.init().resolvedClass();
+                                        string gname = "";
+                                        if (hasInstanceGlobal(cn) != 0) gname = cn;
+                                        else if (hasInstanceGlobal(v.name()) != 0) gname = v.name();
+                                        if (Str.len(gname) != 0) {
+                                            string loaded = newTmp();
+                                            sb_.append("  " + loaded + " = load ptr, ptr " + va + "\n");
+                                            sb_.append("  store ptr " + loaded + ", ptr @__myp_inst_" + gname + "\n");
+                                        }
                                     }
                                 }
                             }
@@ -9479,8 +9832,21 @@ class CodeGen {
                 int sz = classSize(cls);
                 int tid = classTypeId(cls);
                 string t = newTmp();
-                sb_.append("  " + t + " = call ptr @myp_alloc_object(i64 " + sz + ", i32 " + tid + ")\n");
-                addFreshTemp(t);
+                if (stackNew_ != 0) {
+                    // 逃逸分析栈上分配：alloca [8B头+sz]，写 rc=1/tid，data=+8，
+                    // 不 addFreshTemp（栈自动回收；调用方对栈上变量跳过 release）。
+                    string arrLt = "[" + (8 + sz) + " x i8]";
+                    string raw = newTmp();
+                    sb_.append("  " + raw + " = alloca " + arrLt + ", align 8\n");
+                    sb_.append("  store i32 1, ptr " + raw + ", align 4\n");   // rc=1（栈上唯一所有权）
+                    string tg = newTmp();
+                    sb_.append("  " + tg + " = getelementptr " + arrLt + ", ptr " + raw + ", i64 0, i64 4\n");
+                    sb_.append("  store i32 " + tid + ", ptr " + tg + ", align 4\n");  // tid
+                    sb_.append("  " + t + " = getelementptr " + arrLt + ", ptr " + raw + ", i64 0, i64 8\n");  // data
+                } else {
+                    sb_.append("  " + t + " = call ptr @myp_alloc_object(i64 " + sz + ", i32 " + tid + ")\n");
+                    addFreshTemp(t);
+                }
                 // 零初始化对象（同 C++ generateNewExpr 的 CreateMemSet——未显式
                 // 初始化的属性必须为 0，否则 malloc 垃圾值）
                 sb_.append("  call void @llvm.memset.p0.i64(ptr " + t + ", i8 0, i64 " + sz + ", i1 false)\n");
@@ -11904,6 +12270,10 @@ class CodeGen {
         // BUG-030 镜像：当前函数是否为构造器（构造器入口把 this 注册进
         // __myp_inst_<Class>，使构造器内 mapping 事件派发到当前实例）。
         int curFnIsCtor_;
+        // 逃逸分析（第一版）：stackNew_=当前 new 栈上分配；escapeStackVars_=
+        // 当前函数/action 可栈上分配的局部变量名集合（函数体生成前分析设置）。
+        int stackNew_;
+        ArrayList<string> escapeStackVars_;
         int curFnRegion_;
         string curRegionMark_;
         int parallelCounter_;

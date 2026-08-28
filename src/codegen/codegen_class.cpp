@@ -4,6 +4,7 @@
 
 #include "mylang/CodeGen.h"
 #include "mylang/MypPasses.h"
+#include "escape_analysis.h"
 
 #include <llvm/BinaryFormat/Dwarf.h>
 #include <llvm/IR/DIBuilder.h>
@@ -789,8 +790,12 @@ void CodeGen::generateClassDefaultAction(const ClassDecl& cls, const InterfaceDe
                 getLLVMType(typeNodeToCodegenType(*action.params[i].type.element_type));
     }
 
-    if (action.body)
+    if (action.body) {
+        // 逃逸分析：设置当前 action 可栈上分配的局部变量集合。
+        auto* bb = dynamic_cast<const BlockStmt*>(action.body.get());
+        current_escape_stack_vars_ = bb ? analyzeEscapeStackVars(bb) : std::set<std::string>{};
         generateBlock(static_cast<const BlockStmt&>(*action.body));
+    }
     if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
         builder_.CreateRetVoid();
     }
@@ -1069,6 +1074,12 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     // M-FN-2 nonlocal: lambda __call 开头注入 cell 属性别名（body 读写直达共享 cell）。
     if (action.body && cls.name.rfind("__lambda_", 0) == 0)
         setupNonlocalAliases(cls);
+    // 逃逸分析：设置当前 action/构造器可栈上分配的局部变量集合。
+    current_escape_stack_vars_.clear();
+    if (action.body) {
+        auto* ebb = dynamic_cast<const BlockStmt*>(action.body.get());
+        if (ebb) current_escape_stack_vars_ = analyzeEscapeStackVars(ebb);
+    }
     if (action.body)
         generateBlock(static_cast<const BlockStmt&>(*action.body));
     if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
@@ -1745,6 +1756,13 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
         !typeIsReference(rt) &&
         (!decl.body || !regionBodyMayEscape(*decl.body));
     if (fn_region) { in_region_function_ = true; emitRegionEnter(); }
+
+    // 逃逸分析：设置当前函数可栈上分配的局部变量集合（generateVarDecl 使用）。
+    current_escape_stack_vars_.clear();
+    if (decl.body) {
+        auto* bb = dynamic_cast<const BlockStmt*>(decl.body.get());
+        if (bb) current_escape_stack_vars_ = analyzeEscapeStackVars(bb);
+    }
 
     if (decl.body) generateBlock(*decl.body);
 

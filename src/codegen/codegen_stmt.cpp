@@ -787,8 +787,14 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     // methods fell back to the template method).
     if (is_struct)
         var_struct_map_[d.name] = dt.class_name;
+    // 逃逸分析：`let v = new T()` 且 v 不逃逸 → 栈上分配（generateNewExpr 的
+    // stack_new_ 分支），跳过 ARC 槽注册（栈自动回收，无 release）。
+    bool is_stack_escape = d.init_expr && d.init_expr->kind == ExprKind::NewExpr &&
+                           current_escape_stack_vars_.count(d.name) != 0 &&
+                           !::getenv("MYP_NO_STACK_NEW");
+    if (is_stack_escape && current_is_coro_) is_stack_escape = false;  // coro 帧不栈上
     // ARC: a local class reference is released when its scope exits.
-    if (arc_decl_class) registerArcSlot(a, 0);
+    if (arc_decl_class && !is_stack_escape) registerArcSlot(a, 0);
     // M8: a local string reference is released when its scope exits (kind 0
     // shares the class-ptr release machinery — myp_release on a char*).
     if (arc_decl_string) registerArcSlot(a, 0);
@@ -824,12 +830,15 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     }
 
     if (d.init_expr) {
+        bool saved_stack_new = stack_new_;
+        if (is_stack_escape) stack_new_ = true;
         auto* v = generateExpr(*d.init_expr);
+        stack_new_ = saved_stack_new;
         if (v->getType() != lt)
             v = convertIntegerValue(builder_, v, lt, d.init_expr.get());
         // ARC: fresh (new / call) transfers into the slot; an alias (var/prop)
         // must retain because the previous owner keeps its reference.
-        if (arc_decl_class && !isFreshArcExpr(*d.init_expr))
+        if (arc_decl_class && !is_stack_escape && !isFreshArcExpr(*d.init_expr))
             emitRetain(v);
         // M8 strings: same discipline — fresh (call/concat) transfers its rc=1;
         // an alias (string b = s / literal) retains the shared string.
@@ -857,10 +866,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         // (not leaks) their backing.
         if (current_is_coro_ && (arc_decl_class || arc_decl_function || arc_decl_string))
             emitCoroFrameSet(a, v);
-        arcConsumeTemp(v);   // a fresh `new` temp is now owned by the local
+        if (!is_stack_escape) arcConsumeTemp(v);   // a fresh `new` temp is now owned by the local
 
         // Store instance in global for mapping handler access
-        if (d.init_expr->kind == ExprKind::NewExpr && !d.type.class_name.empty() && current_tu_) {
+        if (d.init_expr->kind == ExprKind::NewExpr && !d.type.class_name.empty() && current_tu_ && !is_stack_escape) {
             auto& ne = static_cast<const NewExpr&>(*d.init_expr);
             // Check both by class name and variable name
             auto git = class_instance_globals_.find(ne.class_name);

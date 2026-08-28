@@ -1,5 +1,8 @@
 #include "mylang/CodeGen.h"
 #include "mylang/MypPasses.h"
+#include "escape_analysis.h"
+#include <set>
+#include <cstdlib>
 
 #include <llvm/BinaryFormat/Dwarf.h>
 #include <llvm/IR/DIBuilder.h>
@@ -1483,6 +1486,44 @@ void CodeGen::setupNonlocalAliases(const ClassDecl& cls) {
 
 // -- Top level --
 void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
+    // MYP_ESCAPE_DEBUG=1: 打印逃逸分析结果（验证可栈上分配变量判定）
+    if (::getenv("MYP_ESCAPE_DEBUG")) {
+        for (auto& f : tu.functions) {
+            if (f.body) {
+                auto* bb = dynamic_cast<const BlockStmt*>(f.body.get());
+                auto sv = bb ? analyzeEscapeStackVars(bb) : std::set<std::string>{};
+                if (!sv.empty()) {
+                    fprintf(stderr, "[escape] func %s:", f.name.c_str());
+                    for (auto& n : sv) fprintf(stderr, " %s", n.c_str());
+                    fprintf(stderr, "\n");
+                }
+            }
+        }
+        for (auto& cls : tu.classes) {
+            for (auto& a : cls.actions) {
+                if (a.body) {
+                    auto* bb = dynamic_cast<const BlockStmt*>(a.body.get());
+                    auto sv = bb ? analyzeEscapeStackVars(bb) : std::set<std::string>{};
+                    if (!sv.empty()) {
+                        fprintf(stderr, "[escape] %s.%s:", cls.name.c_str(), a.name.c_str());
+                        for (auto& n : sv) fprintf(stderr, " %s", n.c_str());
+                        fprintf(stderr, "\n");
+                    }
+                }
+            }
+            for (auto& a : cls.static_actions) {
+                if (a.body) {
+                    auto* bb = dynamic_cast<const BlockStmt*>(a.body.get());
+                    auto sv = bb ? analyzeEscapeStackVars(bb) : std::set<std::string>{};
+                    if (!sv.empty()) {
+                        fprintf(stderr, "[escape] %s.%s:", cls.name.c_str(), a.name.c_str());
+                        for (auto& n : sv) fprintf(stderr, " %s", n.c_str());
+                        fprintf(stderr, "\n");
+                    }
+                }
+            }
+        }
+    }
     // Create ALL class action function declarations first
     for (auto& cls : tu.classes) {
         for (auto& action : cls.actions)

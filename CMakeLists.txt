@@ -113,6 +113,7 @@ set(SOURCES
     src/codegen/codegen_gpu.cpp
     src/codegen/codegen_test.cpp
     src/codegen/myp_passes.cpp
+    src/codegen/escape_analysis.cpp
     src/eval/eval.cpp
     src/macro/macro_expand.cpp
     src/fmt/fmt.cpp

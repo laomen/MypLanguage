@@ -239,6 +239,11 @@ private:
     // arcFlushTemps (end of every statement) releases the leftover temporaries.
     std::vector<llvm::Value*> arc_pending_temps_;
     bool arc_skip_retain_return_ = false;
+    // 逃逸分析：当前正在生成的 `new` 是否栈上分配（generateVarDecl 对栈上变量
+    // 置 true，generateNewExpr 检测 → alloca 替代 myp_alloc_object）。
+    bool stack_new_ = false;
+    // 当前函数的可栈上分配局部变量名集合（函数体生成前由逃逸分析设置）。
+    std::set<std::string> current_escape_stack_vars_;
     void arcPushTemp(llvm::Value* v);
     void arcConsumeTemp(llvm::Value* v);
     // M7: release temps created during a condition evaluation (the branch uses

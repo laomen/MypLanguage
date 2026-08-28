@@ -3541,12 +3541,34 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
     }
     auto tit = class_type_ids_.find(cls_name);
     uint32_t tid = (tit != class_type_ids_.end()) ? (uint32_t)tit->second : 0;
-    auto* obj = builder_.CreateCall(alloc_fn,
-        {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz > 0 ? sz : 1),
-         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), tid)});
-    arcPushTemp(obj);   // statement-end temp release (consumed by stores)
-    if (sz > 0)
-        builder_.CreateMemSet(obj, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), sz, llvm::Align(8));
+    llvm::Value* obj = nullptr;
+    if (stack_new_) {
+        // 逃逸分析栈上分配：alloca [8B 头 + sz]，data=+8，写 rc=1/tid，
+        // 不注册 ARC 临时释放（调用方对栈上变量跳过 release，栈自动回收）。
+        auto* i8ty = llvm::Type::getInt8Ty(ctx_);
+        auto* i32ty = llvm::Type::getInt32Ty(ctx_);
+        auto* raw = builder_.CreateAlloca(
+            llvm::ArrayType::get(i8ty, 8 + (sz > 0 ? sz : 1)),
+            nullptr, cls_name + "_stack");
+        auto* hdr = builder_.CreateBitCast(raw, llvm::PointerType::get(ctx_, 0));
+        // rc=1（栈上唯一所有权；不参与 ARC/环收集——不在 arena）
+        builder_.CreateStore(llvm::ConstantInt::get(i32ty, 1),
+            builder_.CreateGEP(i32ty, hdr, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0)));
+        builder_.CreateStore(llvm::ConstantInt::get(i32ty, tid),
+            builder_.CreateGEP(i32ty, hdr, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 1)));
+        auto* data8 = builder_.CreateGEP(i8ty, raw, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 8));
+        obj = builder_.CreateBitCast(data8, llvm::PointerType::get(ctx_, 0));
+        if (sz > 0)
+            builder_.CreateMemSet(obj, llvm::ConstantInt::get(i8ty, 0), sz, llvm::Align(8));
+        // 不 arcPushTemp（栈上对象不入临时释放表）
+    } else {
+        obj = builder_.CreateCall(alloc_fn,
+            {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz > 0 ? sz : 1),
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), tid)});
+        arcPushTemp(obj);   // statement-end temp release (consumed by stores)
+        if (sz > 0)
+            builder_.CreateMemSet(obj, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), sz, llvm::Align(8));
+    }
 
     // Apply declared property default values (`int x = 5;`, class-level
     // `const double T = 0.0253;`). The allocator zero-inits; non-default

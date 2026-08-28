@@ -47,6 +47,34 @@
 - **测试**：`tests/@test/cyclecollect_multi.myp`（2 tests：1000 环显式收集 + 自动
   收集下多环回收）。全量 456/456 + parity 95/95 + 自举 MD5 一致。
 
+### v3.15.181 — 逃逸分析 selfhost 同步（局部 new 栈上分配，微基准 9.3x）
+
+**非破坏性**（编译器 codegen 优化，语义不变）。将 v3.15.180 已在 C++ oracle
+（mypc-seed）验证的逃逸分析同步进自举编译器（build/mypc 用户级）——`let v =
+new T()` 若 v 在函数内不逃逸（仅作 MemberAccess object / 方法调用接收者），
+new 改发 `alloca [8+sz x i8]`（头 rc=1 + tid，data=+8）代替 `myp_alloc_object`，
+且不注册 ARC 释放槽（栈自动回收）。LLVM SROA 可完全消除非逃逸对象。
+- **分析器 MYP 版**（`tools/selfhost/src/codegen.myp`）：`escExprE`/`escStmtE`/
+  `escCollect`/`analyzeEscapeStackVars`（与 `src/codegen/escape_analysis.cpp` 对拍）。
+  保守逃逸：赋其他变量 / f(v) 实参 / 存容器 / 返回 / v=other / lambda / 并发 /
+  异常 / Gpu* / 复杂语句。**放类内而非顶层**——selfhost sema 对顶层函数的
+  泛型容器 `ArrayList<T>.get()` 返回类型推断为 int（类方法内正常）。
+- **codegen 栈分支**：`genExpr` New → `stackNew_` 时 alloca + 写头 + memset；
+  `genVarDecl` class 局部 ∈ `escapeStackVars_` 且非协程 → `stackNew_=1` 包生成、
+  跳过 `arcSlotNames_`（不 release）、普通 store（不 retain）、不写 mapping 全局；
+  `genFuncBody` 入口 `escapeStackVars_ = analyzeEscapeStackVars(body)`。
+- **分配内省保守**：函数体调用 `Memory.liveObjectCount`/`liveObjectCountByType`
+  → 整函数不栈上化（这些 API 观测 arena 堆对象，栈上化会使计数断言失真；
+  oracle 与 selfhost 双镜像；修复回归 arc/cyclecollect/mem_diag/weak_multi_sub）。
+  注意 selfhost 成员名用 `memberName()`（`name()` 对 Member 返回空）。
+- **调试开关**（oracle 与 selfhost 一致）：`MYP_ESCAPE_DEBUG=1` 打印
+  `[escape] fn: stackVars=.. hasLiveCall=..`；`MYP_NO_STACK_NEW=1` 全局禁用。
+- **效果**：微基准（局部对象 + 方法调用 + 属性 100 万次）堆 28ms → 栈 3ms
+  （≈9.3x；生成 LLVM 栈版 0 个 `myp_alloc_object` 调用，堆版 2 个）。全量
+  456/456 + parity 95/95 + 自举 MD5 一致（stage0/1/2 三方字节一致）。
+- **备注**：逃逸分析是第一版保守实现；后续可扩展（返回值/容器元素不逃逸、
+  @region 集成、跨模块内联后分析）。
+
 ### v3.15.180 — ccAddrOk O(1) 快路径（混合负载 +5%）
 
 **非破坏性**（纯 MYP 运行时）。perf 定位混合负载（`tests/leak_long.myp`）真实
