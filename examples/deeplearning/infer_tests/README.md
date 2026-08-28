@@ -52,23 +52,24 @@ MYP_GPU=1 /tmp/r18    # → output sum 0.101238，top-5 与 ORT 一致，GPU ~51
 
 ## 通用 ONNX 运行器（F7）
 
-跑**任意** ONNX 模型，无需为每个模型写 main：
+跑**任意** ONNX 模型，无需为每个模型写 main，也无需知道张量名（自动探测）：
 
 ```bash
 ./build/mypc deeplearning/infer_tests/run_onnx.myp -o /tmp/run_onnx --stdlib stdlib
 
-# 分类模型：top-5
-/tmp/run_onnx deeplearning/data/onnx/resnet18_v1_7.onnx data resnetv15_dense0_fwd \
+# 分类模型：自动探测输入/输出张量 + top-5
+/tmp/run_onnx deeplearning/data/onnx/resnet18_v1_7.onnx \
               deeplearning/data/onnx/resnet_input.f32 --topk 5
 
-# 任意输出：打印 sum + 前 10 值，并把输出写为 float32 .bin（供 ORT 交叉校验）
-/tmp/run_onnx <model.onnx> <inputName> <outputName> <input.f32> -o /tmp/out.bin
+# 多输入/多输出模型：显式指定张量名
+/tmp/run_onnx <model.onnx> <input.f32> --in <inputName> --out <outputName> -o /tmp/out.bin
 
 # GPU
-MYP_GPU=1 /tmp/run_onnx <model.onnx> <inputName> <outputName> <input.f32> --topk 5
+MYP_GPU=1 /tmp/run_onnx <model.onnx> <input.f32> --topk 5
 ```
 
-> 输入 .f32 = float32 小端，元素数 = 输入张量元素数（`tensorSize`）。
+> 输入/输出张量名省略时自动探测：图输入中第一个非 initializer = 模型输入；
+> 图输出 = 模型输出。输入 .f32 = float32 小端，元素数按形状表推断（动态维按 1）。
 
 ## 环境变量
 

@@ -60,6 +60,12 @@ class OnnxLoader {
         int foldCount() { return g_.foldCount(); }
         int bnCount() { return g_.bnCount(); }
         int nodeCount() { return g_.nodeCount(); }
+        int graphInputCount() { return g_.graphInputCount(); }
+        string graphInputName(int i) { return g_.graphInputName(i); }
+        int graphOutputCount() { return g_.graphOutputCount(); }
+        string graphOutputName(int i) { return g_.graphOutputName(i); }
+        int isWeightName(string nm) { return g_.isWeightName(nm); }
+        int shapeElementCount(string nm) { return g_.shapeElementCount(nm); }
 
     function:
         // 读文件字节到 file_（增长型缓冲，返回 1=成功）
@@ -118,6 +124,8 @@ class OnnxLoader {
                 } else if (f == 11 || f == 12) {
                     int l = pb_.readLen(); int po = pb_.payloadOff();
                     string nm = parseValueInfo(po, l);
+                    // 记录图输入名（含 initializer；真实输入由 isWeightName 排除）
+                    if (f == 11) g_.addGraphInput(nm);
                     // 记录图输出名（G1 融合安全：被 fused 的中间张量不能是图输出）
                     if (f == 12) g_.addGraphOutput(nm);
                 } else {

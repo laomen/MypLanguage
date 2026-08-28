@@ -1,0 +1,91 @@
+// safetensors_test.myp — safetensors 读取器验证（qwen2-0.5b 真机权重）
+// 验证：header 解析（张量数/名/dtype/shape/偏移）+ BF16→F32 与既有 .bin 提取对拍。
+import env;
+import math;
+import "../infer/safetensors.myp";
+
+class STTest {
+    action:
+        @constructor STTest() {
+            SafeTensors st = new SafeTensors();
+            string path = "./deeplearning/data/llm/qwen2-0.5b-instruct/model.safetensors";
+            int ok = st.load(path);
+            if (ok == 0) {
+                Console.writeLine("load failed");
+                return;
+            }
+            Console.writeString("tensor count: ");
+            Console.writeLong(st.tensorCount());
+            Console.writeLine("");
+            // 打印前 3 个张量元数据
+            int i = 0;
+            while (i < 3 && i < st.tensorCount()) {
+                Console.writeString(st.tensorName(i));
+                Console.writeString(" dtype=");
+                Console.writeString(st.tensorDtype(i));
+                Console.writeString(" shape=[");
+                int d = 0;
+                while (d < st.tensorRank(i)) {
+                    if (d > 0) Console.writeString(",");
+                    Console.writeLong(st.tensorDim(i, d));
+                    d = d + 1;
+                }
+                Console.writeString("] off=");
+                Console.writeLong(st.tensorByteOff(i));
+                Console.writeString(" len=");
+                Console.writeLong(st.tensorByteLen(i));
+                Console.writeLine("");
+                i = i + 1;
+            }
+
+            // BF16→F32 对拍：model.embed_tokens.weight（151936×896）与 .bin 前段一致
+            int wte = st.findTensor("model.embed_tokens.weight");
+            if (wte < 0) {
+                Console.writeLine("FAIL: embed_tokens.weight not found");
+                return;
+            }
+            int n = 4096;   // 抽查前 4096 元素
+            float[] got = new float[n];
+            int cnt = st.readF32(wte, got, n);
+            if (cnt < n) {
+                Console.writeString("FAIL: read short ");
+                Console.writeLong(cnt);
+                Console.writeLine("");
+                return;
+            }
+            // 读 .bin 前 4096 float（qwen2_weights.bin 是 fp32，wte 在最前）
+            int fd = __myp_io_fopen("./deeplearning/data/llm/qwen2_weights.bin", "rb");
+            if (fd < 0) {
+                Console.writeLine("FAIL: no qwen2_weights.bin");
+                return;
+            }
+            double maxDiff = 0.0;
+            int j = 0;
+            while (j < n) {
+                int b0 = __myp_io_read_byte(); int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte(); int b3 = __myp_io_read_byte();
+                if (b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                double refv = F32.toDouble(bits);
+                double g = got[j];
+                double diff = refv - g;
+                if (diff < 0.0) diff = 0.0 - diff;
+                if (diff > maxDiff) maxDiff = diff;
+                j = j + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString("BF16 vs .bin maxAbsDiff (前 ");
+            Console.writeLong(n);
+            Console.writeString(" 元素): ");
+            Console.writeFloat(maxDiff);
+            Console.writeLine("");
+            if (maxDiff == 0.0) Console.writeLine("SAFETENSORS OK (bit-exact)");
+            else if (maxDiff < 1.0e-6) Console.writeLine("SAFETENSORS OK (within fp32 tol)");
+            else Console.writeLine("SAFETENSORS MISMATCH");
+        }
+}
+
+int main() {
+    STTest t = new STTest();
+    return 0;
+}

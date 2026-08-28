@@ -142,6 +142,20 @@ class Graph {
         void nodeIn(int i, int slot, string v) { if (slot==0) nIn0_[i]=v; else if (slot==1) nIn1_[i]=v; else if (slot==2) nIn2_[i]=v; else if (slot==3) nIn3_[i]=v; else nIn4_[i]=v; }
         string nodeInAt(int i, int slot) { if (slot==0) return nIn0_[i]; if (slot==1) return nIn1_[i]; if (slot==2) return nIn2_[i]; if (slot==3) return nIn3_[i]; return nIn4_[i]; }
         int shapeRank5(string name) { int s = shapeIdx(name); if (s < 0) return 0; return shR5_[s]; }
+        // 张量元素总数（按形状表 dims；图输入/输出张量无 runtime 2D 投影，须用此取 size）
+        int shapeElementCount(string name) {
+            int s = shapeIdx(name);
+            if (s < 0) return -1;
+            // 动态维度（dim_param）按 1 处理（batch=1 推理惯例）
+            int d0 = shD0_[s]; if (d0 == 0) d0 = 1;
+            int d1 = shD1_[s]; if (d1 == 0) d1 = 1;
+            int d2 = shD2_[s]; if (d2 == 0) d2 = 1;
+            int d3 = shD3_[s]; if (d3 == 0) d3 = 1;
+            int d4 = shD4_[s]; if (d4 == 0) d4 = 1;
+            int n = d0 * d1 * d2 * d3;
+            if (shR5_[s] == 1) n = n * d4;
+            return n;
+        }
         int rawSt(int i, int k) { return nSt3_[i * 3 + k]; }
         int rawPd(int i, int k) { return nPd3_[i * 6 + k]; }
         int rawDl(int i, int k) { return nDl3_[i * 3 + k]; }
@@ -228,6 +242,17 @@ class Graph {
             wCount_ = wCount_ + 1;
         }
         void addGraphOutput(string nm) { if (goCount_ < 64) { goName_[goCount_] = nm; goCount_ = goCount_ + 1; } }
+        void addGraphInput(string nm) { if (giCount_ < 64) { giName_[giCount_] = nm; giCount_ = giCount_ + 1; } }
+        int graphInputCount() { return giCount_; }
+        string graphInputName(int i) { if (i < 0 || i >= giCount_) return ""; return giName_[i]; }
+        int graphOutputCount() { return goCount_; }
+        string graphOutputName(int i) { if (i < 0 || i >= goCount_) return ""; return goName_[i]; }
+        // 名称是否为初始器权重（ONNX graph input 同时含真实输入与 initializer，须排除后者）
+        int isWeightName(string nm) {
+            int i = 0;
+            while (i < wCount_) { if (wName_[i] == nm) return 1; i = i + 1; }
+            return 0;
+        }
         // 登记形状（解析器调用）；addShapeD4 为内部实现
         void addShapeD(string name, int[] dims, int dimCount) {
             int d0 = 1; int d1 = 1; int d2 = 1; int d3 = 1; int d4 = 1;
@@ -285,7 +310,7 @@ class Graph {
             if (shR5_[src] == 1) addShapeD5(name, shD0_[src], shD1_[src], shD2_[src], shD3_[src], shD4_[src]);
             else addShapeD4(name, shD0_[src], shD1_[src], shD2_[src], shD3_[src]);
         }
-        void resetCounts() { wCount_=0; nCount_=0; sCount_=0; tCount_=0; goCount_=0; fuseCount_=0; gapCount_=0; dceCount_=0; foldCount_=0; bnCount_=0; noReuse_=0; doNHWC_=0; }
+        void resetCounts() { wCount_=0; nCount_=0; sCount_=0; tCount_=0; goCount_=0; giCount_=0; fuseCount_=0; gapCount_=0; dceCount_=0; foldCount_=0; bnCount_=0; noReuse_=0; doNHWC_=0; }
         // P3：覆盖张量形状（输入形状注入：动态维度模型）
         void setShape(string name, int d0, int d1, int d2, int d3, int d4, int is5) {
             int s = shapeIdx(name);
@@ -2790,6 +2815,8 @@ class Graph {
 
         string[64] goName_;      // 图输出名（G1 融合安全）
         int goCount_;
+        string[64] giName_;      // 图输入名（field 11，含真实输入与 initializer）
+        int giCount_;
 
         string[512] shName_;
         int[512] shD0_;
