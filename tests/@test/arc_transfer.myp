@@ -1,0 +1,43 @@
+import test;
+
+class TransferNode {
+    action:
+        void set(int value) { value_ = value; }
+        int get() { return value_; }
+    property:
+        int value_;
+}
+
+int freshStoreValue() {
+    TransferNode[] nodes = new TransferNode[1];
+    TransferNode node = new TransferNode();
+    node.set(42);
+    nodes[0] = node;
+    return nodes[0].get();
+}
+
+int sourceUsedValue() {
+    TransferNode[] nodes = new TransferNode[1];
+    TransferNode node = new TransferNode();
+    node.set(10);
+    nodes[0] = node;
+    node.set(20);
+    return nodes[0].get();
+}
+
+int replaceOwnedValue() {
+    TransferNode[] nodes = new TransferNode[1];
+    TransferNode first = new TransferNode();
+    first.set(1);
+    nodes[0] = first;
+    TransferNode second = new TransferNode();
+    second.set(2);
+    nodes[0] = second;
+    return nodes[0].get();
+}
+
+@test void t_fresh_store_transfer() { Test.assertEq(freshStoreValue(), 42); }
+
+@test void t_source_used_after_store() { Test.assertEq(sourceUsedValue(), 20); }
+
+@test void t_replace_owned_slot() { Test.assertEq(replaceOwnedValue(), 2); }

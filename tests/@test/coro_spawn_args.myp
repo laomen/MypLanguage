@@ -1,0 +1,22 @@
+// 融合协程启动 ABI：参数包不受旧的 16 槽共享入口表限制。
+import test;
+import coro;
+
+class ManyArgs {
+    action:
+        @coro long run(int a0, int a1, int a2, int a3,
+                       int a4, int a5, int a6, int a7,
+                       int a8, int a9, int a10, int a11,
+                       int a12, int a13, int a14, int a15) {
+            await;
+            return long(a0 + a7 + a15);
+        }
+}
+
+@test void test_coro_spawn_args() {
+    ManyArgs worker = new ManyArgs();
+    long handle = worker.run(1, 2, 3, 4, 5, 6, 7, 8,
+                             9, 10, 11, 12, 13, 14, 15, 16);
+    Coro.resume(handle, 0);
+    Test.assertLongEq(Coro.result(handle), 25L);
+}

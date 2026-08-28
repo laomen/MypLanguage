@@ -64,17 +64,11 @@ struct CoroSlot {
     long result;
     long yieldVal;
     long resumeVal;
-    long execResult;  // §五-5 P3：async exec worker 结果（raw addr，跨线程投递）
     int active;
     int ready;
     int generation;
     int resultPending;
     int onFreeList;
-    int discardResult;
-    int cancelRequested;
-    int waitTimeout;      // 被调度器截止期唤醒（1=超时；wait_* 据此返回 -1）
-    int lastWaitEventId;  // wait_any：唤醒的事件 id（-1=无）
-    int lastWaitIndex;    // wait_any_of：唤醒的 spec 下标（-1=无）
 }
 
 @static @thread class CoroT {
@@ -87,6 +81,22 @@ struct CoroSlot {
         // 空闲槽复用列表
         int[] freeSlots;
         int freeCount = 0;
+}
+// create/switch 不使用的冷状态按功能惰性分配，避免普通协程扩容时清零 28B/槽。
+@static @thread class CoroCtl {
+    property:
+        int[] discardResult;
+        int[] cancelRequested;
+}
+@static @thread class CoroWaitSlot {
+    property:
+        int[] timeout;       // 被截止期唤醒（1=超时）
+        int[] lastEventId;   // wait_any 唤醒事件（-1=无）
+        int[] lastIndex;     // wait_any_of 唤醒 spec 下标（-1=无）
+}
+@static @thread class CoroExecSlot {
+    property:
+        long[] result;       // async exec worker 结果（raw addr）
 }
 // ---- Phase B：等待表（wait_* 注册；C myp_coro_wait_t 的 @static 并行数组版）----
 // kind：0=EVENT 1=TIMER(sleep) 2=FD 3=EXEC(未用)。waitIndex：>=0 waitAnyOf spec
@@ -138,6 +148,8 @@ int[] coroGrowInt(int[] src, int old, int nc) {
 @static @thread class CoroArgs {
     property:
         long[16] args;    // entry 参数（this@0 + params@1..；共享槽，同 C 线程本地）
+        long pack = 0;    // 融合启动 ABI 的调用者栈参数包（仅首次 resume 期间有效）
+        int count = 0;
 }
 @static @thread class CoroRetired {
     property:
@@ -180,10 +192,23 @@ void coroTEnsure(int n) {
     int old = CoroCap.coro;
     CoroT.slots = coroGrowSlot(CoroT.slots, old, nc);
     CoroT.freeSlots = coroGrowInt(CoroT.freeSlots, old, nc);
-    // CoroF（per-coro×32 扁平）
-    CoroF.slotId = coroGrowLong(CoroF.slotId, old * 32, nc * 32);
-    CoroF.obj = coroGrowLong(CoroF.obj, old * 32, nc * 32);
-    CoroF.count = coroGrowInt(CoroF.count, old, nc);
+    // ARC 帧明细首次 frame_set 时才分配；无引用协程不承担 32 槽/协程的清零成本。
+    if (CoroF.slotId != null) {
+        CoroF.slotId = coroGrowLong(CoroF.slotId, old * 32, nc * 32);
+        CoroF.obj = coroGrowLong(CoroF.obj, old * 32, nc * 32);
+        CoroF.count = coroGrowInt(CoroF.count, old, nc);
+    }
+    if (CoroCtl.discardResult != null) {
+        CoroCtl.discardResult = coroGrowInt(CoroCtl.discardResult, old, nc);
+        CoroCtl.cancelRequested = coroGrowInt(CoroCtl.cancelRequested, old, nc);
+    }
+    if (CoroWaitSlot.timeout != null) {
+        CoroWaitSlot.timeout = coroGrowInt(CoroWaitSlot.timeout, old, nc);
+        CoroWaitSlot.lastEventId = coroGrowInt(CoroWaitSlot.lastEventId, old, nc);
+        CoroWaitSlot.lastIndex = coroGrowInt(CoroWaitSlot.lastIndex, old, nc);
+    }
+    if (CoroExecSlot.result != null)
+        CoroExecSlot.result = coroGrowLong(CoroExecSlot.result, old, nc);
     // ctx/retCtx arena 缓冲（换新块 + 拷贝旧值；ctx_switch 每次经 base+slot*8 取址）
     long nb = myp_arena_alloc(long(nc) * 8);
     if (CoroT.ctxBase != 0) __myp_memcpy(nb, CoroT.ctxBase, long(old) * 8);
@@ -192,7 +217,21 @@ void coroTEnsure(int n) {
     if (CoroT.retCtxBase != 0) __myp_memcpy(nb2, CoroT.retCtxBase, long(old) * 8);
     CoroT.retCtxBase = nb2;
     CoroCap.coro = nc;
-    coroWEnsure(nc);   // 等待表保持 ≥ coro 容量
+}
+void coroCtlEnsure() {
+    if (CoroCtl.discardResult != null) return;
+    CoroCtl.discardResult = new int[CoroCap.coro];
+    CoroCtl.cancelRequested = new int[CoroCap.coro];
+}
+void coroWaitSlotEnsure() {
+    if (CoroWaitSlot.timeout != null) return;
+    CoroWaitSlot.timeout = new int[CoroCap.coro];
+    CoroWaitSlot.lastEventId = new int[CoroCap.coro];
+    CoroWaitSlot.lastIndex = new int[CoroCap.coro];
+}
+void coroExecSlotEnsure() {
+    if (CoroExecSlot.result != null) return;
+    CoroExecSlot.result = new long[CoroCap.coro];
 }
 // CoroW 扩容到 ≥n（可超 coro 容量：wait_any 一个协程可注册多条）
 void coroWEnsure(int n) {
@@ -333,6 +372,15 @@ long coroStackBatchAlloc(long reserve) {
     return b;
 }
 long coroStackTake(long reserve) {
+    if (CoroStackPool.count > 0) {
+        int last = CoroStackPool.count - 1;
+        if (CoroStackPool.sizes[last] == reserve) {
+            long p = CoroStackPool.ptrs[last];
+            CoroStackPool.total = CoroStackPool.total - reserve;
+            CoroStackPool.count = last;
+            return p;
+        }
+    }
     int best = -1;
     for (int i = 0; i < CoroStackPool.count; i = i + 1) {
         if (CoroStackPool.sizes[i] >= reserve &&
@@ -417,14 +465,19 @@ long __myp_coro_create(long stack_bytes) {
     CoroT.slots[idx].result = 0;
     CoroT.slots[idx].resultPending = 0;
     CoroT.slots[idx].onFreeList = 0;
-    CoroT.slots[idx].discardResult = 0;
-    CoroT.slots[idx].cancelRequested = 0;
     CoroT.slots[idx].yieldVal = 0;
     CoroT.slots[idx].resumeVal = 0;
-    CoroT.slots[idx].waitTimeout = 0;
-    CoroT.slots[idx].lastWaitEventId = -1;
-    CoroT.slots[idx].lastWaitIndex = -1;
-    CoroF.count[idx] = 0;      // 帧表重置（防槽复用时残留）
+    if (CoroCtl.discardResult != null) {
+        CoroCtl.discardResult[idx] = 0;
+        CoroCtl.cancelRequested[idx] = 0;
+    }
+    if (CoroWaitSlot.timeout != null) {
+        CoroWaitSlot.timeout[idx] = 0;
+        CoroWaitSlot.lastEventId[idx] = -1;
+        CoroWaitSlot.lastIndex[idx] = -1;
+    }
+    if (CoroExecSlot.result != null) CoroExecSlot.result[idx] = 0;
+    if (CoroF.count != null) CoroF.count[idx] = 0; // 防槽复用时残留
     long h = coroMakeHandle(idx);
     coroUnlock();
     return h;
@@ -449,8 +502,28 @@ void __myp_coro_set_entry_arg(long idx, long val) {
 long __myp_coro_get_entry_arg(long idx) {
     coroLock();
     long r = 0;
-    if (idx >= 0 && idx < 16) r = CoroArgs.args[int(idx)];
+    if (CoroArgs.pack != 0 && idx >= 0 && idx < CoroArgs.count)
+        r = __myp_mem_load_i64(CoroArgs.pack + idx * 8);
+    else if (idx >= 0 && idx < 16) r = CoroArgs.args[int(idx)];
     coroUnlock();
+    return r;
+}
+
+// 融合首次启动 ABI：保留 create 在参数求值前发生的既有顺序；参数求值完成后，
+// start_args 让 entry wrapper 直接读取调用者栈参数包，避免逐项 set/get runtime 调用。
+long __myp_coro_create_entry(long stack_bytes, long fn_ptr) {
+    long h = __myp_coro_create(stack_bytes);
+    if (coroHandleValid(h) != 0) CoroT.slots[coroSlotOf(h)].fn = fn_ptr;
+    return h;
+}
+long __myp_coro_start_args(long handle, long count, long pack) {
+    long savedPack = CoroArgs.pack;
+    int savedCount = CoroArgs.count;
+    CoroArgs.pack = pack;
+    CoroArgs.count = int(count);
+    long r = __myp_coro_resume(handle, 0);
+    CoroArgs.pack = savedPack;
+    CoroArgs.count = savedCount;
     return r;
 }
 
@@ -486,6 +559,12 @@ long __myp_coro_resume(long handle, long val) {
     myp_ctx_switch(coroRetCtxBase() + long(idx) * 8,
                    coroCtxBase() + long(idx) * 8);
     CoroT.current = saved;
+    // trampoline 已切回调用者栈，此时可安全回收刚完成的协程栈；挂起协程仍保留。
+    if (CoroT.slots[idx].active == 0 && CoroT.slots[idx].stack != 0) {
+        coroStackReturn(CoroT.slots[idx].stack, CoroT.slots[idx].stackSize);
+        CoroT.slots[idx].stack = 0;
+        CoroT.slots[idx].stackSize = 0;
+    }
     coroUnlock();
     return CoroT.slots[idx].yieldVal;
 }
@@ -560,7 +639,8 @@ void __myp_coro_request_cancel(long handle) {
     coroLock();
     if (coroHandleValid(handle) == 0) { coroUnlock(); return; }
     int idx = coroSlotOf(handle);
-    CoroT.slots[idx].cancelRequested = 1;
+    coroCtlEnsure();
+    CoroCtl.cancelRequested[idx] = 1;
     coroUnlock();
 }
 // C: int64_t __myp_coro_cancel_requested(void)
@@ -568,8 +648,9 @@ long __myp_coro_cancel_requested() {
     coroLock();
     coroEnsureInit();
     long r = 0;
-    if (CoroT.current >= 0 && CoroT.current < CoroT.count) {
-        r = CoroT.slots[CoroT.current].cancelRequested != 0 ? 1 : 0;
+    if (CoroCtl.cancelRequested != null &&
+        CoroT.current >= 0 && CoroT.current < CoroT.count) {
+        r = CoroCtl.cancelRequested[CoroT.current] != 0 ? 1 : 0;
     }
     coroUnlock();
     return r;
@@ -578,8 +659,9 @@ long __myp_coro_cancel_requested() {
 void __myp_coro_cancel_clear() {
     coroLock();
     coroEnsureInit();
-    if (CoroT.current >= 0 && CoroT.current < CoroT.count) {
-        CoroT.slots[CoroT.current].cancelRequested = 0;
+    if (CoroCtl.cancelRequested != null &&
+        CoroT.current >= 0 && CoroT.current < CoroT.count) {
+        CoroCtl.cancelRequested[CoroT.current] = 0;
     }
     coroUnlock();
 }
@@ -604,7 +686,8 @@ void __myp_coro_destroy(long handle) {
         coroReleaseFrame(idx);
         CoroT.slots[idx].active = 0;
         CoroT.slots[idx].ready = 0;
-        CoroT.slots[idx].discardResult = 1;
+        coroCtlEnsure();
+        CoroCtl.discardResult[idx] = 1;
         coroUnlock();
         return;
     }
@@ -632,6 +715,11 @@ void __myp_coro_frame_set(long slot_id, long obj) {
     int cur = CoroT.current;
     if (cur < 0 || cur >= CoroT.count) return;
     if (slot_id == 0) return;
+    if (CoroF.slotId == null) {
+        CoroF.slotId = new long[CoroCap.coro * 32];
+        CoroF.obj = new long[CoroCap.coro * 32];
+        CoroF.count = new int[CoroCap.coro];
+    }
     int base = cur * 32;
     for (int i = 0; i < CoroF.count[cur]; i = i + 1) {
         if (CoroF.slotId[base + i] == slot_id) {
@@ -649,6 +737,7 @@ void __myp_coro_frame_clear(long slot_id) {
     int cur = CoroT.current;
     if (cur < 0 || cur >= CoroT.count) return;
     if (slot_id == 0) return;
+    if (CoroF.count == null) return;
     int base = cur * 32;
     for (int i = 0; i < CoroF.count[cur]; i = i + 1) {
         if (CoroF.slotId[base + i] == slot_id) {
@@ -662,6 +751,7 @@ void __myp_coro_frame_clear(long slot_id) {
 // release 帧表仍在表的 obj（destroy/异常收尾）
 void coroReleaseFrame(int cur) {
     if (cur < 0 || cur >= CoroT.count) return;
+    if (CoroF.count == null) return;
     int base = cur * 32;
     for (int i = 0; i < CoroF.count[cur]; i = i + 1) {
         long o = CoroF.obj[base + i];
@@ -677,6 +767,7 @@ int coroWaitReserve() {
 }
 int coroWaitAdd(int kind, int eventId, int fd, int fdEvents, long handle,
                 long deadline, int waitIndex) {
+    coroWaitSlotEnsure();
     coroWEnsure(CoroW.count + 1);
     int i = CoroW.count;
     CoroW.kind[i] = kind;
@@ -861,7 +952,7 @@ void coroPollFds() {
                     CoroW.active[found] = 0;
                     if (hs >= 0 && hs < CoroT.count && CoroT.slots[hs].active != 0) {
                         if (CoroW.waitIndex[found] >= 0)   // waitAnyOf
-                            CoroT.slots[hs].lastWaitIndex = CoroW.waitIndex[found];
+                            CoroWaitSlot.lastIndex[hs] = CoroW.waitIndex[found];
                         CoroT.slots[hs].ready = 1;
                     }
                 }
@@ -937,7 +1028,7 @@ void coroExecPump() {
             CoroExec.mbActive[i] = 0;
             int si = int(slot);
             if (si >= 0 && si < CoroT.count && CoroT.slots[si].active != 0) {
-                CoroT.slots[si].execResult = res;
+                CoroExecSlot.result[si] = res;
                 CoroT.slots[si].ready = 1;
             }
         }
@@ -986,8 +1077,9 @@ string coroFileReadAsync(int io_handle, int op) {
     }
     // 注册 EXEC 等待（kind=3，无截止期）+ park
     coroWaitAdd(3, -1, -1, 0, long(cur), 0, -1);
+    coroExecSlotEnsure();
     CoroT.slots[cur].ready = 0;
-    CoroT.slots[cur].execResult = 0;
+    CoroExecSlot.result[cur] = 0;
     // 投递 worker：共享任务槽（先置 captured=0）→ spawn → 等 capture 握手
     // （防本协程 yield 后另一协程覆盖槽而 worker 尚未读取）。
     CoroExec.handle = io_handle;
@@ -1005,7 +1097,7 @@ string coroFileReadAsync(int io_handle, int op) {
         myp_pause();
     }
     __myp_coro_yield(0);
-    long r = CoroT.slots[cur].execResult;
+    long r = CoroExecSlot.result[cur];
     if (r == 0) return "";   // worker 失败/EOF（raw 0）
     return __myp_addr_to_str(r);
 }
@@ -1062,10 +1154,10 @@ void __myp_coro_scheduler() {
             if (hs >= 0 && hs < CoroT.count && CoroT.slots[hs].active != 0) {
                 if (CoroW.waitIndex[i] >= 0 && CoroW.kind[i] == 1) {
                     // waitAnyOf TIMER spec：它自己的截止期 → 报 spec 下标
-                    CoroT.slots[hs].lastWaitIndex = CoroW.waitIndex[i];
+                    CoroWaitSlot.lastIndex[hs] = CoroW.waitIndex[i];
                     CoroT.slots[hs].ready = 1;
                 } else {
-                    CoroT.slots[hs].waitTimeout = 1;   // 总体超时/普通等待
+                    CoroWaitSlot.timeout[hs] = 1;   // 总体超时/普通等待
                     CoroT.slots[hs].ready = 1;
                 }
             }
@@ -1106,16 +1198,14 @@ void __myp_coro_trampoline() {
         string m = "uncaught exception in coroutine: " + e + "\n";
         __myp_syscall(1, 2, __myp_str_ptr(m), myp_strlen(m), 0, 0, 0);
     }
-    // 收尾：释放帧 ARC（未捕获异常跳过了 epilogue 的释放）→ 退役栈（不能就地
-    // munmap，正运行其上）→ 标记完成 → 切回调用者
+    // 收尾：释放帧 ARC（未捕获异常跳过了 epilogue 的释放）→ 标记完成 → 切回调用者；
+    // resume 回到调用者栈后再安全回收本栈。
     if (id >= 0 && id < CoroT.count) {
         coroReleaseFrame(id);
-        coroRetiredAdd(CoroT.slots[id].stack, CoroT.slots[id].stackSize);
-        CoroT.slots[id].stack = 0;
         CoroT.slots[id].active = 0;
         CoroT.slots[id].ready = 0;
-        if (CoroT.slots[id].discardResult != 0) {
-            CoroT.slots[id].discardResult = 0;
+        if (CoroCtl.discardResult != null && CoroCtl.discardResult[id] != 0) {
+            CoroCtl.discardResult[id] = 0;
             CoroT.slots[id].resultPending = 0;
         } else {
             CoroT.slots[id].resultPending = 1;
@@ -1148,11 +1238,11 @@ long __myp_coro_wait_event_timeout(long event_id, long timeout_ms, long val) {
         if (coroWaitAdd(0, int(event_id), -1, 0, long(cur), deadline, -1) == 0) {
             CoroT.slots[cur].ready = 0;   // park
         }
-        CoroT.slots[cur].waitTimeout = 0;
+        CoroWaitSlot.timeout[cur] = 0;
         coroUnlock();
         long r = __myp_coro_yield(val);
-        if (CoroT.slots[cur].waitTimeout != 0) {
-            CoroT.slots[cur].waitTimeout = 0;
+        if (CoroWaitSlot.timeout[cur] != 0) {
+            CoroWaitSlot.timeout[cur] = 0;
             return -1;
         }
         return r;
@@ -1181,19 +1271,19 @@ long __myp_coro_wait_any(long ids, long count, long timeout_ms, long val) {
             if (coroWaitAdd(0, int(ev), -1, 0, long(cur), deadline, -1) != 0) break;
         }
         CoroT.slots[cur].ready = 0;
-        CoroT.slots[cur].lastWaitEventId = -1;
+        CoroWaitSlot.lastEventId[cur] = -1;
     }
-    if (cur >= 0 && cur < CoroT.count) CoroT.slots[cur].waitTimeout = 0;
+    if (cur >= 0 && cur < CoroT.count) CoroWaitSlot.timeout[cur] = 0;
     coroUnlock();
     long r = __myp_coro_yield(val);
     if (cur >= 0 && cur < CoroT.count) {
         // 只许一个事件唤醒 waitAny——清除本协程其余等待记录（后续 fire 不再重 ready）
         coroWaitClearFor(cur);
-        if (CoroT.slots[cur].waitTimeout != 0) {
-            CoroT.slots[cur].waitTimeout = 0;
+        if (CoroWaitSlot.timeout[cur] != 0) {
+            CoroWaitSlot.timeout[cur] = 0;
             return -1;
         }
-        if (CoroT.slots[cur].lastWaitEventId >= 0) return long(CoroT.slots[cur].lastWaitEventId);
+        if (CoroWaitSlot.lastEventId[cur] >= 0) return long(CoroWaitSlot.lastEventId[cur]);
         return r;
     }
     return r;
@@ -1229,14 +1319,14 @@ long __myp_coro_wait_any_of(long spec, long count, long timeout_ms, long val) {
     // 总体超时标记（kind=TIMER, waitIndex=-2）注册最后——平局时总体超时在后才输
     if (deadline > 0) coroWaitAdd(1, -1, -1, 0, long(cur), deadline, -2);
     CoroT.slots[cur].ready = 0;
-    CoroT.slots[cur].lastWaitIndex = -1;
-    CoroT.slots[cur].waitTimeout = 0;
+    CoroWaitSlot.lastIndex[cur] = -1;
+    CoroWaitSlot.timeout[cur] = 0;
     coroUnlock();
     long r = __myp_coro_yield(val);
     coroWaitClearFor(cur);
-    if (CoroT.slots[cur].lastWaitIndex >= 0) return long(CoroT.slots[cur].lastWaitIndex);
-    if (CoroT.slots[cur].waitTimeout != 0) {
-        CoroT.slots[cur].waitTimeout = 0;
+    if (CoroWaitSlot.lastIndex[cur] >= 0) return long(CoroWaitSlot.lastIndex[cur]);
+    if (CoroWaitSlot.timeout[cur] != 0) {
+        CoroWaitSlot.timeout[cur] = 0;
         return -1;
     }
     return r;
@@ -1257,7 +1347,7 @@ long __myp_coro_sleep(long ms) {
     long deadline = myp_now_ms() + ms;
     if (coroWaitAdd(1, -1, -1, 0, long(cur), deadline, -1) == 0) {
         CoroT.slots[cur].ready = 0;   // park
-        CoroT.slots[cur].waitTimeout = 0;
+        CoroWaitSlot.timeout[cur] = 0;
     }
     coroUnlock();
     __myp_coro_yield(0);
@@ -1278,12 +1368,12 @@ long __myp_coro_wait_fd(long fd, long want_read, long want_write, long timeout_m
     if (want_write != 0) events = events | 4;      // POLLOUT
     if (coroWaitAdd(2, -1, int(fd), events, long(cur), deadline, -1) == 0) {
         CoroT.slots[cur].ready = 0;
-        CoroT.slots[cur].waitTimeout = 0;
+        CoroWaitSlot.timeout[cur] = 0;
     }
     coroUnlock();
     __myp_coro_yield(0);
-    if (CoroT.slots[cur].waitTimeout != 0) {
-        CoroT.slots[cur].waitTimeout = 0;
+    if (CoroWaitSlot.timeout[cur] != 0) {
+        CoroWaitSlot.timeout[cur] = 0;
         return -1;
     }
     return 1;   // fd 就绪（或手动 resume）
@@ -1300,9 +1390,9 @@ void __myp_coro_event_notify(long event_id) {
             CoroW.active[i] = 0;
             int hs = int(h);
             if (hs >= 0 && hs < CoroT.count && CoroT.slots[hs].active != 0) {
-                CoroT.slots[hs].lastWaitEventId = int(event_id);   // wait_any
+                CoroWaitSlot.lastEventId[hs] = int(event_id);   // wait_any
                 if (CoroW.waitIndex[i] >= 0)                 // waitAnyOf
-                    CoroT.slots[hs].lastWaitIndex = CoroW.waitIndex[i];
+                    CoroWaitSlot.lastIndex[hs] = CoroW.waitIndex[i];
                 CoroT.slots[hs].ready = 1;
             }
         }
@@ -1465,23 +1555,31 @@ void chanWakePump() {
     Chan.cwCount = w;
     __myp_atomic_store_i32_addr(Chan.cwLock, 0);
 }
-// 唤醒一个对端等待者；isRecv=1 唤醒 recv waiter（由 send 调），0 唤醒 send waiter。
-// **须在 chanLock 内调用**（send/recv/try/close 持锁）：pop + 路由（同线程 ready=1、
-// 跨线程 mailbox）。v3.15.83 起**不再内联 resume**——持锁跨 ctx_switch 会死锁（被唤醒
-// 协程再碰通道 → 锁自死）；改 ready=1 由调度器下一趟 resume（测试主循环均反复 scheduler，
-// 单线程 rendezvous 每趟推进一步）。
+// 锁内弹出一个对端 waiter 并完成跨线程路由；同线程返回槽位，由调用方解锁后交接。
 long chanWakeOne(int h, int isRecv) {
     long sl = isRecv != 0 ? chanPopRecv(h) : chanPopSend(h);
     if (sl < 0) return -1;
     long owner = ChanPop.lastOwner;
     if (owner != pthread_self()) {
         chanWakePush(owner, sl);   // 跨线程：不能碰对方 per-thread 表 → mailbox
-        return sl;
+        return -1;
     }
     int hs = int(sl);
-    if (hs >= 0 && hs < CoroT.count && CoroT.slots[hs].active != 0)
-        CoroT.slots[hs].ready = 1;   // 同线程：ready（调度器下一趟 resume）
-    return sl;
+    if (hs < 0 || hs >= CoroT.count || CoroT.slots[hs].active == 0) return -1;
+    return long(hs);
+}
+// 状态锁外同步交接：协程调用方直接推进对端一步；非协程或递归过深则仅标 ready。
+void chanHandoff(long sl) {
+    if (sl < 0) return;
+    int hs = int(sl);
+    if (hs < 0 || hs >= CoroT.count || CoroT.slots[hs].active == 0) return;
+    if (CoroT.current >= 0 && Chan.wakeDepth < 64) {
+        Chan.wakeDepth = Chan.wakeDepth + 1;
+        __myp_coro_resume(coroMakeHandle(hs), 0L);
+        Chan.wakeDepth = Chan.wakeDepth - 1;
+    } else {
+        CoroT.slots[hs].ready = 1;
+    }
 }
 // 只 ready（不内联 resume）——close/try 用：内联 resume 可能在关闭通道上跑无界
 // 循环挂起调用者。跨线程同 mailbox。
@@ -1543,8 +1641,9 @@ int myp_channel_send(long handle, long val) {
             if (wpos >= Chan.capacity[h]) wpos = wpos - Chan.capacity[h];
             __myp_mem_store_i64(Chan.buf[h] + long(wpos) * 8, val);
             Chan.count[h] = Chan.count[h] + 1;
-            chanWakeOne(h, 1);   // 唤醒一个 recv waiter（锁内）
+            long wakeSlot = chanWakeOne(h, 1);
             chanUnlock();
+            chanHandoff(wakeSlot);
             return 0;
         }
         int cur = CoroT.current;
@@ -1580,8 +1679,9 @@ long myp_channel_recv(long handle) {
             if (nh >= Chan.capacity[h]) nh = 0;
             Chan.head[h] = nh;
             Chan.count[h] = Chan.count[h] - 1;
-            chanWakeOne(h, 0);   // 唤醒一个 send waiter（锁内）
+            long wakeSlot = chanWakeOne(h, 0);
             chanUnlock();
+            chanHandoff(wakeSlot);
             return v;
         }
         if (Chan.closed[h] != 0) { chanUnlock(); return -1; }

@@ -1098,6 +1098,21 @@ void CodeGen::releaseArcSlot(llvm::Value* alloca, int kind) {
     // BEFORE the release — a normally-released slot's object must not be
     // released again if the coroutine is destroyed later.
     emitCoroFrameClear(alloca);
+    if (kind == 6) {
+        auto it = arc_stack_class_types_.find(alloca);
+        if (it == arc_stack_class_types_.end()) return;
+        auto* obj = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), alloca);
+        std::string name = "__myp_destroy_" + it->second;
+        auto* fn = module_->getFunction(name);
+        if (!fn) {
+            auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                {llvm::PointerType::get(ctx_, 0)}, false);
+            fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                name, module_.get());
+        }
+        builder_.CreateCall(fn, {obj});
+        return;
+    }
     if (kind == 5) {
         // M8 structs: an owned struct local — release every ARC-reference field
         // (string / class / interface / slice / dynamic array / nested struct).
@@ -1486,6 +1501,7 @@ void CodeGen::setupNonlocalAliases(const ClassDecl& cls) {
 
 // -- Top level --
 void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
+    prepareEscapeAnalysis(tu);
     // MYP_ESCAPE_DEBUG=1: 打印逃逸分析结果（验证可栈上分配变量判定）
     if (::getenv("MYP_ESCAPE_DEBUG")) {
         for (auto& f : tu.functions) {
@@ -2456,13 +2472,14 @@ void CodeGen::declareRuntimeFunctions() {
         llvm::GlobalValue::InternalLinkage,
         llvm::ConstantAggregateZero::get(jmp_buf_type_), "__myp_jmpbuf");
 
-    // Declare system setjmp as: int setjmp(ptr)
+    // Language exceptions do not alter signal masks, so _setjmp avoids the
+    // sigprocmask syscall performed by setjmp while preserving stack/register state.
     // MUST carry the returns_twice attribute: the optimizer otherwise assumes
     // setjmp returns exactly once and miscompiles try/catch (longjmp back to a
     // setjmp is a second "return" that optimization passes would not preserve).
     runtime_setjmp_ = llvm::Function::Create(
         llvm::FunctionType::get(i32, {llvm::PointerType::get(ctx_, 0)}, false),
-        llvm::Function::ExternalLinkage, "setjmp", module_.get());
+        llvm::Function::ExternalLinkage, "_setjmp", module_.get());
     runtime_setjmp_->addFnAttr(llvm::Attribute::ReturnsTwice);
 
     // Longjmp: void longjmp(ptr, int)  (noreturn).

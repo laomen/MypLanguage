@@ -4,6 +4,7 @@
 import fs;
 import process;
 import env;
+import args;
 import io;          // File（读侧车文件）
 import collections; // ArrayList
 
@@ -55,6 +56,22 @@ import collections; // ArrayList
             ArrayList<string> v = new ArrayList<string>();
             v.add("21"); v.add("20"); v.add("19"); v.add("18");
             return Link.probeTool("opt", "MYP_OPT", v);
+        }
+
+        string findPassPlugin() {
+            string envPath = Console.getEnv("MYP_PASS_PLUGIN");
+            if (envPath == "0") return "";
+            if (Str.len(envPath) != 0 && Fs.isFile(envPath) != 0) return envPath;
+            string name = "libmyp_pass_plugin.so";
+            if (Link.isWindows() != 0) name = "libmyp_pass_plugin.dll";
+            if (Args.count() > 0) {
+                string beside = Fs.join(Fs.dirname(Args.get(0)), name);
+                if (Fs.isFile(beside) != 0) return beside;
+            }
+            string built = Fs.join("build", name);
+            if (Fs.isFile(built) != 0) return built;
+            if (Fs.isFile(name) != 0) return name;
+            return "";
         }
 
         // 探测 host triple：opt 需要 `-mtriple` 才创建 TargetMachine 并注册
@@ -479,7 +496,14 @@ import collections; // ArrayList
                 string opt = Link.findOpt();
                 string optPath = outPath + ".opt.ll";
                 string mt = Link.findHostTriple();
-                string optCmd = opt + " " + llPath + " -O" + optLevel;
+                string plugin = Link.findPassPlugin();
+                string optCmd = opt + " " + llPath;
+                if (Str.len(plugin) != 0) {
+                    optCmd = optCmd + " -load-pass-plugin=" + plugin
+                        + " -passes='default<O" + optLevel + ">,myp-arc-transfer,verify'";
+                } else {
+                    optCmd = optCmd + " -O" + optLevel;
+                }
                 if (Str.len(mt) > 0) optCmd = optCmd + " -mtriple=" + mt;
                 // v3.15.73: 显式 -mcpu=generic 让 opt 建立带 CPU 子目标的
                 // TargetMachine，补全 LoopUnroll/LoopVectorize 的指令·寄存器成本

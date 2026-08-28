@@ -1275,6 +1275,14 @@ typedef struct myp_obj_header {
     uint32_t type_id;
 } myp_obj_header_t;
 
+// Monotonic ARC mode: MYP thread/pool startup marks this before creating or
+// releasing workers. Programs that never start a worker can use plain load +
+// store for retain; once marked, ARC remains atomic for the process lifetime.
+static _Atomic int myp_arc_threaded = 0;
+void myp_arc_mark_threaded(void) {
+    atomic_store_explicit(&myp_arc_threaded, 1, memory_order_release);
+}
+
 #define MYP_OBJ_HEADER_SIZE ((size_t)sizeof(myp_obj_header_t))
 
 // ---- Ref-counted class arrays (§五-1) ----
@@ -1441,8 +1449,13 @@ void myp_retain(void* obj) {
     myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
     if (myp_strict_checks && !myp_header_type_id_ok(h->type_id))
         myp_strict_abort_header(obj, h->type_id);
-    // M6: relaxed atomic increment — safe for concurrent retain across threads.
-    atomic_fetch_add_explicit(&h->rc, 1, memory_order_relaxed);
+    if (atomic_load_explicit(&myp_arc_threaded, memory_order_relaxed)) {
+        // M6: relaxed atomic increment — safe for concurrent retain across threads.
+        atomic_fetch_add_explicit(&h->rc, 1, memory_order_relaxed);
+    } else {
+        uint32_t rc = atomic_load_explicit(&h->rc, memory_order_relaxed);
+        atomic_store_explicit(&h->rc, rc + 1, memory_order_relaxed);
+    }
 }
 
 // ---- M7: weak references ----
@@ -1466,6 +1479,7 @@ typedef struct myp_weak_entry {
 
 #define MYP_WEAK_BUCKETS 64
 static myp_weak_entry_t* myp_weak_table[MYP_WEAK_BUCKETS];
+static _Atomic uint64_t myp_weak_entry_count = 0;
 static pthread_spinlock_t myp_weak_lock;
 static pthread_once_t myp_weak_lock_once = PTHREAD_ONCE_INIT;
 static void myp_weak_lock_init(void) { pthread_spin_init(&myp_weak_lock, PTHREAD_PROCESS_PRIVATE); }
@@ -1485,7 +1499,10 @@ static void myp_weak_remove_entry_locked(myp_weak_entry_t* e) {
     unsigned b = myp_weak_hash(e->target);
     myp_weak_entry_t** link = &myp_weak_table[b];
     while (*link && *link != e) link = &(*link)->next;
-    if (*link) *link = e->next;
+    if (*link) {
+        *link = e->next;
+        atomic_fetch_sub_explicit(&myp_weak_entry_count, 1, memory_order_release);
+    }
     free(e->slots);
     free(e);
 }
@@ -1498,6 +1515,7 @@ static void myp_weak_add_locked(void* target, void** slot) {
         unsigned b = myp_weak_hash(target);
         e->next = myp_weak_table[b];
         myp_weak_table[b] = e;
+        atomic_fetch_add_explicit(&myp_weak_entry_count, 1, memory_order_release);
     }
     if (e->count >= e->cap) {
         size_t nc = e->cap ? e->cap * 2 : 4;
@@ -1635,6 +1653,8 @@ void* myp_weak_load(void** slot) {
 // true last owner (should free); 0 if a concurrent weak_load re-bumped rc under
 // the lock first (the object lives; the new owner will free it).
 static int myp_weak_notify_death(void* obj) {
+    if (atomic_load_explicit(&myp_weak_entry_count, memory_order_acquire) == 0)
+        return 1;
     myp_weak_lock_ensure();
     pthread_spin_lock(&myp_weak_lock);
     myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
@@ -1667,6 +1687,7 @@ void myp_weak_free_all(void) {
         }
         myp_weak_table[i] = NULL;
     }
+    atomic_store_explicit(&myp_weak_entry_count, 0, memory_order_release);
     pthread_spin_unlock(&myp_weak_lock);
 }
 
@@ -1829,6 +1850,9 @@ void myp_free_object(void* obj) {
     if (myp_cc_trial || myp_cc_restore) return;   // trial/restore: don't free
     char* base = (char*)obj - MYP_OBJ_HEADER_SIZE;
     myp_obj_header_t* h = (myp_obj_header_t*)base;
+    // Stack-promoted class: destroy stub already released all ARC/weak fields,
+    // but the object storage belongs to the function frame and must not be freed.
+    if (atomic_load_explicit(&h->rc, memory_order_relaxed) == 0x7FFFFFFEu) return;
     int tid = (int)h->type_id;
     myp_alloc_node_t* node =
         (myp_alloc_node_t*)(base - sizeof(myp_alloc_node_t));
@@ -3163,6 +3187,7 @@ static void* myp_thread_entry(void* arg) {
 }
 
 void myp_thread_run_loop(myp_thread_t* thr) {
+    myp_arc_mark_threaded();
     pthread_create(&thr->thread, NULL, myp_thread_entry, thr);
 }
 
@@ -3354,6 +3379,7 @@ myp_pool_t* myp_pool_create(int n_threads) {
     pthread_cond_broadcast(&myp_pool_start_cond);
     pthread_mutex_unlock(&myp_pool_start_mutex);
 
+    myp_arc_mark_threaded();
     for (int i = 0; i < n_threads; i++)
         pthread_create(&pool->threads[i], NULL, myp_pool_worker, (void*)(uintptr_t)i);
 
@@ -4526,7 +4552,7 @@ static void __myp_coro_trampoline(void) {
     // "starting fiber switch while in fiber switch"。
     myp_asan_finish_switch();
     jmp_buf jb;
-    if (setjmp(jb) == 0) {
+    if (_setjmp(jb) == 0) {
         myp_exception_push(&jb);
         if (id >= 0 && id < myp_coro_count && myp_coros[id] && myp_coros[id]->fn) {
             myp_coros[id]->fn();
@@ -5438,6 +5464,7 @@ static void* myp_exec_worker_loop(void* arg) {
 static void myp_exec_ensure_started(void) {
     pthread_mutex_lock(&myp_exec_mutex);
     if (!myp_exec_started) {
+        myp_arc_mark_threaded();
         for (int i = 0; i < MYP_EXEC_WORKERS; i++)
             pthread_create(&myp_exec_workers[i], NULL, myp_exec_worker_loop, NULL);
         myp_exec_started = 1;
@@ -5614,14 +5641,35 @@ static void __myp_coro_register_cleanup(void) {
 // because only one coroutine of a thread runs at a time.
 #define MYP_CORO_MAX_ENTRY_ARGS 16
 static __thread uint64_t myp_coro_entry_args[MYP_CORO_MAX_ENTRY_ARGS];
+static __thread const uint64_t* myp_coro_entry_pack = NULL;
+static __thread int64_t myp_coro_entry_pack_count = 0;
 void __myp_coro_set_entry_arg(int64_t idx, int64_t val) {
     if (idx >= 0 && idx < MYP_CORO_MAX_ENTRY_ARGS)
         myp_coro_entry_args[idx] = (uint64_t)val;
 }
 int64_t __myp_coro_get_entry_arg(int64_t idx) {
+    if (myp_coro_entry_pack && idx >= 0 && idx < myp_coro_entry_pack_count)
+        return (int64_t)myp_coro_entry_pack[idx];
     if (idx >= 0 && idx < MYP_CORO_MAX_ENTRY_ARGS)
         return (int64_t)myp_coro_entry_args[idx];
     return 0;
+}
+
+int64_t __myp_coro_create_entry(int64_t stack_bytes, int64_t fn_ptr) {
+    int64_t handle = __myp_coro_create(stack_bytes);
+    __myp_coro_set_entry(handle, fn_ptr);
+    return handle;
+}
+
+int64_t __myp_coro_start_args(int64_t handle, int64_t count, int64_t pack_ptr) {
+    const uint64_t* saved_pack = myp_coro_entry_pack;
+    int64_t saved_count = myp_coro_entry_pack_count;
+    myp_coro_entry_pack = (const uint64_t*)(uintptr_t)pack_ptr;
+    myp_coro_entry_pack_count = count;
+    int64_t result = __myp_coro_resume(handle, 0);
+    myp_coro_entry_pack = saved_pack;
+    myp_coro_entry_pack_count = saved_count;
+    return result;
 }
 
 // ---- Channel (协程间通信, Go-style buffered channel) ----

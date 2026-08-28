@@ -1,0 +1,50 @@
+// ArrayList inline storage: boundary operations and ARC element destruction.
+
+import test;
+import collections;
+
+class SmallBox {
+    action:
+        void set(int value) { value_ = value; }
+        int get() { return value_; }
+    property:
+        int value_;
+}
+
+@test void test_arraylist_small_buffer() {
+    ArrayList<int> ints = new ArrayList<int>();
+    Test.assertEq(ints.size(), 0, "size 0");
+    for (int i = 0; i < 17; i = i + 1) {
+        ints.add(i * 10);
+        if (i == 0 || i == 7 || i == 8 || i == 15 || i == 16) {
+            Test.assertEq(ints.size(), i + 1, "boundary size");
+            Test.assertEq(ints.get(i), i * 10, "boundary value");
+        }
+    }
+    ints.set(7, 7007);
+    ints.set(8, 8008);
+    Test.assertEq(ints.get(7), 7007, "inline set");
+    Test.assertEq(ints.get(8), 8008, "overflow set");
+    ints.remove(7);
+    Test.assertEq(ints.size(), 16, "remove size");
+    Test.assertEq(ints.get(7), 8008, "remove across boundary");
+    ints.clear();
+    Test.assertEq(ints.size(), 0, "clear");
+    ints.add(42);
+    Test.assertEq(ints.get(0), 42, "reuse after clear");
+
+    ArrayList<string> strings = new ArrayList<string>();
+    for (int i = 0; i < 9; i = i + 1) strings.add("value");
+    Test.assertStrEq(strings.get(0), "value", "inline string");
+    Test.assertStrEq(strings.get(8), "value", "overflow string");
+
+    for (int outer = 0; outer < 100000; outer = outer + 1) {
+        ArrayList<SmallBox> boxes = new ArrayList<SmallBox>();
+        for (int i = 0; i < 4; i = i + 1) {
+            SmallBox box = new SmallBox();
+            box.set(outer + i);
+            boxes.add(box);
+        }
+        Test.assertEq(boxes.get(3).get(), outer + 3, "inline class");
+    }
+}

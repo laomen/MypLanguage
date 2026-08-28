@@ -144,6 +144,23 @@ include_directories(BEFORE ${CMAKE_SOURCE_DIR}/include)
 add_executable(mypc_seed ${SOURCES})
 set_target_properties(mypc_seed PROPERTIES OUTPUT_NAME mypc-seed)
 
+# Shared New-PM plugin used by the self-hosted compiler's external `opt`.
+# Link against the monolithic shared LLVM library to avoid duplicate LLVM
+# command-line option registration when the plugin is loaded into `opt`.
+add_library(myp_pass_plugin MODULE
+    src/codegen/myp_passes.cpp
+    src/codegen/myp_pass_plugin.cpp
+)
+set_target_properties(myp_pass_plugin PROPERTIES
+    PREFIX "lib"
+    OUTPUT_NAME "myp_pass_plugin"
+)
+target_include_directories(myp_pass_plugin PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${LLVM_INCLUDE_DIRS}
+)
+target_link_libraries(myp_pass_plugin PRIVATE LLVM)
+
 # ---- DAP debug adapter (bridges VS Code DAP <-> gdb MI) ----
 # Windows：暂不构建 —— DAP 服务器用 fork/pipe/dup2/execlp/poll/read/write 编排
 # gdb MI 子进程（POSIX 专属）；Windows 移植（CreateProcess + 管道 + 等待）为后续
@@ -313,7 +330,7 @@ add_custom_command(
     OUTPUT ${MYP_SELF2_OUT}
     COMMAND ${MYP_SELF_OUT} ${MYP_SELF_SRC} -o ${MYP_SELF2_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
     COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/selfhost/src/main.myp.o
-    DEPENDS ${MYP_SELF_SRC} ${MYP_SELF_MODULES} myp_self myp_rt_myp
+    DEPENDS ${MYP_SELF_SRC} ${MYP_SELF_MODULES} myp_self myp_rt_myp myp_pass_plugin
     COMMENT "Building self-hosted compiler stage-1 (myp_self -> myp_self2)"
     VERBATIM
 )
@@ -324,7 +341,7 @@ add_custom_command(
     OUTPUT ${MYP_SELF3_OUT}
     COMMAND ${MYP_SELF2_OUT} ${MYP_SELF_SRC} -o ${MYP_SELF3_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
     COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/selfhost/src/main.myp.o
-    DEPENDS ${MYP_SELF_SRC} ${MYP_SELF_MODULES} myp_self2 myp_rt_myp
+    DEPENDS ${MYP_SELF_SRC} ${MYP_SELF_MODULES} myp_self2 myp_rt_myp myp_pass_plugin
     COMMENT "Building self-hosted compiler stage-2 (myp_self2 -> myp_self3, fixed-point)"
     VERBATIM
 )
@@ -350,13 +367,14 @@ add_custom_target(mypc ALL DEPENDS ${MYP_MYPC_OUT})
 # runtime / gcc），失败才回退 shadow。v3.15.65 起 MYP 运行时全绿（归档下
 # selfhost 323/323），默认产出；MYP_SKIP_SMOKE=1 跳过冒烟测试（加速 CMake）。
 set(MYP_RT_MYP_OUT ${CMAKE_BINARY_DIR}/libmyp_rt_myp.a)
+file(GLOB MYP_RT_MYP_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/runtime_myp/*.myp)
 add_custom_command(
     OUTPUT ${MYP_RT_MYP_OUT}
     # myp_self 是自定义目标（无 TARGET_FILE 生成表达式）；SELF 作为位置参数 $1
     # 传入 build.sh（build.sh 内部 cd 到仓库根，绝对路径安全）；MYP_RT_MYP_OUT
     # 使 out-of-source 构建（build-asan/ 等）把归档写到各自 build 目录。
     COMMAND ${CMAKE_COMMAND} -E env MYP_MAKE_ARCHIVE=1 MYP_SKIP_SMOKE=1 MYP_RT_MYP_OUT=${MYP_RT_MYP_OUT} bash ${CMAKE_SOURCE_DIR}/runtime_myp/build.sh ${MYP_SELF_OUT}
-    DEPENDS myp_self
+    DEPENDS myp_self ${MYP_RT_MYP_SOURCES} ${CMAKE_SOURCE_DIR}/runtime_myp/build.sh
     COMMENT "Building MYP runtime archive (runtime_myp/*.myp -> libmyp_rt_myp.a)"
     VERBATIM
 )

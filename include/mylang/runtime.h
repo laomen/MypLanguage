@@ -31,6 +31,7 @@ void myp_free_all(void);
 // reaching rc=0 dispatches to the per-TU __myp_release_table[type_id] destroy
 // stub, which cascades reference fields then calls myp_free_object.
 void* myp_alloc_object(size_t size, uint32_t type_id);
+void myp_arc_mark_threaded(void);
 void myp_retain(void* obj);
 uint32_t myp_release(void* obj);
 void myp_free_object(void* obj);

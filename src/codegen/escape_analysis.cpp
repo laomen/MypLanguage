@@ -6,8 +6,13 @@
 #include "escape_analysis.h"
 
 #include <map>
+#include <utility>
 
 namespace mylang {
+
+using CallKey = std::pair<std::string, size_t>;
+static std::map<CallKey, std::set<size_t>> noescape_params;
+static bool tu_has_live_call = false;
 
 // 前向声明（stmtEscapes <-> exprStmtMentions 互相递归）
 static bool stmtEscapes(const Stmt* s, const std::string& v);
@@ -37,9 +42,23 @@ static bool exprEscapes(const Expr* e, const std::string& v) {
         case ExprKind::Call: {
             auto& c = static_cast<const CallExpr&>(*e);
             // 方法调用 v.method() 允许（receiver 位置，MemberAccess object 分支处理）。
-            // v 作为普通实参 f(v) → 逃逸（函数可能持有）。
-            for (auto& a : c.args)
-                if (exprEscapes(a.get(), v)) return true;
+            // 同 TU 唯一顶层函数的 noescape 参数允许直接传入 v；复杂实参、方法调用、
+            // 重载歧义和未知函数仍保守判逃逸。
+            std::string target;
+            if (!c.resolved_call_name.empty())
+                target = c.resolved_call_name;
+            else if (c.callee && c.callee->kind == ExprKind::Identifier)
+                target = static_cast<const IdentifierExpr&>(*c.callee).name;
+            auto summary = noescape_params.find({target, c.args.size()});
+            for (size_t i = 0; i < c.args.size(); ++i) {
+                auto* arg = c.args[i].get();
+                bool direct_v = arg && arg->kind == ExprKind::Identifier &&
+                    static_cast<const IdentifierExpr&>(*arg).name == v;
+                if (direct_v && summary != noescape_params.end() &&
+                    summary->second.count(i) != 0)
+                    continue;
+                if (exprEscapes(arg, v)) return true;
+            }
             return exprEscapes(c.callee.get(), v);
         }
         case ExprKind::Assignment: {
@@ -421,12 +440,16 @@ static bool stmtHasLiveCall(const Stmt* s);
 
 static bool callIsLiveCount(const Expr* c) {
     if (!c) return false;
-    if (c->kind == ExprKind::Identifier)
-        return static_cast<const IdentifierExpr*>(c)->name == "liveObjectCount";
+    if (c->kind == ExprKind::Identifier) {
+        const auto& name = static_cast<const IdentifierExpr*>(c)->name;
+        return name == "liveObjectCount" || name == "liveObjectCountByType" ||
+               name == "liveTotalCount";
+    }
     if (c->kind == ExprKind::MemberAccess) {
         auto& m = static_cast<const MemberAccessExpr&>(*c);
         return m.member_name == "liveObjectCount" ||
-               m.member_name == "liveObjectCountByType";
+               m.member_name == "liveObjectCountByType" ||
+               m.member_name == "liveTotalCount";
     }
     return false;
 }
@@ -584,12 +607,59 @@ static bool stmtHasLiveCall(const Stmt* s) {
     }
 }
 
+// ---- 顶层函数参数摘要 ----
+void prepareEscapeAnalysis(const TranslationUnit& tu) {
+    noescape_params.clear();
+    tu_has_live_call = false;
+
+    for (auto& f : tu.functions)
+        if (f.body && stmtHasLiveCall(f.body.get())) tu_has_live_call = true;
+    for (auto& cls : tu.classes) {
+        for (auto& a : cls.actions)
+            if (a.body && stmtHasLiveCall(a.body.get())) tu_has_live_call = true;
+        for (auto& a : cls.static_actions)
+            if (a.body && stmtHasLiveCall(a.body.get())) tu_has_live_call = true;
+        for (auto& f : cls.functions)
+            if (f.body && stmtHasLiveCall(f.body.get())) tu_has_live_call = true;
+        for (auto& st : cls.structs)
+            for (auto& f : st.functions)
+                if (f.body && stmtHasLiveCall(f.body.get())) tu_has_live_call = true;
+    }
+    for (auto& st : tu.structs)
+        for (auto& f : st.functions)
+            if (f.body && stmtHasLiveCall(f.body.get())) tu_has_live_call = true;
+
+    std::map<CallKey, const FuncDecl*> unique;
+    std::set<CallKey> ambiguous;
+    for (auto& f : tu.functions) {
+        if (!f.body || (!f.type_params.empty() && !f.is_generic_inst)) continue;
+        CallKey key{f.name, f.params.size()};
+        if (unique.count(key) != 0) {
+            unique.erase(key);
+            ambiguous.insert(key);
+        } else if (ambiguous.count(key) == 0) {
+            unique[key] = &f;
+        }
+    }
+
+    // 先在空摘要环境中分析，因此第一版只推导叶函数，不递归传播调用效果。
+    std::map<CallKey, std::set<size_t>> summaries;
+    for (auto& entry : unique) {
+        auto* f = entry.second;
+        for (size_t i = 0; i < f->params.size(); ++i) {
+            if (!stmtEscapes(f->body.get(), f->params[i].name))
+                summaries[entry.first].insert(i);
+        }
+    }
+    noescape_params = std::move(summaries);
+}
+
 // ---- 主入口 ----
 std::set<std::string> analyzeEscapeStackVars(const BlockStmt* body) {
     std::set<std::string> result;
     if (!body) return result;
-    // 分配内省函数（Memory.liveObjectCount[ByType]）→ 不栈上化（见上）。
-    if (stmtHasLiveCall(body)) return result;
+    // 分配内省可在调用者观测被调函数中的分配，因此整个 TU 不栈上化。
+    if (tu_has_live_call || stmtHasLiveCall(body)) return result;
     // 1. 收集候选（VarDecl + NewExpr 初始化）
     std::map<std::string, const VarDecl*> candidates;
     collectCandidates(body, candidates);

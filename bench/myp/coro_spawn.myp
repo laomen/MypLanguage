@@ -4,6 +4,13 @@
 import env;
 import coro;
 import time;
+import memory;
+
+@static class SpawnDiag {
+    property:
+        long spawnMs = 0;
+        long finishMs = 0;
+}
 
 class Worker {
     action:
@@ -15,17 +22,21 @@ class Worker {
 
 long coroSpawn(int K, int seed) {
     long[] h = new long[K];
+    long spawnStart = Time.nowMs();
     int i = 0;
     while (i < K) {
         Worker w = new Worker();
         h[i] = w.run(long(i));
         i = i + 1;
     }
+    long finishStart = Time.nowMs();
+    SpawnDiag.spawnMs = finishStart - spawnStart;
     i = 0;
     while (i < K) {
         Coro.resume(h[i], 0L);
         i = i + 1;
     }
+    SpawnDiag.finishMs = Time.nowMs() - finishStart;
     // 全部结束后应无活跃协程（正确性检查）；verify = 协程总数（与 Go 一致）
     long left = Coro.count();
     if (left != 0L) return -1L;
@@ -42,6 +53,18 @@ class Bench {
             Console.writeLong(v);
             Console.writeString("\nms ");
             Console.writeLong(t1 - t0);
+            Console.writeString("spawn_ms ");
+            Console.writeLong(SpawnDiag.spawnMs);
+            Console.writeString("finish_ms ");
+            Console.writeLong(SpawnDiag.finishMs);
+            Console.writeString("slots ");
+            Console.writeLong(Memory.coroSlotCount());
+            Console.writeString("capacity ");
+            Console.writeLong(Memory.coroSlotCapacity());
+            Console.writeString("stack_pool ");
+            Console.writeLong(Memory.stackPoolCount());
+            Console.writeString("retired ");
+            Console.writeLong(Memory.retiredCount());
             Console.writeString("\n");
         }
 }

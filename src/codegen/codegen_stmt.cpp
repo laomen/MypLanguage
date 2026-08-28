@@ -38,6 +38,21 @@ extern "C" void LLVMInitializeNVPTXAsmPrinter(void);
 #include <cstdlib>
 #include <iostream>
 
+namespace {
+constexpr uint64_t kDefaultStackPromotionBudgetBytes = 64 * 1024;
+constexpr uint64_t kMaxStackPromotionBudgetBytes = 2147483647;
+
+uint64_t stackPromotionBudgetBytes() {
+    const char* text = std::getenv("MYP_STACK_PROMOTION_BUDGET");
+    if (!text || !*text) return kDefaultStackPromotionBudgetBytes;
+    if (*text == '-') return kDefaultStackPromotionBudgetBytes;
+    char* end = nullptr;
+    uint64_t value = std::strtoull(text, &end, 10);
+    if (end == text || *end != '\0') return kDefaultStackPromotionBudgetBytes;
+    return std::min(value, kMaxStackPromotionBudgetBytes);
+}
+}
+
 namespace mylang {
 
 void CodeGen::generateStmt(const Stmt& s) {
@@ -788,21 +803,63 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     if (is_struct)
         var_struct_map_[d.name] = dt.class_name;
     // 逃逸分析：`let v = new T()` 且 v 不逃逸 → 栈上分配（generateNewExpr 的
-    // stack_new_ 分支），跳过 ARC 槽注册（栈自动回收，无 release）。第二版支持
+    // stack_new_ 分支）。含 ARC 字段的栈 class 注册 kind-6 清理槽，作用域退出
+    // 调析构桩释放字段但不释放栈存储。第二版支持
     // 动态数组 `let v = new T[N]`（常量维度 + 元素非 ARC，isStackArrayCandidate）
     // → stack_new_array_ 分支（alloca backing）。
     bool is_stack_escape = false;
+    bool stack_needs_drop = false;
+    uint64_t stack_allocation_bytes = 0;
     if (current_escape_stack_vars_.count(d.name) != 0 && !::getenv("MYP_NO_STACK_NEW")) {
         if (d.init_expr && d.init_expr->kind == ExprKind::NewExpr &&
-            !d.type.class_name.empty() && !classHasArcProps(d.type.class_name))
+            !d.type.class_name.empty()) {
             is_stack_escape = true;
-        else if (d.init_expr && d.init_expr->kind == ExprKind::NewArrayExpr &&
-                 isStackArrayCandidate(d.init_expr.get()))
+            if (auto* stack_ty = getClassStruct(vt.class_name)) {
+                auto stack_size = module_->getDataLayout().getTypeAllocSize(stack_ty);
+                stack_allocation_bytes = 8 + stack_size.getFixedValue();
+            }
+            stack_needs_drop = classHasArcProps(vt.class_name);
+            // setjmp/longjmp may reach cleanup before the stack-object slot is
+            // initialized; keep ARC-field classes on the heap in try scopes.
+            if (stack_needs_drop && !try_ctx_stack_.empty()) is_stack_escape = false;
+        } else if (d.init_expr && d.init_expr->kind == ExprKind::NewArrayExpr &&
+                 isStackArrayCandidate(d.init_expr.get())) {
             is_stack_escape = true;
+            const auto& array = static_cast<const NewArrayExpr&>(*d.init_expr);
+            uint64_t count = 1;
+            uint64_t budget = stackPromotionBudgetBytes();
+            for (const auto& dim : array.dimensions) {
+                int64_t value = static_cast<const IntegerLiteralExpr&>(*dim).value;
+                if (value < 0 || (value != 0 && count > budget / static_cast<uint64_t>(value))) {
+                    count = budget + 1;
+                    break;
+                }
+                count *= static_cast<uint64_t>(value);
+            }
+            uint64_t elem_size = module_->getDataLayout()
+                .getTypeAllocSize(typeNodeToLLVMType(array.element_type)).getFixedValue();
+            if (count > budget || (elem_size != 0 && count > budget / elem_size))
+                stack_allocation_bytes = budget + 1;
+            else
+                stack_allocation_bytes = 24 + count * elem_size;
+        }
     }
     if (is_stack_escape && current_is_coro_) is_stack_escape = false;  // coro 帧不栈上
+    if (is_stack_escape) {
+        uint64_t budget = stackPromotionBudgetBytes();
+        if (stack_allocation_bytes > budget ||
+            current_stack_promotion_bytes_ > budget - stack_allocation_bytes) {
+            is_stack_escape = false;
+        } else {
+            current_stack_promotion_bytes_ += stack_allocation_bytes;
+        }
+    }
     // ARC: a local class reference is released when its scope exits.
     if (arc_decl_class && !is_stack_escape) registerArcSlot(a, 0);
+    if (arc_decl_class && is_stack_escape && stack_needs_drop) {
+        registerArcSlot(a, 6);
+        arc_stack_class_types_[a] = vt.class_name;
+    }
     // M8: a local string reference is released when its scope exits (kind 0
     // shares the class-ptr release machinery — myp_release on a char*).
     if (arc_decl_string) registerArcSlot(a, 0);

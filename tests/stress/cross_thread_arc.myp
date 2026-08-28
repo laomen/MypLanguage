@@ -20,6 +20,8 @@ import sync;
         Node sharedNode;    // 场景 A：共享实例（main 永久持有）
         Node tempNode;      // 场景 B：跨线程最后持有者释放
         WeakHolder wk;      // M7：跨线程 weak 升级/存储（weak 登记表 spinlock 并发）
+        long arenaSum = 0;  // 场景 C：多线程 class arena 扩容后的字段校验和
+        long rawSum = 0;    // 场景 D：多线程 raw arena 扩容后的数组校验和
 }
 
 // M7: weak 引用 holder —— set 弱存、get 弱→强升级（返回强引用，调用方释放）。
@@ -65,10 +67,32 @@ class Worker {
                 if (w != null) { int x = w.val(); }
                 j = j + 1;
             }
+            // 场景 C：每线程保留 >64KB 类对象，强制多个线程并发挂接 arena chunk。
+            Node[] batch = new Node[3000];
+            long batchSum = 0;
+            long k = 0;
+            while (k < 3000) {
+                Node item = new Node();
+                item.setV(int(k));
+                batch[k] = item;
+                batchSum = batchSum + batch[k].val();
+                k = k + 1;
+            }
+            // 场景 D：每线程分配 >64KB scalar backing，强制 raw arena 并发扩容。
+            int[] raw = new int[20000];
+            long rawLocal = 0;
+            long q = 0;
+            while (q < 20000) {
+                raw[q] = int(q);
+                rawLocal = rawLocal + raw[q];
+                q = q + 1;
+            }
             // 场景 B：mutex 保护下清空 tempNode（槽无竞争），release 在本 worker 线程
             Mutex.lock(Shared.mutex);
             Node t = Shared.tempNode;
             Shared.tempNode = null;         // release(t) → rc 0 → 本线程跨线程释放
+            Shared.arenaSum = Shared.arenaSum + batchSum;
+            Shared.rawSum = Shared.rawSum + rawLocal;
             Mutex.unlock(Shared.mutex);
             Mutex.lock(Shared.mutex);
             Shared.done = Shared.done + 1;
@@ -99,6 +123,10 @@ class Main {
             if (sv != 0) { Console.writeString("FAIL shared node\n"); return; }
             // 场景 B：tempNode 已被 worker 跨线程释放 → 槽为 null
             if (Shared.tempNode != null) { Console.writeString("FAIL temp not freed\n"); return; }
+            // 场景 C：4 个线程各自的 0..2999 对象在并发扩容后仍完整
+            if (Shared.arenaSum != 17994000L) { Console.writeString("FAIL arena chunks\n"); return; }
+            // 场景 D：4 个线程各自的 0..19999 scalar backing 在并发扩容后仍完整
+            if (Shared.rawSum != 799960000L) { Console.writeString("FAIL raw chunks\n"); return; }
             // 跨线程 free 后继续分配，验证全局分配列表无损坏
             long acc = 0;
             long i = 0;

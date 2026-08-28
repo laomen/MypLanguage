@@ -152,54 +152,73 @@ verify 一致（浮点容差 1e-3）、输出比值表。
 | 基准 | 测什么 | MYP | Go | Go/MYP |
 |------|--------|-----|-----|--------|
 | `coro_switch` | 上下文切换吞吐（200 协程 × 10000 次挂起/恢复） | **72ms** | 307ms | **4.26** |
-| `coro_spawn` | spawn 开销（20000 个只返回的协程） | **24ms** | 3ms | **0.12** |
+| `coro_spawn` | 20000 个执行体全部启动并挂起，再统一恢复 | 14ms | **13ms** | **0.93** |
 
 - **切换**：MYP 比 Go 快 ~4.3x（4.26）——2026-08 把 ucontext swapcontext（每次切换
   都做 sigprocmask syscall，~180ns）换成**寄存器级汇编切换**（coro_ctx.S，~13ns，
   微基准 13.9x），400ms→72ms。Go 的 goroutine 切换本身 ~150ns（有运行时抢占/检查
   开销），被 MYP 的纯寄存器切换反超。
-- **spawn**：MYP 460→**24ms**（19x）——修复 `__myp_coro_create` 的 O(n²) 槽位复用
-  扫描（每创建遍历全部槽找可复用者）+ 句柄槽位不复用（句柄唯一）。Go 仍快 ~8x：
-  Go goroutine ~2KB 可增长栈批量创建极廉价；MYP `@coro` 每个分配固定栈（默认
-  128KB，`@coro(stack=KB)` 可调小）+ 初始化。适合少量长生命周期协程，不适合海量短任务。
+- **spawn**：MYP 460→22→**14ms**。除修复 `__myp_coro_create` 的 O(n²) 槽扫描外，
+  trampoline 改用 `_setjmp`，消除每协程一次的 `rt_sigprocmask`；ARC 帧明细和等待表
+  改为首次实际使用时分配；协程完成切回调用者后立即回收栈，不再经 retired 数组
+  延迟处理；槽内取消、等待和 exec 冷状态拆为按功能惰性 sidecar。旧 Go 用例在创建
+  循环中直接结束并复用 goroutine 栈，MYP 则要求全部
+  执行体先启动、挂起并同时存活，生命周期不等价；加入 ready/barrier 后 Go
+  3→13ms，公平差距仅 7.5%。MYP 的独立固定栈仍使 RSS（约 87.4MB）高于 Go 的
+  可增长栈（约 56MB），这是剩余的主要结构差异。
+- **首次启动调用融合**：生成代码使用 `create_entry + start_args`，参数通过调用者
+  entry-block 栈包同步传给首次 resume；单参数方法从 create/set/get/entry/resume
+  共 7 次 runtime 调用降到 2 次，同时解除旧共享入口表最多 16 槽的限制。20k 并发
+  基准仍为 14ms，说明该场景已由独立栈首次触页而非 ABI 调用主导。
 
 ## Go 主套件对比（MYP vs Go）
 
-`bash bench/run_compare_go.sh [iters]` 现覆盖**全部 21 个主套件基准 + 2 个协程通信/I-O
-专项 + 2 个协程切换专项**（共 25 项）。Go 侧 `bench/go/*.go` 由
+`bash bench/run_compare_go.sh [iters]` 现覆盖计算、内存、递归、字节处理、协程通信/I-O
+与协程切换/创建专项（共 30 项）。Go 侧 `bench/go/*.go` 由
 `bench/cpp/*.cpp` 逐文件移植（同算法、同规模、同 LCG），MYP -O2 vs Go
 `go build`（默认优化，**无 -march=native**），verify 全部与 MYP 对拍（整数精确、
-浮点 1e-3 容差）。结果（16 核，min-of-3）：
+浮点 1e-3 容差）。双方逐项预热后交错运行，默认不限制 Go runtime 的 CPU；标量
+抖动诊断可指定 `PIN_CORE=0`，子集可指定 `BENCHES='fft coro_spawn'`。结果（16 核、
+无钉核、min-of-7，2026-08-28）：
 
 | 基准 | MYP(ms) | Go(ms) | Go/MYP |
 |------|--------:|-------:|:------:|
-| `sieve` | 13 | 14 | 1.08 |
+| `sieve` | 12 | 12 | 1.00 |
+| `sieve_odd` | 9 | 8 | **0.89** |
+| `montepi` | 94 | 181 | 1.93 |
 | `matmul` | 17 | 59 | **3.47** |
-| `nbody` | 112 | 238 | 2.12 |
+| `nbody` | 112 | 239 | 2.13 |
 | `mandelbrot` | 98 | 99 | 1.01 |
 | `tripleloop` | 10 | 17 | 1.70 |
-| `fft` | 74 | 64 | **0.86** |
-| `sha256` | 17 | 22 | 1.29 |
-| `quicksort` | 37 | 42 | 1.14 |
-| `knapsack` | 24 | 41 | 1.71 |
-| `kmp` | 73 | 86 | 1.18 |
+| `fft` | 72 | 64 | **0.89** |
+| `sha256` | 15 | 22 | 1.47 |
+| `quicksort` | 38 | 41 | 1.08 |
+| `knapsack` | 23 | 40 | 1.74 |
+| `kmp` | 72 | 84 | 1.17 |
 | `crc32` | 77 | 119 | 1.55 |
-| `radixsort` | 15 | 33 | 2.20 |
+| `radixsort` | 16 | 32 | 2.00 |
 | `sobel` | 6 | 19 | **3.17** |
-| `floyd` | 66 | 111 | 1.68 |
-| `heapsort` | 72 | 83 | 1.15 |
-| `convolution` | 23 | 93 | **4.04** |
-| `base64` | 16 | 24 | 1.50 |
+| `floyd` | 57 | 112 | 1.96 |
+| `heapsort` | 70 | 83 | 1.19 |
+| `convolution` | 22 | 93 | **4.23** |
+| `base64` | 11 | 24 | 2.18 |
 | `spmv` | 13 | 28 | 2.15 |
-| `kmeans` | 95 | 362 | **3.81** |
-| `huffman` | 9 | 19 | 2.11 |
-| `bigint` | 61 | 97 | 1.59 |
-| `channel_pingpong` | 5 | 6 | **1.20** |
-| `io_socket` | 71 | 78 | **1.10** |
-| `coro_spawn`（见上节） | 24 | 3 | **0.12** |
+| `kmeans` | 80 | 357 | **4.46** |
+| `huffman` | 8 | 19 | 2.38 |
+| `bigint` | 63 | 98 | 1.56 |
+| `fannkuch` | 1573 | 1625 | 1.03 |
+| `spectral_norm` | 451 | 451 | 1.00 |
+| `binary_trees` | 1 | 2 | 2.00* |
+| `channel_pingpong` | 3 | 6 | **2.00*** |
+| `io_socket` | 83 | 78 | **0.94** |
+| `coro_switch` | 52 | 319 | **6.13** |
+| `coro_spawn` | 14 | 13 | **0.93** |
 
-- **结论：MYP 在 24 个主套件/协程基准里赢 24 项**（Go/MYP>1 即 MYP 快）；唯一 Go 赢
-  的是 `fft`（0.85）。
+- **结论：30/30 verify 一致，MYP 胜 25 项、Go 胜 5 项，Go/MYP 几何均值 1.68**。
+  双方均不少于 5ms 的 28 个稳健项几何均值为 **1.66**。星号项低于 5ms，受整数
+  毫秒量化影响，只用于方向判断，不用于细粒度百分比结论。
+- **剩余差距均较小**：`coro_spawn` 14ms vs 13ms，慢 7.5%；其余 Go 获胜项
+  `fft`、`sieve_odd`、`sieve`、`io_socket` 慢 5.3–12.4%。
 - **最大差距集中在浮点/内存带宽类**：convolution 4.04、kmeans 3.81、matmul 3.47、
   sobel 3.17、radixsort 2.20、spmv 2.15。根因是 **MYP 走 LLVM O2 自动向量化
   （SIMD 循环展开）**，而 Go 编译器默认几乎不自动向量化，这些标量浮点/字节循环
@@ -208,15 +227,14 @@ verify 一致（浮点容差 1e-3）、输出比值表。
   优化在起作用，但 Go 的简单循环执行效率本身很高。
 - **注意公平性**：MYP 是"编译器优化到 LLVM IR"，天然继承 LLVM 的向量化；Go 更
   强调快速编译 + GC + 简单内联。二者都不是 `-march=native`，均用基础 x86-64。
-- **协程对比见上一节**：spawn 差 ~8x（固定栈 vs 可增长栈，460→24ms 已修复 O(n²)）、
-  **切换已反超**（汇编切换 400→72ms，MYP 快 4.3x），是 MYP 协程实现特性，与主套件
-  趋势独立。
+- **协程对比见上一节**：统一“全部启动并挂起后再恢复”的生命周期后，spawn 为
+  14ms vs 13ms，已同级；**切换已反超**（52ms vs 319ms，MYP 快 6.1x）。
 - **协程通信/I-O 专项**：`channel_pingpong`（cap=1 Channel 双向 10⁵ 次收发）
-  **MYP 反超 1.20**（5ms vs Go 6ms）——2026-08 加**同步交接**（send/recv 唤醒对端
-  等待者时立即 resume，Go 式 rendezvous，免调度轮往返），21ms→5ms；此前多消费者
+  **MYP 约快 2x**（3ms vs Go 6ms）——锁内更新状态、锁外同步交接，避免持锁切换与
+  scheduler 往返；此前多消费者
   count 下溢崩溃与句柄槽位复用两个缺陷已修（见下），交接现在安全。
   `io_socket`（回环 TCP 逐字节 ping-pong，@coro + waitFd vs goroutine + 阻塞
-  socket）**MYP 反超 1.10**——汇编切换把调度代价降到与 Go netpoller 相当甚至更低。
+  socket）MYP 慢约 6%，已基本同级。
 
 
 ## 性能修复记录

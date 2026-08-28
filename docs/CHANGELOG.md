@@ -27,6 +27,205 @@
 
 ## 编译器版本历史
 
+### v3.15.196 — 协程创建与 Go 同级（22ms → 14ms）
+
+**非破坏性**（MYP runtime + oracle/selfhost codegen + 基准公平性修复）。调查
+`coro_spawn` 的 7 倍表面差距后发现两类独立问题：MYP 每个协程首次启动时通过
+`setjmp` 保存信号掩码，产生 20000 次 `rt_sigprocmask`；同时 runtime 按协程容量
+提前分配每槽 32 项 ARC 帧表和未使用的等待表。现改用不保存信号掩码的 `_setjmp`
+（oracle/selfhost/C trampoline 一致），ARC 帧明细与等待表均在首次实际使用时分配，
+栈池同尺寸命中增加 O(1) 尾部快路径；trampoline 完成切回调用者后，由 `resume`
+在安全栈上立即回收协程栈，普通完成不再累积 retired 元数据；每槽仅保留创建、切换
+热字段，取消/自毁、等待结果和 async exec 结果拆为按功能首次使用的 sidecar。20000
+个 64KB 活跃协程的 RSS 约 124MB → 87.4MB、minor faults 约 30.5k → 21.4k，
+创建+完成耗时 22ms → 14ms。
+- **融合首次启动 ABI**：oracle/selfhost 统一将原 create、逐项 set-arg、set-entry、
+  first-resume 改为 `create_entry + start_args` 两段调用；entry 参数放在调用者
+  entry-block 栈包中，首次 resume 同步读取，并保存/恢复嵌套 spawn 的参数包指针。
+  单参数方法的外部 runtime 调用由 7 次降到 2 次；20k 并发驻留基准仍为 14ms
+  （已由栈首次触页主导），但高参数协程不再受旧共享入口表 16 槽限制。C fallback
+  同步实现新 ABI，新增 `this + 16` 显式参数回归，两套 runtime 均通过。
+- **修复 MYP runtime 增量构建**：`libmyp_rt_myp.a` 的 CMake 自定义命令此前只依赖
+  `myp_self`，修改 `runtime_myp/*.myp` 不会触发归档重建，可能静默使用旧 runtime
+  或回退 C runtime。现用 `CONFIGURE_DEPENDS` 跟踪全部 MYP runtime 源和构建脚本。
+- **修正比较语义**：旧 Go 用例允许 goroutine 在创建循环中直接结束并回收栈，而 MYP
+  用例要求全部 20000 个协程先启动、挂起并同时存活，再统一恢复；这比较的是流水回收
+  与并发驻留，不是同一生命周期。Go 用例现同样用 ready/barrier 保持全部 goroutine
+  活跃，耗时 3ms → 13ms、RSS 约 6MB → 56MB。公平对比为 **MYP 14ms / Go 13ms**，
+  MYP 仅慢 7.5%，已处同一性能级别。
+- **全面结果**：30/30 verify 一致；MYP 胜 25、Go 胜 5，Go/MYP 几何均值
+  **1.68**；双方均不少于 5ms 的 28 项几何均值 **1.66**。全量 **464/464**，
+  stress **17/17**；ARC 帧释放、事件/FD 等待和协程异常定向回归均通过。
+
+### v3.15.195 — Go 全面基准与锁外 Channel 同步交接（29ms → 3ms）
+
+**非破坏性**（MYP runtime + 基准方法优化）。将 MYP/Go 对比扩到计算、内存、递归、
+字节处理、协程、通道与 I/O 共 30 项，并统一为双方预热、交错运行、可选 CPU 亲和性、
+只汇总 verify 一致项目；脚本新增 `BENCHES` 子集与整体几何均值，修复 verify 失败仍被
+标为 OK 的 shell 判定错误。
+- **发现并修复 Channel 性能回退**：v3.15.83 为解决跨线程通道竞态增加状态锁时，
+  同线程 waiter 也从同步 `resume` 退化为下一轮 scheduler，`channel_pingpong` 从历史
+  5ms 回退到 29ms。现锁内仅更新缓冲、弹出 waiter 和路由跨线程 mailbox；同线程 waiter
+  在解锁后按深度上限 64 同步交接，既不持锁切换，也不增加调度轮次，实测 **29ms →
+  3ms**，Go 为 6ms。
+- **消除线程程序的 C runtime 回退**：单线程 ARC 快路径新增的
+  `myp_arc_mark_threaded` 此前仅由 C runtime 定义，MYP `alloc.myp` 仍保留 FFI 未定义
+  引用，导致 `@thread`/`@parallel` 程序首次纯 MYP 链接失败后追加 `libmyp_rt.a`。
+  现由 MYP allocator 导出同名函数并设置 `CC.everThreaded`；归档符号由 `U` 变为 `T`，
+  线程/通道程序直接输出 `(MYP runtime only)`。新增端到端回归，防止 fallback 掩盖
+  MYP runtime 符号闭包缺口。
+- **全面结果**：16 核、无钉核、每项预热后交错 7 轮取最小值，30/30 verify 一致；
+  MYP 胜 26、Go 胜 4，Go/MYP 几何均值 **1.61**；双方均不少于 5ms 的 27 个稳健项
+  几何均值 **1.73**。Go 仅在 `coro_spawn`（MYP 22ms / Go 3ms）、`fft`（72/64）、
+  `sieve_odd`（9/8）、`io_socket`（83/78）领先；除 spawn 外缺口均为 6–13%。下一主攻
+  方向是固定协程栈的创建/映射成本，而非纯计算代码生成。
+- **验证**：`channel_stress`、`coro_churn`、多消费者回归通过，跨线程
+  `xthread_storm` 连续 6 次通过；全量 **463/463**，完整 stress **17/17**。
+
+### v3.15.194 — 叶类直达析构与 weak 空表内联快路径（8.75ms → 7.77ms）
+
+**非破坏性**（oracle/selfhost codegen + C/MYP runtime 通用优化）。每个类对象归零时
+此前都会经 release table 间接调用生成的析构桩；纯标量叶类的桩只再调用一次
+`myp_free_object`，形成无效的两跳分发。同时，无 `@weak` 的常见程序仍需跨模块调用
+死亡通知函数，函数内部才检查弱注册表为空。
+- **按字段所有权生成表项**：无 ARC/weak 字段的 class 直接将 release table 表项
+  指向 `myp_free_object`，且不再生成不可达的空析构桩；含 class/string/array/slice/
+  interface/function/nested-struct ARC 字段或 `@weak` 字段的类继续使用级联析构桩。
+- **weak 空表本地快路径**：MYP alloc 模块维护 weak 注册表非空标志，C runtime
+  维护 release/acquire 原子 entry 计数；罕见的 weak 注册/移除负责更新，普通对象
+  release 只做一次 load/branch，非空时才调用慢速死亡通知。保持 MYP alloc/weak
+  独立归档模块，不引入全 runtime LTO 或用户链接开销。
+- **效果与验证**：20 万个四元素 `ArrayList<Item>`、共 80 万叶对象的 mixed2，30 次
+  均值 **8.75ms → 7.77ms**（约 11%），checksum 800000 不变，RSS 约 2MiB；规则不依赖
+  容器、类型、方法名或循环次数。fixed-point 自举通过，全量 **462/462**，stress
+  **17/17**；新增 IR 回归验证叶类直达与持引用类级联。
+
+### v3.15.193 — liveTotalCount 逃逸可观测性修复
+
+**非破坏性**（oracle/selfhost codegen 正确性修复）。逃逸分析的分配内省保护此前只
+识别 `Memory.liveObjectCount()` 与 `liveObjectCountByType()`；仅使用
+`Memory.liveTotalCount()` 的函数仍可能把局部 class 栈上化，使总存活数少计对象。
+现将 total count 纳入全 TU 内省检测，保持可观测分配语义；新增局部纯 class 的计数
+回归。fixed-point 自举通过，全量 **461/461**，stress **17/17**。
+
+### v3.15.192 — ArrayList 小缓冲与循环栈对象复用（11–12ms → 8–9ms）
+
+**非破坏性**（标准库 + oracle/selfhost codegen 优化）。短生命周期小列表此前仍为
+每个实例分配动态 backing；同时，逃逸分析生成的 class `alloca` 若位于循环体，会在
+每轮继续下移栈指针，较大对象长循环最终耗尽线程栈。
+- **8 槽 inline storage**：`ArrayList<T>` 的前 8 个元素直接存入对象内，超过后才
+  惰性分配 overflow backing；`get/set/remove/grow` 统一处理 inline/overflow 边界。
+- **固定数组 ARC 析构**：oracle 与 selfhost 的 class destroy stub 对 `T[N]` 中的
+  class/string/接口/函数引用逐槽 release；oracle 以单态化后的 LLVM 字段布局识别
+  泛型 pointer 数组，避免依赖已离开作用域的类型参数映射。
+- **循环栈对象复用**：固定大小的 stack-promoted class storage 提升到函数 entry，
+  循环内每轮重写 sentinel/type-id、清零并重新构造，避免循环内 `alloca` 累积。
+- **函数级栈预算**：oracle/selfhost 按函数累计 class 与常量维度数组的实际布局字节，
+  仅在剩余预算可容纳候选时栈提升；默认总预算 64KB，可用
+  `MYP_STACK_PROMOTION_BUDGET=<bytes>` 按目标平台覆盖（`0` 禁用）。因此 360KB
+  `MappingParser` 自动回退 arena，不再依赖单对象尺寸特判，也避免巨型 entry alloca
+  触发 LLVM 后端崩溃。
+- **selfhost 聚合数组布局**：修正 `[N x T]` 尺寸解析未剥离末尾 `]`，导致
+  `T={ptr,i64}` 等聚合元素被误按 8 字节、栈对象越界；泛型 class size 计算改用目标
+  实例自身的类型参数上下文。
+- **效果**：20 万个四元素 `ArrayList<Item>` 的容器负载由 **11–12ms** 降到稳定
+  **8–9ms**，checksum 不变；新增 inline 边界、扩容、ARC 元素和 10 万轮栈复用回归。
+
+### v3.15.191 — 单线程 ARC 快路径（容器负载 14–15ms → 11–12ms）
+
+**非破坏性**（C/MYP runtime 协同优化）。ARC 此前即使程序从未启动 worker，也在
+每次 retain/release 上执行原子 RMW；单变量 plain-release 探针将容器负载从
+14–15ms 降至 11–12ms，确认引用计数原子指令已成为主要剩余开销。
+- **单调线程模式**：`myp_cc_thread_enter()` 在创建 `@thread` 或执行 `@parallel`
+  前设置 `everThreaded`，并调用 C 边界 `myp_arc_mark_threaded()`；标志一旦置位，
+  进程余下生命周期永久使用 atomic ARC，不在线程退出时切回。
+- **单线程 fast path**：从未创建 worker 的程序，MYP `myp_release` 使用普通
+  load/store 递减，C `myp_retain` 使用 relaxed load/store 递增；strict 头校验保持。
+  C runtime 自有 thread、pool 和 async-exec 三个 `pthread_create` 入口也在创建前
+  标记，保证 fallback 路径并发安全。
+- **效果与验证**：fixed-point mixed2 稳定 **11–12ms**（本阶段累计 29ms →
+  11–12ms），checksum 不变；跨线程 ARC、parallel、cycle collector、strict 诊断
+  定向回归通过。
+
+### v3.15.190 — TLS raw arena（容器负载 17–18ms → 14–15ms）
+
+**非破坏性**（纯 MYP runtime 分配器优化）。字符串、数组/slice backing 与 raw
+scratch 原先仍在每次分配、回收和字符串原地扩容时获取进程级自旋锁；单线程去锁
+探针将当前容器负载从 17–18ms 降至 14–15ms，确认仍有约 18% 热路径开销。
+- **线程本地 raw 状态**：bump 指针、size-class free-list、诊断计数及字符串原地
+  扩容状态迁入 `@static @thread ALocal`。常规分配、回收和尾部扩容无锁；仅新建
+  64KB chunk 并挂入全局 `Arena` 链时加锁。
+- **全局可发现性**：所有 raw chunk 仍挂入全局链，cycle collector 的数组/字符串
+  地址校验保持完整；`Memory.arenaReservedBytes/UsedBytes` 与 C runtime 一致，报告
+  当前线程 arena。跨线程释放的 backing 归释放线程本地 free-list。
+- **效果与验证**：fixed-point 容器负载稳定 **14–15ms**，checksum 不变；扩展
+  `cross_thread_arc`，4 线程各分配并校验 20000 个整数的 backing，强制并发 raw
+  chunk 扩容。`parallel_string_new`、字符串原地 append、全量 **458/458** 与压力套件
+  **17/17** 通过。顺带修正 `generic_boom.sh` 的 `r2$i` 多位索引变量重名，使
+  10/20/50/100/200 类型单态化压力实际完整运行。
+
+### v3.15.189 — TLS class arena（容器负载 29ms → 17–18ms）
+
+**非破坏性**（纯 MYP runtime 分配器优化）。class arena 原先在每次分配和回收时
+获取进程级自旋锁，即使单线程也执行原子 RMW；单变量去锁探针把容器负载从 29ms
+降至 17–18ms，确认锁是当前主要开销。
+- **线程本地热路径**：class bump 指针、size-class free-list 和分配计数迁入
+  `@static @thread CLocal`；分配与回收不再获取全局锁。每线程按 64KB chunk bump，
+  仅 chunk 扩容时锁住全局 `CArena` 链并发布新节点。
+- **跨线程释放与环收集**：最后一个引用可在任意线程释放，空闲块归释放线程的
+  free-list；所有 chunk 仍永久挂在全局链上，安全点 cycle collector 可继续完整枚举。
+  扩展 `cross_thread_arc`，4 线程分别保留 3000 个对象，覆盖并发 chunk 扩容、字段
+  完整性和跨线程最后释放；既有多环、数组环、泛型环回归全部通过。
+
+### v3.15.188 — fresh 所有权转移（容器负载 36ms → 29ms）
+
+**非破坏性**（LLVM 优化 pass + 自举工具链）。`new T()` 存入强引用槽时，内联后的
+IR 原有 `retain(fresh) → release(old) → store fresh → release(fresh)`；首尾原子
+操作净效果为零。fresh 分配地址不可能等于仍存活的旧槽值，因此无需自赋值保护，
+可把初始 rc=1 直接转移给目标槽。
+- **保守 ARC pass**：新增 `MypArcTransferPass`，仅匹配同一基本块、
+  `myp_alloc_object` fresh 值、恰好一个中间 pointer store、随后同值 release，且
+  fresh 值在窗口内无其他使用的形态；跨块、源变量继续使用、多 store、非 fresh
+  一律不动。保留旧值 release 与全部 weak/cycle/析构语义。
+- **oracle/selfhost 同步**：oracle 在默认 LLVM pipeline 后直接运行 pass；新增
+  `libmyp_pass_plugin.so`，selfhost 外部 `opt` 使用
+  `default<O#>,myp-arc-transfer,verify`。插件从 `MYP_PASS_PLUGIN`、编译器同目录或
+  `build/` 探测；缺失或显式设为 `0` 时回退原生 `opt -O#`，语义不受影响。
+- **效果与验证**：fixed-point `mypc` 上容器+对象负载 **36–37ms → 29ms**，完整
+  mixed **71ms → 64–65ms**（本轮累计 75ms → 64ms），checksum 不变。新增
+  `arc_transfer` 回归，覆盖 fresh 转移、源继续使用时拒绝优化、替换非空旧槽；
+  插件关闭 fallback 同样通过。bootstrap 二级 MD5 一致；全量 **458/458**。
+
+### v3.15.187 — ARC 字段 class 栈上化（容器负载 40ms → 36ms）
+
+**非破坏性**（编译器 codegen + 运行时协议优化）。逃逸分析此前仅栈上化不含 ARC
+字段的 class，导致局部 `ArrayList<T>` 即使不逃逸仍分配 wrapper 对象。
+- **析构式栈上化**：oracle 与 selfhost 允许不逃逸、含 ARC/weak 字段的 class 使用
+  栈存储；作用域退出时调用已有 `__myp_destroy_<Class>` 析构桩，正常释放 backing、
+  元素和其他字段。异常区与协程继续保守使用堆分配，避免 longjmp/跨挂起点清理。
+- **栈对象协议**：对象头 rc 使用 `0x7ffffffe` sentinel；C runtime 与纯 MYP
+  runtime 的 `myp_free_object` 在字段析构后识别该标记，不更新 heap live 计数、不把
+  栈地址送回 class arena。普通堆对象的 ARC/cycle/weak 路径保持不变。
+- **效果与验证**：fixed-point `mypc` 上，容器+对象负载 **40ms → 36–37ms**，完整
+  mixed 负载 **75ms → 71ms**，checksum 不变；新增 `ArrayList<Node>` wrapper 栈上化
+  回归及 IR sentinel/析构调用检查。bootstrap 二级 MD5 一致；全量 **457/457**。
+
+### v3.15.186 — 同 TU 参数 noescape 摘要（单对象传参 27ms → 0ms）
+
+**非破坏性**（编译器 codegen 优化）。第一版跨函数逃逸分析：
+- **顶层函数参数摘要**：oracle 在 TU 生成前预计算名称+参数数量唯一的顶层函数；
+  若参数未被保存、返回、捕获或继续传给未知调用，则标记为 `noescape`。selfhost
+  同步相同保守规则；泛型模板、重载歧义、方法/动态分派、复杂实参继续按逃逸处理。
+- **调用方栈上化**：`T x = new T(); readOnly(x)` 中直接变量实参命中对应摘要后，
+  不再迫使 `x` 堆分配；动态数组只读传参同样受益。保存进对象字段的参数仍保持
+  堆分配，回归覆盖返回后继续访问的悬垂风险。
+- **内存诊断语义**：`Memory.liveObjectCount[ByType]` 可跨函数观测分配，保护从
+  “当前函数”提升为整个 TU；检测到内省调用时全 TU 禁用栈上化，保证 ARC/weak/
+  cycle collector 诊断计数不被优化改变。
+- **效果与验证**：100 万次 `new Item` + `process(Item)` 从 **27ms → 0ms**
+  （强制 `MYP_NO_STACK_NEW=1` 对照）；新增/扩展 `esc_escape` noescape 与保存反例。
+  bootstrap 二级 MD5 一致；全量 **457/457**。
+
 ### v3.15.176 — 修复多环大规模漏收集 + 长时间泄漏测试工具
 
 **非破坏性**（纯 MYP 运行时）。长时间运行测试暴露 + 修复：

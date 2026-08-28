@@ -3,7 +3,7 @@
 // 符号名与 C 一致，--shared + 前置链接 → MYP 定义优先。
 //
 // 设计（镜像 C 语义）：
-//   - `setjmp` 用 libc（生成代码发射 `call i32 @setjmp(ptr)`，ReturnsTwice）——
+//   - `_setjmp` 用 libc（生成代码发射 `call i32 @_setjmp(ptr)`，ReturnsTwice）——
 //     非 myp_* 符号，不影。`__myp_longjmp`（ASan 感知包装）MYP 化：经 ffi 调
 //     libc `longjmp`（i64/i32 与 ptr/i32 ABI 兼容）。
 //   - 处理栈：@static Exc.handlerBufs（arena 64*8）+ depth——try 块 push 自身

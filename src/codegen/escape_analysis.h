@@ -20,6 +20,11 @@ namespace mylang {
 struct BlockStmt;
 struct Stmt;
 struct Expr;
+struct TranslationUnit;
+
+// 在生成函数体前预计算同一翻译单元内顶层函数的参数 noescape 摘要。
+// 仅记录名称+参数数量唯一、且参数在被调函数体中不发生引用转移的函数。
+void prepareEscapeAnalysis(const TranslationUnit& tu);
 
 // 分析函数体 body，返回可栈上分配的局部变量名集合。
 std::set<std::string> analyzeEscapeStackVars(const BlockStmt* body);

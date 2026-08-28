@@ -51,8 +51,8 @@ gen() {
             echo "            C$i r$i = echo<C$i>(c$i);"          # 泛型函数实例 1
             echo "            Box<C$i> b$i = new Box<C$i>();"     # 泛型类实例
             echo "            b$i.set(c$i);"
-            echo "            C$i r2$i = echo<C$i>(r$i);"         # 同类型重复调用 → 应去重
-            echo "            acc = acc + r2$i.get();"
+            echo "            C$i echoed_$i = echo<C$i>(r$i);"    # 同类型重复调用 → 应去重
+            echo "            acc = acc + echoed_$i.get();"
         done
         echo "            Console.writeString(\"acc=\" + acc + \"\\n\");"
         echo "        }"

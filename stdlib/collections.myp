@@ -10,18 +10,24 @@
 class ArrayList<T> {
     action:
         void add(T val) {
-            if (data_ == null) { cap_ = 8; data_ = new T[cap_]; }
-            if (cnt_ >= cap_) grow();
-            data_[cnt_] = val;
+            if (cnt_ < 8) {
+                small_[cnt_] = val;
+            } else {
+                if (data_ == null) { cap_ = 16; data_ = new T[cap_ - 8]; }
+                if (cnt_ >= cap_) grow();
+                data_[cnt_ - 8] = val;
+            }
             cnt_ = cnt_ + 1;
         }
 
         T get(int index) {
-            return data_[index];
+            if (index < 8) return small_[index];
+            return data_[index - 8];
         }
 
         void set(int index, T val) {
-            data_[index] = val;
+            if (index < 8) small_[index] = val;
+            else data_[index - 8] = val;
         }
 
         int size() {
@@ -39,20 +45,27 @@ class ArrayList<T> {
         // 删除 index 处元素（后续元素前移；越界忽略）。
         void remove(int index) {
             if (index < 0 || index >= cnt_) return;
-            for (int i = index; i + 1 < cnt_; i = i + 1) data_[i] = data_[i + 1];
+            for (int i = index; i + 1 < cnt_; i = i + 1) {
+                T next;
+                if (i + 1 < 8) next = small_[i + 1];
+                else next = data_[i + 1 - 8];
+                if (i < 8) small_[i] = next;
+                else data_[i - 8] = next;
+            }
             cnt_ = cnt_ - 1;
         }
 
     function:
         void grow() {
             int nc = cap_ * 2;
-            T[] nd = new T[nc];
-            for (int i = 0; i < cnt_; i = i + 1) nd[i] = data_[i];
+            T[] nd = new T[nc - 8];
+            for (int i = 8; i < cnt_; i = i + 1) nd[i - 8] = data_[i - 8];
             data_ = nd;
             cap_ = nc;
         }
 
     property:
+        T[8] small_;
         T[] data_;
         int cnt_;
         int cap_;

@@ -1,0 +1,21 @@
+// liveTotalCount observes class allocations, so escape analysis must preserve
+// heap allocation for otherwise stack-promotable local objects.
+
+import test;
+import memory;
+
+class TotalCountNode {
+    property:
+        int value;
+}
+
+long localObjectDelta() {
+    long before = Memory.liveTotalCount();
+    TotalCountNode node = new TotalCountNode();
+    return Memory.liveTotalCount() - before;
+}
+
+@test void t_live_total_disables_stack_promotion() {
+    Test.assertLongEq(localObjectDelta(), 1,
+        "liveTotalCount must observe local class allocation");
+}

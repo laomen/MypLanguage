@@ -3543,16 +3543,15 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
     uint32_t tid = (tit != class_type_ids_.end()) ? (uint32_t)tit->second : 0;
     llvm::Value* obj = nullptr;
     if (stack_new_) {
-        // 逃逸分析栈上分配：alloca [8B 头 + sz]，data=+8，写 rc=1/tid，
-        // 不注册 ARC 临时释放（调用方对栈上变量跳过 release，栈自动回收）。
+        // 逃逸分析栈上分配：alloca [8B 头 + sz]，data=+8。特殊 rc 标记
+        // 使含 ARC 字段的对象可调用正常析构桩，而 myp_free_object 跳过栈存储。
         auto* i8ty = llvm::Type::getInt8Ty(ctx_);
         auto* i32ty = llvm::Type::getInt32Ty(ctx_);
-        auto* raw = builder_.CreateAlloca(
+        auto* raw = createEntryBlockAlloca(current_function_,
             llvm::ArrayType::get(i8ty, 8 + (sz > 0 ? sz : 1)),
-            nullptr, cls_name + "_stack");
+            cls_name + "_stack");
         auto* hdr = builder_.CreateBitCast(raw, llvm::PointerType::get(ctx_, 0));
-        // rc=1（栈上唯一所有权；不参与 ARC/环收集——不在 arena）
-        builder_.CreateStore(llvm::ConstantInt::get(i32ty, 1),
+        builder_.CreateStore(llvm::ConstantInt::get(i32ty, 0x7FFFFFFE),
             builder_.CreateGEP(i32ty, hdr, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0)));
         builder_.CreateStore(llvm::ConstantInt::get(i32ty, tid),
             builder_.CreateGEP(i32ty, hdr, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 1)));

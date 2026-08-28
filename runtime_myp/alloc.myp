@@ -28,25 +28,25 @@ ffi void myp_fail_alloc_check();
 
 @static class Arena {
     property:
-        long cur = 0;      // 当前 chunk 头地址（0 = 未初始化）
-        long head = 0;     // 首个 chunk（未来 bulk munmap）
+        long cur = 0;      // 全局最新 chunk（cycle collector 地址校验）
+        long lockS = 0;    // 仅保护新 chunk 挂入全局链
+}
+@static @thread class ALocal {
+    property:
+        long cur = 0;      // 当前线程 chunk 头地址（0 = 未初始化）
         long cur_used = 0;
         long cur_cap = 0;
         long total_used = 0;    // 累计 bump 字节（诊断 myp_diag_arena_used 用）
         long last_base = 0;     // 最后一次分配的 header base（字符串拼接原地扩展用）
         long last_aligned = 0;  // 最后一次分配的 16 对齐大小
-        long freeHead = 0;      // 空闲链表头（块首，arenaLock 保护；0=空）
-        long lockS = 0;         // 自旋锁字地址（mmap 直分配，勿用 arena；0=未初始化）
+        long freeHead = 0;
         // size-class 分桶——2 幂大小类 (32..32768+，16 类) 各一空闲
         // 链表。块按 stored 归 class，分配按 req 的 class 起找（O(1) 链表头）。
         long[16] freeLists;
 }
-// arena 自旋锁（性能优先）：@parallel/@thread 并发 bump 需要——C 版用 TLS arena
-// 天然隔离，MYP 全局 bump 无锁会竞态（parallel_string_new 曾损坏）。锁字 mmap
-// 直分配（arena 锁不能依赖 arena）。用 weak.myp 同款**自旋锁**（atomic_add 返回
-// 旧值，0=获取）而非 futex 票号锁——bump 临界区仅数行（cur_used += a），争用极短，
-// 自旋即可；futex 的 unlock 每次发 futex_wake syscall（~100ns）是纯开销，实测
-// 1M 分配 C 243ms vs futex 250ms（~3%），自旋可进一步压到 ~1%。
+// Arena 自旋锁只保护新 chunk 挂入全局链；每线程 bump/free-list 在 ALocal 中无锁。
+// 锁字 mmap 直分配（arena 锁不能依赖 arena）。用 atomic_add 返回旧值（0=获取），
+// 临界区仅发布链表头数行，避免 futex wake syscall。
 void arenaLockInit() {
     if (Arena.lockS == 0) {
         long p = __myp_syscall(9, 0, 4, 3, 0x22, -1, 0);
@@ -65,61 +65,62 @@ void arenaUnlock() {
     if (Arena.lockS == 0) return;
     __myp_atomic_store_i32_addr(Arena.lockS, 0);
 }
-// LIFO 回收：释放的块若是当前**最后一次 bump 分配**（Arena.last_base 匹配）→ 回退
+// LIFO 回收：释放的块若是当前**最后一次 bump 分配**（ALocal.last_base 匹配）→ 回退
 // cur_used/total_used（空间被下次分配复用）。纯 bump 不回收的高频临时分配模式
 // （alloc_arr 的 `new T[n]` 循环、json 解析树、file_io 临时串）由此线性累积归零。
-// ⚠️ 必须 arenaLock 内原子（last_base/last_aligned 与并发分配竞争）；只在 rc→0
-// 释放路径调用（块确已死亡，回退安全——其后无存活分配）。
-// 释放回收（arenaLock 内）：块若是当前**最后一次 bump 分配**（last_base 匹配，即 bump
+// last_base/last_aligned 属于当前线程 ALocal；只在 rc→0 释放路径调用。
+// 释放回收：块若是当前**最后一次 bump 分配**（last_base 匹配，即 bump
 // tail）→ LIFO 回退 cur_used（空间复用，高频临时分配如 alloc_arr 循环归零）；否则入
 // **空闲链表**（首适复用，覆盖非 LIFO churn 如 json 解析树/文件 IO 临时串）。
 // base0 = 块基址（含 8B total 前缀）。⚠️ 复用块（空闲链表弹出）last_base 置 0 → 禁
 // LIFO（其不在 bump tail，回退会损坏 cur_used）——再释放时走空闲链表。
 void arenaReclaim(long base0) {
-    arenaLock();
     // ⚠️ LIFO 检查保持 `== base0`（last_base 是 header base=base0+8，永不匹配=死
     // 代码）：曾改成 `== base0+8` 让 LIFO 真正生效 → ch9 tryLock 状态损坏/ch11 挂起
     // （LIFO 回退 cur_used 后该空间被立即复用，若块仍被引用则破坏数据——跨分配序列
     // 下"last_base 匹配"不足以证明块确已死亡）。回收统一走**空闲链表**（首适复用；
     // alloc_arr 201MB→1.9MB / file_io 920MB→40MB / json 311MB→9.7MB 收益全部来自
     // 空闲链表，LIFO 非必要且有害，保持死代码）。
-    if (Arena.last_base == base0) {
-        if (Arena.cur_used >= Arena.last_aligned) {
-            Arena.cur_used = Arena.cur_used - Arena.last_aligned;
-            if (Arena.total_used >= Arena.last_aligned)
-                Arena.total_used = Arena.total_used - Arena.last_aligned;
+    if (ALocal.last_base == base0) {
+        if (ALocal.cur_used >= ALocal.last_aligned) {
+            ALocal.cur_used = ALocal.cur_used - ALocal.last_aligned;
+            if (ALocal.total_used >= ALocal.last_aligned)
+                ALocal.total_used = ALocal.total_used - ALocal.last_aligned;
         }
-        Arena.last_base = 0;
-        Arena.last_aligned = 0;
+        ALocal.last_base = 0;
+        ALocal.last_aligned = 0;
     } else {
         long total = __myp_mem_load_i64(base0);
         if (total > 0) {
             // size-class 分桶——块按 total 归对应 2 幂 class 链表
             long fidx = classOf(total);
             __myp_mem_store_i64(base0 + 8, total);       // freed: total@+8
-            __myp_mem_store_i64(base0, Arena.freeLists[fidx]);  // freed: next@+0
-            Arena.freeLists[fidx] = base0;
+            __myp_mem_store_i64(base0, ALocal.freeLists[fidx]);  // freed: next@+0
+            ALocal.freeLists[fidx] = base0;
         }
     }
-    arenaUnlock();
 }
 // ---- class arena（方案 A v3.15.179：类对象独立 arena，环收集 walk 免登记）----
-// 与 Arena 并行的第二个 bump+size-class arena，**只**服务类对象
-// （myp_alloc_object/free_object）。字符串/数组/raw 块仍在 Arena。
+// 全局 CArena 只持可枚举 chunk 链；CLocal 是每线程 bump+size-class 状态，
+// **只**服务类对象（myp_alloc_object/free_object）。热路径无锁，仅新建 64KB
+// chunk 挂入全局链时加锁。字符串/数组/raw 块仍在 Arena。
 // 环收集 walk CArena 即可枚举全部类对象根——全是类对象无原始块污染（原始块
 // 无 type_id 头，混在 Arena 里 walk 会出假根），免去 ccAllAdd 每次分配的登记
 // （实测 5ms/百万）+ 收集期 allN 大遍历。
 @static class CArena {
     property:
         long cur = 0;
-        long head = 0;
+        long lockS = 0;
+}
+@static @thread class CLocal {
+    property:
+        long cur = 0;
         long cur_used = 0;
         long cur_cap = 0;
         long total_used = 0;
         long last_base = 0;
         long last_aligned = 0;
         long freeHead = 0;
-        long lockS = 0;
         long[16] freeLists;
 }
 void cArenaLockInit() {
@@ -149,21 +150,19 @@ long myp_class_arena_alloc_ex(long size, int grow) {
     req = req - (req % 16);
     long cap = req;
     if (grow != 0) cap = req * 2;
-    cArenaLock();
     long idx = classOf(req);
     while (idx < 16) {
         long prev = 0;
-        long cur = CArena.freeLists[idx];
+        long cur = CLocal.freeLists[idx];
         while (cur != 0) {
             long stored = __myp_mem_load_i64(cur + 8);
             if (stored >= req) {
                 long nxt = __myp_mem_load_i64(cur);
-                if (prev == 0) CArena.freeLists[idx] = nxt;
+                if (prev == 0) CLocal.freeLists[idx] = nxt;
                 else __myp_mem_store_i64(prev, nxt);
                 __myp_mem_store_i64(cur, stored);
-                CArena.last_base = 0;
-                CArena.last_aligned = 0;
-                cArenaUnlock();
+                CLocal.last_base = 0;
+                CLocal.last_aligned = 0;
                 return cur + 8;
             }
             prev = cur;
@@ -171,52 +170,52 @@ long myp_class_arena_alloc_ex(long size, int grow) {
         }
         idx = idx + 1;
     }
-    if (CArena.cur == 0 || CArena.cur_used + cap > CArena.cur_cap) {
+    if (CLocal.cur == 0 || CLocal.cur_used + cap > CLocal.cur_cap) {
         long chunk = cap;
         if (chunk < 65536) chunk = 65536;
         long c = __myp_syscall(9, 0, 32 + chunk, 3, 0x22, -1, 0);
-        if (c == -1 || c == 0) { cArenaUnlock(); return 0; }
+        if (c == -1 || c == 0) return 0;
+        cArenaLock();
         __myp_mem_store_i64(c, CArena.cur);
         __myp_mem_store_i64(c + 8, chunk);
         __myp_mem_store_i64(c + 16, 0);
-        if (CArena.cur == 0) CArena.head = c;
         CArena.cur = c;
-        CArena.cur_used = 0;
-        CArena.cur_cap = chunk;
+        cArenaUnlock();
+        CLocal.cur = c;
+        CLocal.cur_used = 0;
+        CLocal.cur_cap = chunk;
     }
-    long p = CArena.cur + 32 + CArena.cur_used;
+    long p = CLocal.cur + 32 + CLocal.cur_used;
     __myp_mem_store_i64(p, cap);
-    CArena.last_base = p + 8;
-    CArena.last_aligned = cap;
-    CArena.cur_used = CArena.cur_used + cap;
-    CArena.total_used = CArena.total_used + cap;
-    __myp_mem_store_i64(CArena.cur + 16, CArena.cur_used);   // chunk used@16（walk 精确边界）
-    cArenaUnlock();
+    CLocal.last_base = p + 8;
+    CLocal.last_aligned = cap;
+    CLocal.cur_used = CLocal.cur_used + cap;
+    CLocal.total_used = CLocal.total_used + cap;
+    __myp_mem_store_i64(CLocal.cur + 16, CLocal.cur_used);   // chunk used@16（walk 精确边界）
     return p + 8;
 }
 long myp_class_arena_alloc(long size) { return myp_class_arena_alloc_ex(size, 0); }
 
-// 类对象块回收：同 arenaReclaim 但用 CArena（LIFO 死代码同原：统一走空闲链表）。
+// 类对象块回收进当前释放线程的本地 free-list；允许跨线程最后释放，不触碰分配
+// 线程状态。chunk 映射仍由全局链持有，因此地址枚举和后续本线程复用都安全。
 void cArenaReclaim(long base0) {
-    cArenaLock();
-    if (CArena.last_base == base0) {
-        if (CArena.cur_used >= CArena.last_aligned) {
-            CArena.cur_used = CArena.cur_used - CArena.last_aligned;
-            if (CArena.total_used >= CArena.last_aligned)
-                CArena.total_used = CArena.total_used - CArena.last_aligned;
+    if (CLocal.last_base == base0) {
+        if (CLocal.cur_used >= CLocal.last_aligned) {
+            CLocal.cur_used = CLocal.cur_used - CLocal.last_aligned;
+            if (CLocal.total_used >= CLocal.last_aligned)
+                CLocal.total_used = CLocal.total_used - CLocal.last_aligned;
         }
-        CArena.last_base = 0;
-        CArena.last_aligned = 0;
+        CLocal.last_base = 0;
+        CLocal.last_aligned = 0;
     } else {
         long total = __myp_mem_load_i64(base0);
         if (total > 0) {
             long fidx = classOf(total);
             __myp_mem_store_i64(base0 + 8, total);
-            __myp_mem_store_i64(base0, CArena.freeLists[fidx]);
-            CArena.freeLists[fidx] = base0;
+            __myp_mem_store_i64(base0, CLocal.freeLists[fidx]);
+            CLocal.freeLists[fidx] = base0;
         }
     }
-    cArenaUnlock();
 }
 
 @static class Live {
@@ -225,6 +224,15 @@ void cArenaReclaim(long base0) {
         long objects = 0;
         long arrays = 0;
 }
+
+@static class WeakFast {
+    property:
+        int hasEntries = 0;
+}
+
+// Updated by weak.myp under its registry lock. Keeping the flag in this module
+// lets the no-weak release path compile to one local load and branch.
+void myp_weak_set_nonempty(int value) { WeakFast.hasEntries = value; }
 
 // C: myp_arena_bump_alloc —— 从 mmap bump arena 取 size 字节（header+payload），
 // **返回 header base**（块首 base0 前 8B 存 total 前缀）。失败返回 0。
@@ -245,23 +253,21 @@ long myp_arena_alloc_ex(long size, int grow) {
     req = req - (req % 16);       // 含 8B total 前缀，16 对齐
     long cap = req;
     if (grow != 0) cap = req * 2;   // 拼接增长 2x 块容量（几何）
-    arenaLock();
     // size-class 复用：按 req 的 2 幂 class 起向上找，桶内 first-fit 遍历（同基线
     // freeHead 遍历但分桶更小 → 匹配更好 + 遍历更短）。
     long idx = classOf(req);
     while (idx < 16) {
         long prev = 0;
-        long cur = Arena.freeLists[idx];
+        long cur = ALocal.freeLists[idx];
         while (cur != 0) {
             long stored = __myp_mem_load_i64(cur + 8);
             if (stored >= req) {
                 long nxt = __myp_mem_load_i64(cur);
-                if (prev == 0) Arena.freeLists[idx] = nxt;
+                if (prev == 0) ALocal.freeLists[idx] = nxt;
                 else __myp_mem_store_i64(prev, nxt);
                 __myp_mem_store_i64(cur, stored);   // live: total@base0
-                Arena.last_base = 0;                // 复用块非 bump tail → 禁 LIFO
-                Arena.last_aligned = 0;
-                arenaUnlock();
+                ALocal.last_base = 0;                // 复用块非 bump tail → 禁 LIFO
+                ALocal.last_aligned = 0;
                 return cur + 8;   // header base
             }
             prev = cur;
@@ -269,26 +275,28 @@ long myp_arena_alloc_ex(long size, int grow) {
         }
         idx = idx + 1;
     }
-    if (Arena.cur == 0 || Arena.cur_used + cap > Arena.cur_cap) {
+    if (ALocal.cur == 0 || ALocal.cur_used + cap > ALocal.cur_cap) {
         long chunk = cap;
         if (chunk < 65536) chunk = 65536;
         long c = __myp_syscall(9, 0, 32 + chunk, 3, 0x22, -1, 0);  // mmap
-        if (c == -1 || c == 0) { arenaUnlock(); return 0; }  // OOM
+        if (c == -1 || c == 0) return 0;  // OOM
+        arenaLock();
         __myp_mem_store_i64(c, Arena.cur);     // next
         __myp_mem_store_i64(c + 8, chunk);
         __myp_mem_store_i64(c + 16, 0);        // used
-        if (Arena.cur == 0) Arena.head = c;
         Arena.cur = c;
-        Arena.cur_used = 0;
-        Arena.cur_cap = chunk;
+        arenaUnlock();
+        ALocal.cur = c;
+        ALocal.cur_used = 0;
+        ALocal.cur_cap = chunk;
     }
-    long p = Arena.cur + 32 + Arena.cur_used;
+    long p = ALocal.cur + 32 + ALocal.cur_used;
     __myp_mem_store_i64(p, cap);       // total@base0
-    Arena.last_base = p + 8;           // header base
-    Arena.last_aligned = cap;
-    Arena.cur_used = Arena.cur_used + cap;
-    Arena.total_used = Arena.total_used + cap;
-    arenaUnlock();
+    ALocal.last_base = p + 8;           // header base
+    ALocal.last_aligned = cap;
+    ALocal.cur_used = ALocal.cur_used + cap;
+    ALocal.total_used = ALocal.total_used + cap;
+    __myp_mem_store_i64(ALocal.cur + 16, ALocal.cur_used);
     return p + 8;   // header base
 }
 long myp_arena_alloc(long size) { return myp_arena_alloc_ex(size, 0); }
@@ -303,17 +311,10 @@ void myp_arena_reclaim_raw(long addr) {
 }
 
 // C: int64_t myp_diag_arena_reserved/used —— 诊断（Memory.arenaReserved/Used）。
-// reserved：遍历 chunk 链表累计总预留。⚠️ 链方向 = 新→旧（新 chunk 的 next@0 指向
-// 旧 chunk，`if (Arena.cur == 0) Arena.head = c` 只记最旧 chunk）→ 必须从 **Arena.cur
-// （最新）** 走 next 链（C 版 `for (c = myp_arena_cur; c; c = c->next)`）。旧实现从
-// head（最旧）走只统计第一个 chunk —— 多 chunk（如 evInit 一次 ~550KB）时 reserved
-// 低估 → used > reserved 诊断误报（#41 暴露的潜伏 bug）。
-// used：MYP arena 只维护 Arena.cur_used（当前 chunk）+ total_used（累计 bump），
-// 不写每 chunk 的 used@16（C 版逐 chunk 读 used 字段——MYP 无此维护）→ 直接用
-// total_used。bump 永不归还（region 自己管），total_used 即当前已用。
+// reserved/used 与 C runtime 一致，只报告当前线程 ALocal 链和累计 bump。
 long myp_diag_arena_reserved() {
     long total = 0;
-    long c = Arena.cur;
+    long c = ALocal.cur;
     while (c != 0) {
         total = total + __myp_mem_load_i64(c + 8);   // cap
         c = __myp_mem_load_i64(c);                   // next = 更旧 chunk
@@ -321,24 +322,23 @@ long myp_diag_arena_reserved() {
     return total;
 }
 long myp_diag_arena_used() {
-    return Arena.total_used;
+    return ALocal.total_used;
 }
 
 // MYP 拼接层辅助（str.myp myp_str_append 原地扩展）：若 base 是 arena 最后一次
 // 分配且当前 chunk 能扩展到 new_aligned 字节，则 bump 前移并返回 1，否则 0。
 // base 是原始 bump 地址（字符串 = data-12）；new_aligned 为 16 对齐后的目标总大小。
 int myp_arena_try_extend(long base, long newAligned) {
-    arenaLock();
-    if (Arena.cur == 0) { arenaUnlock(); return 0; }
-    if (Arena.last_base != base) { arenaUnlock(); return 0; }
-    long extra = newAligned - Arena.last_aligned;
-    if (extra < 0) { arenaUnlock(); return 0; }
-    if (Arena.cur_used + extra > Arena.cur_cap) { arenaUnlock(); return 0; }
-    Arena.cur_used = Arena.cur_used + extra;
-    Arena.total_used = Arena.total_used + extra;
-    Arena.last_aligned = newAligned;
+    if (ALocal.cur == 0) return 0;
+    if (ALocal.last_base != base) return 0;
+    long extra = newAligned - ALocal.last_aligned;
+    if (extra < 0) return 0;
+    if (ALocal.cur_used + extra > ALocal.cur_cap) return 0;
+    ALocal.cur_used = ALocal.cur_used + extra;
+    ALocal.total_used = ALocal.total_used + extra;
+    ALocal.last_aligned = newAligned;
     __myp_mem_store_i64(base - 8, newAligned);   // 同步 8B total 前缀
-    arenaUnlock();
+    __myp_mem_store_i64(ALocal.cur + 16, ALocal.cur_used);
     return 1;
 }
 
@@ -443,6 +443,7 @@ string myp_alloc_slice_backing(long count, int elem_size, int elem_kind) {
         long threshold = 100000;      // 自动收集水位（每 N 次类对象分配；<=0 关闭）
         int pending = 0;              // 水位已到，待安全点收集
         long thrCount = 0;            // 活动 @thread/@parallel 计数地址（arena 4B，原子）
+        int everThreaded = 0;         // 单调模式位：启动过 worker 后 ARC 永久走原子路径
         int depth = 0;                // v3.15.174：级联递归深度（深环栈溢出保护）
         int abort = 0;                // 深度超限 → 回滚放弃本次收集（不崩溃）
         int[] decs;                   // 每对象 trial 递减次数（平行 keys/colors；回滚用）
@@ -461,7 +462,11 @@ long ccThrCountAddr() {
     }
     return CC.thrCount;
 }
-void myp_cc_thread_enter() { __myp_atomic_add_i32_addr(ccThrCountAddr(), 1); }
+void myp_arc_mark_threaded() { CC.everThreaded = 1; }
+void myp_cc_thread_enter() {
+    myp_arc_mark_threaded();           // 父线程在创建 worker 前切换为原子 ARC
+    __myp_atomic_add_i32_addr(ccThrCountAddr(), 1);
+}
 void myp_cc_thread_exit() { __myp_atomic_add_i32_addr(ccThrCountAddr(), -1); }
 int myp_cc_threads_active() { return __myp_atomic_load_i32_addr(ccThrCountAddr()); }
 
@@ -837,8 +842,15 @@ int myp_release(string obj) {
         CC.depth = CC.depth - 1;
         return 0;
     }
-    int old = __myp_atomic_sub_i32_addr(addr - 8, 1);  // fetch_sub
-    if (old == 0) { __myp_atomic_store_i32_addr(addr - 8, 0); return 0; }  // underflow 安全
+    int old;
+    if (CC.everThreaded == 0) {
+        old = __myp_mem_load_i32(addr - 8);
+        if (old == 0) return 0;
+        __myp_mem_store_i32(addr - 8, old - 1);
+    } else {
+        old = __myp_atomic_sub_i32_addr(addr - 8, 1);  // fetch_sub
+        if (old == 0) { __myp_atomic_store_i32_addr(addr - 8, 0); return 0; }
+    }
     int nv = old - 1;
     if (nv != 0) return nv;
     int tid = __myp_mem_load_i32(addr - 4);
@@ -870,7 +882,7 @@ int myp_release(string obj) {
         // 并发 weak_load 在锁内重新 bump rc（对象存活，新持有者负责释放）。
         // 存活则内联分发（不再委托 myp_release_class_obj_ex，消除其内部二次
         // weak 通知）：查 release_table → destroy stub 或直接 myp_free_object。
-        if (myp_weak_notify_death(obj) == 0) {
+        if (WeakFast.hasEntries != 0 && myp_weak_notify_death(obj) == 0) {
             return __myp_atomic_load_i32_addr(addr - 8);
         }
         if (tid > 0) {
@@ -893,11 +905,14 @@ void myp_free_object(string obj) {
     long addr = __myp_str_ptr(obj);
     if (addr == 0) return;
     if (CC.trial == 1 || CC.restore == 1) return;   // 收集期 trial/restore 不真实释放
+    // 栈上 class 的析构桩只释放字段；0x7ffffffe 标记禁止回收栈帧存储。
+    if (__myp_mem_load_i32(addr - 8) == 2147483646) return;
     int tid = __myp_mem_load_i32(addr - 4);
     if (Live.objects > 0) Live.objects = Live.objects - 1;
     myp_type_live_dec(tid);   // 包 B：per-type 计数回落
     cArenaReclaim(addr - 16);   // 类对象块回 class arena（base0=data-16）
 }
+
 
 // C: void myp_release_class_obj_ex(void* obj) —— 类对象 rc→0 后的分发（原 C helper，
 // 2026-08-25 全 MYP 化，不再委托 C）：weak 通知 → 查程序生成的 __myp_release_table
@@ -934,24 +949,24 @@ long myp_live_total_count() { return Live.strings + Live.objects + Live.arrays; 
 //    139）。C 版对 C arena 的时序有 pthread-key 析构保证，MYP 无此保证 → reset-only。
 void myp_arena_free_all() {
     Arena.cur = 0;
-    Arena.head = 0;
-    Arena.cur_used = 0;
-    Arena.cur_cap = 0;
-    Arena.total_used = 0;
-    Arena.last_base = 0;
-    Arena.last_aligned = 0;
-    Arena.freeHead = 0;
-    for (int i = 0; i < 16; i = i + 1) Arena.freeLists[i] = 0;   // size-class
+    ALocal.cur = 0;
+    ALocal.cur_used = 0;
+    ALocal.cur_cap = 0;
+    ALocal.total_used = 0;
+    ALocal.last_base = 0;
+    ALocal.last_aligned = 0;
+    ALocal.freeHead = 0;
+    for (int i = 0; i < 16; i = i + 1) ALocal.freeLists[i] = 0;   // size-class
     // v3.15.179: class arena 一并复位
     CArena.cur = 0;
-    CArena.head = 0;
-    CArena.cur_used = 0;
-    CArena.cur_cap = 0;
-    CArena.total_used = 0;
-    CArena.last_base = 0;
-    CArena.last_aligned = 0;
-    CArena.freeHead = 0;
-    for (int i = 0; i < 16; i = i + 1) CArena.freeLists[i] = 0;
+    CLocal.cur = 0;
+    CLocal.cur_used = 0;
+    CLocal.cur_cap = 0;
+    CLocal.total_used = 0;
+    CLocal.last_base = 0;
+    CLocal.last_aligned = 0;
+    CLocal.freeHead = 0;
+    for (int i = 0; i < 16; i = i + 1) CLocal.freeLists[i] = 0;
 }
 
 // C: void myp_free_all(void) —— codegen 在 main() 退出 epilogue 调用；释放进程级

@@ -150,7 +150,7 @@ private:
     llvm::GlobalVariable* release_table_gv_ = nullptr;
     // ARC scope tracking: per-scope list of local reference slots to release
     // at scope exit (parallel to named_values_). kind: 0=class ptr,
-    // 1=interface fat ptr, 2=function value fat ptr {closure, call_fn}.
+    // 1=interface, 2=function value, 6=stack class requiring field destruction.
     struct ArcSlot { llvm::Value* alloca; int kind; };
     std::vector<std::vector<ArcSlot>> arc_scope_slots_;
     // Exception unwinding (§五-1 剩余项): when a throw longjmps to a catch, the
@@ -245,6 +245,7 @@ private:
     bool stack_new_array_ = false;  // 第二版：动态数组 new T[N] 栈上分配（alloca backing）
     // 当前函数的可栈上分配局部变量名集合（函数体生成前由逃逸分析设置）。
     std::set<std::string> current_escape_stack_vars_;
+    uint64_t current_stack_promotion_bytes_ = 0;
     void arcPushTemp(llvm::Value* v);
     void arcConsumeTemp(llvm::Value* v);
     // M7: release temps created during a condition evaluation (the branch uses
@@ -760,6 +761,10 @@ private:
     // Owned struct locals (kind-5 ARC slots): alloca -> struct name. A struct
     // PARAM is borrowed and NOT here (its field stores stay plain copies).
     std::unordered_map<llvm::Value*, std::string> arc_struct_slot_types_;
+    // Stack class locals with ARC fields (kind-6 slots): alloca -> concrete
+    // class name. Scope exit calls __myp_destroy_<Class>; its final
+    // myp_free_object sees the stack-header sentinel and skips deallocation.
+    std::unordered_map<llvm::Value*, std::string> arc_stack_class_types_;
     bool isOwnedStructLocal(llvm::Value* alloca);
     // True if tn is a class (not interface) reference — resolves generic type
     // params through current_type_params_. Used to decide ref-counted arrays.

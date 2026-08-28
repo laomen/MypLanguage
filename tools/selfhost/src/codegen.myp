@@ -85,8 +85,14 @@ class CodeGen {
                 return escExprE(e.array(), v);
             }
             if (k == "Call") {
-                for (int i = 0; i < e.args().size(); i = i + 1)
-                    if (escExprE(e.args().get(i), v) != 0) return 1;
+                for (int i = 0; i < e.args().size(); i = i + 1) {
+                    AstExpr arg = e.args().get(i);
+                    int directV = 0;
+                    if (arg != null && arg.kind() == "Identifier" && arg.name() == v)
+                        directV = 1;
+                    if (directV != 0 && escCallParamNoEscape(e, i) != 0) continue;
+                    if (escExprE(arg, v) != 0) return 1;
+                }
                 return escExprE(e.callee(), v);
             }
             if (k == "Assign") {
@@ -218,9 +224,9 @@ class CodeGen {
             if (k == "VarDecl") {
                 for (int i = 0; i < s.decls().size(); i = i + 1) {
                     AstVar d = s.decls().get(i);
-                    // 类对象：排除含 ARC 属性的类（栈上化不释放属性 → 泄漏）。
-                    if (d.init() != null && d.init().kind() == "New" && d.thread() == 0
-                            && classHasArcProps(d.init().className()) == 0) cands.add(d.name());
+                    // 类对象：含 ARC 属性时由 stackdrop 清理槽调用析构桩释放字段。
+                    if (d.init() != null && d.init().kind() == "New" && d.thread() == 0)
+                        cands.add(d.name());
                     // 动态数组：常量维度 + 元素非 ARC → 可栈上化（alloca backing）。
                     if (d.init() != null && d.init().kind() == "NewArray" && d.thread() == 0
                             && isStackArrayCandidate(d.init()) != 0) cands.add(d.name());
@@ -243,15 +249,19 @@ class CodeGen {
             }
         }
 
-        // 分配内省检测：函数/action 是否调用 Memory.liveObjectCount[ByType]——
+        // 分配内省检测：函数/action 是否调用对象/总存活计数——
         // 这类函数观测 arena 堆对象数量，栈上化会使计数断言失真 → 整函数不
         // 栈上化（保守；回归 arc/cyclecollect/mem_diag/weak_multi_sub 依赖）。
         int callIsLiveCount(AstExpr c) {
             if (c == null) return 0;
-            if (c.kind() == "Identifier") return (c.name() == "liveObjectCount") ? 1 : 0;
+            if (c.kind() == "Identifier") {
+                if (c.name() == "liveObjectCount" || c.name() == "liveObjectCountByType"
+                    || c.name() == "liveTotalCount") return 1;
+            }
             if (c.kind() == "Member") {
                 // 注意：成员名用 memberName()（name() 对 Member 返回空）。
-                if (c.memberName() == "liveObjectCount" || c.memberName() == "liveObjectCountByType") return 1;
+                if (c.memberName() == "liveObjectCount" || c.memberName() == "liveObjectCountByType"
+                    || c.memberName() == "liveTotalCount") return 1;
             }
             return 0;
         }
@@ -368,12 +378,65 @@ class CodeGen {
             return 0;
         }
 
+        // 同 TU、名称+参数数量唯一的顶层函数参数摘要。推导摘要期间遇到的
+        // 调用仍按逃逸处理，避免递归/互递归误判。
+        int escCallParamNoEscape(AstExpr call, int argIdx) {
+            if (escSummaryDepth_ != 0 || tu_ == null || call == null) return 0;
+            AstExpr callee = call.callee();
+            if (callee == null || callee.kind() != "Identifier") return 0;
+            string target = call.resolved();
+            if (Str.len(target) == 0) target = callee.name();
+
+            AstFunction found = null;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.body() == null || f.params().size() != call.args().size()) continue;
+                if (f.typeParams().size() != 0 && f.genericInst() == 0) continue;
+                if (f.name() != target) continue;
+                if (found != null) return 0;
+                found = f;
+            }
+            if (found == null || argIdx < 0 || argIdx >= found.params().size()) return 0;
+
+            escSummaryDepth_ = 1;
+            int escapes = escStmtE(found.body(), found.params().get(argIdx).name());
+            escSummaryDepth_ = 0;
+            if (escapes == 0) return 1;
+            return 0;
+        }
+
+        int escapeTuHasLiveCall() {
+            if (tu_ == null) return 0;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1)
+                if (stmtHasLiveCall(tu_.functions().get(i).body()) != 0) return 1;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass cls = tu_.classes().get(ci);
+                for (int i = 0; i < cls.actions().size(); i = i + 1)
+                    if (stmtHasLiveCall(cls.actions().get(i).body()) != 0) return 1;
+                for (int i = 0; i < cls.staticActions().size(); i = i + 1)
+                    if (stmtHasLiveCall(cls.staticActions().get(i).body()) != 0) return 1;
+                for (int i = 0; i < cls.funcs().size(); i = i + 1)
+                    if (stmtHasLiveCall(cls.funcs().get(i).body()) != 0) return 1;
+                for (int si = 0; si < cls.structs().size(); si = si + 1) {
+                    AstStruct st = cls.structs().get(si);
+                    for (int i = 0; i < st.funcs().size(); i = i + 1)
+                        if (stmtHasLiveCall(st.funcs().get(i).body()) != 0) return 1;
+                }
+            }
+            for (int si = 0; si < tu_.structs().size(); si = si + 1) {
+                AstStruct st = tu_.structs().get(si);
+                for (int i = 0; i < st.funcs().size(); i = i + 1)
+                    if (stmtHasLiveCall(st.funcs().get(i).body()) != 0) return 1;
+            }
+            return 0;
+        }
+
         // 主入口：返回函数/action body 中可栈上分配的局部变量名列表。
         ArrayList<string> analyzeEscapeStackVars(AstStmt body) {
             ArrayList<string> res = new ArrayList<string>();
             if (body == null) return res;
-            // 分配内省函数（Memory.liveObjectCount[ByType]）→ 不栈上化（见上）。
-            if (stmtHasLiveCall(body) != 0) return res;
+            // 分配内省可在调用者观测被调函数中的分配，因此整个 TU 不栈上化。
+            if (escapeTuLiveCall_ != 0 || stmtHasLiveCall(body) != 0) return res;
             ArrayList<string> cands = new ArrayList<string>();
             escCollect(body, cands);
             for (int i = 0; i < cands.size(); i = i + 1) {
@@ -423,6 +486,24 @@ class CodeGen {
             return 1;
         }
 
+        // 每函数栈提升总预算（字节）。环境变量允许目标平台覆盖默认策略；候选
+        // 是否提升由当前函数累计占用决定，不再用单对象尺寸魔数。
+        int defaultStackPromotionBudget() { return 64 * 1024; }
+
+        int stackPromotionBudget() {
+            string text = Console.getEnv("MYP_STACK_PROMOTION_BUDGET");
+            if (Str.len(text) == 0) return defaultStackPromotionBudget();
+            long value = 0;
+            for (int i = 0; i < Str.len(text); i = i + 1) {
+                int ch = __myp_charcode(text, i);
+                if (ch < 48 || ch > 57) return defaultStackPromotionBudget();
+                int digit = ch - 48;
+                if (value > (2147483647L - long(digit)) / 10L) return 2147483647;
+                value = value * 10L + long(digit);
+            }
+            return int(value);
+        }
+
         // 类是否含 ARC 属性（含嵌套 struct 字段）。
         int classHasArcProps(string cls) {
             if (tu_ == null) return 1;   // 无 TU → 保守
@@ -430,7 +511,8 @@ class CodeGen {
                 AstClass cc = tu_.classes().get(ci);
                 if (cc.name() != cls) continue;
                 for (int pi = 0; pi < cc.props().size(); pi = pi + 1) {
-                    if (propHoldsArc(cc.props().get(pi).type()) != 0) return 1;
+                    AstProp prop = cc.props().get(pi);
+                    if (prop.weak() != 0 || propHoldsArc(prop.type()) != 0) return 1;
                 }
                 return 0;
             }
@@ -480,6 +562,8 @@ class CodeGen {
             stackNew_ = 0;                      // 当前 new 是否栈上分配（逃逸分析）
             stackNewArray_ = 0;                 // 当前 new T[N] 是否栈上分配（第二版）
             escapeStackVars_ = new ArrayList<string>();  // 当前函数可栈上分配变量
+            escSummaryDepth_ = 0;
+            escapeTuLiveCall_ = 0;
             gpuCpuFallback_ = 0;
             gpuCpuLoopVarA_ = "";
             gpuCpuLoopVarLt_ = "";
@@ -1092,12 +1176,29 @@ class CodeGen {
         }
 
         // 释放当前函数全部 ARC 局部槽（返回前/函数末尾）。
+        void releaseArcSlotName(string encoded) {
+            string prefix = "__stackdrop|";
+            if (Str.startsWith(encoded, prefix) != 0) {
+                string rest = Str.substring(encoded, Str.len(prefix), Str.len(encoded));
+                int sep = Str.indexOf(rest, "|");
+                if (sep > 0) {
+                    string cls = Str.substring(rest, 0, sep);
+                    string slot = Str.substring(rest, sep + 1, Str.len(rest));
+                    string obj = newTmp();
+                    sb_.append("  " + obj + " = load ptr, ptr " + slot + "\n");
+                    sb_.append("  call void @__myp_destroy_" + cls + "(ptr " + obj + ")\n");
+                }
+                return;
+            }
+            string old = newTmp();
+            emitCoroFrameClear(encoded);
+            sb_.append("  " + old + " = load ptr, ptr " + encoded + "\n");
+            sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
+        }
+
         void releaseArcSlots() {
             for (int i = 0; i < arcSlotNames_.size(); i = i + 1) {
-                string old = newTmp();
-                emitCoroFrameClear(arcSlotNames_.get(i));
-                sb_.append("  " + old + " = load ptr, ptr " + arcSlotNames_.get(i) + "\n");
-                sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
+                releaseArcSlotName(arcSlotNames_.get(i));
             }
             // 借用参数被重赋值后提升的拥有槽（kind 0：string/class，ptr-typed）。
             for (int i = 0; i < funcPtrSlots_.size(); i = i + 1) {
@@ -1111,10 +1212,7 @@ class CodeGen {
         // 释放 [base, end) 的 ARC 槽（块作用域退出，C++ popScope）。
         void releaseArcSlotsFrom(int base) {
             for (int i = arcSlotNames_.size() - 1; i >= base; i = i - 1) {
-                string old = newTmp();
-                emitCoroFrameClear(arcSlotNames_.get(i));
-                sb_.append("  " + old + " = load ptr, ptr " + arcSlotNames_.get(i) + "\n");
-                sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
+                releaseArcSlotName(arcSlotNames_.get(i));
             }
             while (arcSlotNames_.size() > base) arcSlotNames_.remove(arcSlotNames_.size() - 1);
         }
@@ -1553,6 +1651,7 @@ class CodeGen {
         string generate(AstTU tu) {
             // 函数体写 sb_；字符串全局写 stringGlobals_（module 级，跨函数共享）。
             tu_ = tu;
+            escapeTuLiveCall_ = escapeTuHasLiveCall();
             // P1 缩放：O(1) 声明索引一次建全（codegen 期间 TU 不再增长）。
             classIdx_ = new StrHashMap<int>();
             ifaceIdx_ = new StrHashMap<int>();
@@ -2125,6 +2224,9 @@ class CodeGen {
             for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
                 AstClass c = tu_.classes().get(ci);
                 if (c.name() != cls) continue;
+                ArrayList<string> savedTypeParams = curTypeParams_;
+                ArrayList<AstType> savedTypeArgs = curTypeArgs_;
+                setupTypeParams(cls);
                 int offset = 0;
                 int maxAlign = 1;
                 for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
@@ -2139,6 +2241,8 @@ class CodeGen {
                 int rem2 = offset % maxAlign;
                 if (rem2 != 0) offset = offset + (maxAlign - rem2);
                 if (offset == 0) offset = 1;
+                curTypeParams_ = savedTypeParams;
+                curTypeArgs_ = savedTypeArgs;
                 return offset;
             }
             return 1;
@@ -3692,22 +3796,29 @@ class CodeGen {
             if (stackKb > 0 && stackKb < 16) {
                 warnings_.add("@coro(stack=" + stackKb + "): very small coroutine stack — risk of stack overflow (recommend >= 16KB, or raise with @coro(stack=N))");
             }
+            string ep = newTmp();
+            sb_.append("  " + ep + " = ptrtoint ptr @__myp_coro_entry_" + target + " to i64\n");
             string h = newTmp();
-            sb_.append("  " + h + " = call i64 @__myp_coro_create(i64 " + stackBytes + ")\n");
+            sb_.append("  " + h + " = call i64 @__myp_coro_create_entry(i64 " + stackBytes + ", i64 " + ep + ")\n");
+            int argCount = e.args().size() + 1;
+            string pack = entryAlloca("[" + argCount + " x i64]");
             string slot0 = "0";
             if (isMethod != 0 && Str.len(thisV) != 0) slot0 = castToI64(thisV, "ptr");
-            sb_.append("  call void @__myp_coro_set_entry_arg(i64 0, i64 " + slot0 + ")\n");
+            string p0 = newTmp();
+            sb_.append("  " + p0 + " = getelementptr inbounds [" + argCount + " x i64], ptr " + pack + ", i32 0, i32 0\n");
+            sb_.append("  store i64 " + slot0 + ", ptr " + p0 + "\n");
             for (int i = 0; i < e.args().size(); i = i + 1) {
                 string av = genExpr(e.args().get(i));
                 string at = exprLlvmType(e.args().get(i));
                 string slot = castToI64(av, at);
-                sb_.append("  call void @__myp_coro_set_entry_arg(i64 " + (i + 1) + ", i64 " + slot + ")\n");
+                string pp = newTmp();
+                sb_.append("  " + pp + " = getelementptr inbounds [" + argCount + " x i64], ptr " + pack + ", i32 0, i32 " + (i + 1) + "\n");
+                sb_.append("  store i64 " + slot + ", ptr " + pp + "\n");
             }
-            string ep = newTmp();
-            sb_.append("  " + ep + " = ptrtoint ptr @__myp_coro_entry_" + target + " to i64\n");
-            sb_.append("  call void @__myp_coro_set_entry(i64 " + h + ", i64 " + ep + ")\n");
+            string packRaw = newTmp();
+            sb_.append("  " + packRaw + " = ptrtoint ptr " + pack + " to i64\n");
             string rr = newTmp();
-            sb_.append("  " + rr + " = call i64 @__myp_coro_resume(i64 " + h + ", i64 0)\n");
+            sb_.append("  " + rr + " = call i64 @__myp_coro_start_args(i64 " + h + ", i64 " + argCount + ", i64 " + packRaw + ")\n");
             return h;
         }
 
@@ -3961,7 +4072,7 @@ class CodeGen {
             sb_.append("  " + jb + " = alloca %myp_jmp_buf, align 8\n");
             sb_.append("  call void @myp_exception_push(ptr " + jb + ")\n");
             string r = newTmp();
-            sb_.append("  " + r + " = call i32 @setjmp(ptr " + jb + ")\n");
+            sb_.append("  " + r + " = call i32 @_setjmp(ptr " + jb + ")\n");
             string isErr = newTmp();
             sb_.append("  " + isErr + " = icmp ne i32 " + r + ", 0\n");
             string okB = newBlock("test_call");
@@ -4368,6 +4479,7 @@ class CodeGen {
             // VarDecl/new 生成据此走栈上分配（alloca，不注册 ARC 槽）；协程函数
             // 内栈对象禁用（isStackEscape 条件含 curFnCoro_==0）。
             escapeStackVars_ = analyzeEscapeStackVars(body);
+            stackPromotionBytes_ = 0;
             if (Str.len(Console.getEnv("MYP_ESCAPE_DEBUG")) != 0) {
                 Console.writeLine("[escape] " + fn + ": stackVars=" + escapeStackVars_.size()
                     + " hasLiveCall=" + stmtHasLiveCall(body));
@@ -7739,14 +7851,52 @@ class CodeGen {
                         // 代替 myp_alloc_object；不注册 ARC 槽（函数末不 release，
                         // 栈自动回收）；协程函数禁用（协程帧跨挂起存活）。
                         int isStackEscape = 0;
+                        int stackNeedsDrop = 0;
+                        string stackClass = "";
+                        long stackAllocationBytes = 0;
                         if (escListHas(escapeStackVars_, v.name()) != 0 && curFnCoro_ == 0
                                 && Str.len(Console.getEnv("MYP_NO_STACK_NEW")) == 0) {
-                            if (v.init() != null && v.init().kind() == "New"
-                                    && classHasArcProps(v.init().className()) == 0) isStackEscape = 1;
+                            if (v.init() != null && v.init().kind() == "New") {
+                                stackClass = v.init().resolvedClass();
+                                if (Str.len(stackClass) == 0) stackClass = v.init().className();
+                                stackNeedsDrop = classHasArcProps(stackClass);
+                                stackAllocationBytes = 8 + classSize(stackClass);
+                                if (stackNeedsDrop == 0 || tryArcBases_.size() == 0)
+                                    isStackEscape = 1;
+                            }
                             else if (v.init() != null && v.init().kind() == "NewArray"
-                                    && isStackArrayCandidate(v.init()) != 0) isStackEscape = 1;
+                                    && isStackArrayCandidate(v.init()) != 0) {
+                                int arrayBudget = stackPromotionBudget();
+                                long count = 1;
+                                for (int di = 0; di < v.init().dimensions().size(); di = di + 1) {
+                                    long dim = v.init().dimensions().get(di).value();
+                                    if (dim < 0 || (dim != 0 && count > long(arrayBudget) / dim)) {
+                                        count = long(arrayBudget) + 1L;
+                                        break;
+                                    }
+                                    count = count * dim;
+                                }
+                                long elemSize = long(typeByteSize(v.init().elemType()));
+                                if (count > long(arrayBudget)
+                                        || (elemSize != 0 && count > long(arrayBudget) / elemSize))
+                                    stackAllocationBytes = long(arrayBudget) + 1L;
+                                else
+                                    stackAllocationBytes = 24L + count * elemSize;
+                                isStackEscape = 1;
+                            }
+                        }
+                        if (isStackEscape != 0) {
+                            int budget = stackPromotionBudget();
+                            if (stackAllocationBytes > budget
+                                    || stackPromotionBytes_ > budget - stackAllocationBytes) {
+                                isStackEscape = 0;
+                            } else {
+                                stackPromotionBytes_ = stackPromotionBytes_ + stackAllocationBytes;
+                            }
                         }
                         if (isStackEscape == 0) arcSlotNames_.add(va);
+                        else if (stackNeedsDrop != 0)
+                            arcSlotNames_.add("__stackdrop|" + stackClass + "|" + va);
                         if (lt == "{ ptr, ptr }") {
                             // 函数值局部：fat pointer {closure, call_fn}，闭包
                             // 对象计数引用；作用域末 release index 0。
@@ -8518,7 +8668,7 @@ class CodeGen {
             }
             sb_.append("  call void @myp_exception_push(ptr " + jb + ")\n");
             string r = newTmp();
-            sb_.append("  " + r + " = call i32 @setjmp(ptr " + jb + ")\n");
+            sb_.append("  " + r + " = call i32 @_setjmp(ptr " + jb + ")\n");
             string isErr = newTmp();
             sb_.append("  " + isErr + " = icmp ne i32 " + r + ", 0\n");
 
@@ -9972,12 +10122,10 @@ class CodeGen {
                 int tid = classTypeId(cls);
                 string t = newTmp();
                 if (stackNew_ != 0) {
-                    // 逃逸分析栈上分配：alloca [8B头+sz]，写 rc=1/tid，data=+8，
-                    // 不 addFreshTemp（栈自动回收；调用方对栈上变量跳过 release）。
+                    // 0x7ffffffe 标记允许析构桩释放 ARC 字段，同时禁止 free 栈存储。
                     string arrLt = "[" + (8 + sz) + " x i8]";
-                    string raw = newTmp();
-                    sb_.append("  " + raw + " = alloca " + arrLt + ", align 8\n");
-                    sb_.append("  store i32 1, ptr " + raw + ", align 4\n");   // rc=1（栈上唯一所有权）
+                    string raw = entryAlloca(arrLt);
+                    sb_.append("  store i32 2147483646, ptr " + raw + ", align 4\n");
                     string tg = newTmp();
                     sb_.append("  " + tg + " = getelementptr " + arrLt + ", ptr " + raw + ", i64 0, i64 4\n");
                     sb_.append("  store i32 " + tid + ", ptr " + tg + ", align 4\n");  // tid
@@ -11083,7 +11231,7 @@ class CodeGen {
             sb_.append("  " + jb + " = alloca %myp_jmp_buf, align 8\n");
             sb_.append("  call void @myp_exception_push(ptr " + jb + ")\n");
             string r = newTmp();
-            sb_.append("  " + r + " = call i32 @setjmp(ptr " + jb + ")\n");
+            sb_.append("  " + r + " = call i32 @_setjmp(ptr " + jb + ")\n");
             string isErr = newTmp();
             sb_.append("  " + isErr + " = icmp ne i32 " + r + ", 0\n");
             string tryB = newBlock("try_expr_try");
@@ -11988,6 +12136,7 @@ class CodeGen {
                 string cls = names.get(i);
                 int ci = classIndex(cls);   // O(1)（P6 规模修复：原线性扫全类）
                 if (ci < 0) continue;
+                if (classHasArcProps(cls) == 0) continue;
                 AstClass c = tu_.classes().get(ci);
                 sb.append("define internal void @__myp_destroy_" + cls + "(ptr %self) {\nentry:\n");
                 for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
@@ -12006,6 +12155,27 @@ class CodeGen {
                         string v = newTmp();
                         sb.append("  " + v + " = load ptr, ptr " + gep + "\n");
                         sb.append("  call i32 @myp_release(ptr " + v + ")\n");
+                    } else if (rt != null && rt.element() != null && rt.arraySize() > 0
+                        && isArcType(rt.element()) != 0) {
+                        // 定长 ARC 数组是内联值；对象销毁时逐槽释放元素。
+                        int count = rt.arraySize();
+                        AstType elem = resolveType(rt.element());
+                        string elemLt = llvmType(elem);
+                        for (int ai = 0; ai < count; ai = ai + 1) {
+                            string slot = newTmp();
+                            sb.append("  " + slot + " = getelementptr [" + count + " x " + elemLt
+                                + "], ptr " + gep + ", i32 0, i32 " + ai + "\n");
+                            string value = newTmp();
+                            sb.append("  " + value + " = load " + elemLt + ", ptr " + slot + "\n");
+                            if (elem.funcReturn() != null || (Str.len(elem.className()) != 0
+                                && isInterfaceName(elem.className()) != 0)) {
+                                string data = newTmp();
+                                sb.append("  " + data + " = extractvalue " + elemLt + " " + value + ", 0\n");
+                                sb.append("  call i32 @myp_release(ptr " + data + ")\n");
+                            } else {
+                                sb.append("  call i32 @myp_release(ptr " + value + ")\n");
+                            }
+                        }
                     } else if (rt != null && rt.className() == "slice") {
                         string fv = newTmp();
                         sb.append("  " + fv + " = load { ptr, i64 }, ptr " + gep + "\n");
@@ -12033,7 +12203,11 @@ class CodeGen {
             StringBuilder rel = new StringBuilder();
             rel.append("@__myp_release_table = global [" + (n + 1) + " x ptr] [ptr null");
             for (int i = 0; i < n; i = i + 1) {
-                rel.append(", ptr @__myp_destroy_" + names.get(i));
+                string cls = names.get(i);
+                if (classHasArcProps(cls) != 0)
+                    rel.append(", ptr @__myp_destroy_" + cls);
+                else
+                    rel.append(", ptr @myp_free_object");
             }
             rel.append("]\n");
             sb.append(rel.toString());
@@ -12414,7 +12588,10 @@ class CodeGen {
         // stackNewArray_=当前动态数组 new T[N] 栈上分配（alloca backing，第二版）。
         int stackNew_;
         int stackNewArray_;
+        int stackPromotionBytes_;
         ArrayList<string> escapeStackVars_;
+        int escSummaryDepth_;
+        int escapeTuLiveCall_;
         int curFnRegion_;
         string curRegionMark_;
         int parallelCounter_;

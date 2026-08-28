@@ -156,7 +156,7 @@ import "./ast.myp";
                 int sp = Str.indexOf(lt, " x ");
                 if (sp > 0) {
                     int n = IrEmit.parseNum(Str.substring(lt, 1, sp));
-                    return n * IrEmit.typeSize(Str.substring(lt, sp + 3, Str.len(lt)));
+                    return n * IrEmit.typeSize(Str.substring(lt, sp + 3, Str.len(lt) - 1));
                 }
             }
             if (Str.startsWith(lt, "<") != 0) {
@@ -378,7 +378,7 @@ import "./ast.myp";
             sb.append("declare i32 @myp_timer_create(i32, ptr, i64, i64, i64)\n");
             sb.append("\n");
             sb.append("; Function Attrs: returns_twice\n");
-            sb.append("declare i32 @setjmp(ptr) #0\n");
+            sb.append("declare i32 @_setjmp(ptr) #0\n");
             sb.append("\n");
             sb.append("; Function Attrs: noreturn\n");
             sb.append("declare void @__myp_longjmp(ptr, i32) #1\n");
@@ -453,6 +453,8 @@ import "./ast.myp";
             sb.append("declare void @myp_free(ptr)\n");
             sb.append("\n");
             sb.append("declare i64 @__myp_coro_create(i64)\n");
+            sb.append("declare i64 @__myp_coro_create_entry(i64, i64)\n");
+            sb.append("declare i64 @__myp_coro_start_args(i64, i64, i64)\n");
             sb.append("\n");
             sb.append("declare void @__myp_coro_set_entry(i64, i64)\n");
             sb.append("\n");

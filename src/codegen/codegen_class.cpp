@@ -280,6 +280,8 @@ bool CodeGen::isStackArrayCandidate(const Expr* e) {
 // one. Such fields need retain/release whenever the struct value is copied or
 // discarded.
 bool CodeGen::isArcFieldType(const TypeNode& tn) {
+    if (tn.isArray() && tn.array_size > 0 && tn.element_type)
+        return isArcFieldType(*tn.element_type);
     if (isArcReturnType(tn)) return true;
     if (!tn.class_name.empty() && !tn.isArray() && findStruct(tn.class_name)) {
         const StructDecl* nsd = findStruct(tn.class_name);
@@ -296,8 +298,15 @@ bool CodeGen::isArcFieldType(const TypeNode& tn) {
 bool CodeGen::classHasArcProps(const std::string& cls) {
     const ClassDecl* c = findClass(cls);
     if (!c) return true;  // 找不到类（泛型实例名等）→ 保守
-    for (auto& p : c->properties)
-        if (isArcFieldType(p.type)) return true;
+    auto* st = getClassStruct(cls);
+    for (size_t i = 0; i < c->properties.size(); i++) {
+        auto& p = c->properties[i];
+        if (p.weak || isArcFieldType(p.type)) return true;
+        if (p.type.isArray() && p.type.array_size > 0 && st && i < st->getNumElements()) {
+            auto* at = llvm::dyn_cast<llvm::ArrayType>(st->getElementType(i));
+            if (at && at->getElementType()->isPointerTy()) return true;
+        }
+    }
     return false;
 }
 
@@ -379,6 +388,13 @@ void CodeGen::generateArcSupport(TranslationUnit& tu) {
     for (auto& cls : tu.classes) {
         auto tit = class_type_ids_.find(cls.name);
         if (tit == class_type_ids_.end()) continue;
+        current_type_params_.clear();
+        for (size_t i = 0; i < cls.type_params.size() && i < cls.inst_type_args.size(); i++)
+            current_type_params_.emplace_back(cls.type_params[i], cls.inst_type_args[i]);
+        if (!classHasArcProps(cls.name)) {
+            table[tit->second] = llvm::ConstantExpr::getPointerCast(runtime_free_object_, p);
+            continue;
+        }
         std::string dname = "__myp_destroy_" + cls.name;
         auto* fn = module_->getFunction(dname);
         if (!fn) {
@@ -416,6 +432,20 @@ void CodeGen::generateArcSupport(TranslationUnit& tu) {
                     auto* gep = b.CreateStructGEP(st, self, pi);
                     auto* data = b.CreateLoad(llvm::PointerType::get(ctx_, 0), gep);
                     b.CreateCall(runtime_release_, {data});
+                    continue;
+                }
+                if (prop.type.isArray() && prop.type.array_size > 0 && prop.type.element_type) {
+                    auto* field = b.CreateStructGEP(st, self, pi);
+                    auto* array_ty = llvm::dyn_cast<llvm::ArrayType>(st->getElementType(pi));
+                    if (array_ty && (array_ty->getElementType()->isPointerTy() ||
+                        isArcFieldType(*prop.type.element_type))) {
+                        for (int i = 0; i < prop.type.array_size; i++) {
+                            auto* slot = b.CreateInBoundsGEP(array_ty, field,
+                                {b.getInt32(0), b.getInt32(i)});
+                            auto* value = b.CreateLoad(array_ty->getElementType(), slot);
+                            emitArcFieldOp(b, value, *prop.type.element_type, false);
+                        }
+                    }
                     continue;
                 }
                 if (prop.type.class_name == "slice") {
@@ -819,6 +849,7 @@ void CodeGen::generateClassDefaultAction(const ClassDecl& cls, const InterfaceDe
         // 逃逸分析：设置当前 action 可栈上分配的局部变量集合。
         auto* bb = dynamic_cast<const BlockStmt*>(action.body.get());
         current_escape_stack_vars_ = bb ? analyzeEscapeStackVars(bb) : std::set<std::string>{};
+        current_stack_promotion_bytes_ = 0;
         generateBlock(static_cast<const BlockStmt&>(*action.body));
     }
     if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
@@ -1101,6 +1132,7 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
         setupNonlocalAliases(cls);
     // 逃逸分析：设置当前 action/构造器可栈上分配的局部变量集合。
     current_escape_stack_vars_.clear();
+    current_stack_promotion_bytes_ = 0;
     if (action.body) {
         auto* ebb = dynamic_cast<const BlockStmt*>(action.body.get());
         if (ebb) current_escape_stack_vars_ = analyzeEscapeStackVars(ebb);
@@ -1379,7 +1411,6 @@ void CodeGen::generateCoroFuncEntry(const FuncDecl& decl) {
 llvm::Value* CodeGen::generateCoroSpawn(llvm::Function* target, const CallExpr& e,
                                         llvm::Value* mthis, bool is_method) {
     auto* i64 = llvm::Type::getInt64Ty(ctx_);
-    auto* void_ty = llvm::Type::getVoidTy(ctx_);
 
     // Stack size: @coro(stack=N) KB, default 128KB (0 → runtime default).
     int64_t stack_bytes = 128 * 1024;
@@ -1394,20 +1425,31 @@ llvm::Value* CodeGen::generateCoroSpawn(llvm::Function* target, const CallExpr& 
         }
     }
 
-    auto create_fn = module_->getOrInsertFunction("__myp_coro_create",
-        llvm::FunctionType::get(i64, {i64}, false));
-    auto* handle = builder_.CreateCall(create_fn,
-        {llvm::ConstantInt::get(i64, stack_bytes)}, "coro_handle");
-
-    auto set_arg = module_->getOrInsertFunction("__myp_coro_set_entry_arg",
-        llvm::FunctionType::get(void_ty, {i64, i64}, false));
     auto idx = [&](uint64_t v) { return llvm::ConstantInt::get(i64, v); };
+    std::string entry_name = "__myp_coro_entry_" + target->getName().str();
+    llvm::Value* entry_i = idx(0);
+    if (auto* entry = module_->getFunction(entry_name))
+        entry_i = builder_.CreatePtrToInt(entry, i64);
+    auto create_fn = module_->getOrInsertFunction("__myp_coro_create_entry",
+        llvm::FunctionType::get(i64, {i64, i64}, false));
+    auto* handle = builder_.CreateCall(create_fn,
+        {llvm::ConstantInt::get(i64, stack_bytes), entry_i}, "coro_handle");
+
+    size_t arg_count = e.args.size() + 1;
+    auto* pack_ty = llvm::ArrayType::get(i64, arg_count);
+    auto* pack = createEntryBlockAlloca(current_function_, pack_ty, "coro_args");
+    auto store_arg = [&](size_t pos, llvm::Value* value) {
+        auto* ptr = builder_.CreateInBoundsGEP(pack_ty, pack,
+            {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0),
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), pos)});
+        builder_.CreateStore(value, ptr);
+    };
 
     // Slot 0: 'this'
     llvm::Value* this_i = idx(0);
     if (is_method && mthis)
         this_i = builder_.CreatePtrToInt(mthis, i64);
-    builder_.CreateCall(set_arg, {idx(0), this_i});
+    store_arg(0, this_i);
 
     // Slots 1..N: explicit arguments
     for (size_t i = 0; i < e.args.size(); ++i) {
@@ -1419,22 +1461,13 @@ llvm::Value* CodeGen::generateCoroSpawn(llvm::Function* target, const CallExpr& 
             slot = builder_.CreateIntCast(arg, i64, true);
         else if (arg->getType()->isFloatingPointTy())
             slot = builder_.CreateBitCast(arg, i64);
-        builder_.CreateCall(set_arg, {idx((uint64_t)(i + 1)), slot});
+        store_arg(i + 1, slot);
     }
 
-    // __myp_coro_set_entry(handle, ptrtoint(entry_wrapper))
-    auto set_entry = module_->getOrInsertFunction("__myp_coro_set_entry",
-        llvm::FunctionType::get(void_ty, {i64, i64}, false));
-    std::string entry_name = "__myp_coro_entry_" + target->getName().str();
-    llvm::Value* entry_i = idx(0);
-    if (auto* entry = module_->getFunction(entry_name))
-        entry_i = builder_.CreatePtrToInt(entry, i64);
-    builder_.CreateCall(set_entry, {handle, entry_i});
-
-    // First start
-    auto resume_fn = module_->getOrInsertFunction("__myp_coro_resume",
-        llvm::FunctionType::get(i64, {i64, i64}, false));
-    builder_.CreateCall(resume_fn, {handle, idx(0)});
+    auto start_fn = module_->getOrInsertFunction("__myp_coro_start_args",
+        llvm::FunctionType::get(i64, {i64, i64, i64}, false));
+    builder_.CreateCall(start_fn,
+        {handle, idx(arg_count), builder_.CreatePtrToInt(pack, i64)});
 
     return handle;
 }
@@ -1784,6 +1817,7 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
 
     // 逃逸分析：设置当前函数可栈上分配的局部变量集合（generateVarDecl 使用）。
     current_escape_stack_vars_.clear();
+    current_stack_promotion_bytes_ = 0;
     if (decl.body) {
         auto* bb = dynamic_cast<const BlockStmt*>(decl.body.get());
         if (bb) current_escape_stack_vars_ = analyzeEscapeStackVars(bb);

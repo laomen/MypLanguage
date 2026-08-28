@@ -1,8 +1,10 @@
 // esc_escape.myp — 逃逸分析回归（v3.15.183）：局部不逃逸对象/数组栈上分配，
-// 结果正确性验证。含：纯 int 属性类本地栈上化 / 数组本地栈上化（纯 int 元素 +
-// 常量维度）/ 数组传参（逃逸 → 堆）语义保持 / double·多维数组。全部正向验证。
+// 结果正确性验证。含：纯 int 属性类本地栈上化 / 顶层函数 noescape 参数摘要 /
+// 参数存入对象时保持逃逸 / 数组本地栈上化（纯 int 元素 + 常量维度）/
+// 数组传参（逃逸 → 堆）语义保持 / double·多维数组。全部正向验证。
 
 import test;
+import collections;
 
 class Node {
     action:
@@ -13,7 +15,27 @@ class Node {
         int y;
 }
 
-int sumArr(int[] a) {   // 数组传参（逃逸 → 堆，语义须保持）
+class Holder {
+    action:
+        void set(Node v) { value = v; }
+        int sum() { return value.sum(); }
+    property:
+        Node value;
+}
+
+int readNode(Node n) { return n.sum(); }
+
+void saveNode(Holder h, Node n) { h.set(n); }
+
+Holder makeHolder() {
+    Holder h = new Holder();
+    Node n = new Node();
+    n.set(20, 22);
+    saveNode(h, n);
+    return h;
+}
+
+int sumArr(int[] a) {   // 只读参数 noescape，调用方数组可保持栈分配
     int s = 0;
     for (int i = 0; i < 8; i = i + 1) s = s + a[i];
     return s;
@@ -29,6 +51,33 @@ int sumArr(int[] a) {   // 数组传参（逃逸 → 堆，语义须保持）
     }
     // sum(2i+1) for i in 0..999 = 1000000
     Test.assertEq(total, 1000000);
+}
+
+@test void t_call_noescape() {
+    int total = 0;
+    for (int i = 0; i < 1000; i = i + 1) {
+        Node n = new Node();
+        n.set(i, i + 1);
+        total = total + readNode(n);
+    }
+    Test.assertEq(total, 1000000);
+}
+
+@test void t_call_escape_store() {
+    Holder h = makeHolder();
+    Test.assertEq(h.sum(), 42);
+}
+
+@test void t_arc_field_class_stack() {
+    int total = 0;
+    for (int i = 0; i < 100; i = i + 1) {
+        ArrayList<Node> nodes = new ArrayList<Node>();
+        Node n = new Node();
+        n.set(i, 1);
+        nodes.add(n);
+        total = total + nodes.get(0).sum();
+    }
+    Test.assertEq(total, 5050);
 }
 
 @test void t_arr_stack_pure() {
@@ -47,8 +96,8 @@ int sumArr(int[] a) {   // 数组传参（逃逸 → 堆，语义须保持）
     Test.assertEq(m[2], 7);
 }
 
-@test void t_arr_escape() {
-    // 数组传参（逃逸）→ 堆分配，语义保持。
+@test void t_arr_call_noescape() {
+    // 数组只读传参，参数摘要允许调用方保持栈分配。
     int[] a = new int[8];
     for (int i = 0; i < 8; i = i + 1) a[i] = i * 3;
     Test.assertEq(sumArr(a), 84);

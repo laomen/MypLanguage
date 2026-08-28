@@ -83,6 +83,89 @@ struct MypRedundantStorePass : public llvm::PassInfoMixin<MypRedundantStorePass>
     }
 };
 
+static llvm::StringRef calledName(const llvm::CallBase& call) {
+    if (auto* callee = call.getCalledFunction()) return callee->getName();
+    return {};
+}
+
+/// Transfer the initial rc=1 of a fresh class object into one strong store:
+///
+///   %p = call @myp_alloc_object(...)
+///   call @myp_retain(%p)
+///   call @myp_release(%old)
+///   store %p, %slot
+///   call @myp_release(%p)
+///
+/// Fresh allocation makes `%old == %p` impossible, so the retain-before-release
+/// self-assignment guard is unnecessary. Removing the matching pair leaves the
+/// same final rc while transferring the allocation's initial ownership to slot.
+/// Keep this deliberately local: one basic block, exactly one pointer store,
+/// and no other use of the fresh value between the pair.
+struct MypArcTransferPass : public llvm::PassInfoMixin<MypArcTransferPass> {
+    llvm::PreservedAnalyses run(llvm::Function& function,
+                                llvm::FunctionAnalysisManager&) {
+        bool changed = false;
+        for (auto& block : function) {
+            llvm::SmallVector<std::pair<llvm::CallBase*, llvm::CallBase*>, 4> pairs;
+            for (auto& instruction : block) {
+                auto* retain = llvm::dyn_cast<llvm::CallBase>(&instruction);
+                if (!retain || calledName(*retain) != "myp_retain" ||
+                    retain->arg_size() != 1)
+                    continue;
+
+                llvm::Value* value = retain->getArgOperand(0)->stripPointerCasts();
+                auto* allocation = llvm::dyn_cast<llvm::CallBase>(value);
+                if (!allocation || calledName(*allocation) != "myp_alloc_object")
+                    continue;
+
+                llvm::StoreInst* ownershipStore = nullptr;
+                llvm::CallBase* release = nullptr;
+                bool invalid = false;
+                for (auto iterator = std::next(llvm::BasicBlock::iterator(retain));
+                     iterator != block.end(); ++iterator) {
+                    llvm::Instruction& current = *iterator;
+                    bool usesValue = false;
+                    for (llvm::Use& operand : current.operands()) {
+                        if (operand.get()->stripPointerCasts() == value) {
+                            usesValue = true;
+                            break;
+                        }
+                    }
+                    if (!usesValue) continue;
+
+                    if (auto* store = llvm::dyn_cast<llvm::StoreInst>(&current)) {
+                        if (store->getValueOperand()->stripPointerCasts() == value &&
+                            !ownershipStore) {
+                            ownershipStore = store;
+                            continue;
+                        }
+                    }
+                    if (auto* call = llvm::dyn_cast<llvm::CallBase>(&current)) {
+                        if (calledName(*call) == "myp_release" &&
+                            call->arg_size() == 1 && call->use_empty() &&
+                            call->getArgOperand(0)->stripPointerCasts() == value &&
+                            ownershipStore) {
+                            release = call;
+                            break;
+                        }
+                    }
+                    invalid = true;
+                    break;
+                }
+                if (!invalid && ownershipStore && release)
+                    pairs.push_back({retain, release});
+            }
+            for (auto [retain, release] : pairs) {
+                retain->eraseFromParent();
+                release->eraseFromParent();
+                changed = true;
+            }
+        }
+        return changed ? llvm::PreservedAnalyses::none()
+                       : llvm::PreservedAnalyses::all();
+    }
+};
+
 } // namespace
 
 void registerMypPasses(llvm::PassBuilder& PB,
@@ -96,6 +179,13 @@ void registerMypPasses(llvm::PassBuilder& PB,
             if (Name == "myp-pass") {
                 Passes.addPass(
                     llvm::createModuleToFunctionPassAdaptor(MypRedundantStorePass()));
+                Passes.addPass(
+                    llvm::createModuleToFunctionPassAdaptor(MypArcTransferPass()));
+                return true;
+            }
+            if (Name == "myp-arc-transfer") {
+                Passes.addPass(
+                    llvm::createModuleToFunctionPassAdaptor(MypArcTransferPass()));
                 return true;
             }
             return false;
@@ -105,6 +195,8 @@ void registerMypPasses(llvm::PassBuilder& PB,
     if (OL != llvm::OptimizationLevel::O0) {
         MPM.addPass(
             llvm::createModuleToFunctionPassAdaptor(MypRedundantStorePass()));
+        MPM.addPass(
+            llvm::createModuleToFunctionPassAdaptor(MypArcTransferPass()));
     }
 }
 
@@ -129,6 +221,11 @@ bool runMypPasses(llvm::Module& M, const std::string& passes) {
         if (name == "myp-pass") {
             MPM.addPass(
                 llvm::createModuleToFunctionPassAdaptor(MypRedundantStorePass()));
+            MPM.addPass(
+                llvm::createModuleToFunctionPassAdaptor(MypArcTransferPass()));
+        } else if (name == "myp-arc-transfer") {
+            MPM.addPass(
+                llvm::createModuleToFunctionPassAdaptor(MypArcTransferPass()));
         } else {
             known = false;
         }

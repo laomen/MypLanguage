@@ -22,6 +22,7 @@
 ffi long myp_arena_alloc(long size);
 ffi void myp_retain(string obj);
 ffi int myp_cc_active();   // alloc.myp 环收集守卫（trial/restore）
+ffi void myp_weak_set_nonempty(int value);
 
 @static class Weak {
     property:
@@ -66,6 +67,7 @@ void weakRemoveEntry(long e) {
             long nxt = __myp_mem_load_i64(e);
             if (prev == 0) Weak.head = nxt;
             else __myp_mem_store_i64(prev, nxt);
+            if (Weak.head == 0) myp_weak_set_nonempty(0);
             return;
         }
         prev = cur;
@@ -82,6 +84,7 @@ void weakAddSlot(long target, long slotAddr) {
         __myp_mem_store_i64(e + 8, target);
         __myp_mem_store_i64(e + 16, 0);
         Weak.head = e;
+        myp_weak_set_nonempty(1);
     }
     long sn = myp_arena_alloc(16);
     if (sn == 0) return;
@@ -173,4 +176,5 @@ int myp_weak_notify_death(string obj) {
 // C: void myp_weak_free_all(void)
 void myp_weak_free_all() {
     Weak.head = 0;
+    myp_weak_set_nonempty(0);
 }

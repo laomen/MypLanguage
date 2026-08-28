@@ -306,6 +306,48 @@ if [ -f "$PROJ_ROOT/tests/test_multifile.sh" ]; then
     fi
 fi
 
+# 逃逸分析函数级栈预算：0 禁用、中间预算累计扣减、默认预算允许小对象。
+if [ -f "$PROJ_ROOT/tests/test_stack_promotion_budget.sh" ]; then
+    spb_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_stack_promotion_budget.sh" 2>&1)
+    if echo "$spb_out" | grep -qE "stack-promotion-budget: [0-9]+ passed, 0 failed"; then
+        echo -e "${GREEN}PASS${NC} (逃逸分析：函数级累计栈预算)"
+        TFPASS=$((TFPASS + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$spb_out" | tail -10
+        TFFAIL=$((TFFAIL + 1))
+        FAILED_TESTS="$FAILED_TESTS stack_promotion_budget(escape-analysis)"
+    fi
+fi
+
+# 叶类无需空析构桩；含 ARC/weak 字段的类仍须保留级联析构。
+if [ -f "$PROJ_ROOT/tests/test_leaf_destroy_dispatch.sh" ]; then
+    leaf_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_leaf_destroy_dispatch.sh" 2>&1)
+    if echo "$leaf_out" | grep -q "PASS (leaf class direct destroy dispatch)"; then
+        echo -e "${GREEN}PASS${NC} (叶类直接析构分发)"
+        TFPASS=$((TFPASS + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$leaf_out" | tail -10
+        TFFAIL=$((TFFAIL + 1))
+        FAILED_TESTS="$FAILED_TESTS leaf_destroy_dispatch(codegen)"
+    fi
+fi
+
+# 纯 MYP runtime 符号闭包：线程/通道程序不得因归档缺符号静默回退 C runtime。
+if [ -f "$PROJ_ROOT/tests/test_runtime_myp_only.sh" ]; then
+    rt_only_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_runtime_myp_only.sh" 2>&1)
+    if echo "$rt_only_out" | grep -q "PASS (threaded program uses MYP runtime only)"; then
+        echo -e "${GREEN}PASS${NC} (线程程序仅链接 MYP runtime)"
+        TFPASS=$((TFPASS + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$rt_only_out" | tail -10
+        TFFAIL=$((TFFAIL + 1))
+        FAILED_TESTS="$FAILED_TESTS runtime_myp_only(link)"
+    fi
+fi
+
 # package-path 冒号分隔（BUG-015）：mypc --package-path "a:b" 按 ':' 切分逐路径
 # 查找——包在 dirB 时编译成功（修复前把整串当单一目录 → cannot find import）。
 if [ -f "$PROJ_ROOT/tests/test_package_path.sh" ]; then
