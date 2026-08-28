@@ -47,6 +47,23 @@
 - **测试**：`tests/@test/cyclecollect_multi.myp`（2 tests：1000 环显式收集 + 自动
   收集下多环回收）。全量 456/456 + parity 95/95 + 自举 MD5 一致。
 
+### v3.15.184 — int→string 单次分配（strcat 提速 1.3x，混合负载 +6%）
+
+**非破坏性**（纯 MYP 运行时优化）。对象密集混合负载实测 MYP 124ms vs Go 37ms
+（3.35x）——分解成本：容器 ARC 40ms + **string 84ms（最大头，含 `"item"+j`
+strcat）**。strcat 100 万次 MYP 108ms vs Go 17ms（6.4x）。根因：
+`myp_itoa_common`（int→string）**每次转换 2 次 arena 分配**——tmp 缓冲
+`myp_alloc(25)` + 结果串 `myp_alloc(n+1)` + memcpy。
+- **修复**：`myp_itoa_common` 改**单次分配**——先算十进制位数，直接分配结果串，
+  从尾部 2 位查表填充（消除 tmp 缓冲分配 + memcpy）。
+- **验证**：strcat 100 万次 **108ms → 82ms**（-24%）；混合负载 124→117ms；
+  数字转换正确性全过（0/7/±负数/INT64_MAX/MIN/999999/50000/10/100/±10）；
+  全量 457/457（runtime 改动影响所有数字格式化，回归全绿）。
+- **剩余差距**：strcat 仍 82ms vs Go 17ms（4.8x）——每次 int→string 仍有
+  1 次分配 + 除法循环；concat 另 1 次分配。**下一步：编译器内联 itoa + concat**
+  （stringifyConcat 整数分支生成内联十进制转换，消除 to_string/strcat 调用 +
+  合并单次分配——Go 的 Itoa 快路径同思路）。
+
 ### v3.15.183 — 逃逸分析第二版：动态数组栈上分配（分配基准追平 Go）
 
 **非破坏性**（编译器 codegen 优化，语义不变）。触发：300 万次 `new int[8]`
