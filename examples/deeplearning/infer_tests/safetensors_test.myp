@@ -38,51 +38,67 @@ class STTest {
                 i = i + 1;
             }
 
-            // BF16→F32 对拍：model.embed_tokens.weight（151936×896）与 .bin 前段一致
+            // 整张量读取：model.embed_tokens.weight（151936×896 = 136,134,656 元素）
             int wte = st.findTensor("model.embed_tokens.weight");
             if (wte < 0) {
                 Console.writeLine("FAIL: embed_tokens.weight not found");
                 return;
             }
-            int n = 4096;   // 抽查前 4096 元素
-            float[] got = new float[n];
-            int cnt = st.readF32(wte, got, n);
-            if (cnt < n) {
-                Console.writeString("FAIL: read short ");
-                Console.writeLong(cnt);
-                Console.writeLine("");
+            int n = st.tensorElemCount(wte);
+            Console.writeString("embed_tokens.weight 元素数: ");
+            Console.writeLong(n);
+            Console.writeLine("");
+            if (n != 136134656) {
+                Console.writeLine("FAIL: 元素数异常");
                 return;
             }
-            // 读 .bin 前 4096 float（qwen2_weights.bin 是 fp32，wte 在最前）
+            // readF32All 一次性读完整张量（BF16→F32）
+            float[] full = st.readF32All(wte);
+            // 与 .bin（fp32，wte 在文件最前）采样对拍：首 4096 + 末 4096 + 均匀 16 点
             int fd = __myp_io_fopen("./deeplearning/data/llm/qwen2_weights.bin", "rb");
             if (fd < 0) {
                 Console.writeLine("FAIL: no qwen2_weights.bin");
                 return;
             }
-            double maxDiff = 0.0;
-            int j = 0;
-            while (j < n) {
-                int b0 = __myp_io_read_byte(); int b1 = __myp_io_read_byte();
-                int b2 = __myp_io_read_byte(); int b3 = __myp_io_read_byte();
-                if (b3 < 0) break;
-                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-                double refv = F32.toDouble(bits);
-                double g = got[j];
-                double diff = refv - g;
-                if (diff < 0.0) diff = 0.0 - diff;
-                if (diff > maxDiff) maxDiff = diff;
-                j = j + 1;
-            }
+            maxDiff_ = 0.0;
+            checked_ = 0;
+            int k = 0;
+            while (k < 4096 && k < n) { cmpAt(fd, full, k); k = k + 1; }
+            k = n - 4096;
+            while (k < n) { cmpAt(fd, full, k); k = k + 1; }
+            long step = long(n) / 16;
+            long pos = step;
+            while (pos < long(n) - 4096) { cmpAt(fd, full, int(pos)); pos = pos + step; }
             __myp_io_fclose();
-            Console.writeString("BF16 vs .bin maxAbsDiff (前 ");
+            Console.writeString("full read: 抽查 ");
+            Console.writeLong(checked_);
+            Console.writeString(" 点 / ");
             Console.writeLong(n);
-            Console.writeString(" 元素): ");
-            Console.writeFloat(maxDiff);
+            Console.writeString(" 元素，maxAbsDiff: ");
+            Console.writeFloat(maxDiff_);
             Console.writeLine("");
-            if (maxDiff == 0.0) Console.writeLine("SAFETENSORS OK (bit-exact)");
-            else if (maxDiff < 1.0e-6) Console.writeLine("SAFETENSORS OK (within fp32 tol)");
-            else Console.writeLine("SAFETENSORS MISMATCH");
+            if (maxDiff_ == 0.0) Console.writeLine("SAFETENSORS FULL OK (bit-exact)");
+            else if (maxDiff_ < 1.0e-6) Console.writeLine("SAFETENSORS FULL OK (within fp32 tol)");
+            else Console.writeLine("SAFETENSORS FULL MISMATCH");
         }
+
+        // 抽查单点：.bin 元素 idx（fp32，offset=idx*4）与 full[idx] 对拍
+        void cmpAt(int fd, float[] got, int idx) {
+            __myp_io_seek(idx * 4, 0);
+            int b0 = __myp_io_read_byte(); int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte(); int b3 = __myp_io_read_byte();
+            if (b3 < 0) return;
+            int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            double refv = F32.toDouble(bits);
+            double diff = refv - got[idx];
+            if (diff < 0.0) diff = 0.0 - diff;
+            if (diff > maxDiff_) maxDiff_ = diff;
+            checked_ = checked_ + 1;
+        }
+
+    property:
+        double maxDiff_;
+        long checked_;
 }
 
 int main() {

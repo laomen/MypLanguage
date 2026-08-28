@@ -2,6 +2,8 @@
 // 格式：8B header_size(LE) + JSON header + 张量数据（data_offsets 为数据段字节偏移）。
 // 仅解析 header 元数据；按张量读数据时 seek 到绝对偏移 + 按 dtype 转 float。
 // 支持 dtype：F32 / BF16 / F16（BF16→F32 = bits<<16；F16 用标准 half 解码）。
+// 读取 API：readF32All(i) / readF32AllByName(name) 整张量读入新 float[]；
+//          readF32Range(i, start, out, count) 部分读；readF32(i, out, maxN) 起读。
 // 用途：直接加载 HuggingFace 权重（如 qwen2-0.5b-instruct/model.safetensors），
 //       替代 extract_*.py 转自定义 .bin 的流程。
 import env;
@@ -95,17 +97,25 @@ class SafeTensors {
             return readF32(i, out, maxN);
         }
 
-        int readF32(int i, float[] out, int maxN) {
+        // 读张量 [startElem, startElem+count) 元素到 out（F32/BF16/F16→float）。
+        // 返回读入元素数（失败 0）；startElem 越界或 dtype 不支持返回 0。
+        int readF32Range(int i, int startElem, float[] out, int count) {
             if (i < 0 || i >= count_) return 0;
             int n = tensorElemCount(i);
+            if (n <= 0 || startElem < 0 || startElem >= n || count <= 0) return 0;
             string dt = dtype_[i];
             if (dt != "F32" && dt != "BF16" && dt != "F16") return 0;
+            int elemSize = 2;
+            if (dt == "F32") elemSize = 4;
+            long off = byteOff_[i] + long(startElem) * elemSize;
             int fd = __myp_io_fopen(path_, "rb");
             if (fd < 0) return 0;
-            __myp_io_seek(int(byteOff_[i]), 0);   // 绝对偏移（<2GB 内 int 够用）
+            __myp_io_seek(int(off), 0);   // 绝对偏移（int32；safetensors 文件 <2GB）
+            int limit = n - startElem;
+            if (limit > count) limit = count;
             int j = 0;
             if (dt == "F32") {
-                while (j < n && j < maxN) {
+                while (j < limit) {
                     int b0 = __myp_io_read_byte(); int b1 = __myp_io_read_byte();
                     int b2 = __myp_io_read_byte(); int b3 = __myp_io_read_byte();
                     if (b3 < 0) break;
@@ -114,7 +124,7 @@ class SafeTensors {
                     j = j + 1;
                 }
             } else if (dt == "BF16") {
-                while (j < n && j < maxN) {
+                while (j < limit) {
                     int b0 = __myp_io_read_byte(); int b1 = __myp_io_read_byte();
                     if (b1 < 0) break;
                     int bf = (b0 | (b1 << 8)) & 65535;
@@ -123,7 +133,7 @@ class SafeTensors {
                     j = j + 1;
                 }
             } else {   // F16
-                while (j < n && j < maxN) {
+                while (j < limit) {
                     int b0 = __myp_io_read_byte(); int b1 = __myp_io_read_byte();
                     if (b1 < 0) break;
                     int h = (b0 | (b1 << 8)) & 65535;
@@ -133,6 +143,30 @@ class SafeTensors {
             }
             __myp_io_fclose();
             return j;
+        }
+
+        // 从张量起始读最多 maxN 元素（部分读；out 由调用方分配）。
+        int readF32(int i, float[] out, int maxN) {
+            return readF32Range(i, 0, out, maxN);
+        }
+
+        // 读整个张量为新分配的 float[]（按张量元素数分配；F32/BF16/F16→float）。
+        // 失败/不支持 dtype 返回空数组；调用方用 tensorElemCount(i) 取元素数。
+        float[] readF32All(int i) {
+            int n = tensorElemCount(i);
+            if (i < 0 || i >= count_ || n <= 0) return new float[0];
+            string dt = dtype_[i];
+            if (dt != "F32" && dt != "BF16" && dt != "F16") return new float[0];
+            float[] out = new float[n];
+            readF32Range(i, 0, out, n);
+            return out;
+        }
+
+        // 按名称读整个张量（失败返回空数组）。
+        float[] readF32AllByName(string name) {
+            int i = findTensor(name);
+            if (i < 0) return new float[0];
+            return readF32All(i);
         }
 
     function:

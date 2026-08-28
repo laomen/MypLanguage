@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-08-28 — safetensors 整张量读取（readF32All / readF32Range）
+
+### 完善 `infer/safetensors.myp`：解除「只能读 4096」的限制
+- 原 `readF32(i, out, maxN)` 须调用方预分配 `out` 且传 `maxN` 上限，验证只抽查
+  前 4096 元素 → 整张量读取不直观、易越界。
+- 新增 API：
+  - `readF32All(i)` / `readF32AllByName(name)`：按张量元素数 `tensorElemCount(i)`
+    内部分配 `new float[n]`，一次性读完整张量并返回 `float[]`（MYP 方法返回动态
+    数组已用最小探针验证可行；失败返回空数组）。
+  - `readF32Range(i, startElem, out, count)`：读 `[startElem, startElem+count)`
+    段（seek 到 `byteOff + startElem*elemSize`），支撑 LLM 分块加载 embed/权重。
+  - `readF32(i, out, maxN)` 重构为 `readF32Range(i, 0, out, maxN)` 的薄包装（
+    签名不变，无破坏）。
+- 验证：`infer_tests/safetensors_test.myp` 改为整张量读取
+  `model.embed_tokens.weight`（151936×896 = **136,134,656** 元素），与
+  qwen2_weights.bin（fp32）采样对拍（首 4096 + 末 4096 + 均匀 16 点 = 8207 点）
+  **maxAbsDiff=0（bit-exact）**；整次运行 1.9s（MYP 缓冲 io 逐字节读 272MB BF16
+  无压力）。
+
+---
+
 ## 2026-08-26 — json_tool 同步 runtime.addAdd 新签名（修复 7 个入口编译失败）
 
 ### 修复：`json_tool/model_loader.myp` 的 `addAdd` 缺 doRelu 参数
