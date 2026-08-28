@@ -213,7 +213,9 @@ class CodeGen {
             if (k == "VarDecl") {
                 for (int i = 0; i < s.decls().size(); i = i + 1) {
                     AstVar d = s.decls().get(i);
-                    if (d.init() != null && d.init().kind() == "New" && d.thread() == 0) cands.add(d.name());
+                    // 排除含 ARC 属性的类（栈上化不释放属性 → 泄漏）。
+                    if (d.init() != null && d.init().kind() == "New" && d.thread() == 0
+                            && classHasArcProps(d.init().className()) == 0) cands.add(d.name());
                 }
                 return;
             }
@@ -378,6 +380,39 @@ class CodeGen {
                 if (l.get(i) == s) return 1;
             }
             return 0;
+        }
+
+        // 属性类型是否持 ARC 引用（string/数组/类/接口/函数值/slice，或嵌套
+        // struct 递归含 ARC 字段）。栈上化对象作用域结束只回收对象本身、不释放
+        // ARC 属性 → 含此类属性的类不栈上化（防泄漏；第一版保守）。
+        int propHoldsArc(AstType t) {
+            if (isArcType(t) != 0) return 1;
+            AstType rt = resolveType(t);
+            if (rt == null) return 0;
+            if (rt.className() == "slice") return 1;   // slice backing 计数引用
+            if (isStructName(rt.className()) != 0) {
+                AstStruct st = findStructByName(rt.className());
+                if (st != null) {
+                    for (int fi = 0; fi < st.props().size(); fi = fi + 1) {
+                        if (propHoldsArc(st.props().get(fi).type()) != 0) return 1;
+                    }
+                }
+            }
+            return 0;
+        }
+
+        // 类是否含 ARC 属性（含嵌套 struct 字段）。
+        int classHasArcProps(string cls) {
+            if (tu_ == null) return 1;   // 无 TU → 保守
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass cc = tu_.classes().get(ci);
+                if (cc.name() != cls) continue;
+                for (int pi = 0; pi < cc.props().size(); pi = pi + 1) {
+                    if (propHoldsArc(cc.props().get(pi).type()) != 0) return 1;
+                }
+                return 0;
+            }
+            return 1;   // 找不到类（泛型实例名等）→ 保守
         }
 
         @constructor CodeGen() {

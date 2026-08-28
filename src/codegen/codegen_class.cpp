@@ -276,6 +276,17 @@ bool CodeGen::isArcFieldType(const TypeNode& tn) {
     return false;
 }
 
+// 类是否含 ARC 属性（string/数组/类/接口/slice，或嵌套 struct 递归含 ARC 字段）。
+// 栈上化对象作用域结束只回收对象本身、不释放 ARC 属性 → 泄漏（esc_leak 实测
+// 10 万 string 泄漏）→ 含这类属性的类不栈上化（第一版保守）。
+bool CodeGen::classHasArcProps(const std::string& cls) {
+    const ClassDecl* c = findClass(cls);
+    if (!c) return true;  // 找不到类（泛型实例名等）→ 保守
+    for (auto& p : c->properties)
+        if (isArcFieldType(p.type)) return true;
+    return false;
+}
+
 // Operate (retain/release) on one loaded field value. field_val is a plain
 // pointer (string/class/counted-array), a fat-pointer struct (slice/interface/
 // function value -> index 0 is the data ptr), or a nested struct value (recurse).

@@ -791,7 +791,9 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     // stack_new_ 分支），跳过 ARC 槽注册（栈自动回收，无 release）。
     bool is_stack_escape = d.init_expr && d.init_expr->kind == ExprKind::NewExpr &&
                            current_escape_stack_vars_.count(d.name) != 0 &&
-                           !::getenv("MYP_NO_STACK_NEW");
+                           !::getenv("MYP_NO_STACK_NEW") &&
+                           !d.type.class_name.empty() &&
+                           !classHasArcProps(d.type.class_name);
     if (is_stack_escape && current_is_coro_) is_stack_escape = false;  // coro 帧不栈上
     // ARC: a local class reference is released when its scope exits.
     if (arc_decl_class && !is_stack_escape) registerArcSlot(a, 0);

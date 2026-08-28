@@ -744,6 +744,9 @@ private:
     // M8 structs: a struct FIELD that holds an ARC reference (or is a nested
     // struct that transitively does) — needs retain/release on struct copies.
     bool isArcFieldType(const TypeNode& tn);
+    // 栈上化对象作用域结束只回收对象本身、不释放 ARC 属性（string/数组/类/接口/
+    // slice/嵌套 struct 含 ARC 字段）→ 含这类属性的类不栈上化（防泄漏；第一版保守）。
+    bool classHasArcProps(const std::string& cls);
     // M8 structs: emit retain (retain=true) or release on one loaded field value.
     void emitArcFieldOp(llvm::IRBuilderBase& b, llvm::Value* field_val, const TypeNode& tn, bool retain);
     // M8 structs: operate on every ARC field of a struct VALUE (loaded value).

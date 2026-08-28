@@ -47,6 +47,29 @@
 - **测试**：`tests/@test/cyclecollect_multi.myp`（2 tests：1000 环显式收集 + 自动
   收集下多环回收）。全量 456/456 + parity 95/95 + 自举 MD5 一致。
 
+### v3.15.182 — 修复栈上化对象 ARC 属性泄漏 + 逃逸分析混合负载实测
+
+**非破坏性**（编译器 codegen 修复，语义修正）。逃逸分析（v3.15.181）的
+**重大隐患**：栈上化对象作用域结束只回收对象本身、**不释放其 ARC 属性**
+（string/动态数组/类/接口/slice/函数值，或嵌套 struct 含 ARC 字段）——对象不在
+arena、跳过 ARC 槽注册 → 属性指向的堆对象**永不释放**。实测：循环 10 万次
+`Holder h = new Holder(); h.set("hello-"+i);`（string 属性）退出时 `MYP_MEM_REPORT`
+报告 **strings: 100001**（10 万泄漏）；禁用逃逸后 strings: 1。
+- **修复（第一版保守）**：逃逸分析**排除含 ARC 属性的类**——`classHasArcProps`/
+  `propHoldsArc`（selfhost codegen.myp）与 `CodeGen::classHasArcProps`（C++ oracle，
+  用 `findClass` + `isArcFieldType` 递归嵌套 struct）双镜像；selfhost 在
+  `escCollect` 收集候选时排除，oracle 在 `generateVarDecl` 的 `is_stack_escape`
+  判定处排除。找不到类（泛型实例名等）→ 保守排除。
+- **验证**：esc_leak strings 100001 → 1（无泄漏）；纯 int 对象微基准仍栈上化
+  （`myp_alloc_object` 0 调用、3ms）；全量 456/456 + 自举 MD5 一致。
+- **混合负载实测（重要发现）**：`tests/leak_long.myp` 60s，逃逸版 vs 无逃逸版
+  （`MYP_NO_STACK_NEW=1`）均 **~1097k/s**（v3.15.180 基线 1075k/s，无差异）——
+  真实代码里局部 `new` **大多逃逸**（存容器/传参/属性持有），逃逸分析只对
+  "纯局部对象 + 方法调用" 模式（微基准 9.3x）有效。**真实瓶颈仍是编译器调用点
+  代码生成**（跨模块小函数未内联 + ARC retain/release 簿记），下一步方向：
+  调用点内联（`define internal` 小函数 `alwaysinline`）+ ARC retain/release 对
+  合并消除。
+
 ### v3.15.181 — 逃逸分析 selfhost 同步（局部 new 栈上分配，微基准 9.3x）
 
 **非破坏性**（编译器 codegen 优化，语义不变）。将 v3.15.180 已在 C++ oracle
