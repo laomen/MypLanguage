@@ -47,6 +47,26 @@
 - **测试**：`tests/@test/cyclecollect_multi.myp`（2 tests：1000 环显式收集 + 自动
   收集下多环回收）。全量 456/456 + parity 95/95 + 自举 MD5 一致。
 
+### v3.15.185 — string+int 组合单分配（strcat 2.3x，混合负载 1.65x）
+
+**非破坏性**（运行时 + 编译器 codegen 优化）。strcat（`"item"+j`）100 万次
+82ms vs Go 17ms——每次 `myp_to_string_*`（1 分配 + 除法）+ `myp_strcat`（1 分配 +
+memcpy）两调用两分配。
+- **`myp_itoa_concat(prefix, val, signed)`（runtime_myp/num.myp）**：string+int
+  组合单次分配——算 prefix 长 + 十进制位数 → `myp_alloc(total+1)` → 复制 prefix
+  + 从尾部 2 位查表填数字 + 负号。signed=1 有符号 / 0 无符号。
+- **codegen（selfhost）**：string concat 分支，`string + int`（且非 bool/char）
+  → 直接调 `myp_itoa_concat`（替代 stringifyConcat + strcat 两调用两分配）；
+  无符号（ubyte/ushort/uint/ulong）须 **zext 到 i64**（sext 会把 0xFFFFFFFF 变
+  -1 → 2^64-1 错值，修复 stringify_conv/numeric_underscore 回归）。
+  新增 `exprIsUnsigned`/`exprIsItoaInt` helper + ir_emit preamble declare。
+- **效果**：strcat 100 万次 **82ms → 46ms**（1.78x，累计 108→46 = 2.3x）；
+  对象密集混合负载 **117ms → 75ms**（累计 124→75 = 1.65x，vs Go 37ms 差距缩至
+  2x）。数字/拼接正确性全过（含 uint 边界 4294967295）；全量 457/457 +
+  自举 MD5 一致。
+- **剩余差距**：混合负载 75ms 里对象 ARC ~40ms（已近 Go 总量）+ string ~35ms。
+  继续方向：编译器内联 itoa/concat（消调用+合并分配）、对象 ARC fast path 内联。
+
 ### v3.15.184 — int→string 单次分配（strcat 提速 1.3x，混合负载 +6%）
 
 **非破坏性**（纯 MYP 运行时优化）。对象密集混合负载实测 MYP 124ms vs Go 37ms

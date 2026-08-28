@@ -175,6 +175,41 @@ string myp_to_string_i64(long val) {
     return myp_itoa_common(ulong(a), neg);
 }
 
+// string + int 组合（v3.15.185）：单次分配复制 prefix + 填整数十进制，替代
+// myp_to_string_* + myp_strcat 两调用两分配（strcat 热点，追 Go Itoa 快路径）。
+// signed=1 有符号（负号处理），0 无符号。
+string myp_itoa_concat(string prefix, long val, int signed) {
+    int plen = myp_strlen(prefix);   // O(1) 读头
+    long u = long(val);
+    int neg = 0;
+    if (signed != 0 && u < 0) { neg = 1; u = -u; }
+    int nd = 1;
+    ulong t = ulong(u);
+    while (t >= 10) { t = t / 10; nd = nd + 1; }
+    int total = plen + nd + neg;
+    string r = myp_alloc(total + 1);
+    long rp = __myp_str_ptr(r);
+    __myp_memcpy(rp, __myp_str_ptr(prefix), plen);
+    int pos = total;
+    __myp_mem_store_i8(rp + pos, 0);   // 终止符
+    ulong uu = ulong(u);
+    while (true) {
+        ulong d = uu % 100;
+        uu = uu / 100;
+        pos = pos - 1;
+        __myp_mem_store_i8(rp + pos, 48 + int(d % 10));
+        if (uu == 0 && d < 10) break;
+        pos = pos - 1;
+        __myp_mem_store_i8(rp + pos, 48 + int(d / 10));
+        if (uu == 0) break;
+    }
+    if (neg != 0) {
+        pos = pos - 1;
+        __myp_mem_store_i8(rp + pos, 45);
+    }
+    return r;
+}
+
 long myp_two_32() { return long(1) << 32; }
 
 // C: char* myp_to_string_u32(uint32_t val) —— 位模式按无符号十进制

@@ -1470,6 +1470,21 @@ class CodeGen {
             return v;
         }
 
+        // 表达式是否为无符号整数类型（ubyte/ushort/uint/ulong）。
+        int exprIsUnsigned(AstExpr e) {
+            if (e == null) return 0;
+            string rk = e.resolvedKind();
+            if (rk == "ubyte" || rk == "ushort" || rk == "uint" || rk == "ulong") return 1;
+            return 0;
+        }
+        // 表达式是否 itoa 可转换整数（非 bool/char——char 走 myp_chr）。
+        int exprIsItoaInt(AstExpr e, string vt) {
+            if (e == null) return 0;
+            if (vt == "i1") return 0;
+            if (e.resolvedKind() == "char") return 0;
+            return 1;
+        }
+
         // 字符串拼接的标量 → 字符串转换（对齐 C++ stringifyForConcat）：
         // ptr 直通；bool→myp_to_string_bool；char→myp_chr；整数按有符号/无符号
         // 选择 i32/i64/u32/u64；float/double 各自转换。
@@ -9302,6 +9317,30 @@ class CodeGen {
                 // 仅当未解析到 @op（double[]+double[] 走 @op vecAdd，不是字符串
                 // 拼接；否则 ptr+ptr 会被误判成 myp_strcat）。
                 if (op == "+" && e.opCall() == 0 && (lt == "ptr" || rt == "ptr")) {
+                    // 优化 v3.15.185：string + int → myp_itoa_concat（单次分配 +
+                    // 单调用，替代 myp_to_string_* + myp_strcat 两调用两分配；
+                    // strcat 热点，追 Go Itoa 快路径）。
+                    if (lt == "ptr" && rt != "ptr" && IrEmit.isIntType(rt) != 0
+                            && exprIsItoaInt(e.rhs(), rt) != 0) {
+                        int uns = exprIsUnsigned(e.rhs());
+                        // 无符号须 zext（sext 会把 0xFFFFFFFF 变成 -1 → 2^64-1 错值）。
+                        string rv64 = "";
+                        if (rt == "i64") {
+                            rv64 = rv;
+                        } else if (uns != 0) {
+                            string zz = newTmp();
+                            sb_.append("  " + zz + " = zext " + rt + " " + rv + " to i64\n");
+                            rv64 = zz;
+                        } else {
+                            string ss = newTmp();
+                            sb_.append("  " + ss + " = sext " + rt + " " + rv + " to i64\n");
+                            rv64 = ss;
+                        }
+                        string tc = newTmp();
+                        sb_.append("  " + tc + " = call ptr @myp_itoa_concat(ptr " + lv + ", i64 " + rv64 + ", i32 " + (uns != 0 ? 0 : 1) + ")\n");
+                        addFreshTemp(tc);
+                        return tc;
+                    }
                     string lv2 = stringifyConcat(lv, lt, e.lhs());
                     string rv2 = stringifyConcat(rv, rt, e.rhs());
                     string t = newTmp();
