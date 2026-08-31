@@ -960,6 +960,17 @@ class InferenceRuntime {
         int opP8At(int i) { return opP8_[i]; }
         int opXAt(int i, int j) { return opX_[i * 4 + j]; }
         int opReluAt(int i) { return opRelu_[i]; }
+        // Slice 并行参数表（opKind 27）
+        int sCntAt(int i) { return sCnt_[i]; }
+        int sIdAt(int i, int j) { return sId_[i * 4 + j]; }
+        int sOdAt(int i, int j) { return sOd_[i * 4 + j]; }
+        int sAxAt(int i, int j) { return sAx_[i * 4 + j]; }
+        int sStAt(int i, int j) { return sSt_[i * 4 + j]; }
+        int sSpAt(int i, int j) { return sSp_[i * 4 + j]; }
+        // Pad constant_value 位型（opKind 38/39/44）
+        int pCvalAt(int i) { return pCval_[i]; }
+        // 归约/归一化 GPU 暂存区偏移（opKind 30/35 GPU 用）
+        int statsOffRef() { return statsOff_; }
 
         void run() {
             int prof = 0;

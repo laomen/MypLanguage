@@ -1,0 +1,1737 @@
+// ops_iface_all.myp — 阶段4e3：全部算子按 interface 双方法（forward/backward）拆分
+//
+// 把 runtime run()/runGpu() 的巨型 if/else 分支体搬进每个算子的独立类：
+//   interface IOp { void forward(rt, opIdx); void backward(rt, opIdx); }
+// CPU 类调 InferOps 静态内核；GPU 类调 GpuInferOps @gpu for 内核（dev 经 rt.devRef()）。
+// registerAllIfaceOps(rt) 全量注册：前向 opKind → forward()，反向 opKind → backward()。
+// backward 实现内自检 rt.trainMode()==1（与原 if/else 守卫一致）。
+//
+// 未注册槽回退原 if/else（增量零行为变化）。验证：train/op_iface_check.myp +
+// 全量训练/对拍回归（MYP_IFACE=1 时入口调 registerAllIfaceOps 走全接口路径）。
+import env;
+import "./runtime.myp";
+import "./ops.myp";
+import "./gpu_ops.myp";
+import "./op_iface.myp";   // relu（ReluOp/GpuReluOp + registerIfaceOps）
+
+// =====================================================================
+// CPU 算子类
+// =====================================================================
+
+// ---- dense（opKind 1 前向 / 50 反向）----
+class DenseOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int wb = rt.opBAt(i);
+            int bc = rt.opCAt(i);
+            int yd = rt.opDAt(i);
+            InferOps.dense(rt.arenaRef(), rt.tensorOff(xa), rt.tensorRows(xa), rt.tensorCols(xa),
+                           rt.tensorOff(wb), rt.tensorRows(wb), rt.tensorOff(bc), rt.tensorOff(yd));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int x = rt.opBAt(i);
+                int w = rt.opCAt(i);
+                int dx = rt.opDAt(i);
+                int dw = rt.opP0At(i);
+                int db = rt.opP1At(i);
+                InferOps.bwdDense(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorRows(x), rt.tensorCols(x),
+                                  rt.tensorOff(w), rt.tensorRows(w), rt.tensorOff(dx), rt.tensorOff(dw), rt.tensorOff(db));
+            }
+        }
+}
+
+// ---- softmax（opKind 3 前向 / 70 反向 bwdSoftmax，Dice 链）----
+class SoftmaxOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            InferOps.softmax(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yb), rt.tensorRows(xa), rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dp = rt.opAAt(i);
+                int p = rt.opBAt(i);
+                int dl = rt.opCAt(i);
+                InferOps.bwdSoftmax(rt.arenaRef(), rt.tensorOff(p), rt.tensorOff(dp), rt.tensorOff(dl), rt.tensorRows(p), rt.tensorCols(p));
+            }
+        }
+}
+
+// ---- sigmoid（opKind 4 前向 / 52 反向）----
+class SigmoidOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            InferOps.sigmoid(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yb), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int y = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                InferOps.bwdSigmoid(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(y), rt.tensorOff(dx), rt.tensorRows(y) * rt.tensorCols(y));
+            }
+        }
+}
+
+// ---- add（opKind 5 前向 / 53 反向；opRelu 融合标志）----
+class AddOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int aa = rt.opAAt(i);
+            int bb = rt.opBAt(i);
+            int oc = rt.opCAt(i);
+            InferOps.add(rt.arenaRef(), rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc),
+                         rt.tensorRows(aa) * rt.tensorCols(aa), rt.opReluAt(i));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int da = rt.opBAt(i);
+                int db = rt.opCAt(i);
+                InferOps.bwdAdd(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(da), rt.tensorOff(db), rt.tensorRows(dy) * rt.tensorCols(dy));
+            }
+        }
+}
+
+// ---- matmul（opKind 6 前向；无独立反向）----
+class MatmulOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int wb = rt.opBAt(i);
+            int yd = rt.opCAt(i);
+            InferOps.matmul(rt.arenaRef(), rt.tensorOff(xa), rt.tensorRows(xa), rt.tensorCols(xa),
+                            rt.tensorOff(wb), rt.tensorRows(wb), rt.tensorOff(yd));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// =====================================================================
+// GPU 算子类
+// =====================================================================
+
+// ---- dense（GPU）----
+class GpuDenseOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int wb = rt.opBAt(i);
+            int bc = rt.opCAt(i);
+            int yd = rt.opDAt(i);
+            int work = rt.tensorRows(wb) * rt.tensorCols(xa);
+            GpuInferOps.dense(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorRows(xa),
+                              rt.tensorOff(wb), rt.tensorRows(wb), rt.tensorCols(xa),
+                              rt.tensorOff(bc), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int x = rt.opBAt(i);
+                int w = rt.opCAt(i);
+                int dx = rt.opDAt(i);
+                int dw = rt.opP0At(i);
+                int db = rt.opP1At(i);
+                GpuInferOps.bwdDense(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorRows(x), rt.tensorCols(x),
+                                     rt.tensorOff(w), rt.tensorRows(w), rt.tensorOff(dx), rt.tensorOff(dw), rt.tensorOff(db));
+            }
+        }
+}
+
+// ---- softmax（GPU）----
+class GpuSoftmaxOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            GpuInferOps.softmax(rt.arenaRef(), rt.tensorRows(xa) * rt.tensorCols(xa),
+                                rt.tensorOff(xa), rt.tensorOff(yb), rt.tensorRows(xa), rt.tensorCols(xa), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dp = rt.opAAt(i);
+                int p = rt.opBAt(i);
+                int dl = rt.opCAt(i);
+                GpuInferOps.bwdSoftmax(rt.arenaRef(), rt.devRef(), rt.tensorOff(p), rt.tensorOff(dp), rt.tensorOff(dl), rt.tensorRows(p), rt.tensorCols(p));
+            }
+        }
+}
+
+// ---- sigmoid（GPU）----
+class GpuSigmoidOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            GpuInferOps.sigmoid(rt.arenaRef(), rt.tensorRows(xa) * rt.tensorCols(xa), rt.tensorOff(xa), rt.tensorOff(yb), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int y = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                GpuInferOps.bwdSigmoid(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(y), rt.tensorOff(dx), rt.tensorRows(y) * rt.tensorCols(y));
+            }
+        }
+}
+
+// ---- add（GPU）----
+class GpuAddOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int aa = rt.opAAt(i);
+            int bb = rt.opBAt(i);
+            int oc = rt.opCAt(i);
+            GpuInferOps.add(rt.arenaRef(), rt.tensorRows(aa) * rt.tensorCols(aa),
+                            rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.devRef(), rt.opReluAt(i));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int da = rt.opBAt(i);
+                int db = rt.opCAt(i);
+                GpuInferOps.bwdAdd(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(da), rt.tensorOff(db), rt.tensorRows(dy) * rt.tensorCols(dy));
+            }
+        }
+}
+
+// ---- matmul（GPU）----
+class GpuMatmulOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int wb = rt.opBAt(i);
+            int yd = rt.opCAt(i);
+            int work = rt.tensorRows(wb) * rt.tensorCols(xa);
+            GpuInferOps.matmul(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorRows(xa),
+                               rt.tensorOff(wb), rt.tensorRows(wb), rt.tensorCols(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- conv（opKind 7 前向 / 56 反向；2D NCHW）----
+class ConvOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            InferOps.conv(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorH(wb), rt.tensorW(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int w = rt.opCAt(i); int dx = rt.opDAt(i);
+                int dw = rt.opP0At(i); int db = rt.opP1At(i);
+                int dbOff = -1; if (db >= 0) dbOff = rt.tensorOff(db);
+                InferOps.bwdConv(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x),
+                                 rt.tensorN(x), rt.tensorC(x), rt.tensorH(x), rt.tensorW(x),
+                                 rt.tensorOff(w), rt.tensorOff(dx), rt.tensorOff(dw), dbOff,
+                                 rt.tensorC(dy), rt.tensorH(dy), rt.tensorW(dy),
+                                 rt.tensorH(w), rt.tensorW(w),
+                                 rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+            }
+        }
+}
+
+// ---- maxpool（opKind 8 前向 / 57 反向）----
+class MaxpoolOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.maxpool(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                InferOps.bwdMaxPool(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x),
+                                    rt.tensorN(x), rt.tensorC(x), rt.tensorH(x), rt.tensorW(x),
+                                    rt.tensorOff(dx), rt.tensorH(dy), rt.tensorW(dy),
+                                    rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i));
+            }
+        }
+}
+
+// ---- gapool（opKind 9 前向）----
+class GapoolOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.gapool(rt.arenaRef(), rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- flatten（opKind 10 前向）----
+class FlattenOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.flatten(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- convRelu（opKind 11 前向，融合；无独立反向）----
+class ConvReluOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            InferOps.convRelu(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorH(wb), rt.tensorW(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- transposeNCHW2NHWC（opKind 12 前向）----
+class TransposeNchw2NhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.transposeNCHW2NHWC(rt.arenaRef(), rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// =====================================================================
+// GPU 算子类（第 2 批）
+// =====================================================================
+
+// ---- conv（GPU）----
+class GpuConvOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.conv(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorH(wb), rt.tensorW(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int w = rt.opCAt(i); int dx = rt.opDAt(i);
+                int dw = rt.opP0At(i); int db = rt.opP1At(i);
+                int dbOff = -1; if (db >= 0) dbOff = rt.tensorOff(db);
+                GpuInferOps.bwdConv(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x),
+                                    rt.tensorN(x), rt.tensorC(x), rt.tensorH(x), rt.tensorW(x),
+                                    rt.tensorOff(w), rt.tensorOff(dx), rt.tensorOff(dw), dbOff,
+                                    rt.tensorC(dy), rt.tensorH(dy), rt.tensorW(dy),
+                                    rt.tensorH(w), rt.tensorW(w),
+                                    rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+            }
+        }
+}
+
+// ---- maxpool（GPU）----
+class GpuMaxpoolOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.maxpool(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                GpuInferOps.bwdMaxPool(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x),
+                                       rt.tensorN(x), rt.tensorC(x), rt.tensorH(x), rt.tensorW(x),
+                                       rt.tensorOff(dx), rt.tensorH(dy), rt.tensorW(dy),
+                                       rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i));
+            }
+        }
+}
+
+// ---- gapool（GPU）----
+class GpuGapoolOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.gapool(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- flatten（GPU）----
+class GpuFlattenOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(xa) * rt.tensorCols(xa);
+            GpuInferOps.flatten(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- convRelu（GPU）----
+class GpuConvReluOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.convRelu(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorH(wb), rt.tensorW(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- transposeNCHW2NHWC（GPU）----
+class GpuTransposeNchw2NhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(xa) * rt.tensorCols(xa);
+            GpuInferOps.transposeNCHW2NHWC(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- convNHWC（opKind 13 前向）----
+class ConvNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            InferOps.convNHWC(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorC(wb), rt.tensorH(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- convNHWCRelu（opKind 14 前向，融合）----
+class ConvNhwcReluOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            InferOps.convNHWCRelu(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorC(wb), rt.tensorH(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- maxpoolNHWC（opKind 15 前向）----
+class MaxpoolNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.maxpoolNHWC(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- gapoolNHWC（opKind 16 前向）----
+class GapoolNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.gapoolNHWC(rt.arenaRef(), rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- batchnorm（opKind 17 前向）----
+class BatchnormOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            double eps = 1.0e-5;
+            if (rt.opP3At(i) == 1) eps = F32.toDouble(rt.opP2At(i));
+            InferOps.batchnorm(rt.arenaRef(), rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd),
+                rt.tensorOff(rt.opCAt(i)), rt.tensorOff(rt.opDAt(i)), rt.tensorOff(rt.opP0At(i)), rt.tensorOff(rt.opP1At(i)), eps);
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- batchnormNHWC（opKind 18 前向）----
+class BatchnormNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            double eps = 1.0e-5;
+            if (rt.opP3At(i) == 1) eps = F32.toDouble(rt.opP2At(i));
+            InferOps.batchnormNHWC(rt.arenaRef(), rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd),
+                rt.tensorOff(rt.opCAt(i)), rt.tensorOff(rt.opDAt(i)), rt.tensorOff(rt.opP0At(i)), rt.tensorOff(rt.opP1At(i)), eps);
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- relu6（opKind 19 前向）----
+class Relu6Op {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.relu6(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- leakyrelu（opKind 20 前向）----
+class LeakyReluOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            double alpha = 0.01;
+            if (rt.opP1At(i) == 1) alpha = F32.toDouble(rt.opP0At(i));
+            InferOps.leakyrelu(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa), alpha);
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- silu（opKind 21 前向）----
+class SiluOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.silu(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- hardswish（opKind 22 前向）----
+class HardSwishOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.hardswish(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- clip（opKind 23 前向）----
+class ClipOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int minOff = -1; if (rt.opP0At(i) >= 0) minOff = rt.tensorOff(rt.opP0At(i));
+            int maxOff = -1; if (rt.opP1At(i) >= 0) maxOff = rt.tensorOff(rt.opP1At(i));
+            InferOps.clip(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa), minOff, maxOff);
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- reshape（opKind 24 前向，连续拷贝）----
+class ReshapeOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.copyFlat(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- concat（opKind 25 前向）----
+class ConcatOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int a0 = rt.opAAt(i); int a1 = rt.opBAt(i); int a2 = rt.opCAt(i); int yd = rt.opDAt(i);
+            int axis = rt.opP0At(i); int nIn = rt.opP1At(i);
+            int od0 = rt.opP2At(i), od1 = rt.opP3At(i), od2 = rt.opP4At(i), od3 = rt.opP5At(i);
+            int ax0 = rt.opP6At(i), ax1 = rt.opP7At(i), ax2 = rt.opP8At(i);
+            int off2 = 0;
+            if (a2 >= 0) off2 = rt.tensorOff(a2);
+            InferOps.concat(rt.arenaRef(), rt.tensorOff(a0), rt.tensorOff(a1), off2, rt.tensorOff(yd),
+                            od0, od1, od2, od3, ax0, ax1, ax2, axis, nIn);
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- transpose（opKind 26 前向）----
+class TransposeOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int p0 = rt.opP0At(i), p1 = rt.opP1At(i), p2 = rt.opP2At(i), p3 = rt.opP3At(i);
+            int pc = rt.opP4At(i);
+            int id0 = rt.opP5At(i), id1 = rt.opP6At(i), id2 = rt.opP7At(i), id3 = rt.opP8At(i);
+            InferOps.transpose(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), id0, id1, id2, id3, p0, p1, p2, p3, pc);
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- slice（opKind 27 前向）----
+class SliceOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int cnt = rt.sCntAt(i);
+            int id0 = rt.sIdAt(i, 0), id1 = rt.sIdAt(i, 1), id2 = rt.sIdAt(i, 2), id3 = rt.sIdAt(i, 3);
+            int od0 = rt.sOdAt(i, 0), od1 = rt.sOdAt(i, 1), od2 = rt.sOdAt(i, 2), od3 = rt.sOdAt(i, 3);
+            int ax0 = rt.sAxAt(i, 0), st0 = rt.sStAt(i, 0), sp0 = rt.sSpAt(i, 0);
+            int ax1 = rt.sAxAt(i, 1), st1 = rt.sStAt(i, 1), sp1 = rt.sSpAt(i, 1);
+            int ax2 = rt.sAxAt(i, 2), st2 = rt.sStAt(i, 2), sp2 = rt.sSpAt(i, 2);
+            int ax3 = rt.sAxAt(i, 3), st3 = rt.sStAt(i, 3), sp3 = rt.sSpAt(i, 3);
+            InferOps.sliceOp(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), cnt, id0, id1, id2, id3, od0, od1, od2, od3,
+                             ax0, st0, sp0, ax1, st1, sp1, ax2, st2, sp2, ax3, st3, sp3);
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// =====================================================================
+// GPU 算子类（第 3 批）
+// =====================================================================
+
+// ---- convNHWC（GPU）----
+class GpuConvNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.convNHWC(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorC(wb), rt.tensorH(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- convNHWCRelu（GPU）----
+class GpuConvNhwcReluOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.convNHWCRelu(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorC(wb), rt.tensorH(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- maxpoolNHWC（GPU）----
+class GpuMaxpoolNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.maxpoolNHWC(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- gapoolNHWC（GPU）----
+class GpuGapoolNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.gapoolNHWC(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- batchnorm（GPU）----
+class GpuBatchnormOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            double eps = 1.0e-5;
+            if (rt.opP3At(i) == 1) eps = F32.toDouble(rt.opP2At(i));
+            GpuInferOps.batchnorm(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd),
+                rt.tensorOff(rt.opCAt(i)), rt.tensorOff(rt.opDAt(i)), rt.tensorOff(rt.opP0At(i)), rt.tensorOff(rt.opP1At(i)), eps, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- batchnormNHWC（GPU）----
+class GpuBatchnormNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            double eps = 1.0e-5;
+            if (rt.opP3At(i) == 1) eps = F32.toDouble(rt.opP2At(i));
+            GpuInferOps.batchnormNHWC(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd),
+                rt.tensorOff(rt.opCAt(i)), rt.tensorOff(rt.opDAt(i)), rt.tensorOff(rt.opP0At(i)), rt.tensorOff(rt.opP1At(i)), eps, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- relu6（GPU）----
+class GpuRelu6Op {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.relu6(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- leakyrelu（GPU）----
+class GpuLeakyReluOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            double alpha = 0.01;
+            if (rt.opP1At(i) == 1) alpha = F32.toDouble(rt.opP0At(i));
+            GpuInferOps.leakyrelu(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), alpha, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- silu（GPU）----
+class GpuSiluOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.silu(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- hardswish（GPU）----
+class GpuHardSwishOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.hardswish(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- clip（GPU）----
+class GpuClipOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            int minOff = -1; if (rt.opP0At(i) >= 0) minOff = rt.tensorOff(rt.opP0At(i));
+            int maxOff = -1; if (rt.opP1At(i) >= 0) maxOff = rt.tensorOff(rt.opP1At(i));
+            GpuInferOps.clip(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), minOff, maxOff, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- reshape（GPU）----
+class GpuReshapeOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.copyFlat(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- concat（GPU）----
+class GpuConcatOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int a0 = rt.opAAt(i); int a1 = rt.opBAt(i); int a2 = rt.opCAt(i); int yd = rt.opDAt(i);
+            int axis = rt.opP0At(i); int nIn = rt.opP1At(i);
+            int od0 = rt.opP2At(i), od1 = rt.opP3At(i), od2 = rt.opP4At(i), od3 = rt.opP5At(i);
+            int ax0 = rt.opP6At(i), ax1 = rt.opP7At(i), ax2 = rt.opP8At(i);
+            int off2 = 0;
+            if (a2 >= 0) off2 = rt.tensorOff(a2);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.concat(rt.arenaRef(), work, rt.tensorOff(a0), rt.tensorOff(a1), off2, rt.tensorOff(yd),
+                               od0, od1, od2, od3, ax0, ax1, ax2, axis, nIn, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- transpose（GPU）----
+class GpuTransposeOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int p0 = rt.opP0At(i), p1 = rt.opP1At(i), p2 = rt.opP2At(i), p3 = rt.opP3At(i);
+            int pc = rt.opP4At(i);
+            int id0 = rt.opP5At(i), id1 = rt.opP6At(i), id2 = rt.opP7At(i), id3 = rt.opP8At(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.transpose(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), id0, id1, id2, id3, p0, p1, p2, p3, pc, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- slice（GPU）----
+class GpuSliceOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int cnt = rt.sCntAt(i);
+            int id0 = rt.sIdAt(i, 0), id1 = rt.sIdAt(i, 1), id2 = rt.sIdAt(i, 2), id3 = rt.sIdAt(i, 3);
+            int od0 = rt.sOdAt(i, 0), od1 = rt.sOdAt(i, 1), od2 = rt.sOdAt(i, 2), od3 = rt.sOdAt(i, 3);
+            int ax0 = rt.sAxAt(i, 0), st0 = rt.sStAt(i, 0), sp0 = rt.sSpAt(i, 0);
+            int ax1 = rt.sAxAt(i, 1), st1 = rt.sStAt(i, 1), sp1 = rt.sSpAt(i, 1);
+            int ax2 = rt.sAxAt(i, 2), st2 = rt.sStAt(i, 2), sp2 = rt.sSpAt(i, 2);
+            int ax3 = rt.sAxAt(i, 3), st3 = rt.sStAt(i, 3), sp3 = rt.sSpAt(i, 3);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.sliceOp(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), cnt, id0, id1, id2, id3, od0, od1, od2, od3,
+                                ax0, st0, sp0, ax1, st1, sp1, ax2, st2, sp2, ax3, st3, sp3, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- resize2d（opKind 28 前向）----
+class Resize2dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.resize2d(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd),
+                              rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                              rt.opP6At(i), rt.opP7At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- split（opKind 29 前向）----
+class SplitOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.splitOp(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd),
+                             rt.opP0At(i), rt.opP1At(i), rt.opP2At(i),
+                             rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- reduceMean（opKind 30 前向）----
+class ReduceMeanOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.reduceMean(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd),
+                                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- sub（opKind 31 前向）----
+class SubOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int aa = rt.opAAt(i); int bb = rt.opBAt(i); int oc = rt.opCAt(i);
+            InferOps.sub(rt.arenaRef(), rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc),
+                         rt.tensorRows(oc) * rt.tensorCols(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- div（opKind 32 前向）----
+class DivOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int aa = rt.opAAt(i); int bb = rt.opBAt(i); int oc = rt.opCAt(i);
+            InferOps.div(rt.arenaRef(), rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc),
+                         rt.tensorRows(oc) * rt.tensorCols(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- mul（opKind 33 前向）----
+class MulOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int aa = rt.opAAt(i); int bb = rt.opBAt(i); int oc = rt.opCAt(i);
+            InferOps.mul(rt.arenaRef(), rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc),
+                         rt.tensorRows(oc) * rt.tensorCols(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- sqrt（opKind 34 前向）----
+class SqrtOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.sqrt1(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(yd) * rt.tensorCols(yd));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- instancenorm（opKind 35 前向）----
+class InstanceNormOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int sT = rt.opBAt(i); int bT = rt.opCAt(i); int yd = rt.opDAt(i);
+            double eps = 1.0e-5;
+            if (rt.opP4At(i) == 1) eps = F32.toDouble(rt.opP3At(i));
+            InferOps.instancenorm(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(sT), rt.tensorOff(bT), rt.tensorOff(yd),
+                                  rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), eps, rt.opReluAt(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- avgpool（opKind 36 前向）----
+class AvgpoolOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.avgpool(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- avgpoolNHWC（opKind 37 前向）----
+class AvgpoolNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.avgpoolNHWC(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- pad（opKind 38 前向）----
+class PadOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            double cv = F32.toDouble(rt.pCvalAt(i));
+            InferOps.pad(rt.arenaRef(), rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                         rt.tensorOff(yd), rt.tensorN(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                         rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i),
+                         rt.opP8At(i), cv);
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- padNHWC（opKind 39 前向）----
+class PadNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            double cv = F32.toDouble(rt.pCvalAt(i));
+            InferOps.padNHWC(rt.arenaRef(), rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                             rt.tensorOff(yd), rt.tensorN(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                             rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i),
+                             rt.opP8At(i), cv);
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// =====================================================================
+// GPU 算子类（第 4 批）
+// =====================================================================
+
+// ---- resize2d（GPU）----
+class GpuResize2dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.resize2d(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd),
+                                 rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                                 rt.opP6At(i), rt.opP7At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- split（GPU）----
+class GpuSplitOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.splitOp(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd),
+                                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i),
+                                rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- reduceMean（GPU）----
+class GpuReduceMeanOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = (rt.opP0At(i) == 0) ? 1 : (rt.opP1At(i) * rt.opP2At(i));
+            GpuInferOps.reduceMean(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd),
+                                   rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.devRef(), rt.statsOffRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- sub（GPU）----
+class GpuSubOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int aa = rt.opAAt(i); int bb = rt.opBAt(i); int oc = rt.opCAt(i);
+            GpuInferOps.sub(rt.arenaRef(), rt.tensorRows(oc) * rt.tensorCols(oc),
+                            rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- div（GPU）----
+class GpuDivOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int aa = rt.opAAt(i); int bb = rt.opBAt(i); int oc = rt.opCAt(i);
+            GpuInferOps.div(rt.arenaRef(), rt.tensorRows(oc) * rt.tensorCols(oc),
+                            rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- mul（GPU）----
+class GpuMulOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int aa = rt.opAAt(i); int bb = rt.opBAt(i); int oc = rt.opCAt(i);
+            GpuInferOps.mul(rt.arenaRef(), rt.tensorRows(oc) * rt.tensorCols(oc),
+                            rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- sqrt（GPU）----
+class GpuSqrtOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            GpuInferOps.sqrt1(rt.arenaRef(), rt.tensorRows(yd) * rt.tensorCols(yd), rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- instancenorm（GPU）----
+class GpuInstanceNormOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int sT = rt.opBAt(i); int bT = rt.opCAt(i); int yd = rt.opDAt(i);
+            double eps = 1.0e-5;
+            if (rt.opP4At(i) == 1) eps = F32.toDouble(rt.opP3At(i));
+            int work = rt.opP0At(i) * rt.opP1At(i);
+            GpuInferOps.instancenorm(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(sT), rt.tensorOff(bT), rt.tensorOff(yd),
+                                     rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), eps, rt.devRef(), rt.statsOffRef(), rt.opReluAt(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- avgpool（GPU）----
+class GpuAvgpoolOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.avgpool(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- avgpoolNHWC（GPU）----
+class GpuAvgpoolNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.avgpoolNHWC(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- pad（GPU）----
+class GpuPadOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            double cv = F32.toDouble(rt.pCvalAt(i));
+            GpuInferOps.pad(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                            rt.tensorOff(yd), rt.tensorN(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                            rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i),
+                            rt.opP8At(i), cv, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- padNHWC（GPU）----
+class GpuPadNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            double cv = F32.toDouble(rt.pCvalAt(i));
+            GpuInferOps.padNHWC(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                                rt.tensorOff(yd), rt.tensorN(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i),
+                                rt.opP8At(i), cv, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- convTranspose（opKind 40 前向 / 68 反向）----
+class ConvTransposeOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            InferOps.convTranspose(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorH(wb), rt.tensorW(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int w = rt.opCAt(i); int dx = rt.opDAt(i);
+                int dw = rt.opP0At(i); int db = rt.opP1At(i);
+                int dbOff = -1; if (db >= 0) dbOff = rt.tensorOff(db);
+                InferOps.bwdConvTranspose(rt.arenaRef(),
+                    rt.tensorOff(dy), rt.tensorOff(x), rt.tensorN(x), rt.tensorC(x), rt.tensorH(x), rt.tensorW(x),
+                    rt.tensorOff(w), rt.tensorOff(dx), rt.tensorOff(dw), dbOff,
+                    rt.tensorC(dy), rt.tensorH(dy), rt.tensorW(dy),
+                    rt.tensorH(w), rt.tensorW(w),
+                    rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i));
+            }
+        }
+}
+
+// ---- conv3d（opKind 41 前向 / 58 反向）----
+class Conv3dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            InferOps.conv3d(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorD(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorD(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorD(wb), rt.tensorH(wb), rt.tensorW(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i),
+                rt.opXAt(i, 0), rt.opXAt(i, 1), rt.opXAt(i, 2), rt.opXAt(i, 3));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int w = rt.opCAt(i); int dx = rt.opDAt(i);
+                int dw = rt.opP0At(i); int db = rt.opP1At(i);
+                int dbOff = -1; if (db >= 0) dbOff = rt.tensorOff(db);
+                InferOps.bwdConv3D(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x),
+                                   rt.tensorN(x), rt.tensorC(x), rt.tensorD(x), rt.tensorH(x), rt.tensorW(x),
+                                   rt.tensorOff(w), rt.tensorOff(dx), rt.tensorOff(dw), dbOff,
+                                   rt.tensorC(dy), rt.tensorD(dy), rt.tensorH(dy), rt.tensorW(dy),
+                                   rt.tensorD(w), rt.tensorH(w), rt.tensorW(w),
+                                   rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i),
+                                   rt.opXAt(i, 0), rt.opXAt(i, 1), 1, 1, 1, 1);
+            }
+        }
+}
+
+// ---- maxpool3d（opKind 42 前向 / 59 反向）----
+class Maxpool3dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.maxpool3d(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorD(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(yd), rt.tensorD(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0), rt.opXAt(i, 1), rt.opXAt(i, 2));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                InferOps.bwdMaxPool3D(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x),
+                                      rt.tensorN(x), rt.tensorC(x), rt.tensorD(x), rt.tensorH(x), rt.tensorW(x),
+                                      rt.tensorOff(dx), rt.tensorD(dy), rt.tensorH(dy), rt.tensorW(dy),
+                                      rt.opP0At(i), rt.opP1At(i), rt.opP2At(i),
+                                      rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                                      rt.opP6At(i), rt.opP7At(i), rt.opP8At(i),
+                                      rt.opXAt(i, 0), rt.opXAt(i, 1), rt.opXAt(i, 2));
+            }
+        }
+}
+
+// ---- avgpool3d（opKind 43 前向 / 60 反向）----
+class Avgpool3dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.avgpool3d(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorD(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(yd), rt.tensorD(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0), rt.opXAt(i, 1), rt.opXAt(i, 2),
+                rt.opXAt(i, 3));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                InferOps.bwdAvgPool3D(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x),
+                                      rt.tensorN(x), rt.tensorC(x), rt.tensorD(x), rt.tensorH(x), rt.tensorW(x),
+                                      rt.tensorOff(dx), rt.tensorD(dy), rt.tensorH(dy), rt.tensorW(dy),
+                                      rt.opP0At(i), rt.opP1At(i), rt.opP2At(i),
+                                      rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                                      rt.opP6At(i), rt.opP7At(i), rt.opP8At(i),
+                                      rt.opXAt(i, 0), rt.opXAt(i, 1), rt.opXAt(i, 2), rt.opXAt(i, 3));
+            }
+        }
+}
+
+// ---- pad3d（opKind 44 前向）----
+class Pad3dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            double cv = F32.toDouble(rt.opXAt(i, 2));
+            InferOps.pad3d(rt.arenaRef(), rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorD(xa), rt.tensorH(xa), rt.tensorW(xa),
+                           rt.tensorOff(yd), rt.tensorN(yd), rt.tensorC(yd), rt.tensorD(yd), rt.tensorH(yd), rt.tensorW(yd),
+                           rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0),
+                           rt.opXAt(i, 1), cv);
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- resize3d（opKind 45 前向 / 71 反向）----
+class Resize3dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.resize3d(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd),
+                              rt.tensorN(xa), rt.tensorC(xa),
+                              rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                              rt.opP6At(i), rt.opP7At(i));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dOut = rt.opAAt(i); int dIn = rt.opBAt(i);
+                InferOps.bwdResize3d(rt.arenaRef(), rt.tensorOff(dOut), rt.tensorOff(dIn),
+                                     rt.tensorN(dOut), rt.tensorC(dOut),
+                                     rt.opP0At(i), rt.opP1At(i), rt.opP2At(i),
+                                     rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                                     rt.opP6At(i), rt.opP7At(i));
+            }
+        }
+}
+
+// ---- softmaxCE（opKind 54 训练专用；注册到 bwd 表，backward 内自检 trainMode）----
+class SoftmaxCeOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int lg = rt.opAAt(i); int lb = rt.opBAt(i); int dl = rt.opCAt(i); int lo = rt.opDAt(i);
+                InferOps.softmaxCE(rt.arenaRef(), rt.tensorOff(lg), rt.tensorOff(lb), rt.tensorRows(lg), rt.tensorCols(lg), rt.tensorOff(dl), rt.tensorOff(lo));
+            }
+        }
+}
+
+// ---- update（opKind 55 训练专用：W -= lr·grad）----
+class UpdateOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int w = rt.opAAt(i); int g = rt.opBAt(i);
+                InferOps.update(rt.arenaRef(), rt.tensorOff(w), rt.tensorOff(g), rt.tensorRows(w) * rt.tensorCols(w), rt.lrRef());
+            }
+        }
+}
+
+// ---- diceLoss（opKind 69 训练专用）----
+class DiceLossOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int p = rt.opAAt(i); int y = rt.opBAt(i); int dp = rt.opCAt(i); int lo = rt.opDAt(i);
+                InferOps.diceLoss(rt.arenaRef(), rt.tensorOff(p), rt.tensorOff(y), rt.tensorOff(dp), rt.tensorOff(lo),
+                                  rt.tensorRows(p), rt.tensorCols(p), F32.toDouble(rt.opP0At(i)));
+            }
+        }
+}
+
+// ---- rmsNorm（opKind 61 前向，CPU-only）----
+class RmsNormOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int in = rt.opAAt(i); int g = rt.opBAt(i); int out = rt.opCAt(i);
+            InferOps.rmsNorm(rt.arenaRef(), rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(out), rt.opP0At(i), rt.opP1At(i), F32.toDouble(rt.opP2At(i)));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- attention（opKind 62 前向，CPU-only）----
+class AttentionOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int q = rt.opAAt(i); int k = rt.opBAt(i); int v = rt.opCAt(i); int out = rt.opDAt(i); int sc = rt.opP0At(i);
+            InferOps.attention(rt.arenaRef(), rt.tensorOff(q), rt.tensorOff(k), rt.tensorOff(v), rt.tensorOff(out), rt.tensorOff(sc),
+                               rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- gatherRows（opKind 63 前向，CPU-only）----
+class GatherRowsOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int e = rt.opAAt(i); int ids = rt.opBAt(i); int out = rt.opCAt(i);
+            InferOps.gatherRows(rt.arenaRef(), rt.tensorOff(e), rt.tensorOff(ids), rt.tensorOff(out), rt.opP0At(i), rt.opP1At(i), rt.opP2At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- layerNorm（opKind 64 前向，CPU-only）----
+class LayerNormOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int in = rt.opAAt(i); int g = rt.opBAt(i); int b = rt.opCAt(i); int out = rt.opDAt(i);
+            InferOps.layerNorm(rt.arenaRef(), rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(b), rt.tensorOff(out), rt.opP0At(i), rt.opP1At(i), F32.toDouble(rt.opP2At(i)));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- gelu（opKind 65 前向，CPU-only）----
+class GeluOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int in = rt.opAAt(i); int out = rt.opBAt(i);
+            InferOps.gelu(rt.arenaRef(), rt.tensorOff(in), rt.tensorOff(out), rt.opP0At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- rope（opKind 66 前向，CPU-only）----
+class RopeOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int x = rt.opAAt(i); int cos = rt.opBAt(i); int sin = rt.opCAt(i);
+            InferOps.rope(rt.arenaRef(), rt.tensorOff(x), rt.tensorOff(cos), rt.tensorOff(sin), rt.opP0At(i), rt.opP1At(i), rt.opP2At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- attentionCached（opKind 67 前向，CPU-only）----
+class AttentionCachedOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int q = rt.opAAt(i); int kc = rt.opBAt(i); int vc = rt.opCAt(i); int out = rt.opDAt(i); int sc = rt.opP0At(i);
+            InferOps.attentionCached(rt.arenaRef(), rt.tensorOff(q), rt.tensorOff(kc), rt.tensorOff(vc), rt.tensorOff(out), rt.tensorOff(sc),
+                                     rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// =====================================================================
+// GPU 算子类（第 5 批：ConvTranspose / 3D / 训练 loss）
+// =====================================================================
+
+// ---- convTranspose（GPU）----
+class GpuConvTransposeOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.convTranspose(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorH(wb), rt.tensorW(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int w = rt.opCAt(i); int dx = rt.opDAt(i);
+                int dw = rt.opP0At(i); int db = rt.opP1At(i);
+                int dbOff = -1; if (db >= 0) dbOff = rt.tensorOff(db);
+                GpuInferOps.bwdConvTranspose(rt.arenaRef(), rt.devRef(),
+                    rt.tensorOff(dy), rt.tensorOff(x), rt.tensorN(x), rt.tensorC(x), rt.tensorH(x), rt.tensorW(x),
+                    rt.tensorOff(w), rt.tensorOff(dx), rt.tensorOff(dw), dbOff,
+                    rt.tensorC(dy), rt.tensorH(dy), rt.tensorW(dy),
+                    rt.tensorH(w), rt.tensorW(w),
+                    rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i));
+            }
+        }
+}
+
+// ---- conv3d（GPU，注意 GPU 用 conv3dTiled）----
+class GpuConv3dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.conv3dTiled(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorD(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorD(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorD(wb), rt.tensorH(wb), rt.tensorW(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i),
+                rt.opXAt(i, 0), rt.opXAt(i, 1), rt.opXAt(i, 2), rt.opXAt(i, 3), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int w = rt.opCAt(i); int dx = rt.opDAt(i);
+                int dw = rt.opP0At(i); int db = rt.opP1At(i);
+                int dbOff = -1; if (db >= 0) dbOff = rt.tensorOff(db);
+                GpuInferOps.bwdConv3D(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x),
+                                      rt.tensorN(x), rt.tensorC(x), rt.tensorD(x), rt.tensorH(x), rt.tensorW(x),
+                                      rt.tensorOff(w), rt.tensorOff(dx), rt.tensorOff(dw), dbOff,
+                                      rt.tensorC(dy), rt.tensorD(dy), rt.tensorH(dy), rt.tensorW(dy),
+                                      rt.tensorD(w), rt.tensorH(w), rt.tensorW(w),
+                                      rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i),
+                                      rt.opXAt(i, 0), rt.opXAt(i, 1), 1, 1, 1, 1);
+            }
+        }
+}
+
+// ---- maxpool3d（GPU）----
+class GpuMaxpool3dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.maxpool3d(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorD(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(yd), rt.tensorD(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0), rt.opXAt(i, 1), rt.opXAt(i, 2), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                GpuInferOps.bwdMaxPool3D(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x),
+                                         rt.tensorN(x), rt.tensorC(x), rt.tensorD(x), rt.tensorH(x), rt.tensorW(x),
+                                         rt.tensorOff(dx), rt.tensorD(dy), rt.tensorH(dy), rt.tensorW(dy),
+                                         rt.opP0At(i), rt.opP1At(i), rt.opP2At(i),
+                                         rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                                         rt.opP6At(i), rt.opP7At(i), rt.opP8At(i),
+                                         rt.opXAt(i, 0), rt.opXAt(i, 1), rt.opXAt(i, 2));
+            }
+        }
+}
+
+// ---- avgpool3d（GPU）----
+class GpuAvgpool3dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.avgpool3d(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorD(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(yd), rt.tensorD(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0), rt.opXAt(i, 1), rt.opXAt(i, 2),
+                rt.opXAt(i, 3), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                GpuInferOps.bwdAvgPool3D(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x),
+                                         rt.tensorN(x), rt.tensorC(x), rt.tensorD(x), rt.tensorH(x), rt.tensorW(x),
+                                         rt.tensorOff(dx), rt.tensorD(dy), rt.tensorH(dy), rt.tensorW(dy),
+                                         rt.opP0At(i), rt.opP1At(i), rt.opP2At(i),
+                                         rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                                         rt.opP6At(i), rt.opP7At(i), rt.opP8At(i),
+                                         rt.opXAt(i, 0), rt.opXAt(i, 1), rt.opXAt(i, 2), rt.opXAt(i, 3));
+            }
+        }
+}
+
+// ---- pad3d（GPU）----
+class GpuPad3dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            double cv = F32.toDouble(rt.opXAt(i, 2));
+            GpuInferOps.pad3d(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorD(xa), rt.tensorH(xa), rt.tensorW(xa),
+                              rt.tensorOff(yd), rt.tensorN(yd), rt.tensorC(yd), rt.tensorD(yd), rt.tensorH(yd), rt.tensorW(yd),
+                              rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0),
+                              rt.opXAt(i, 1), cv, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- resize3d（GPU）----
+class GpuResize3dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.resize3d(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd),
+                                 rt.tensorN(xa), rt.tensorC(xa),
+                                 rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                                 rt.opP6At(i), rt.opP7At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dOut = rt.opAAt(i); int dIn = rt.opBAt(i);
+                GpuInferOps.bwdResize3d(rt.arenaRef(), rt.devRef(), rt.tensorOff(dOut), rt.tensorOff(dIn),
+                                        rt.tensorN(dOut), rt.tensorC(dOut),
+                                        rt.opP0At(i), rt.opP1At(i), rt.opP2At(i),
+                                        rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                                        rt.opP6At(i), rt.opP7At(i));
+            }
+        }
+}
+
+// ---- softmaxCE（GPU，训练专用）----
+class GpuSoftmaxCeOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int lg = rt.opAAt(i); int lb = rt.opBAt(i); int dl = rt.opCAt(i); int lo = rt.opDAt(i);
+                GpuInferOps.softmaxCE(rt.arenaRef(), rt.devRef(), rt.tensorOff(lg), rt.tensorOff(lb), rt.tensorRows(lg), rt.tensorCols(lg), rt.tensorOff(dl), rt.tensorOff(lo));
+            }
+        }
+}
+
+// ---- update（GPU，训练专用）----
+class GpuUpdateOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int w = rt.opAAt(i); int g = rt.opBAt(i);
+                GpuInferOps.update(rt.arenaRef(), rt.devRef(), rt.tensorOff(w), rt.tensorOff(g), rt.tensorRows(w) * rt.tensorCols(w), rt.lrRef());
+            }
+        }
+}
+
+// ---- diceLoss（GPU，训练专用）----
+class GpuDiceLossOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int p = rt.opAAt(i); int y = rt.opBAt(i); int dp = rt.opCAt(i); int lo = rt.opDAt(i);
+                GpuInferOps.diceLoss(rt.arenaRef(), rt.devRef(), rt.tensorOff(p), rt.tensorOff(y), rt.tensorOff(dp), rt.tensorOff(lo),
+                                     rt.tensorRows(p), rt.tensorCols(p), F32.toDouble(rt.opP0At(i)));
+            }
+        }
+}
+
+// ---- 全量注册：relu + 本文件所有算子（前向/反向 × CPU/GPU）----
+// 未注册槽回退原 if/else。LLM 算子（61-67）runGpu 无分支 → 只注册 CPU。
+void registerAllIfaceOps(InferenceRuntime rt) {
+    registerIfaceOps(rt);   // relu（2/51，CPU+GPU）
+    rt.registerFwdBwd(1, 50, new DenseOp(), 0);          rt.registerFwdBwd(1, 50, new GpuDenseOp(), 1);
+    rt.registerFwdBwd(3, 70, new SoftmaxOp(), 0);        rt.registerFwdBwd(3, 70, new GpuSoftmaxOp(), 1);
+    rt.registerFwdBwd(4, 52, new SigmoidOp(), 0);        rt.registerFwdBwd(4, 52, new GpuSigmoidOp(), 1);
+    rt.registerFwdBwd(5, 53, new AddOp(), 0);            rt.registerFwdBwd(5, 53, new GpuAddOp(), 1);
+    rt.registerFwd(6, new MatmulOp(), 0);                rt.registerFwd(6, new GpuMatmulOp(), 1);
+    rt.registerFwdBwd(7, 56, new ConvOp(), 0);           rt.registerFwdBwd(7, 56, new GpuConvOp(), 1);
+    rt.registerFwdBwd(8, 57, new MaxpoolOp(), 0);        rt.registerFwdBwd(8, 57, new GpuMaxpoolOp(), 1);
+    rt.registerFwd(9, new GapoolOp(), 0);                rt.registerFwd(9, new GpuGapoolOp(), 1);
+    rt.registerFwd(10, new FlattenOp(), 0);              rt.registerFwd(10, new GpuFlattenOp(), 1);
+    rt.registerFwd(11, new ConvReluOp(), 0);             rt.registerFwd(11, new GpuConvReluOp(), 1);
+    rt.registerFwd(12, new TransposeNchw2NhwcOp(), 0);   rt.registerFwd(12, new GpuTransposeNchw2NhwcOp(), 1);
+    rt.registerFwd(13, new ConvNhwcOp(), 0);             rt.registerFwd(13, new GpuConvNhwcOp(), 1);
+    rt.registerFwd(14, new ConvNhwcReluOp(), 0);         rt.registerFwd(14, new GpuConvNhwcReluOp(), 1);
+    rt.registerFwd(15, new MaxpoolNhwcOp(), 0);          rt.registerFwd(15, new GpuMaxpoolNhwcOp(), 1);
+    rt.registerFwd(16, new GapoolNhwcOp(), 0);           rt.registerFwd(16, new GpuGapoolNhwcOp(), 1);
+    rt.registerFwd(17, new BatchnormOp(), 0);            rt.registerFwd(17, new GpuBatchnormOp(), 1);
+    rt.registerFwd(18, new BatchnormNhwcOp(), 0);        rt.registerFwd(18, new GpuBatchnormNhwcOp(), 1);
+    rt.registerFwd(19, new Relu6Op(), 0);                rt.registerFwd(19, new GpuRelu6Op(), 1);
+    rt.registerFwd(20, new LeakyReluOp(), 0);            rt.registerFwd(20, new GpuLeakyReluOp(), 1);
+    rt.registerFwd(21, new SiluOp(), 0);                 rt.registerFwd(21, new GpuSiluOp(), 1);
+    rt.registerFwd(22, new HardSwishOp(), 0);            rt.registerFwd(22, new GpuHardSwishOp(), 1);
+    rt.registerFwd(23, new ClipOp(), 0);                 rt.registerFwd(23, new GpuClipOp(), 1);
+    rt.registerFwd(24, new ReshapeOp(), 0);              rt.registerFwd(24, new GpuReshapeOp(), 1);
+    rt.registerFwd(25, new ConcatOp(), 0);               rt.registerFwd(25, new GpuConcatOp(), 1);
+    rt.registerFwd(26, new TransposeOp(), 0);            rt.registerFwd(26, new GpuTransposeOp(), 1);
+    rt.registerFwd(27, new SliceOp(), 0);                rt.registerFwd(27, new GpuSliceOp(), 1);
+    rt.registerFwd(28, new Resize2dOp(), 0);             rt.registerFwd(28, new GpuResize2dOp(), 1);
+    rt.registerFwd(29, new SplitOp(), 0);                rt.registerFwd(29, new GpuSplitOp(), 1);
+    rt.registerFwd(30, new ReduceMeanOp(), 0);           rt.registerFwd(30, new GpuReduceMeanOp(), 1);
+    rt.registerFwd(31, new SubOp(), 0);                  rt.registerFwd(31, new GpuSubOp(), 1);
+    rt.registerFwd(32, new DivOp(), 0);                  rt.registerFwd(32, new GpuDivOp(), 1);
+    rt.registerFwd(33, new MulOp(), 0);                  rt.registerFwd(33, new GpuMulOp(), 1);
+    rt.registerFwd(34, new SqrtOp(), 0);                 rt.registerFwd(34, new GpuSqrtOp(), 1);
+    rt.registerFwd(35, new InstanceNormOp(), 0);         rt.registerFwd(35, new GpuInstanceNormOp(), 1);
+    rt.registerFwd(36, new AvgpoolOp(), 0);              rt.registerFwd(36, new GpuAvgpoolOp(), 1);
+    rt.registerFwd(37, new AvgpoolNhwcOp(), 0);          rt.registerFwd(37, new GpuAvgpoolNhwcOp(), 1);
+    rt.registerFwd(38, new PadOp(), 0);                  rt.registerFwd(38, new GpuPadOp(), 1);
+    rt.registerFwd(39, new PadNhwcOp(), 0);              rt.registerFwd(39, new GpuPadNhwcOp(), 1);
+    rt.registerFwdBwd(40, 68, new ConvTransposeOp(), 0); rt.registerFwdBwd(40, 68, new GpuConvTransposeOp(), 1);
+    rt.registerFwdBwd(41, 58, new Conv3dOp(), 0);        rt.registerFwdBwd(41, 58, new GpuConv3dOp(), 1);
+    rt.registerFwdBwd(42, 59, new Maxpool3dOp(), 0);     rt.registerFwdBwd(42, 59, new GpuMaxpool3dOp(), 1);
+    rt.registerFwdBwd(43, 60, new Avgpool3dOp(), 0);     rt.registerFwdBwd(43, 60, new GpuAvgpool3dOp(), 1);
+    rt.registerFwd(44, new Pad3dOp(), 0);                rt.registerFwd(44, new GpuPad3dOp(), 1);
+    rt.registerFwdBwd(45, 71, new Resize3dOp(), 0);      rt.registerFwdBwd(45, 71, new GpuResize3dOp(), 1);
+    // 训练专用（bwd 表）
+    rt.registerBwd(54, new SoftmaxCeOp(), 0);            rt.registerBwd(54, new GpuSoftmaxCeOp(), 1);
+    rt.registerBwd(55, new UpdateOp(), 0);               rt.registerBwd(55, new GpuUpdateOp(), 1);
+    rt.registerBwd(69, new DiceLossOp(), 0);             rt.registerBwd(69, new GpuDiceLossOp(), 1);
+    // LLM 算子 CPU-only（runGpu 无分支，不注册 GPU）
+    rt.registerFwd(61, new RmsNormOp(), 0);
+    rt.registerFwd(62, new AttentionOp(), 0);
+    rt.registerFwd(63, new GatherRowsOp(), 0);
+    rt.registerFwd(64, new LayerNormOp(), 0);
+    rt.registerFwd(65, new GeluOp(), 0);
+    rt.registerFwd(66, new RopeOp(), 0);
+    rt.registerFwd(67, new AttentionCachedOp(), 0);
+}

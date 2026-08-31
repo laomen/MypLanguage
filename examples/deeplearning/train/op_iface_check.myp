@@ -14,53 +14,59 @@ import fmt;
 import cuda;
 import "../infer/runtime.myp";
 import "../infer/op_iface.myp";
+import "../infer/ops_iface_all.myp";
 
 class OpIfaceCheck {
     action:
         @constructor OpIfaceCheck() {
             int fails = 0;
-            // A：不注册接口；B：注册接口算子
+            // A：不注册接口；B：只注册 relu；C：全量注册所有算子
             InferenceRuntime A = new InferenceRuntime();
             A.init(200000);
             InferenceRuntime B = new InferenceRuntime();
             B.init(200000);
+            InferenceRuntime C = new InferenceRuntime();
+            C.init(200000);
             registerIfaceOps(B);
+            registerAllIfaceOps(C);
 
-            // 构建图（返回 lossTid；权重以确定性推进式种子填充，A/B 重置种子 → 同权重）
+            // 构建图（返回 lossTid；权重以确定性推进式种子填充，A/B/C 重置种子 → 同权重）
             seed_ = 7.0;
             int aLoss = build(A, 0);
             seed_ = 7.0;
             int bLoss = build(B, 0);
+            seed_ = 7.0;
+            int cLoss = build(C, 0);
 
-            // 训练 12 步，逐位对比 loss
+            // 训练 12 步，逐位对比 A vs B、A vs C
             int s = 0;
             while (s < 12) {
-                seed_ = 3.0;
-                setData(A, 0);
-                seed_ = 3.0;
-                setData(B, 0);
-                A.setLr(0.05);
-                B.setLr(0.05);
-                A.setTrain(1);
-                B.setTrain(1);
-                step(A);
-                step(B);
+                seed_ = 3.0; setData(A, 0);
+                seed_ = 3.0; setData(B, 0);
+                seed_ = 3.0; setData(C, 0);
+                A.setLr(0.05); B.setLr(0.05); C.setLr(0.05);
+                A.setTrain(1); B.setTrain(1); C.setTrain(1);
+                step(A); step(B); step(C);
                 double la = A.getFlat(aLoss, 0);
                 double lb = B.getFlat(bLoss, 0);
-                double d = la - lb;
-                if (d < 0.0) d = 0.0 - d;
-                if (d > 1.0e-9) fails = fails + 1;
+                double lc = C.getFlat(cLoss, 0);
+                double d1 = la - lb; if (d1 < 0.0) d1 = 0.0 - d1;
+                double d2 = la - lc; if (d2 < 0.0) d2 = 0.0 - d2;
+                if (d1 > 1.0e-9) fails = fails + 1;
+                if (d2 > 1.0e-9) fails = fails + 1;
                 if (s < 3 || s >= 11) {
-                    Console.writeString("step " + Fmt.i(s) + " A=" + Fmt.f(la, 6) + " B=" + Fmt.f(lb, 6) + " diff=" + Fmt.f(d, 9));
+                    Console.writeString("step " + Fmt.i(s) + " A=" + Fmt.f(la, 6) + " B=" + Fmt.f(lb, 6) + " C=" + Fmt.f(lc, 6) + " dAB=" + Fmt.f(d1, 9) + " dAC=" + Fmt.f(d2, 9));
                     Console.writeLine("");
                 }
                 s = s + 1;
             }
-            // 最终权重对比
+            // 最终权重对比（A vs B、A vs C）
             fails = fails + cmpTensor(A, B, "w1");
             fails = fails + cmpTensor(A, B, "w2");
-            fails = fails + cmpTensor(A, B, "b1");
-            fails = fails + cmpTensor(A, B, "b2");
+            fails = fails + cmpTensor(A, C, "w1");
+            fails = fails + cmpTensor(A, C, "w2");
+            fails = fails + cmpTensor(A, C, "b1");
+            fails = fails + cmpTensor(A, C, "b2");
 
             if (fails == 0) Console.writeLine("OP IFACE CHECK OK");
             else Console.writeLine("OP IFACE CHECK FAIL (" + Fmt.i(fails) + ")");

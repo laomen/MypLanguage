@@ -6,6 +6,44 @@
 
 ---
 
+## 2026-09-01 — 算子全量接口化迁移（阶段4e3，含编译器 bug 阻塞说明）
+
+### 全量迁移已写（`infer/ops_iface_all.myp`）
+- 把全部 ~50 个算子（opKind 1-45, 50-60, 61-71）按 interface 双方法
+  `IOp{forward,backward}` 拆成独立类：`DenseOp/SoftmaxOp/SigmoidOp/AddOp/
+  MatmulOp/ConvOp/MaxpoolOp/.../Conv3dOp/Maxpool3dOp/Avgpool3dOp/Resize3dOp/
+  ConvTransposeOp`（含对应反向方法）+ GPU 版 `Gpu*Op` + 训练专用
+  `SoftmaxCeOp/UpdateOp/DiceLossOp`（bwd 表，backward 内自检 trainMode）。
+- `registerAllIfaceOps(rt)` 全量注册（registerFwd/registerBwd/registerFwdBwd；
+  仅单向算子用 registerFwd/registerBwd；LLM 61-67 CPU-only 不注册 GPU）。
+- 需要的 runtime 访问器补齐：`sCntAt/sIdAt/sOdAt/sAxAt/sStAt/sSpAt`（Slice）、
+  `pCvalAt`（Pad）、`statsOffRef`（GPU 归约暂存区）。
+- 2 层小图 `op_iface_check.myp`：A(if/else) vs C(registerAllIfaceOps)
+  **逐位 diff=0**（CPU/GPU，loss 0.82→0.58 下降）——已注册的 dense/relu/
+  softmaxCE/update 走接口正确。
+
+### **编译器 bug 阻塞全量启用（自举编译器 tools/selfhost/src）**
+- 症状：U-Net 训练全接口路径（C=registerAllIfaceOps）从 **bwdSoftmax（opKind 70）
+  发散**——loss 一致、diceLoss 的 dp 一致、prob 一致，但 dlogits 不同 → 权重全错
+  → 训练卡死。GPU 路径通过（Gpu* 类独立）、CPU 失败。
+- **最小复现**（已删调试文件，复现方法）：
+  `registerAllIfaceOps(B)` + 单算子 bwdSoftmax [2,512]：B 与 A(if/else) maxDiff=0.23
+  DIVERGE；只注册 `DenseOp`+`SoftmaxOp` 两类比则通过。
+- **定位**：LLVM 层 `__myp_vtable_IOp_SoftmaxOp = [SoftmaxOp_forward,
+  SoftmaxOp_backward]` 正确、upcast `store ptr @__myp_vtable_IOp_SoftmaxOp` 正确、
+  `interfaceMethodIndex` 正确、run() 分发正确——但实际分派 `bwdCpu_[70].backward()`
+  **调用了非 SoftmaxOp 的 backward**（在 SoftmaxOp.backward 里加打印确认未触发）。
+  → 自举编译器在**多个类实现同一接口**时的接口虚表/分派存在 bug（同一文件 ~50 个
+  实现类才触发；与记忆里「同名方法回退选第一个类」教训同族）。**修复需在
+  tools/selfhost/src/codegen.myp 的接口分派/虚表生成**（genIfaceCall /
+  emitInterfaceVTables / upcastIface 一带）。
+- 现状：`ops_iface_all.myp` 全部算子类 + `registerAllIfaceOps` 已写好并编译通过
+  （op_iface_check 的 2 层子集逐位一致），但**全量注册受编译器 bug 阻塞**，默认
+  不启用（训练入口不调用 registerAllIfaceOps → 无行为变化）。修复编译器后即可
+  在训练入口 `registerAllIfaceOps(rt)` 一键切换全接口分派。
+
+---
+
 ## 2026-09-01 — 算子拆分 POC：interface 多态分派（阶段4e）
 
 ### 背景
