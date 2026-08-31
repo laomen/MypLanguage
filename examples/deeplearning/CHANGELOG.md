@@ -6,6 +6,52 @@
 
 ---
 
+## 2026-09-01 — 3D U-Net 编码-解码：bwdResize3d + Resize 反向图集成 + 编解码训练
+
+### bwdResize3d（`infer/ops.myp` + `gpu_ops.myp`，opKind 71）
+- Resize3D 上采样的反向（U-Net 解码上采样路径）。坐标变换同前向 resize3d
+  （transform 0=align_corners / 1=half_pixel / 2=asymmetric；mode 0=nearest
+  1=trilinear）。CPU：thread-per-output 散射累加（单线程无竞争）。GPU：
+  **每输入一个线程**——各线程遍历全部输出按插值权重求和，避免散射 `+=`
+  的并发累加竞争（首版 thread-per-output 散射在 GPU 上丢更新，maxDiff 1.9→0）。
+  trilinear 边界与前向一致：`izf>=inD-1` 时 clamp `fz=0`（前向 iz2 同样 clamp
+  到 inD-1），保证权重守恒。
+- `runtime.myp` opKind 71 `addBwdResize3d(dOut,dIn,inD..outW,mode,transform)`
+  + run/runGpu 分发（N/C 取 dOut 张量）+ opKindName。
+- **对拍** `train/resize3d_grad_check.myp`：nearest/trilinear × align_corners/
+  asymmetric 四组合，`L=Σy·dy` 对 x 有限差分 + GPU vs CPU 逐元素 maxDiff=0。
+
+### Resize 反向图集成（`infer/graph.myp`）
+- buildReverseGraph 新增 `Resize/Upsample` 反向分支 → `BwdResize(dy,x)→dx`
+  （仅 3D；2D 反向未实现跳过），复制 mode/transform。buildRuntime 新增
+  `BwdResize` 接线（inD/inH/inW/outD/outH/outW 从输入/输出张量形状推出）。
+- **框架 BUG（Update 空梯度）**：反向图对每个节点**所有输入**都 ensureGrad
+  （含 Resize 的 sizes 常量 `u1_sz`）→ `u1_sz#g` 有形状 → 第 5 步给 role=0 的
+  常量造 Update 节点 → buildRuntime 因该常量非运行时张量（tensorId=-1）失败
+  `buildRuntime wire fail type=Update in0=u1_sz(-1)`。**修复**：Update 条件从
+  `shapeIdx(gradName)>=0` 改为 `isNodeOutput(gradName)==1`（仅梯度确实由反向
+  算子产出的可训权重）。
+- **框架 BUG（Resize3D 输出 D=1）**：foldShapeChains 在输入秩确定前跑
+  （shapeRank5(p2) 误判 0）→ 只填 nRszH/nRszW，nRszD_=0 → inferShapes 条件
+  `nRszH>0` 成立 → outD=nRszD_=0 → clamp 成 1 → 下游全部塌成 D=1
+  （u2 应为 [1,16,8,8,8]=8192 却 1024）。**修复**：foldShapeChains 用 sizes
+  元素个数判 3D/2D（5=[N,C,D,H,W]，4=[N,C,H,W]，不依赖秩时序）；inferShapes
+  is5=1 时要求 nRszD/H/W 三者齐备才用折叠值，否则回退 readI64Init 读全 sizes。
+
+### 3D U-Net 编码-解码训练（`train/3d_unet_train.myp` + `tools/make_3d_unet_onnx.py`）
+- 模型：Conv3D×2→MaxPool3D→Conv3D×2→MaxPool3D→**Resize3D**→Conv3D→**Resize3D**
+  →Conv3D×2→Softmax（编码下采样 + Resize3D 上采样解码；无跳跃连接——跳跃连接需
+  5D Concat 反向，留后续）。输入 [1,1,8,8,8]，2 类分割（中心块=前景）。
+  Resize 用 `sizes` int64 初始器 [N,C,outD,outH,outW] + mode=linear +
+  coordinate_transformation_mode=asymmetric。
+- `train/3d_unet_grad_check.myp`：全图 dL/dw 对 e1_w/e3_w/d1_w 中心差分对拍
+  （lr=0 + train 模式：前向算 loss、Update 无副作用）→ `3D UNET GRAD CHECK OK`。
+- **端到端**：CPU/GPU 均 **acc 100%、dice 0.15→1.95e-8** → `3D UNET TRAIN OK`
+  （lr=0.4→0.15→0.05；lr=1.0 时 GPU float32 累积在分割边界震荡，acc 卡 91%）。
+- 经验：GPU 训练用更小 lr（float32 累积精度低于 CPU double 归约）。
+
+---
+
 ## 2026-08-31 — 阶段4d：bwdConvTranspose + Dice loss 图集成 + 3D 分割训练
 
 ### bwdConvTranspose（`infer/ops.myp` + `gpu_ops.myp`，opKind 68）

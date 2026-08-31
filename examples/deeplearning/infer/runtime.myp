@@ -845,6 +845,21 @@ class InferenceRuntime {
             opP6_[id] = mode; opP7_[id] = transform;
             opCount_ = opCount_ + 1;
         }
+        // 阶段4d：Resize3D 反向（opKind 71）。dOut=opA, dIn=opB;
+        // inD=opP0, inH=opP1, inW=opP2, outD=opP3, outH=opP4, outW=opP5,
+        // mode=opP6, transform=opP7（同 addResize3d）；N/C 取 dOut 张量。
+        void addBwdResize3d(int dOutT, int dInT,
+                            int inD, int inH, int inW, int outD, int outH, int outW,
+                            int mode, int transform) {
+            int id = opCount_;
+            opKind_[id] = 71;
+            opA_[id] = dOutT;
+            opB_[id] = dInT;
+            opP0_[id] = inD; opP1_[id] = inH; opP2_[id] = inW;
+            opP3_[id] = outD; opP4_[id] = outH; opP5_[id] = outW;
+            opP6_[id] = mode; opP7_[id] = transform;
+            opCount_ = opCount_ + 1;
+        }
         // Split（opKind 29）：沿 axis 复制 [start, start+len)（一个输出一个 op）
         // d0..d4 为输入 5 维（2D 时 d4=1）；len = 该输出沿 axis 长度
         void addSplit(int inTid, int outTid, int axis, int start, int len,
@@ -1289,6 +1304,16 @@ class InferenceRuntime {
                     if (trainMode_ == 1) {
                         int dp = opA_[i]; int p = opB_[i]; int dl = opC_[i];
                         InferOps.bwdSoftmax(arena, tOff_[p], tOff_[dp], tOff_[dl], tRows_[p], tCols_[p]);
+                    }
+                } else if (opKind_[i] == 71) {
+                    // 阶段4d：Resize3D 反向（CPU）
+                    if (trainMode_ == 1) {
+                        int dOut = opA_[i]; int dIn = opB_[i];
+                        InferOps.bwdResize3d(arena, tOff_[dOut], tOff_[dIn],
+                                             tN_[dOut], tC_[dOut],
+                                             opP0_[i], opP1_[i], opP2_[i],
+                                             opP3_[i], opP4_[i], opP5_[i],
+                                             opP6_[i], opP7_[i]);
                     }
                 } else if (opKind_[i] == 61) {
                     // 阶段5：RMSNorm
@@ -1893,6 +1918,16 @@ class InferenceRuntime {
                         int dp = opA_[i]; int p = opB_[i]; int dl = opC_[i];
                         GpuInferOps.bwdSoftmax(arena, dev, tOff_[p], tOff_[dp], tOff_[dl], tRows_[p], tCols_[p]);
                     }
+                } else if (opKind_[i] == 71) {
+                    // 阶段4d：Resize3D 反向（GPU）
+                    if (trainMode_ == 1) {
+                        int dOut = opA_[i]; int dIn = opB_[i];
+                        GpuInferOps.bwdResize3d(arena, dev, tOff_[dOut], tOff_[dIn],
+                                                tN_[dOut], tC_[dOut],
+                                                opP0_[i], opP1_[i], opP2_[i],
+                                                opP3_[i], opP4_[i], opP5_[i],
+                                                opP6_[i], opP7_[i]);
+                    }
                 }
                 string dumpOpStr = Console.getEnv("MYP_DUMP_OP");
                 int dumpOp = -1;
@@ -2049,6 +2084,7 @@ class InferenceRuntime {
             if (k == 68) return "bwdConvTranspose";
             if (k == 69) return "diceLoss";
             if (k == 70) return "bwdSoftmax";
+            if (k == 71) return "bwdResize3d";
             return "kind" + Fmt.i(k);
         }
 

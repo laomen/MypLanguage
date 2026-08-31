@@ -2622,4 +2622,93 @@ class GpuInferOps {
                 }
             }
         }
+
+        // Resize3D 反向（阶段4d，GPU）：清 dIn + thread-per-output 按前向坐标
+        // 散射回 dIn（nearest → 单输入累加；trilinear → 8 邻居按权重累加）。
+        void bwdResize3d(float[] a, long dev, int dOutOff, int dInOff,
+                         int N, int C, int inD, int inH, int inW, int outD, int outH, int outW,
+                         int mode, int transform) {
+            // 每输入一个线程：dIn[i] = Σ_输出 dy[w] * weight(i, w)。避免散射累加竞争。
+            @gpu for (long p = 0L; p < long(N) * long(C) * long(inD) * long(inH) * long(inW); p = p + 1L) resident(a = dev) {
+                long iS = long(inD) * long(inH) * long(inW);
+                long oS = long(outD) * long(outH) * long(outW);
+                long nn = p / (long(C) * iS);
+                long cc = (p / iS) % long(C);
+                long iz = (p % iS) / long(inH * inW);
+                long iy = (p % long(inH * inW)) / long(inW);
+                long ix = p % long(inW);
+                long base = (nn * long(C) + cc) * iS;
+                long obase = (nn * long(C) + cc) * oS;
+                float acc = 0.0f;
+                long z = 0L;
+                while (z < long(outD)) {
+                    long y = 0L;
+                    while (y < long(outH)) {
+                        long x = 0L;
+                        while (x < long(outW)) {
+                            float sz = 0.0f;
+                            float sy = 0.0f;
+                            float sx = 0.0f;
+                            if (transform == 0) {
+                                if (outD > 1) sz = float(z) * float(inD - 1) / float(outD - 1);
+                                if (outH > 1) sy = float(y) * float(inH - 1) / float(outH - 1);
+                                if (outW > 1) sx = float(x) * float(inW - 1) / float(outW - 1);
+                            } else if (transform == 2) {
+                                sz = float(z) * float(inD) / float(outD);
+                                sy = float(y) * float(inH) / float(outH);
+                                sx = float(x) * float(inW) / float(outW);
+                            } else {
+                                sz = (float(z) + 0.5f) * float(inD) / float(outD) - 0.5f;
+                                sy = (float(y) + 0.5f) * float(inH) / float(outH) - 0.5f;
+                                sx = (float(x) + 0.5f) * float(inW) / float(outW) - 0.5f;
+                            }
+                            long ooff = obase + z * long(outH * outW) + y * long(outW) + x;
+                            float dy = a[dOutOff + ooff];
+                            if (mode == 0) {
+                                // nearest：输入 (iz,iy,ix) 若为该输出的最近点则权重 1
+                                long izn = long(sz);
+                                long iyn = long(sy);
+                                long ixn = long(sx);
+                                if (izn < 0L) izn = 0L;
+                                if (izn >= long(inD)) izn = long(inD - 1);
+                                if (iyn < 0L) iyn = 0L;
+                                if (iyn >= long(inH)) iyn = long(inH - 1);
+                                if (ixn < 0L) ixn = 0L;
+                                if (ixn >= long(inW)) ixn = long(inW - 1);
+                                if (izn == iz && iyn == iy && ixn == ix) acc = acc + dy;
+                            } else {
+                                // trilinear：输入 (iz,iy,ix) 的权重 = (z 维 w)*(y 维 w)*(x 维 w)
+                                long izf = long(sz);
+                                long iyf = long(sy);
+                                long ixf = long(sx);
+                                float fz = sz - float(izf);
+                                float fy = sy - float(iyf);
+                                float fx = sx - float(ixf);
+                                if (izf < 0L) { izf = 0L; fz = 0.0f; }
+                                if (izf >= long(inD - 1)) { izf = long(inD - 1); fz = 0.0f; }
+                                if (iyf < 0L) { iyf = 0L; fy = 0.0f; }
+                                if (iyf >= long(inH - 1)) { iyf = long(inH - 1); fy = 0.0f; }
+                                if (ixf < 0L) { ixf = 0L; fx = 0.0f; }
+                                if (ixf >= long(inW - 1)) { ixf = long(inW - 1); fx = 0.0f; }
+                                float wz = 0.0f;
+                                if (iz == izf) wz = 1.0f - fz;
+                                else if (iz == izf + 1L) wz = fz;
+                                float wy = 0.0f;
+                                if (iy == iyf) wy = 1.0f - fy;
+                                else if (iy == iyf + 1L) wy = fy;
+                                float wx = 0.0f;
+                                if (ix == ixf) wx = 1.0f - fx;
+                                else if (ix == ixf + 1L) wx = fx;
+                                float w = wz * wy * wx;
+                                if (w != 0.0f) acc = acc + dy * w;
+                            }
+                            x = x + 1L;
+                        }
+                        y = y + 1L;
+                    }
+                    z = z + 1L;
+                }
+                a[dInOff + p] = acc;
+            }
+        }
 }

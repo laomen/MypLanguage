@@ -1,0 +1,148 @@
+// resize3d_grad_check.myp — 阶段4d：Resize3D 反向数值对拍
+// （bwdResize3d 有限差分：L=Σ y·dy，对 x[i] 中心差分；GPU vs CPU 逐元素对拍）
+//
+// 运行（须在 examples/ 下）：
+//   ./build/mypc examples/deeplearning/train/resize3d_grad_check.myp -o /tmp/rs3_gc --stdlib stdlib
+//   cd examples && /tmp/rs3_gc           # CPU 对拍
+//   MYP_GPU=1 /tmp/rs3_gc                # + GPU vs CPU
+
+import env;
+import math;
+import fmt;
+import cuda;
+import gpu;
+import "../infer/ops.myp";
+import "../infer/gpu_ops.myp";
+
+class Resize3dGradCheck {
+    action:
+        @constructor Resize3dGradCheck() {
+            int fails = 0;
+            seed_ = 1234.0;
+            int N = 1;
+            int C = 2;
+            int inD = 2, inH = 2, inW = 2;
+            int outD = 3, outH = 3, outW = 3;
+            int xSize = N * C * inD * inH * inW;
+            int ySize = N * C * outD * outH * outW;
+            int xOff = 0;
+            int yOff = xSize;
+            int dyOff = yOff + ySize;
+            int dInA = dyOff + ySize;   // 解析 dL/dx
+            int dInN = dInA + xSize;    // 数值 dL/dx
+            int yScr = dInN + xSize;    // 差分重算前向
+            int CAP = yScr + ySize;
+            float[] host = new float[CAP];
+            int i = 0;
+            while (i < xSize) { host[xOff + i] = float(rnd()); i = i + 1; }
+            i = 0;
+            while (i < ySize) { host[dyOff + i] = float(rnd() * 2.0 - 1.0); i = i + 1; }
+
+            int[] modes = new int[2]; modes[0] = 0; modes[1] = 1;
+            int[] tfms = new int[2]; tfms[0] = 0; tfms[1] = 2;
+            int m = 0;
+            while (m < 2) {
+                int tm = 0;
+                while (tm < 2) {
+                    int mode = modes[m];
+                    int transform = tfms[tm];
+                    Console.writeString("== mode=" + Fmt.i(mode) + " transform=" + Fmt.i(transform));
+                    Console.writeLine("");
+                    // 解析：前向 y + bwdResize3d
+                    float[] cpu = new float[CAP];
+                    i = 0; while (i < CAP) { cpu[i] = host[i]; i = i + 1; }
+                    InferOps.resize3d(cpu, xOff, yOff, N, C, inD, inH, inW, outD, outH, outW, mode, transform);
+                    InferOps.bwdResize3d(cpu, dyOff, dInA, N, C, inD, inH, inW, outD, outH, outW, mode, transform);
+
+                    // 数值：对 x[i] 中心差分 L=Σ y·dy
+                    double eps = 1.0e-3;
+                    int[] idx = new int[4]; idx[0] = 0; idx[1] = 1; idx[2] = xSize / 2; idx[3] = xSize - 1;
+                    i = 0;
+                    while (i < 4) {
+                        int j = idx[i];
+                        double a = cpu[dInA + j];
+                        double num = fdX(host, xOff, yOff, dyOff, yScr, N, C, inD, inH, inW, outD, outH, outW,
+                                         mode, transform, j, eps, xSize, ySize);
+                        Console.writeString("  dIn[" + Fmt.i(j) + "] analytic=" + Fmt.f(a, 6) + " numeric=" + Fmt.f(num, 6));
+                        Console.writeLine("");
+                        if (Math.abs(a - num) > 2.0e-2 * (1.0 + Math.abs(a) + Math.abs(num))) fails = fails + 1;
+                        i = i + 1;
+                    }
+
+                    // GPU vs CPU
+                    if (Cuda.available() == 1) {
+                        float[] gpu = new float[CAP];
+                        i = 0; while (i < CAP) { gpu[i] = host[i]; i = i + 1; }
+                        GpuBufferF buf = new GpuBufferF(gpu, CAP);
+                        long dev = buf.devicePtr();
+                        buf.copyFromHost(gpu, 0, 0, CAP);
+                        GpuInferOps.resize3d(gpu, ySize, xOff, yOff, N, C, inD, inH, inW, outD, outH, outW, mode, transform, dev);
+                        GpuInferOps.bwdResize3d(gpu, dev, dyOff, dInA, N, C, inD, inH, inW, outD, outH, outW, mode, transform);
+                        buf.copyToHost(gpu, 0, 0, CAP);
+                        fails = fails + cmpRange("  gpu dIn", cpu, gpu, dInA, xSize);
+                        fails = fails + cmpRange("  gpu y", cpu, gpu, yOff, ySize);
+                    } else {
+                        Console.writeLine("  GPU SKIP (no device)");
+                    }
+                    tm = tm + 1;
+                }
+                m = m + 1;
+            }
+
+            if (fails == 0) Console.writeLine("RESIZE3D GRAD CHECK OK");
+            else Console.writeLine("RESIZE3D GRAD CHECK FAIL (" + Fmt.i(fails) + ")");
+        }
+
+        // L(x[j]+e) - L(x[j]-e) / 2e，其中 L=Σ y·dy
+        double fdX(float[] arena, int xOff, int yOff, int dyOff, int yScr,
+                   int N, int C, int inD, int inH, int inW, int outD, int outH, int outW,
+                   int mode, int transform, int j, double eps, int xSize, int ySize) {
+            double xp = double(arena[xOff + j]);
+            arena[xOff + j] = float(xp + eps);
+            InferOps.resize3d(arena, xOff, yScr, N, C, inD, inH, inW, outD, outH, outW, mode, transform);
+            double Lp = dot(arena, yScr, dyOff, ySize);
+            arena[xOff + j] = float(xp - eps);
+            InferOps.resize3d(arena, xOff, yScr, N, C, inD, inH, inW, outD, outH, outW, mode, transform);
+            double Lm = dot(arena, yScr, dyOff, ySize);
+            arena[xOff + j] = float(xp);
+            return (Lp - Lm) / (2.0 * eps);
+        }
+
+        double dot(float[] arena, int aOff, int bOff, int n) {
+            double s = 0.0;
+            int i = 0;
+            while (i < n) { s = s + double(arena[aOff + i]) * double(arena[bOff + i]); i = i + 1; }
+            return s;
+        }
+
+        int cmpRange(string tag, float[] cpu, float[] gpu, int off, int n) {
+            double maxDiff = 0.0;
+            int bad = 0;
+            int i = 0;
+            while (i < n) {
+                double a = double(cpu[off + i]);
+                double b = double(gpu[off + i]);
+                double d = a - b;
+                if (d < 0.0) d = 0.0 - d;
+                if (d > maxDiff) maxDiff = d;
+                if (d > 1.0e-3 * (1.0 + Math.abs(a) + Math.abs(b))) bad = bad + 1;
+                i = i + 1;
+            }
+            Console.writeString(tag + " n=" + Fmt.i(n) + " maxDiff=" + Fmt.f(maxDiff, 6) + " bad=" + Fmt.i(bad));
+            Console.writeLine("");
+            return bad;
+        }
+
+        double rnd() {
+            seed_ = (seed_ * 1103515245.0 + 12345.0) % 2147483648.0;
+            return float(seed_ % 1000000) / 1000000.0;
+        }
+
+    property:
+        double seed_;
+}
+
+int main() {
+    Resize3dGradCheck t = new Resize3dGradCheck();
+    return 0;
+}

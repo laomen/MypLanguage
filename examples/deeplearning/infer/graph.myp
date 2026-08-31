@@ -595,6 +595,21 @@ class Graph {
                             nPT_[bd] = nPT_[ni]; nPB_[bd] = nPB_[ni];
                             nPL_[bd] = nPL_[ni]; nPR_[bd] = nPR_[ni];
                             nCip_[bd] = nCip_[ni];
+                        } else if (t == "Resize" || t == "Upsample") {
+                            // 阶段4d：Resize3D 反向 → BwdResize(dy, x) → dx；复制 mode/transform。
+                            // 仅 3D（U-Net 上采样）；2D 反向未实现 → 跳过（梯度 0）。
+                            int osr = shapeIdx(y);
+                            if (osr >= 0 && shR5_[osr] == 1) {
+                                int bd = nCount_;
+                                beginNode();
+                                nodeType(bd, "BwdResize");
+                                nodeIn(bd, 0, gradName(y));
+                                nodeIn(bd, 1, nIn0_[ni]);
+                                nodeOut(bd, gradName(nIn0_[ni]));
+                                endNode();
+                                nMode_[bd] = nMode_[ni];
+                                nTransform_[bd] = nTransform_[ni];
+                            }
                         }
                         // Softmax 由 CE 处理；Conv3D/池化等暂不支持（梯度 0，跳过）
                     }
@@ -603,11 +618,14 @@ class Graph {
             }
 
             // 5) 权重/偏置追加 Update(W, W#g)（可训参数：FC_W/FC_B/CNN_W/CNN_B）
+            // 仅当梯度确实由某个反向算子产出（isNodeOutput）——Resize sizes/scales
+            // 等参数初始器虽被 ensureGrad 登记了形状，但没有反向节点产出其梯度，
+            // 不应生成 Update（否则 buildRuntime 因该常量非运行时张量而失败）。
             int wi = 0;
             while (wi < wCount_) {
                 string nm = wName_[wi];
                 int role = wRole_[wi];
-                if ((role == 0 || role == 1 || role == 2 || role == 3) && shapeIdx(gradName(nm)) >= 0) {
+                if ((role == 0 || role == 1 || role == 2 || role == 3) && isNodeOutput(gradName(nm)) == 1) {
                     int uid = nCount_;
                     // 输出用独立 dummy 标量（不能复用权重名——那会让 producerIdx(权重)=Update，
                     // 权重"被产出"→ 前向消费权重 + Update 依赖梯度 → 环）
@@ -1253,39 +1271,46 @@ class Graph {
                         outH = int(hd * sh);
                         outW = int(wd * sw);
                     } else {
-                        if (nRszD_[i] > 0 || nRszH_[i] > 0 || nRszW_[i] > 0) {
-                            // P3：foldShapeChains 折叠出的 sizes
-                            if (is5 == 1) { outD = nRszD_[i]; outH = nRszH_[i]; outW = nRszW_[i]; }
-                            else { outH = nRszH_[i]; outW = nRszW_[i]; }
-                        } else if (is5 == 1) {
-                            int szc = readI64Init(nIn3_[i], 8);   // sizes [N,C,outD,outH,outW]
-                            if (szc >= 5) {
-                                outD = int(i64TmpL_[2]);
-                                outH = int(i64TmpL_[3]);
-                                outW = int(i64TmpL_[4]);
+                        if (is5 == 1) {
+                            // 3D：sizes [N,C,outD,outH,outW]。foldShapeChains 可能在
+                            // 输入秩确定前跑（shapeRank5 误判 0 → 只填 nRszH/nRszW），
+                            // 故 is5=1 须 nRszD/H/W 三者齐备才用折叠值；否则回退 readI64Init。
+                            if (nRszD_[i] > 0 && nRszH_[i] > 0 && nRszW_[i] > 0) {
+                                outD = nRszD_[i]; outH = nRszH_[i]; outW = nRszW_[i];
                             } else {
-                                int sc2 = readF32Init(nIn2_[i], 8);   // scales [1,1,sd,sh,sw]
-                                if (sc2 >= 3) {
-                                    double dd = float(D);
-                                    double hd = float(H);
-                                    double wd = float(W);
-                                    outD = int(dd * f32Tmp_[2]);
-                                    outH = int(hd * f32Tmp_[3]);
-                                    outW = int(wd * f32Tmp_[4]);
+                                int szc = readI64Init(nIn3_[i], 8);   // sizes [N,C,outD,outH,outW]
+                                if (szc >= 5) {
+                                    outD = int(i64TmpL_[2]);
+                                    outH = int(i64TmpL_[3]);
+                                    outW = int(i64TmpL_[4]);
+                                } else {
+                                    int sc2 = readF32Init(nIn2_[i], 8);   // scales [1,1,sd,sh,sw]
+                                    if (sc2 >= 3) {
+                                        double dd = float(D);
+                                        double hd = float(H);
+                                        double wd = float(W);
+                                        outD = int(dd * f32Tmp_[2]);
+                                        outH = int(hd * f32Tmp_[3]);
+                                        outW = int(wd * f32Tmp_[4]);
+                                    }
                                 }
                             }
                         } else {
-                            int szc = readI64Init(nIn3_[i], 8);   // sizes [N,C,outH,outW]
-                            if (szc >= 4) {
-                                outH = int(i64TmpL_[2]);
-                                outW = int(i64TmpL_[3]);
+                            if (nRszH_[i] > 0 && nRszW_[i] > 0) {
+                                outH = nRszH_[i]; outW = nRszW_[i];
                             } else {
-                                int sc2 = readF32Init(nIn2_[i], 8);   // scales [1,1,sh,sw]
-                                if (sc2 >= 3) {
-                                    double hd = float(H);
-                                    double wd = float(W);
-                                    outH = int(hd * f32Tmp_[2]);
-                                    outW = int(wd * f32Tmp_[3]);
+                                int szc = readI64Init(nIn3_[i], 8);   // sizes [N,C,outH,outW]
+                                if (szc >= 4) {
+                                    outH = int(i64TmpL_[2]);
+                                    outW = int(i64TmpL_[3]);
+                                } else {
+                                    int sc2 = readF32Init(nIn2_[i], 8);   // scales [1,1,sh,sw]
+                                    if (sc2 >= 3) {
+                                        double hd = float(H);
+                                        double wd = float(W);
+                                        outH = int(hd * f32Tmp_[2]);
+                                        outW = int(wd * f32Tmp_[3]);
+                                    }
                                 }
                             }
                         }
@@ -1837,17 +1862,17 @@ class Graph {
                         foldCount_ = foldCount_ + 1;
                     }
                 } else if (t == "Resize" || t == "Upsample") {
-                    // 记录折叠出的 sizes（优先于初始器）
-                    if (i64Count(nIn3_[i]) >= 3) {
-                        int is5 = shapeRank5(nIn0_[i]);
-                        if (is5 == 1 && i64Count(nIn3_[i]) >= 5) {
-                            nRszD_[i] = int(i64Get(nIn3_[i], 2));
-                            nRszH_[i] = int(i64Get(nIn3_[i], 3));
-                            nRszW_[i] = int(i64Get(nIn3_[i], 4));
-                        } else if (is5 == 0 && i64Count(nIn3_[i]) >= 4) {
-                            nRszH_[i] = int(i64Get(nIn3_[i], 2));
-                            nRszW_[i] = int(i64Get(nIn3_[i], 3));
-                        }
+                    // 记录折叠出的 sizes（优先于初始器）。用 sizes 元素个数判断 3D/2D
+                    // （3D=[N,C,outD,outH,outW] 5 个；2D=[N,C,outH,outW] 4 个）——
+                    // 不依赖 shapeRank5（fold 阶段输入秩可能未定）。
+                    int c5 = i64Count(nIn3_[i]);
+                    if (c5 >= 5) {
+                        nRszD_[i] = int(i64Get(nIn3_[i], 2));
+                        nRszH_[i] = int(i64Get(nIn3_[i], 3));
+                        nRszW_[i] = int(i64Get(nIn3_[i], 4));
+                    } else if (c5 >= 4) {
+                        nRszH_[i] = int(i64Get(nIn3_[i], 2));
+                        nRszW_[i] = int(i64Get(nIn3_[i], 3));
                     }
                 }
                 i = i + 1;
@@ -2254,6 +2279,20 @@ class Graph {
                     if (nOut2_[ni] != "") db = tensorId(nOut2_[ni]);
                     rt.addBwdConvTranspose(dy, x, w, dx, dw, db,
                                            nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
+                } else if (t == "BwdResize") {
+                    // 阶段4d：Resize3D 反向。in0=dOut（输出梯度，形状=输出形状），
+                    // in1=x（输入形状），out0=dIn；inD/inH/inW/outD/outH/outW 从形状推出。
+                    int dOut = tensorId(nIn0_[ni]);
+                    int x = tensorId(nIn1_[ni]);
+                    int dIn = tensorId(nOut0_[ni]);
+                    int is = shapeIdx(nIn1_[ni]);
+                    int os = shapeIdx(nIn0_[ni]);
+                    if (os >= 0 && is >= 0 && shR5_[os] == 1) {
+                        int inD = shD2_[is]; int inH = shD3_[is]; int inW = shD4_[is];
+                        int outD = shD2_[os]; int outH = shD3_[os]; int outW = shD4_[os];
+                        rt.addBwdResize3d(dOut, dIn, inD, inH, inW, outD, outH, outW,
+                                          nMode_[ni], nTransform_[ni]);
+                    }
                 } else if (t == "DiceLoss") {
                     // 阶段4d：Dice loss。in0=prob, in1=label; out0=dprob, out1=loss
                     int p = tensorId(nIn0_[ni]);
