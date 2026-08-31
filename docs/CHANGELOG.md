@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.15.199 — selfhost 定长接口数组类型修复（`IOp[128]` 错成 `[128 x ptr]` 溢出别名）
+
+**非破坏性**（selfhost codegen）。自举编译器 `IrEmit.llvmType` 对定长数组用简单
+元素类型递归：接口元素返回 `ptr` → `IOp[128]` 错成 `[128 x ptr]`（8B/元素，共
+1024B），而 store/load 用 `{ptr,ptr}` GEP（16B/元素，2048B）→ **slot≥64 溢出
+写穿数组边界、别名到后续字段**。暴露于 deeplearning 算子接口化：`bwdCpu_[70]`
+与 `fwdGpu_[6]` 同址，SoftmaxOp 注册后被 GpuMatmulOp 覆盖 → `bwdCpu_[70]
+.backward()` 调错类方法（GPU 过、CPU 挂；执行时逐 op checksum 追踪定位，非虚表
+/分派/ARC 问题——LLVM vtable、upcast、分派、retain 全对）。修复：`codegen.myp`
+`llvmType()` 增定长数组分支，元素类型用 codegen 自身 `llvmType`（接口/struct/
+枚举/bitfield 感知），`IOp[128]` → `[128 x {ptr,ptr}]`（2048B），与 GEP 一致。
+对齐 C++ oracle（`typeNodeToLLVMType` 本就正确）。回归：deeplearning 全接口对拍
+`FULL IFACE CHECK OK`（修复前 prob 分歧 1016/1024）；bootstrap 95/95 + 主套件
+466/466 全绿；自举 2 级 MD5 一致。
+
 ### v3.15.198 — selfhost GPU kernel 链接 libdevice（`Math.exp` 等真 GPU 返回 0 修复）
 
 **非破坏性**（selfhost codegen/link）。selfhost 编译器在 `@gpu for`/`@gpu tile`

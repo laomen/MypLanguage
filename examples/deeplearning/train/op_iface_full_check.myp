@@ -1,0 +1,93 @@
+// op_iface_full_check.myp — 阶段4e3 全接口对拍回归：3D U-Net 全接口 vs if/else
+//
+// 载入同一 3d_unet.onnx 到两份 runtime：A=if/else（未注册），B=registerAllIfaceOps。
+// 同数据跑一次完整前向+反向（Dice loss 训练图），对比 loss 与 prob 输出。
+// 修复前（自举编译器接口数组类型 bug）：B 的 bwdSoftmax 分派到 GpuMatmulOp（接口
+// 数组 slot≥64 溢出别名）→ prob 分歧 1016/1024 → 训练发散。修复后逐位一致。
+//
+// 运行（须在 examples/ 下）：
+//   ./build/mypc examples/deeplearning/train/op_iface_full_check.myp -o /tmp/full_ck --stdlib stdlib
+//   cd examples && /tmp/full_ck          # CPU：A vs B 逐位（expect FULL IFACE CHECK OK）
+import env;
+import fmt;
+import "../infer/runtime.myp";
+import "../infer/op_iface.myp";
+import "../infer/ops_iface_all.myp";
+import "../infer/onnx_loader.myp";
+
+class UnetIfaceFullCheck {
+    action:
+        @constructor UnetIfaceFullCheck() {
+            InferenceRuntime A = new InferenceRuntime();
+            A.init(8000000);
+            InferenceRuntime B = new InferenceRuntime();
+            B.init(8000000);
+            registerAllIfaceOps(B);
+            OnnxLoader la = new OnnxLoader();
+            la.setLossMode(1);
+            int oka = la.loadTrain("./deeplearning/data/onnx/3d_unet.onnx", A);
+            OnnxLoader lb = new OnnxLoader();
+            lb.setLossMode(1);
+            int okb = lb.loadTrain("./deeplearning/data/onnx/3d_unet.onnx", B);
+            if (oka == 0 || okb == 0) { Console.writeLine("loadTrain failed"); return; }
+            int dataA = la.tensorId("data");
+            int labelA = la.tensorId("label");
+            int dataB = lb.tensorId("data");
+            int labelB = lb.tensorId("label");
+            int lossA = la.tensorId("loss");
+            int lossB = lb.tensorId("loss");
+            int probA = la.tensorId("prob");
+            int probB = lb.tensorId("prob");
+
+            double seed = 20260901.0;
+            int i = 0;
+            while (i < 512) {
+                seed = seed * 1103515245.0 + 12345.0;
+                double u = seed / 2147483648.0;
+                double frac = u - double(int(u));
+                double v = (frac - 0.5) * 2.0;
+                A.setFlat(dataA, i, v);
+                B.setFlat(dataB, i, v);
+                i = i + 1;
+            }
+            i = 0;
+            while (i < 1024) {
+                seed = seed * 1103515245.0 + 12345.0;
+                double u = seed / 2147483648.0;
+                double frac = u - double(int(u));
+                double v = frac < 0.9 ? 0.0 : 1.0;
+                A.setFlat(labelA, i, v);
+                B.setFlat(labelB, i, v);
+                i = i + 1;
+            }
+            A.setTrain(1); B.setTrain(1);
+            A.run(); B.run();
+
+            double dl = A.getFlat(lossA, 0) - B.getFlat(lossB, 0);
+            if (dl < 0.0) dl = 0.0 - dl;
+            double maxp = 0.0;
+            int badp = 0;
+            int ps = A.tensorSize(probA);
+            int pj = 0;
+            while (pj < ps) {
+                double a = A.getFlat(probA, pj);
+                double b = B.getFlat(probB, pj);
+                double d = a - b;
+                if (d < 0.0) d = 0.0 - d;
+                if (d > maxp) maxp = d;
+                if (d > 1.0e-9) badp = badp + 1;
+                pj = pj + 1;
+            }
+            Console.writeString("lossA=" + Fmt.f(A.getFlat(lossA, 0), 6) + " lossB=" + Fmt.f(B.getFlat(lossB, 0), 6) + " |dLoss|=" + Fmt.f(dl, 9));
+            Console.writeLine("");
+            Console.writeString("prob A vs B: maxDiff=" + Fmt.f(maxp, 4) + " bad=" + Fmt.i(badp) + " of " + Fmt.i(ps));
+            Console.writeLine("");
+            if (dl < 1.0e-9 && badp == 0) Console.writeLine("FULL IFACE CHECK OK");
+            else Console.writeLine("FULL IFACE CHECK DIVERGE");
+        }
+}
+
+int main() {
+    UnetIfaceFullCheck d = new UnetIfaceFullCheck();
+    return 0;
+}

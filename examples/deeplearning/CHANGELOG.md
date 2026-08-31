@@ -6,7 +6,7 @@
 
 ---
 
-## 2026-09-01 — 算子全量接口化迁移（阶段4e3，含编译器 bug 阻塞说明）
+## 2026-09-01 — 算子全量接口化迁移（阶段4e3，含自举编译器接口数组 bug 修复）
 
 ### 全量迁移已写（`infer/ops_iface_all.myp`）
 - 把全部 ~50 个算子（opKind 1-45, 50-60, 61-71）按 interface 双方法
@@ -22,25 +22,29 @@
   **逐位 diff=0**（CPU/GPU，loss 0.82→0.58 下降）——已注册的 dense/relu/
   softmaxCE/update 走接口正确。
 
-### **编译器 bug 阻塞全量启用（自举编译器 tools/selfhost/src）**
-- 症状：U-Net 训练全接口路径（C=registerAllIfaceOps）从 **bwdSoftmax（opKind 70）
-  发散**——loss 一致、diceLoss 的 dp 一致、prob 一致，但 dlogits 不同 → 权重全错
-  → 训练卡死。GPU 路径通过（Gpu* 类独立）、CPU 失败。
-- **最小复现**（已删调试文件，复现方法）：
-  `registerAllIfaceOps(B)` + 单算子 bwdSoftmax [2,512]：B 与 A(if/else) maxDiff=0.23
-  DIVERGE；只注册 `DenseOp`+`SoftmaxOp` 两类比则通过。
-- **定位**：LLVM 层 `__myp_vtable_IOp_SoftmaxOp = [SoftmaxOp_forward,
-  SoftmaxOp_backward]` 正确、upcast `store ptr @__myp_vtable_IOp_SoftmaxOp` 正确、
-  `interfaceMethodIndex` 正确、run() 分发正确——但实际分派 `bwdCpu_[70].backward()`
-  **调用了非 SoftmaxOp 的 backward**（在 SoftmaxOp.backward 里加打印确认未触发）。
-  → 自举编译器在**多个类实现同一接口**时的接口虚表/分派存在 bug（同一文件 ~50 个
-  实现类才触发；与记忆里「同名方法回退选第一个类」教训同族）。**修复需在
-  tools/selfhost/src/codegen.myp 的接口分派/虚表生成**（genIfaceCall /
-  emitInterfaceVTables / upcastIface 一带）。
-- 现状：`ops_iface_all.myp` 全部算子类 + `registerAllIfaceOps` 已写好并编译通过
-  （op_iface_check 的 2 层子集逐位一致），但**全量注册受编译器 bug 阻塞**，默认
-  不启用（训练入口不调用 registerAllIfaceOps → 无行为变化）。修复编译器后即可
-  在训练入口 `registerAllIfaceOps(rt)` 一键切换全接口分派。
+### **自举编译器接口数组类型 bug —— 已修复（tools/selfhost/src/codegen.myp）**
+- **症状**：全接口路径（C=registerAllIfaceOps）3D U-Net 从 **bwdSoftmax（opKind 70）
+  发散**（loss 一致、prob 被覆盖 → 权重全错 → 训练卡死）。GPU 通过、CPU 失败。
+- **根因（执行时逐 op checksum 追踪定位）**：自举编译器 `IrEmit.llvmType` 对定长
+  数组用简单元素类型递归——接口元素返回 `ptr` → `IOp[128]` 错成 `[128 x ptr]`
+  （8B/元素，共 1024B），而 store/load 用 `{ptr,ptr}` GEP（16B/元素，2048B）→
+  **slot≥64 溢出写穿数组边界、别名到后续字段**：`bwdCpu_[70]`（field 26 字节 1120）
+  与 `fwdGpu_[6]`（field 27 偏移 96）同址 → registerAllIfaceOps 中 SoftmaxOp
+  注册（`bwdCpu_[70]`）后被 GpuMatmulOp 注册（`fwdGpu_[6]`）覆盖 → `bwdCpu_[70]
+  .backward()` 调 GpuMatmulOp.backward（写垃圾、SoftmaxOp.backward 打印不触发）。
+  C++ oracle 正确处理（`typeNodeToLLVMType` 接口→`{ptr,ptr}`），仅 selfhost 缺口。
+- **修复**：`codegen.myp` 的 `llvmType()` 增加定长数组分支——元素类型用 codegen 自身
+  `llvmType`（接口/struct/枚举/bitfield 感知），`IOp[128]` → `[128 x {ptr,ptr}]`
+  （2048B），与 store/load GEP 一致、不再越界别名。
+- **验证**：
+  - `train/op_iface_full_check.myp`（新回归）：3D U-Net A(if/else) vs
+    C(registerAllIfaceOps) 同数据跑前向+反向，**loss 逐位一致、prob maxDiff=0
+    bad=0 → `FULL IFACE CHECK OK`**（修复前 prob 分歧 1016/1024）。
+  - `op_iface_check`（2 层 POC）CPU/GPU 仍 OK；3d_seg/3d_unet 训练 CPU/GPU 回归
+    全 OK；自举 bootstrap 95/95 + 主套件 466/466 全绿。
+  - 双编译器对照（执行时追踪 + 结构体 dump `[128 x {ptr,ptr}]`）确认修复生效。
+- **现状**：`ops_iface_all.myp` 全部算子类 + `registerAllIfaceOps` 可直接启用——
+  训练入口加一行 `registerAllIfaceOps(rt)` 即可一键切换全接口分派（增量零行为变化）。
 
 ---
 

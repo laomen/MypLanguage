@@ -832,6 +832,18 @@ class CodeGen {
             if (rt != null && Str.len(tn) != 0 && isBitfieldName(tn) != 0) {
                 return bitfieldLlvmType(tn);
             }
+            // 定长数组 T[N] → [N x T]（元素类型用 codegen llvmType——接口/struct/枚举/
+            // bitfield 感知）。IrEmit.llvmType 对数组元素递归用简单类型：接口元素返回
+            // ptr → IOp[128] 错成 [128 x ptr]（8B/元素，共 1024B），而 store/load 用
+            // {ptr,ptr} GEP（16B/元素，2048B）→ slot≥64 溢出写穿数组边界、别名到后续
+            // 字段 → 接口数组元素被后续注册覆盖 → 错调方法（如 bwdCpu_[70] 与
+            // fwdGpu_[6] 同址：SoftmaxOp 注册后 GpuMatmulOp 覆盖 → backward 调错类）。
+            if (rt != null && rt.element() != null) {
+                if (rt.arraySize() > 0) {
+                    return "[" + rt.arraySize() + " x " + llvmType(rt.element()) + "]";
+                }
+                return "ptr";
+            }
             return IrEmit.llvmType(rt);
         }
 
