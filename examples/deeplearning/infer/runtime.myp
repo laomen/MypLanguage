@@ -1774,6 +1774,43 @@ class InferenceRuntime {
                                                tOff_[dx], tH_[dy], tW_[dy],
                                                opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i]);
                     }
+                } else if (opKind_[i] == 58) {
+                    // 阶段4b：Conv3D 反向（GPU；膨胀=1、group=1，kd/kh/kw 取 w 形状）
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int w = opC_[i]; int dx = opD_[i];
+                        int dw = opP0_[i]; int db = opP1_[i];
+                        int dbOff = -1;
+                        if (db >= 0) dbOff = tOff_[db];
+                        GpuInferOps.bwdConv3D(arena, dev, tOff_[dy], tOff_[x], tN_[x], tC_[x], tD_[x], tH_[x], tW_[x],
+                                              tOff_[w], tOff_[dx], tOff_[dw], dbOff,
+                                              tC_[dy], tD_[dy], tH_[dy], tW_[dy],
+                                              tD_[w], tH_[w], tW_[w],
+                                              opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i],
+                                              opX_[i * 4 + 0], opX_[i * 4 + 1], 1, 1, 1, 1);
+                    }
+                } else if (opKind_[i] == 59) {
+                    // 阶段4b：MaxPool3D 反向（GPU）
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int dx = opC_[i];
+                        GpuInferOps.bwdMaxPool3D(arena, dev, tOff_[dy], tOff_[x], tN_[x], tC_[x], tD_[x], tH_[x], tW_[x],
+                                                 tOff_[dx], tD_[dy], tH_[dy], tW_[dy],
+                                                 opP0_[i], opP1_[i], opP2_[i],
+                                                 opP3_[i], opP4_[i], opP5_[i],
+                                                 opP6_[i], opP7_[i], opP8_[i],
+                                                 opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2]);
+                    }
+                } else if (opKind_[i] == 60) {
+                    // 阶段4b：AveragePool3D 反向（GPU）
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int dx = opC_[i];
+                        GpuInferOps.bwdAvgPool3D(arena, dev, tOff_[dy], tOff_[x], tN_[x], tC_[x], tD_[x], tH_[x], tW_[x],
+                                                 tOff_[dx], tD_[dy], tH_[dy], tW_[dy],
+                                                 opP0_[i], opP1_[i], opP2_[i],
+                                                 opP3_[i], opP4_[i], opP5_[i],
+                                                 opP6_[i], opP7_[i], opP8_[i],
+                                                 opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2],
+                                                 opX_[i * 4 + 3]);
+                    }
                 }
                 string dumpOpStr = Console.getEnv("MYP_DUMP_OP");
                 int dumpOp = -1;

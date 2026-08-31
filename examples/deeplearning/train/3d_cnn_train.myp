@@ -3,7 +3,8 @@
 // 模型：deeplearning/data/onnx/3d_cnn.onnx
 //   Conv3D(1→4,k3,p1)→ReLU→MaxPool3D(k2,s2)→Flatten(256)→Gemm(256→2)→Softmax
 // 数据：合成 8³ 体积，2 分类——类0=中心高亮块、类1=角落高亮块（含噪声）。
-// 训练：batch=1 纯 SGD，CPU run()（3D GPU backward 在阶段4b，届时切 runGpu）。
+// 训练：batch=1 纯 SGD；MYP_GPU=1 走 runGpu（阶段4b：3D GPU backward 已接 runGpu，
+//      持久化 arena 驻留显存），否则 CPU run()。
 //
 // 运行（须在 examples/ 下）：
 //   deeplearning/infer/tools/onnxvenv/bin/python deeplearning/infer/tools/make_3d_cnn_onnx.py
@@ -42,6 +43,12 @@ class Cnn3DTrain {
             if (dataTid < 0 || labelTid < 0 || lossTid < 0 || probTid < 0) {
                 Console.writeLine("tensor not found: d=" + Fmt.i(dataTid) + " l=" + Fmt.i(labelTid) + " loss=" + Fmt.i(lossTid) + " p=" + Fmt.i(probTid));
                 return;
+            }
+
+            // 阶段4b：GPU 持久化 arena（MYP_GPU=1 且 GPU 可用；否则 no-op 回退）
+            if (rt.gpuPersistentStart() == 1) {
+                rt.markGpuSync(lossTid);
+                rt.markGpuSync(probTid);
             }
 
             int preAcc = testAccuracy(rt, probTid, dataTid, xt, yt, NIN, NTEST);
@@ -86,7 +93,7 @@ class Cnn3DTrain {
                     if (dbg == 1 && epoch == 0 && s == 0) {
                         Console.writeLine("BEFORE-run label=[" + Fmt.f(rt.getFlat(labelTid, 0), 3) + "," + Fmt.f(rt.getFlat(labelTid, 1), 3) + "]");
                     }
-                    rt.run();          // CPU（3D GPU backward 阶段4b 接 runGpu）
+                    step(rt);
                     if (dbg == 1 && epoch == 0 && s == 0) {
                         int probTid2 = probTid;
                         Console.writeLine("sample0 y=" + Fmt.i(y[0]) +
@@ -116,6 +123,13 @@ class Cnn3DTrain {
             Console.writeLine("");
             if (bestAcc >= 90) Console.writeLine("3D CNN TRAIN OK");
             else Console.writeLine("3D CNN TRAIN FAIL");
+            rt.gpuPersistentEnd();   // 取回最终权重到宿主 + 释放设备 arena
+        }
+
+        // 前向+（训练时）反向+更新一步：MYP_GPU=1 走 runGpu，否则 run()
+        void step(InferenceRuntime rt) {
+            if (Console.getEnv("MYP_GPU") == "1") rt.runGpu();
+            else rt.run();
         }
 
         // 合成 3D 数据：类0=中心 2³ 高亮块（中心随机偏移），类1=角落 2³ 高亮块
@@ -156,7 +170,7 @@ class Cnn3DTrain {
             while (s < n) {
                 int j = 0;
                 while (j < NIN) { rt.setFlat(dataTid, j, double(xt[s * NIN + j])); j = j + 1; }
-                rt.run();
+                step(rt);
                 int pred = rt.argmax1d(probTid);
                 if (pred == yt[s]) correct = correct + 1;
                 s = s + 1;

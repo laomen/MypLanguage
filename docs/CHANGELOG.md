@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.198 — selfhost GPU kernel 链接 libdevice（`Math.exp` 等真 GPU 返回 0 修复）
+
+**非破坏性**（selfhost codegen/link）。selfhost 编译器在 `@gpu for`/`@gpu tile`
+kernel 内遇到 `Math.exp/sin/log/pow/...` 超越函数时只发射 `declare @__nv_expf`
+等外部声明（llc 通过即可），但运行期 `myp_gpu_load_kernel` 约定 **PTX 自包含
+（编译期已链接 libdevice）**——C++ oracle 链接了 libdevice.10.bc，selfhost 没有 →
+真 GPU 上 `__nv_expf` 未定义返回 0（softmax 输出全 0、CNN 训练 loss=0、acc 卡 50%）。
+修复：`genKernelDeviceCall` 置 `gpuMathUsed_`，`gpuPtxFromLl` 对用数学的 kernel
+先 `llvm-link kernel.ll libdevice.10.bc`，再 `opt -passes='internalize,globaldce'
+--internalize-public-api-list=<kname>` 只保留 kernel 入口（删未用 libdevice 函数，
+PTX 精简），最后 `llc`。`Link.findLlvmlink()` 探测 `llvm-link`（MYP_LLVM_LINK
+覆盖），libdevice 路径 `$MYP_CUDA_LIBDEVICE` → 常见 CUDA toolkit 安装路径。
+- 验证：`@gpu for` 内 `Math.exp(float/double)` 五种取值（-2..2）bit-exact；
+  deeplearning `conv3d_grad_check_gpu` GPU 3D 反向三内核与 CPU maxDiff=0；
+  3D CNN GPU 训练 acc=100（loss 与 CPU 逐轮一致）。回归 466/466 + GPU 61/61。
+
 ### v3.15.197 — opt InstCombine 爆炸修复（对象清零下沉分配器，2m33s → 亚秒）
 
 **非破坏性**（oracle/selfhost codegen + C/MYP 双运行时）。类属性含巨型定长数组

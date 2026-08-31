@@ -571,6 +571,7 @@ class CodeGen {
             gpuCpuBlock_ = 0;
             gpuKernelCounter_ = 0;
             gpuKernelBarrier_ = 0;
+            gpuMathUsed_ = 0;
             gpuKernelMode_ = 0;
         }
 
@@ -5052,6 +5053,7 @@ class CodeGen {
             else if (meth == "atan2") nv = "atan2";
             if (Str.len(nv) != 0 && Str.len(ty) != 0) {
                 string nvname = "__nv_" + nv + ((ty == "f32") ? "f" : "");
+                gpuMathUsed_ = 1;   // 超越函数 → 须链接 libdevice（见 gpuPtxFromLl）
                 if ((nv == "pow" || nv == "atan2") && e.args().size() >= 2) {
                     string a0 = genExpr(e.args().get(0));
                     string a1 = genExpr(e.args().get(1));
@@ -5722,6 +5724,7 @@ class CodeGen {
                                    ArrayList<string> scalarNames, ArrayList<string> scalarTypes,
                                    ArrayList<string> arrNames, ArrayList<string> arrElems,
                                    int blockSize, string kname, int stride) {
+            gpuMathUsed_ = 0;   // 每个 kernel 独立统计是否用 libdevice 超越函数
             // 保存外层状态（同 genParallelBody）
             StringBuilder saveSb = sb_;
             ArrayList<string> spn = paramNames_;
@@ -6041,22 +6044,85 @@ class CodeGen {
             return "myp_kernel" + kid;
         }
 
-        // kernel .ll → llc nvptx → PTX 文本（无论成败清理临时文件；失败返回空）。
+        // 定位 CUDA libdevice.10.bc（提供 __nv_* 设备数学函数）。
+        // 搜索：$MYP_CUDA_LIBDEVICE → 常见 CUDA toolkit 安装路径。找不到返回 ""。
+        string findGpuLibdevice() {
+            string env = Console.getEnv("MYP_CUDA_LIBDEVICE");
+            if (Str.len(env) != 0 && Fs.isFile(env) != 0) return env;
+            if (Fs.isFile("/usr/lib/nvidia-cuda-toolkit/libdevice/libdevice.10.bc") != 0)
+                return "/usr/lib/nvidia-cuda-toolkit/libdevice/libdevice.10.bc";
+            if (Fs.isFile("/usr/lib/x86_64-linux-gnu/nvidia-cuda-toolkit/libdevice/libdevice.10.bc") != 0)
+                return "/usr/lib/x86_64-linux-gnu/nvidia-cuda-toolkit/libdevice/libdevice.10.bc";
+            if (Fs.isFile("/usr/local/cuda/nvvm/libdevice/libdevice.10.bc") != 0)
+                return "/usr/local/cuda/nvvm/libdevice/libdevice.10.bc";
+            if (Fs.isFile("/usr/local/cuda/libdevice/libdevice.10.bc") != 0)
+                return "/usr/local/cuda/libdevice/libdevice.10.bc";
+            if (Fs.isFile("/opt/cuda/nvvm/libdevice/libdevice.10.bc") != 0)
+                return "/opt/cuda/nvvm/libdevice/libdevice.10.bc";
+            if (Fs.isFile("/usr/lib/cuda/nvvm/libdevice/libdevice.10.bc") != 0)
+                return "/usr/lib/cuda/nvvm/libdevice/libdevice.10.bc";
+            if (Fs.isFile("/usr/local/cuda-12/nvvm/libdevice/libdevice.10.bc") != 0)
+                return "/usr/local/cuda-12/nvvm/libdevice/libdevice.10.bc";
+            if (Fs.isFile("/usr/local/cuda-11/nvvm/libdevice/libdevice.10.bc") != 0)
+                return "/usr/local/cuda-11/nvvm/libdevice/libdevice.10.bc";
+            return "";
+        }
+
+        // kernel .ll → (可选 llvm-link libdevice + opt internalize/globaldce) → llc
+        // nvptx → PTX 文本（无论成败清理临时文件；失败返回空）。
+        // 关键：kernel 内调用 __nv_*（Math.exp/sin/log 等超越函数）时，selfhost
+        // 只发射 `declare @__nv_xxx`，若不链接 libdevice.10.bc 则真 GPU 运行期
+        // 该函数未定义 → 返回 0（softmax 输出全 0、训练 loss=0）。链接后经
+        // internalize+globaldce 只保留用到的函数，PTX 保持精简。
         string gpuPtxFromLl(string kernelLl, string kname) {
             string llc = findGpuLlc();
             string llPath = "/tmp/myp_gpu_k" + kname + ".ll";
             string ptxPath = "/tmp/myp_gpu_k" + kname + ".ptx";
-            writeGpuFile(llPath, kernelLl);
+            string llInput = llPath;
+            int usedLibdevice = 0;
+            if (gpuMathUsed_ == 1) {
+                string ld = findGpuLibdevice();
+                if (Str.len(ld) != 0) {
+                    string lvmlink = Link.findLlvmlink();
+                    string opt = Link.findOpt();
+                    string bcPath = "/tmp/myp_gpu_k" + kname + ".bc";
+                    writeGpuFile(llPath, kernelLl);
+                    // 1) llvm-link kernel.ll + libdevice.10.bc → linked.bc
+                    string linkCmd = lvmlink + " " + llPath + " " + ld + " -o " + bcPath + " 2>&1";
+                    if (Process.run(linkCmd) == 0 && Fs.isFile(bcPath) != 0) {
+                        // 2) opt internalize+globaldce：仅保留 kernel 入口，删未用
+                        //    libdevice 函数（否则每 kernel PTX 塞进整份 libdevice）。
+                        string stripPath = "/tmp/myp_gpu_k" + kname + ".strip.bc";
+                        string optCmd = opt + " " + bcPath + " -passes='internalize,globaldce'"
+                                      + " --internalize-public-api-list=" + kname
+                                      + " -o " + stripPath + " 2>&1";
+                        if (Process.run(optCmd) == 0 && Fs.isFile(stripPath) != 0) {
+                            llInput = stripPath;
+                            usedLibdevice = 1;
+                            Fs.removeRecursive(bcPath);
+                        } else {
+                            Fs.removeRecursive(bcPath);
+                            Fs.removeRecursive(stripPath);
+                        }
+                    } else {
+                        Fs.removeRecursive(bcPath);
+                    }
+                }
+            }
+            if (usedLibdevice == 0) {
+                writeGpuFile(llPath, kernelLl);
+            }
             // -mcpu=sm_75（与 C++ oracle gpuTargetArch() 一致）：不指定时 NVPTX
             // 默认老架构不支持 double 原子 → atomicrmw fadd 降级成 atom.cas 循环
             // （高竞争下重试风暴，sum 1M 元素 25s vs sm_75 直加 4ms）。
-            string cmd = llc + " " + llPath + " -mtriple=nvptx64-nvidia-cuda -mcpu=sm_75 -O2 -o " + ptxPath + " 2>&1";
+            string cmd = llc + " " + llInput + " -mtriple=nvptx64-nvidia-cuda -mcpu=sm_75 -O2 -o " + ptxPath + " 2>&1";
             string ptx = "";
             if (Process.run(cmd) == 0 && Fs.isFile(ptxPath) != 0) {
                 ptx = readGpuFile(ptxPath);
             }
             Fs.removeRecursive(llPath);
             Fs.removeRecursive(ptxPath);
+            if (usedLibdevice == 1) Fs.removeRecursive(llInput);
             return ptx;
         }
 
@@ -6240,6 +6306,7 @@ class CodeGen {
                                  ArrayList<string> scalarNames, ArrayList<string> scalarTypes,
                                  ArrayList<string> arrNames, ArrayList<string> arrElems,
                                  string kname) {
+            gpuMathUsed_ = 0;   // 每个 kernel 独立统计是否用 libdevice 超越函数
             // 保存外层状态（同 emitGpuKernelModule）
             StringBuilder saveSb = sb_;
             ArrayList<string> spn = paramNames_;
@@ -12620,6 +12687,10 @@ class CodeGen {
         int gpuKernelCounter_;
         // kernel 内 kernel.sync() 是否发射 bar.sync（@gpu tile 用）。
         int gpuKernelBarrier_;
+        // kernel 内是否调用 __nv_* libdevice 超越函数（Math.exp/sin/...）。
+        // 置 1 时 gpuPtxFromLl 先 llvm-link CUDA libdevice.10.bc 再 llc
+        // （否则 __nv_expf 等仅声明未定义 → 真 GPU 运行期结果为 0）。
+        int gpuMathUsed_;
         // 当前是否在生成 NVPTX kernel 模块 body（区别于 CPU 回退串行 codegen；
         // kernel 内 Device./Math. 数学 → LLVM intrinsic、Atomic.* → atomicrmw 仅在此生效）。
         int gpuKernelMode_;

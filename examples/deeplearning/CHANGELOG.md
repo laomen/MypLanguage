@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-08-31 — 阶段4b：GPU 3D 反向（bwdConv3D/bwdMaxPool3D/bwdAvgPool3D）
+
+### GPU 3D 反向内核（`infer/gpu_ops.myp`）
+- 新增 `bwdConv3D`（db/dW/dX 三内核，thread-per-元素全和赋值，无原子、无需清零，
+  非对称 padding pdt/pdb/pt/pb/pl/pr + 膨胀 dd/dh/dw + group，镜像 2D bwdConv
+  模式）、`bwdMaxPool3D`（清 dX + thread-per-output 重算 argmax 路由 dY，
+  stride≥kernel 无重叠假设）、`bwdAvgPool3D`（清 dX + thread-per-output 算 div
+  散射 dY/div，cip=1 用整窗口分母）。
+- `infer/runtime.myp` `runGpu()` 新增 opKind 58/59/60 GPU 分发，参数映射与 CPU
+  `run()` 逐位一致（Conv3D 假定膨胀=1、group=1，kd/kh/kw 取权重形状）。
+- `train/3d_cnn_train.myp` 接入 GPU 训练：`gpuPersistentStart()` + `markGpuSync`
+  + `step()` 走 `runGpu()`（MYP_GPU=1），否则 CPU `run()`。
+- **数值对拍** `train/conv3d_grad_check_gpu.myp` → bwdConv3D/bwdMaxPool3D/
+  bwdAvgPool3D 三内核与 CPU `InferOps` **逐元素 bit-exact（maxDiff=0）**；
+  `3d_cnn_train.myp` MYP_GPU=1 → **3D CNN TRAIN OK**（loss/acc 与 CPU 逐轮一致）。
+- **依赖的编译器修复**：selfhost 编译器 `@gpu for` 内 `Math.exp` 只发射
+  `declare @__nv_expf` 未链接 libdevice → 真 GPU 返回 0（softmax 输出全 0 →
+  loss=0）。修复见主 changelog v3.15.198（kernel .ll 先 llvm-link libdevice.10.bc
+  + opt internalize/globaldce 再 llc）。至此 GPU 3D 训练闭环。
+
+---
+
 ## 2026-08-31 — stdlib/mmap.myp + safetensors mmap 零拷贝读（加载 6.3s→2.7s）
 
 ### 新增内存映射文件库（分两层：runtime 提供符号，stdlib 薄包装）

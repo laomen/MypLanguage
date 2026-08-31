@@ -58,6 +58,14 @@ import collections; // ArrayList
             return Link.probeTool("opt", "MYP_OPT", v);
         }
 
+        // 探测 llvm-link（GPU kernel 链接 CUDA libdevice.10.bc 用）。
+        // 路径规则同 llc/opt。MYP_LLVM_LINK 环境变量优先。
+        string findLlvmlink() {
+            ArrayList<string> v = new ArrayList<string>();
+            v.add("21"); v.add("20"); v.add("19"); v.add("18");
+            return Link.probeTool("llvm-link", "MYP_LLVM_LINK", v);
+        }
+
         string findPassPlugin() {
             string envPath = Console.getEnv("MYP_PASS_PLUGIN");
             if (envPath == "0") return "";
