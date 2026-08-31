@@ -8,11 +8,17 @@
 
 ## 2026-08-31 — stdlib/mmap.myp + safetensors mmap 零拷贝读（加载 6.3s→2.7s）
 
-### 新增 `stdlib/mmap.myp`：内存映射文件（只读，零拷贝）
-- 纯 raw syscall：open(2) / lseek(8, SEEK_END 取大小) / mmap(9, PROT_READ|MAP_PRIVATE)
-  / munmap(11) / close(3)。mmap 后即 close fd（MAP_PRIVATE 映射保持有效）。
-- `u8/i32/i64/f64(off)`：文件相对偏移 O(1) 零拷贝读（`__myp_mem_load_*`，自举独有
-  内建；`u8` 因 `byte` 是 MYP 类型关键字而改名）。
+### 新增内存映射文件库（分两层：runtime 提供符号，stdlib 薄包装）
+- `runtime_myp/mmap.myp`：MYP runtime 符号 `myp_file_size` / `myp_mmap_file` /
+  `myp_munmap_file`（open(2)/lseek(8)/mmap(9)/munmap(11)/close(3) 纯 raw syscall，
+  与其他 runtime_myp 模块一致——raw syscall 属 syscall 边界，不进 stdlib）。
+- `stdlib/mmap.myp`：`ffi` 声明 + `MmapFile` 薄包装（`u8/i32/i64/f64` 按文件相对
+  偏移 O(1) 零拷贝读，`__myp_mem_load_*`）。可移植：Windows/ARM 由对应 runtime
+  提供同名符号，stdlib 不碰裸 syscall。
+- **分层教训**：首版把 raw `__myp_syscall` 直接写进 stdlib——`__myp_syscall` 的
+  syscall 号按架构硬编码（x86-64 open=2/mmap=9，aarch64 openat=56/mmap=222，
+  Windows 无稳定 syscall ABI），且是绕过运行时的逃生舱。改正：syscall 下沉 runtime，
+  stdlib 用 ffi。
 
 ### safetensors 接入 mmap（`infer/safetensors.myp`）
 - `load()` 里 `mm_.open(path)` 整文件 mmap；`readF32RangeAt` 走 mmap 快路径（免

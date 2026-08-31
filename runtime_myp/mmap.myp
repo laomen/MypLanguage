@@ -1,0 +1,29 @@
+// mmap.myp — 内存映射文件运行时符号（Linux 原生 raw syscall）
+// 供 stdlib/mmap.myp 经 ffi 调用。open(2)/lseek(8)/mmap(9)/munmap(11)/close(3)。
+// 与其他 runtime_myp 模块一致：raw syscall 属 syscall 边界，不进 stdlib。
+
+// C: int64_t myp_file_size(const char* path) —— 文件大小（open+lseek+close），失败 -1
+long myp_file_size(string path) {
+    long fd = __myp_syscall(2, __myp_str_ptr(path), 0, 0, 0, 0, 0);   // open(path, O_RDONLY)
+    if (fd < 0) return -1;
+    long sz = __myp_syscall(8, fd, 0, 2, 0, 0, 0);                   // lseek(fd,0,SEEK_END)=文件大小
+    __myp_syscall(3, fd, 0, 0, 0, 0, 0);                            // close
+    return sz;
+}
+
+// C: void* myp_mmap_file(const char* path, int64_t size) —— 只读映射前 size 字节
+// 返回基址（失败 0 或负值）；mmap 后即 close fd（MAP_PRIVATE 映射仍有效）
+long myp_mmap_file(string path, long size) {
+    if (size <= 0) return 0;
+    long fd = __myp_syscall(2, __myp_str_ptr(path), 0, 0, 0, 0, 0);   // open(path, O_RDONLY)
+    if (fd < 0) return 0;
+    long b = __myp_syscall(9, 0, size, 1, 2, fd, 0);                 // mmap(0,size,PROT_READ,MAP_PRIVATE,fd,0)
+    __myp_syscall(3, fd, 0, 0, 0, 0, 0);                             // close fd
+    return b;
+}
+
+// C: int64_t myp_munmap_file(void* addr, int64_t size) —— 0 成功，-1 失败
+long myp_munmap_file(long addr, long size) {
+    if (addr <= 0 || size <= 0) return -1;
+    return __myp_syscall(11, addr, size, 0, 0, 0, 0);                // munmap
+}
