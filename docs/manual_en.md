@@ -2362,16 +2362,18 @@ Future.destroy(handle);              // destroy
 
 ### `import coro` — Coroutines
 
-MYP coroutines are ucontext-based user-space fibers: an `@coro`-annotated **class action method**
-or **top-level function** + `await` to suspend + `Coro.resume` to resume (C1-C7 implemented).
-Users access the scheduling/lifecycle API through the static class `Coro`.
+MYP coroutines are user-space fibers with register-level assembly switching (x86-64 uses the
+`coro_ctx.S` asm fast path with no syscall; non-x86-64 falls back to ucontext): an `@coro`-annotated
+**class action method** or **top-level function** + `await` to suspend + `Coro.resume` to resume
+(C1-C10 implemented). Users access the scheduling/lifecycle API through the static class `Coro`.
 
 > `await` is only allowed inside an `@coro` method or top-level `@coro` function. In a plain
 > action / `function:` / `static:` section or a plain top-level function, `await` is a compile
 > error: `'await' is only allowed inside an '@coro' method`.
 
 **Declaring a coroutine method** (`@coro`, may take parameters; use `await` to suspend;
-`@coro(stack=N)` sets the stack size in KB, default 128):
+`@coro(stack=N)` sets the stack size in KB, range 64KB–64MB; omitted or `stack=128` uses the
+default 1MB dynamic reserve):
 
 ```myp
 import env;     // Console
@@ -2382,7 +2384,7 @@ class Worker {
         string label_;
     action:
         void setLabel(string s) { label_ = s; }
-        @coro void run() {                    // coroutine method (default 128KB stack)
+        @coro void run() {                    // coroutine method (default 1MB dynamic reserve)
             Console.writeString(label_); Console.writeString(":1\n");
             await;                            // suspend, yield control
             Console.writeString(label_); Console.writeString(":2\n");

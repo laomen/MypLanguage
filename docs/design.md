@@ -1200,7 +1200,7 @@ Once.destroy(once);
 
 ### 8.6 协程与异步（`@coro` / `await`）
 
-协程是**线程内协作式并发**：`@coro` 方法/函数以用户态纤程（ucontext）运行，`await` 挂起、调度器恢复，单线程内可承载大量轻量任务——与 `@thread`（抢占式独立时间线）互补。
+协程是**线程内协作式并发**：`@coro` 方法/函数以用户态纤程（x86-64 寄存器级汇编切换）运行，`await` 挂起、调度器恢复，单线程内可承载大量轻量任务——与 `@thread`（抢占式独立时间线）互补。
 
 #### 8.6.1 语法（真实可编译运行，实测输出 `start / v=100 / r=0 / result=42 / resumed`）
 
@@ -1240,7 +1240,7 @@ class Worker {
             Console.write(r);
             Console.writeString("\n");
         }
-        // ④ 自定义栈大小（KB，默认 128）
+        // ④ 自定义栈大小（KB，默认 1MB 动态预留）
         @coro(stack=64) void big() { await; }
 }
 
@@ -1287,14 +1287,14 @@ int main() {
   `long` 句柄；恢复用手动 `Coro.resume(h, val)` 或自动 `Coro.scheduler()`（每轮驱动
   所有就绪协程各一步）；返回值经 `Coro.result(h)` 取出
 
-#### 8.6.2 运行时（ucontext 用户态纤程）
+#### 8.6.2 运行时（寄存器级汇编纤程）
 
 | 机制 | 说明 |
 |------|------|
 | 上下文切换 | x86-64 用**寄存器级汇编**（`coro_ctx.S`，无 syscall，~20-40ns）；非 x86-64 平台回退 `ucontext` `swapcontext`（~200ns）——「ucontext」为历史特性名，主流 x86-64 实际走 asm 快路径 |
 | 底层原语 | `__myp_coro_*`：create/set_entry/set_entry_arg/get_entry_arg/yield/resume/set_result/result/is_active/destroy/current/count/status/wait_event/wait_event_timeout/wait_any/wait_any_of/sleep/wait_fd/request_cancel/cancel_requested/cancel_clear 等 |
 | 调度 | 手动 `Coro.resume(h, val)` + 自动调度器（就绪队列，`Coro.scheduler()` 每轮驱动所有就绪协程各一步；阻塞等待事件的协程跳过） |
-| 栈 | 128KB（可配 `@coro(stack=N)`，KB；`0`/省略=默认 128KB，无硬性最小，`N<16` 仅编译警告建议 ≥16KB，过小运行期栈溢出）+ 栈池复用（缓存上限 128 个，省反复 malloc/free；**每线程池内总字节上限 16MB**） |
+| 栈 | 默认 1MB 动态预留（RSS 按实际使用提交）；`@coro(stack=N)` 显式指定 64KB–64MB，`stack=128`/省略等价默认；`N<16` 仅编译警告建议 ≥16KB，过小运行期栈溢出 + 栈池复用（同尺寸 O(1) 尾取，缓存上限 1024 项 / 每线程池内 VA 总字节上限 128MB） |
 | 线程绑定 | 协程状态线程本地（`__thread`）——协程绑定创建线程，可与 `@thread` 线程并用 |
 | 事件集成 | `await Class.event` 阻塞等待，事件 fire 后重新就绪；事件等待表动态扩容（自 64 起倍增，无硬上限） |
 | 超时/多事件 | `waitEventTimeout` / `Coro.waitAny(ids, count, timeoutMs, val)`（返回触发事件 id，超时 -1）/ `Coro.waitAnyOf(spec, …)`（P4 混等事件/定时器/fd，返回触发的 spec 下标）/ `Coro.waitFd(fd, …)` |
@@ -2110,7 +2110,7 @@ maxThreads/warpSize）、`Device`、`DevMath`（设备端数学 = `Math` 泛型�
 | `pool` | `Parallel` 静态类（线程池任务工具） | ✅ 已实现 |
 | `barrier` | `Barrier` 类（create/wait/destroy），基于 pthread_barrier | ✅ 已实现 |
 | `future` | `Future` 类（create/set/get/destroy），异步结果容器 | ✅ 已实现 |
-| `coro` | `Coro` 协程类（scheduler/resume/yield/isActive/destroy/result/waitEvent/current/count/status/waitEventTimeout/waitAny/requestCancel/cancelRequested/clearCancel），基于 ucontext；`@coro` 方法/顶层函数 + `await` 语法由编译器支持 | ✅ 已实现（C1-C10，详见 `coro.md`）|
+| `coro` | `Coro` 协程类（scheduler/resume/yield/isActive/destroy/result/waitEvent/current/count/status/waitEventTimeout/waitAny/requestCancel/cancelRequested/clearCancel），基于寄存器级汇编纤程；`@coro` 方法/顶层函数 + `await` 语法由编译器支持 | ✅ 已实现（C1-C10，详见 `coro.md`）|
 | `memory` | `Memory` 类（alloc/free/realloc/release），FFI 桥接 libc malloc/free/realloc（指针以 `long` 承载） | ✅ 已实现（v3.8.0 修复） |
 | `test` | `Test` 类（assert/assertEq/assertStrEq/report），配合 `@test` 注解 | ✅ 已实现 |
 | `sdl` | `SDL` 图形类（init/quit/clear/present/getKey），基于 SDL2 FFI | ✅ 已实现 |

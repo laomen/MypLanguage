@@ -1,6 +1,8 @@
 # MYP 编程语言
 
 > 事件驱动组件语言 | LLVM 21 后端 | 内置 GPU 支持
+>
+> 编译器 v3.15.197 | 语言规格 v1.0
 
 <p align="center">
   <img src="logo/logo2.png" alt="MYP Logo" width="460">
@@ -19,7 +21,7 @@ MYP 是一门**事件驱动组件**编程语言，以 `class` + `action:` / `eve
 | **数据并行** | `@parallel for` 自动并行化，work-stealing 线程池 |
 | **泛型** | `ArrayList<T>`、`HashMap<K,V>`、`Queue<T>` 等 |
 | **接口多态** | `interface` + 虚表分派（胖指针） |
-| **协程 + 异步 IO** | `@coro`/`await` 用户态协程 + `@async` 统一异步抽象（定时器/套接字/文件执行器）+ `Coro.waitAnyOf` 混等 |
+| **协程 + 异步 IO** | `@coro`/`await` 寄存器级纤程（asm 切换，无系统调用）+ `@async` 统一异步抽象（定时器/套接字/文件执行器）+ `Coro.waitAnyOf` 混等 |
 | **错误处理** | `Result<T,E>` / `Option<T>`/`T?` 容器 + `catch (Error)` 异常分层 |
 | **自动内存管理** | class 实例 ARC（自动引用计数，additive 无新语法） |
 | **派生序列化** | `@derive(Json)` 类注解自动生成 toJson/fromJson（serde 式，零运行时反射） |

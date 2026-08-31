@@ -1,6 +1,8 @@
 # MYP Programming Language
 
 > Event-Driven Component Language | LLVM 21 Backend | Built-in GPU Support
+>
+> Compiler v3.15.197 | Language Spec v1.0
 
 <p align="center">
   <img src="logo/logo2.png" alt="MYP Logo" width="460">
@@ -19,7 +21,7 @@ MYP is an **event-driven component** programming language built around `class` +
 | **Data Parallelism** | `@parallel for` auto-parallelization with a work-stealing thread pool |
 | **Generics** | `ArrayList<T>`, `HashMap<K,V>`, `Queue<T>` and more |
 | **Interface Polymorphism** | `interface` + vtable dispatch (fat pointers) |
-| **Coroutines + Async I/O** | `@coro`/`await` user-space coroutines + `@async` unified async abstraction (timers/sockets/file executor) + `Coro.waitAnyOf` mixed waits |
+| **Coroutines + Async I/O** | `@coro`/`await` register-level fibers (asm switching, no syscall) + `@async` unified async abstraction (timers/sockets/file executor) + `Coro.waitAnyOf` mixed waits |
 | **Error Handling** | `Result<T,E>` / `Option<T>`/`T?` containers + layered `catch (Error)` exceptions |
 | **Automatic Memory Mgmt** | ARC for class instances (automatic reference counting, additive, no new syntax) |
 | **Derived Serialization** | `@derive(Json)` class annotation auto-generates toJson/fromJson (serde-style, zero runtime reflection) |

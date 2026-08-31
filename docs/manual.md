@@ -2309,14 +2309,15 @@ Future.destroy(handle);              // 销毁
 
 ### `import coro` — 协程
 
-MYP 协程基于 ucontext 用户态纤程：`@coro` 注解的**类 action 方法**或**顶层函数** + `await` 挂起 +
-`Coro.resume` 恢复（C1-C7 已实现）。用户通过静态类 `Coro` 访问调度/生命周期 API。
+MYP 协程基于寄存器级汇编切换的用户态纤程（x86-64 走 `coro_ctx.S` asm 快路径，无系统调用；非 x86-64 回退 ucontext）：`@coro` 注解的**类 action 方法**或**顶层函数** + `await` 挂起 +
+`Coro.resume` 恢复（C1-C10 已实现）。用户通过静态类 `Coro` 访问调度/生命周期 API。
 
 > `await` 只能在 `@coro` 方法或顶层 `@coro` 函数内使用；普通 action / `function:` /
 > `static:` 段或普通顶层函数中的 `await` 会报编译错误
 > `'await' is only allowed inside an '@coro' method`。
 
-**声明协程方法**（`@coro`，可带参数，方法内可用 `await` 挂起；`@coro(stack=N)` 指定栈大小 KB，默认 128）：
+**声明协程方法**（`@coro`，可带参数，方法内可用 `await` 挂起；`@coro(stack=N)` 指定栈大小 KB，
+范围 64KB–64MB，缺省或 `stack=128` 使用默认 1MB 动态预留）：
 
 ```myp
 import env;     // Console
@@ -2327,7 +2328,7 @@ class Worker {
         string label_;
     action:
         void setLabel(string s) { label_ = s; }
-        @coro void run() {                    // 协程方法（默认 128KB 栈）
+        @coro void run() {                    // 协程方法（默认 1MB 动态预留）
             Console.writeString(label_); Console.writeString(":1\n");
             await;                            // 挂起，让出控制权
             Console.writeString(label_); Console.writeString(":2\n");
