@@ -312,6 +312,22 @@ class InferenceRuntime {
             opP6_[id] = pl; opP7_[id] = pr;
             opCount_ = opCount_ + 1;
         }
+        // 阶段4d：Dice loss（opKind 69）。p=opA(prob), y=opB(label), dp=opC, loss=opD;
+        // eps=opP0（位型）；rows/cols 取 prob 张量 tRows_/tCols_。
+        void addDiceLoss(int pT, int yT, int dpT, int lossT, double eps) {
+            int id = opCount_;
+            opKind_[id] = 69;
+            opA_[id] = pT; opB_[id] = yT; opC_[id] = dpT; opD_[id] = lossT;
+            opP0_[id] = F32.toBits(eps);
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段4d：Softmax 反向（opKind 70）。dprob=opA, prob=opB, dlogit=opC
+        void addBwdSoftmax(int dpT, int pT, int dlT) {
+            int id = opCount_;
+            opKind_[id] = 70;
+            opA_[id] = dpT; opB_[id] = pT; opC_[id] = dlT;
+            opCount_ = opCount_ + 1;
+        }
         // 阶段5：RMSNorm（opKind 61）。in=opA, gamma=opB, out=opC; D=opP0, S=opP1, eps=opP2(位型)
         void addRmsNorm(int inT, int gT, int outT, int D, int S, double eps) {
             int id = opCount_;
@@ -1261,6 +1277,19 @@ class InferenceRuntime {
                             tH_[w], tW_[w],
                             opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i]);
                     }
+                } else if (opKind_[i] == 69) {
+                    // 阶段4d：Dice loss（CPU）
+                    if (trainMode_ == 1) {
+                        int p = opA_[i]; int y = opB_[i]; int dp = opC_[i]; int lo = opD_[i];
+                        InferOps.diceLoss(arena, tOff_[p], tOff_[y], tOff_[dp], tOff_[lo],
+                                          tRows_[p], tCols_[p], F32.toDouble(opP0_[i]));
+                    }
+                } else if (opKind_[i] == 70) {
+                    // 阶段4d：Softmax 反向（CPU）
+                    if (trainMode_ == 1) {
+                        int dp = opA_[i]; int p = opB_[i]; int dl = opC_[i];
+                        InferOps.bwdSoftmax(arena, tOff_[p], tOff_[dp], tOff_[dl], tRows_[p], tCols_[p]);
+                    }
                 } else if (opKind_[i] == 61) {
                     // 阶段5：RMSNorm
                     int in = opA_[i]; int g = opB_[i]; int out = opC_[i];
@@ -1851,6 +1880,19 @@ class InferenceRuntime {
                             tH_[w], tW_[w],
                             opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i]);
                     }
+                } else if (opKind_[i] == 69) {
+                    // 阶段4d：Dice loss（GPU）
+                    if (trainMode_ == 1) {
+                        int p = opA_[i]; int y = opB_[i]; int dp = opC_[i]; int lo = opD_[i];
+                        GpuInferOps.diceLoss(arena, dev, tOff_[p], tOff_[y], tOff_[dp], tOff_[lo],
+                                             tRows_[p], tCols_[p], F32.toDouble(opP0_[i]));
+                    }
+                } else if (opKind_[i] == 70) {
+                    // 阶段4d：Softmax 反向（GPU）
+                    if (trainMode_ == 1) {
+                        int dp = opA_[i]; int p = opB_[i]; int dl = opC_[i];
+                        GpuInferOps.bwdSoftmax(arena, dev, tOff_[p], tOff_[dp], tOff_[dl], tRows_[p], tCols_[p]);
+                    }
                 }
                 string dumpOpStr = Console.getEnv("MYP_DUMP_OP");
                 int dumpOp = -1;
@@ -2005,6 +2047,8 @@ class InferenceRuntime {
             if (k == 44) return "pad3d";
             if (k == 45) return "resize3d";
             if (k == 68) return "bwdConvTranspose";
+            if (k == 69) return "diceLoss";
+            if (k == 70) return "bwdSoftmax";
             return "kind" + Fmt.i(k);
         }
 

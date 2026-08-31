@@ -512,6 +512,28 @@ class InferOps {
             arena[lossOff] = float(1.0 - sumLoss / double(rows));
         }
 
+        // Softmax 反向（阶段4d）：dProb → dLogit。dlogit[i] = p[i]·(dp[i] - Σ_j p[j]·dp[j])
+        // （softmax 雅可比 J_ij = p_i(δ_ij - p_j) 的转置作用于 dp）
+        void bwdSoftmax(float[] arena, int probOff, int dprobOff, int dlogitOff, int rows, int cols) {
+            int b = 0;
+            while (b < cols) {
+                double inner = 0.0;
+                int r = 0;
+                while (r < rows) {
+                    inner = inner + double(arena[probOff + r * cols + b]) * double(arena[dprobOff + r * cols + b]);
+                    r = r + 1;
+                }
+                r = 0;
+                while (r < rows) {
+                    double p = arena[probOff + r * cols + b];
+                    double dp = arena[dprobOff + r * cols + b];
+                    arena[dlogitOff + r * cols + b] = float(p * (dp - inner));
+                    r = r + 1;
+                }
+                b = b + 1;
+            }
+        }
+
         // ---- 训练：卷积/池化反向（阶段3，CPU）----
 
         // 反向：y = conv(x, w)；给定 dY[N,yC,yH,yW]

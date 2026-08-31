@@ -387,6 +387,83 @@ class GpuInferOps {
             }
         }
 
+        // Dice loss（阶段4d，GPU，thread-per-class）：pOff=prob[C,N], yOff=label[C,N]
+        // → dpOff=dProb[C,N], lossOff。每类一个线程串行统计 sumP/sumY/sumPY，
+        // 写 dp；loss 由独立单线程 kernel 重算汇总（跨线程无 barrier，不能在同一
+        // kernel 内由 thread0 读其他线程的 sum）。
+        void diceLoss(float[] a, long dev, int pOff, int yOff, int dpOff, int lossOff,
+                      int rows, int cols, double eps) {
+            @gpu for (long p = 0L; p < long(rows); p = p + 1L) resident(a = dev) {
+                if (p < long(rows)) {
+                    long c = p;
+                    double sumP = 0.0;
+                    double sumY = 0.0;
+                    double sumPY = 0.0;
+                    long s = 0L;
+                    while (s < long(cols)) {
+                        double pv = double(a[pOff + c * long(cols) + s]);
+                        double yv = double(a[yOff + c * long(cols) + s]);
+                        sumP = sumP + pv;
+                        sumY = sumY + yv;
+                        sumPY = sumPY + pv * yv;
+                        s = s + 1L;
+                    }
+                    double B = sumP + sumY + eps;
+                    double denom = 2.0 / double(rows) / (B * B);
+                    s = 0L;
+                    while (s < long(cols)) {
+                        double yv = double(a[yOff + c * long(cols) + s]);
+                        a[dpOff + c * long(cols) + s] = float(0.0 - denom * (yv * B - sumPY));
+                        s = s + 1L;
+                    }
+                }
+            }
+            @gpu for (long p = 0L; p < 1L; p = p + 1L) resident(a = dev) {
+                double sumLoss = 0.0;
+                long c = 0L;
+                while (c < long(rows)) {
+                    double sumP = 0.0;
+                    double sumY = 0.0;
+                    double sumPY = 0.0;
+                    long s = 0L;
+                    while (s < long(cols)) {
+                        double pv = double(a[pOff + c * long(cols) + s]);
+                        double yv = double(a[yOff + c * long(cols) + s]);
+                        sumP = sumP + pv;
+                        sumY = sumY + yv;
+                        sumPY = sumPY + pv * yv;
+                        s = s + 1L;
+                    }
+                    double B = sumP + sumY + eps;
+                    sumLoss = sumLoss + 2.0 * sumPY / B;
+                    c = c + 1L;
+                }
+                a[lossOff] = float(1.0 - sumLoss / double(rows));
+            }
+        }
+
+        // Softmax 反向（阶段4d，GPU，thread-per-column）：dlogit[i] = p[i]·(dp[i] - Σ_j p[j]·dp[j])
+        void bwdSoftmax(float[] a, long dev, int probOff, int dprobOff, int dlogitOff, int rows, int cols) {
+            @gpu for (long p = 0L; p < long(cols); p = p + 1L) resident(a = dev) {
+                if (p < long(cols)) {
+                    long b = p;
+                    double inner = 0.0;
+                    long r = 0L;
+                    while (r < long(rows)) {
+                        inner = inner + double(a[probOff + r * long(cols) + b]) * double(a[dprobOff + r * long(cols) + b]);
+                        r = r + 1L;
+                    }
+                    r = 0L;
+                    while (r < long(rows)) {
+                        double pv = double(a[probOff + r * long(cols) + b]);
+                        double dpv = double(a[dprobOff + r * long(cols) + b]);
+                        a[dlogitOff + r * long(cols) + b] = float(pv * (dpv - inner));
+                        r = r + 1L;
+                    }
+                }
+            }
+        }
+
         // SGD 更新：W -= lr·grad（lr 位型存于调用方，经 long 传）
         void update(float[] a, long dev, int wOff, int gradOff, int n, double lr) {
             @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {

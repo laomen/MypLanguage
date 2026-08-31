@@ -6,6 +6,41 @@
 
 ---
 
+## 2026-08-31 — 阶段4d：bwdConvTranspose + Dice loss 图集成 + 3D 分割训练
+
+### bwdConvTranspose（`infer/ops.myp` + `gpu_ops.myp`，opKind 68）
+- 权重 [Cin,Cout,kh,kw] 同前向 ONNX 布局；dW 用 gather 公式（ih=(oh+pt-ky)/sh 整除
+  界内）、dX 用 scatter 公式（oh=ih*sh-pt+ky 界内）、db=Σdy。GPU 三内核
+  thread-per-元素全和赋值（无原子、无需清零）。`runtime.myp` opKind 68 + run/runGpu
+  分发；`graph.myp` buildReverseGraph/buildRuntime 支持 ConvTranspose 反向节点。
+- **对拍** `train/convtranspose_grad_check.myp`：dW/dX 有限差分 + db 直接对拍，
+  GPU vs CPU 逐元素 maxDiff=0。**端到端** `train/convt_train.myp`
+  （ConvTranspose 分类 ONNX）CPU/GPU acc 100%、loss 0.667→0.35 → `CONVT TRAIN OK`。
+
+### Dice loss 图集成（opKind 69 DiceLoss + 70 BwdSoftmax）
+- 分离式集成：`diceLoss`（已有 CPU，新增 GPU thread-per-class 串行归约，O(C·N)）
+  + `bwdSoftmax`（dlogit=p·(dp-Σp·dp)，CPU/GPU，thread-per-column）。
+  `OnnxLoader.setLossMode(1)` → `Graph.setLossMode` → buildReverseGraph 用
+  `DiceLoss(prob,label)→(dprob,loss)` + `BwdSoftmax(dprob,prob)→dlogits` 替代
+  SoftmaxCE。prob 即 Softmax 图输出（[1,C,D,H,W] → 运行时 [C,D*H*W] 视图，
+  softmax 自然沿 C 归一化）。
+- **对拍** `train/dice_softmax_grad_check.myp`：dlogit 全链有限差分 + GPU vs CPU
+  maxDiff=0 → `DICE SOFTMAX GRAD CHECK OK`。
+- **框架 BUG（label 5D 形状）**：buildReverseGraph 的 label 用 `addShapeD4` 硬编码
+  → 5D 分割 logits [1,C,D,H,W] 丢深度维（label 注册成 [C,1] 2 元素）→ diceLoss 读
+  越界 label → 训练不收敛（loss 0.5 卡死 / 先增后降）。**修复**：label 按 logits
+  秩 `addShapeD5` 且 `setShapeKind(label, shKind_[logits])`（否则 buildRuntime 的
+  FC_ACT 分支优先于 5D 分支，仍注册成 [C,1]）。**症状识别**：dump 张量表 label
+  size=2（应为 C·D·H·W）→ 查 label 注册秩/kind。
+
+### 3D 分割训练（`train/3d_seg_train.myp` + `tools/make_3d_seg_onnx.py`）
+- 模型：Conv3D(1→4,k3,p1) → ReLU → Conv3D(4→2,k3,p1) → Softmax；数据合成 8³ 体素
+  2 类（上半体=前景）。`setLossMode(1)` + Dice loss → **dice 0.5→8.6e-8、acc 100%**
+  → `3D SEG TRAIN OK`（CPU/GPU）。U-Net 编解码上采样（bwdResize3d 或
+  ConvTranspose3D）留作后续扩展。
+
+---
+
 ## 2026-08-31 — 阶段4b：GPU 3D 反向（bwdConv3D/bwdMaxPool3D/bwdAvgPool3D）
 
 ### GPU 3D 反向内核（`infer/gpu_ops.myp`）

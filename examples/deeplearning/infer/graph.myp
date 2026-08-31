@@ -108,6 +108,9 @@ class Graph {
         // ---- 图统计（供验证入口打印；G5 由 Graph 自持）----
         void setLayoutNHWC(int v) { doNHWC_ = v; }
         int doNHWC() { return doNHWC_; }
+        // 训练损失模式：0=SoftmaxCE（默认），1=Dice（分割，阶段4d）
+        void setLossMode(int v) { lossMode_ = v; }
+        int lossMode() { return lossMode_; }
         int fuseCount() { return fuseCount_; }
         int gapCount() { return gapCount_; }
         int dceCount() { return dceCount_; }
@@ -397,21 +400,51 @@ class Graph {
             if (ls < 0) return 0;
 
             // 2) label / loss / dlogits 张量（label 由训练循环灌 one-hot）
-            addShapeD4("label", shD0_[ls], shD1_[ls], shD2_[ls], shD3_[ls]);
-            setShapeKind("label", Kind.FC_ACT());
+            // 注意：label 必须与 logits 同秩且同 shape kind——5D 分割 logits
+            // [N,C,D,H,W] 走 addShapeD5，否则漏深度维（同 Flatten 5D BUG：4D
+            // 注册丢 shD4 → label 越界/覆盖）；shape kind 直接镜像 logits（否则
+            // FC_ACT 分支在 buildRuntime 里优先于 5D 分支 → label 被注册成 [C,1]）。
+            if (shR5_[ls] == 1)
+                addShapeD5("label", shD0_[ls], shD1_[ls], shD2_[ls], shD3_[ls], shD4_[ls]);
+            else
+                addShapeD4("label", shD0_[ls], shD1_[ls], shD2_[ls], shD3_[ls]);
+            setShapeKind("label", shKind_[ls]);
             addShapeD4("loss", 1, 1, 1, 1);
             setShapeKind("loss", Kind.FC_ACT());
             ensureGrad(logits);
 
-            // 3) SoftmaxCE(logits, label) → (dlogits, loss)
-            int nid = nCount_;
-            beginNode();
-            nodeType(nid, "SoftmaxCE");
-            nodeIn(nid, 0, logits);
-            nodeIn(nid, 1, "label");
-            nodeOut(nid, gradName(logits));
-            nodeOut(nid, "loss");
-            endNode();
+            // 3) loss 节点：CE（SoftmaxCE(logits,label)→(dlogits,loss)）或
+            //    Dice（DiceLoss(prob,label)→(dprob,loss) + BwdSoftmax(dprob,prob)→dlogits）
+            if (lossMode_ == 1) {
+                // prob = Softmax 输出（图输出）；其梯度 dprob 由 DiceLoss 产出，
+                // 经 BwdSoftmax 链式回传到 logits 梯度 dlogits。
+                string prob = nOut0_[smNode];
+                ensureGrad(prob);
+                int nid = nCount_;
+                beginNode();
+                nodeType(nid, "DiceLoss");
+                nodeIn(nid, 0, prob);
+                nodeIn(nid, 1, "label");
+                nodeOut(nid, gradName(prob));
+                nodeOut(nid, "loss");
+                endNode();
+                int nid2 = nCount_;
+                beginNode();
+                nodeType(nid2, "BwdSoftmax");
+                nodeIn(nid2, 0, gradName(prob));
+                nodeIn(nid2, 1, prob);
+                nodeOut(nid2, gradName(logits));
+                endNode();
+            } else {
+                int nid = nCount_;
+                beginNode();
+                nodeType(nid, "SoftmaxCE");
+                nodeIn(nid, 0, logits);
+                nodeIn(nid, 1, "label");
+                nodeOut(nid, gradName(logits));
+                nodeOut(nid, "loss");
+                endNode();
+            }
 
             // 4) 反向拓扑遍历（planOrder_ 逆序）：输出梯度已知 → 按算子类型追加 backward
             int oi = planOrderCount_ - 1;
@@ -2221,6 +2254,19 @@ class Graph {
                     if (nOut2_[ni] != "") db = tensorId(nOut2_[ni]);
                     rt.addBwdConvTranspose(dy, x, w, dx, dw, db,
                                            nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
+                } else if (t == "DiceLoss") {
+                    // 阶段4d：Dice loss。in0=prob, in1=label; out0=dprob, out1=loss
+                    int p = tensorId(nIn0_[ni]);
+                    int y = tensorId(nIn1_[ni]);
+                    int dp = tensorId(nOut0_[ni]);
+                    int lo = tensorId(nOut1_[ni]);
+                    rt.addDiceLoss(p, y, dp, lo, 1.0e-5);
+                } else if (t == "BwdSoftmax") {
+                    // 阶段4d：Softmax 反向。in0=dprob, in1=prob; out0=dlogit
+                    int dp = tensorId(nIn0_[ni]);
+                    int p = tensorId(nIn1_[ni]);
+                    int dl = tensorId(nOut0_[ni]);
+                    rt.addBwdSoftmax(dp, p, dl);
                 } else if (t == "SoftmaxCE") {
                     // 阶段2：Softmax+CE。in0=logits, in1=label; out0=dlogits, out1=loss
                     int lg = tensorId(nIn0_[ni]);
@@ -2838,6 +2884,7 @@ class Graph {
         int bnCount_;            // G3：Conv+BN 融合数
         int noReuse_;            // 调试：1 = 内存规划不复用区域（MYP_NO_REUSE=1）
         int doNHWC_;             // G2：布局变换开关（setLayoutNHWC）
+        int lossMode_;           // 训练损失模式：0=SoftmaxCE，1=Dice（setLossMode）
 
         string[64] goName_;      // 图输出名（G1 融合安全）
         int goCount_;

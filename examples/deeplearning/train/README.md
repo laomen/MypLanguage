@@ -66,7 +66,7 @@ bh[NH+NOUT] double 小端  = [b1(64) | b2(10)]
 | 3 | conv/maxpool 反向（CPU）→ 小 CNN | ✅（13%→96%） |
 | 3d | `@gpu for` backward 内核（GPU）| ✅（泄漏修复 + 持久化 arena，GPU 13.4s / CPU 23.2s / 旧 GPU 120s） |
 | 4 | 3D backward（conv3d/maxpool3d/avgpool3d）+ Dice loss | ✅（CPU 内核 + 数值对拍 + 3D CNN 100% + Dice 对拍） |
-| 4d | bwdConvTranspose + 3D U-Net（Dice） | ⬜ |
+| 4d | bwdConvTranspose + 3D U-Net（Dice） | ✅（bwdConvTranspose CPU/GPU + Dice loss 图集成 + 3D 分割训练 100%） |
 | 4b | GPU 3D backward 内核 | ✅（bwdConv3D/bwdMaxPool3D/bwdAvgPool3D，`conv3d_grad_check_gpu.myp` 与 CPU maxDiff=0，3D CNN GPU 训练 100%） |
 
 ## 阶段4：3D 反向（CPU）+ Dice loss
