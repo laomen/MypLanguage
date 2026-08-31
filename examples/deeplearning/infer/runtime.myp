@@ -8,12 +8,14 @@ import "./ops.myp";
 import "./gpu_ops.myp";
 import "./pb.myp";   // F32（分发时把 BN eps 位型解析为 double）
 
-// 阶段4e POC：算子接口——每个 opKind 可注册一个实现 IOp 的算子对象，
-// run()/runGpu() 分发时优先走接口分派（opsCpu_/opsGpu_ 查表），未注册回退 if/else。
-// 算子对象通过 rt 的公共访问器读参数表/张量表，调用 InferOps/GpuInferOps 静态内核。
-// （MYP interface = fat-pointer vtable，见 docs/manual.md §Interface 与 examples/ad.myp）
+// 阶段4e POC：算子接口——每个算子类同时实现前向(forward)与后向(backward)两个方法，
+// run()/runGpu() 分发时按 opKind 查表：前向 opKind → forward()，反向 opKind → backward()，
+// 未注册回退 if/else。算子对象通过 rt 的公共访问器读参数表/张量表，调用
+// InferOps/GpuInferOps 静态内核。（MYP interface = fat-pointer vtable，
+// 见 docs/manual.md §Interface 与 examples/ad.myp 的 IOp{forward,backward} 算子模式）
 interface IOp {
-    void run(InferenceRuntime rt, int opIdx);
+    void forward(InferenceRuntime rt, int opIdx);    // 前向（推理/前向传播）
+    void backward(InferenceRuntime rt, int opIdx);   // 后向（训练梯度；实现内自检 trainMode）
 }
 
 class InferenceRuntime {
@@ -913,11 +915,23 @@ class InferenceRuntime {
         int tensorOff(int tid) { return tOff_[tid]; }   // 调试用
 
         // ---- 阶段4e POC：接口算子分派 ----
-        // opsCpu_[k]/opsGpu_[k] 存 opKind k 的算子对象；null = 未注册 → 回退 if/else。
-        void registerOp(int k, IOp op, int isGpu) {
+        // fwdCpu_/fwdGpu_：前向 opKind → 算子对象（调 forward）；bwdCpu_/bwdGpu_：反向
+        // opKind → 算子对象（调 backward）。null = 未注册 → 回退 if/else。
+        // 一个算子类同时实现 forward+backward（同一实例可注册到前向与反向两个槽）。
+        void registerFwd(int k, IOp op, int isGpu) {
             if (k < 0 || k >= 128) return;
-            if (isGpu == 1) opsGpu_[k] = op;
-            else opsCpu_[k] = op;
+            if (isGpu == 1) fwdGpu_[k] = op;
+            else fwdCpu_[k] = op;
+        }
+        void registerBwd(int k, IOp op, int isGpu) {
+            if (k < 0 || k >= 128) return;
+            if (isGpu == 1) bwdGpu_[k] = op;
+            else bwdCpu_[k] = op;
+        }
+        // 完整算子：同一个对象注册到前向 fwdKind 与反向 bwdKind 两个槽
+        void registerFwdBwd(int fwdKind, int bwdKind, IOp op, int isGpu) {
+            registerFwd(fwdKind, op, isGpu);
+            registerBwd(bwdKind, op, isGpu);
         }
         // 公共访问器（接口算子读参数/张量/上下文用）
         float[] arenaRef() { return arena; }
@@ -955,8 +969,10 @@ class InferenceRuntime {
                 long tOp0 = 0L;
                 if (prof == 1) tOp0 = __myp_now_ms();
                 int kk = opKind_[i];
-                if (kk >= 0 && kk < 128 && opsCpu_[kk] != null) {
-                    opsCpu_[kk].run(this, i);
+                if (kk >= 0 && kk < 128 && fwdCpu_[kk] != null) {
+                    fwdCpu_[kk].forward(this, i);
+                } else if (kk >= 0 && kk < 128 && bwdCpu_[kk] != null) {
+                    bwdCpu_[kk].backward(this, i);
                 } else if (opKind_[i] == 1) {
                     int xa = opA_[i];
                     int wb = opB_[i];
@@ -1530,8 +1546,10 @@ class InferenceRuntime {
                     __myp_io_fclose();
                 }
                 int kk = opKind_[i];
-                if (kk >= 0 && kk < 128 && opsGpu_[kk] != null) {
-                    opsGpu_[kk].run(this, i);
+                if (kk >= 0 && kk < 128 && fwdGpu_[kk] != null) {
+                    fwdGpu_[kk].forward(this, i);
+                } else if (kk >= 0 && kk < 128 && bwdGpu_[kk] != null) {
+                    bwdGpu_[kk].backward(this, i);
                 } else if (opKind_[i] == 1) {
                     int xa = opA_[i];
                     int wb = opB_[i];
@@ -2225,8 +2243,10 @@ class InferenceRuntime {
         int[512] opP8_;
         int[2048] opX_;       // 3D：额外参数 [id*4+k]（Conv3D dd/dh/dw/group，MaxPool3D pb/pl/pr）
         int[512] pCval_;      // F8：Pad constant_value（float 位型）
-        IOp[128] opsCpu_;     // 阶段4e POC：接口算子分派表（CPU）
-        IOp[128] opsGpu_;     // 阶段4e POC：接口算子分派表（GPU）
+        IOp[128] fwdCpu_;     // 阶段4e POC：接口算子分派表（CPU 前向）
+        IOp[128] bwdCpu_;     // 阶段4e POC：接口算子分派表（CPU 反向）
+        IOp[128] fwdGpu_;     // 阶段4e POC：接口算子分派表（GPU 前向）
+        IOp[128] bwdGpu_;     // 阶段4e POC：接口算子分派表（GPU 反向）
         long curDev_;         // 阶段4e POC：runGpu 当前设备指针（接口 GPU 算子取 dev）
         long[64] gpuOpMs_;    // GPU profiling：按 opKind 累计耗时（ms，MYP_PROF_GPU=1）
         int[64] gpuOpCnt_;    // GPU profiling：按 opKind 计数

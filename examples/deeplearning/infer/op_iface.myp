@@ -1,13 +1,16 @@
-// op_iface.myp — 阶段4e POC：算子拆开，用 interface 实现
+// op_iface.myp — 阶段4e POC：算子拆开，用 interface 实现（前向+后向双方法）
 //
 // 演示：把「巨型 if/else 分发」里的算子体搬进各自独立的类，实现统一接口
-//   interface IOp { void run(InferenceRuntime rt, int opIdx); }
-// runtime 分发时优先查 opsCpu_/opsGpu_ 分派表（fat-pointer vtable），未注册回退 if/else。
+//   interface IOp {
+//       void forward(InferenceRuntime rt, int opIdx);    // 前向
+//       void backward(InferenceRuntime rt, int opIdx);   // 后向（训练梯度）
+//   }
+// 一个算子类同时实现前向与后向（如 ad.myp 的 IOp{forward,backward} 算子模式）。
+// runtime 分发时按 opKind 查表：前向 opKind → forward()，反向 opKind → backward()。
+// 注册用 registerFwdBwd(fwdKind, bwdKind, op, isGpu) 把同一实例放进前向/反向两个槽。
 //
-// 本文件先迁移 relu(2)/bwdRelu(51) 四个算子（CPU+GPU）作概念验证：
-//   - CpuReluOp / CpuBwdReluOp → 调 InferOps 静态内核
-//   - GpuReluOp / GpuBwdReluOp → 调 GpuInferOps @gpu for 内核（dev 经 rt.devRef()）
-// 后续迁移其余 opKind 只需照此模式：每 opKind 一个类，run() 里写原 if/else 分支体。
+// 本文件先迁移 relu：CPU ReluOp + GPU GpuReluOp（opKind 2 前向 / 51 反向）。
+// 后续迁移其余算子照此模式：每算子一个类，forward()/backward() 里写原 if/else 分支体。
 //
 // 验证入口：train/op_iface_check.myp（同一小图 ± 接口注册，loss 逐位一致 + 收敛）。
 import env;
@@ -15,20 +18,18 @@ import "./runtime.myp";
 import "./ops.myp";
 import "./gpu_ops.myp";
 
-// ---- 逐元素激活（opKind 2 relu / 51 bwdRelu），CPU ----
-class CpuReluOp {
+// ---- relu（opKind 2 前向 / 51 反向），CPU ----
+class ReluOp {
     interface class IOp;
     action:
-        void run(InferenceRuntime rt, int i) {
+        // 前向：y = relu(x)
+        void forward(InferenceRuntime rt, int i) {
             int xa = rt.opAAt(i);
             int yb = rt.opBAt(i);
             InferOps.relu(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yb), rt.tensorRows(xa) * rt.tensorCols(xa));
         }
-}
-class CpuBwdReluOp {
-    interface class IOp;
-    action:
-        void run(InferenceRuntime rt, int i) {
+        // 后向：dX = dY · (x>0)；仅训练模式（trainMode_=1）执行
+        void backward(InferenceRuntime rt, int i) {
             if (rt.trainMode() == 1) {
                 int dy = rt.opAAt(i);
                 int x = rt.opBAt(i);
@@ -38,20 +39,16 @@ class CpuBwdReluOp {
         }
 }
 
-// ---- 逐元素激活（opKind 2 relu / 51 bwdRelu），GPU（@gpu for 内核）----
+// ---- relu（opKind 2 前向 / 51 反向），GPU（@gpu for 内核）----
 class GpuReluOp {
     interface class IOp;
     action:
-        void run(InferenceRuntime rt, int i) {
+        void forward(InferenceRuntime rt, int i) {
             int xa = rt.opAAt(i);
             int yb = rt.opBAt(i);
             GpuInferOps.relu(rt.arenaRef(), rt.tensorRows(xa) * rt.tensorCols(xa), rt.tensorOff(xa), rt.tensorOff(yb), rt.devRef());
         }
-}
-class GpuBwdReluOp {
-    interface class IOp;
-    action:
-        void run(InferenceRuntime rt, int i) {
+        void backward(InferenceRuntime rt, int i) {
             if (rt.trainMode() == 1) {
                 int dy = rt.opAAt(i);
                 int x = rt.opBAt(i);
@@ -61,10 +58,8 @@ class GpuBwdReluOp {
         }
 }
 
-// ---- 注册：把上面 4 个算子注册进 runtime 分派表 ----
+// ---- 注册：relu 前向(2) + 反向(51)，CPU 与 GPU 各一个算子对象（同一实例进两个槽）----
 void registerIfaceOps(InferenceRuntime rt) {
-    rt.registerOp(2, new CpuReluOp(), 0);
-    rt.registerOp(51, new CpuBwdReluOp(), 0);
-    rt.registerOp(2, new GpuReluOp(), 1);
-    rt.registerOp(51, new GpuBwdReluOp(), 1);
+    rt.registerFwdBwd(2, 51, new ReluOp(), 0);
+    rt.registerFwdBwd(2, 51, new GpuReluOp(), 1);
 }

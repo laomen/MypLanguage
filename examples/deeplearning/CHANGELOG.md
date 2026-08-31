@@ -15,26 +15,32 @@
 §Interface 明言「适合算子模式」，见 `examples/ad.myp`）。
 
 ### 接口分派机制（`infer/runtime.myp`）
-- 新增 `interface IOp { void run(InferenceRuntime rt, int opIdx); }` + 两张分派表
-  `IOp[128] opsCpu_ / opsGpu_`（property，接口数组元素支持）+
-  `registerOp(k, op, isGpu)` + 公共访问器（`arenaRef/devRef/trainMode/lrRef/
-  tensorRows..W/opAAt..opP8At/opXAt/opReluAt`）。
-- `run()`/`runGpu()` 循环开头：`kk=opKind_[i]`，`opsCpu_[kk]/opsGpu_[kk] != null`
-  则 `ops_[kk].run(this, i)`，否则 `else if` 回退原 if/else——**增量、零行为变化**。
+- 新增 `interface IOp { void forward(rt, i); void backward(rt, i); }`——**接口同时
+  声明前向与后向两个方法**（对齐 ad.myp 的算子模式；单 `run()` 会失去「同一算子
+  前向+反向」的语义，且无法在算子对象里保存前向中间量供反向复用）。
+- 四张分派表 `IOp[128] fwdCpu_/bwdCpu_/fwdGpu_/bwdGpu_`（property，接口数组元素
+  支持）+ `registerFwd(k,op,isGpu)` / `registerBwd(k,op,isGpu)` /
+  `registerFwdBwd(fwdKind, bwdKind, op, isGpu)`（同一实例进前向/反向两个槽）+ 公共
+  访问器（`arenaRef/devRef/trainMode/lrRef/tensorRows..W/opAAt..opP8At/opXAt/
+  opReluAt`）。
+- `run()`/`runGpu()` 循环开头：`kk=opKind_[i]`，前向表命中 → `forward()`，否则反向
+  表命中 → `backward()`，否则 `else if` 回退原 if/else——**增量、零行为变化**。
 - `curDev_` 字段：runGpu 每轮存当前设备指针，接口 GPU 算子经 `rt.devRef()` 取 dev
   （原 `dev` 是 runGpu 局部变量，接口方法拿不到，必须存字段）。
 
 ### 拆分实现（`infer/op_iface.myp`）
-- relu(2)/bwdRelu(51) 四个算子拆成独立类：`CpuReluOp/CpuBwdReluOp`（调
-  `InferOps`）+ `GpuReluOp/GpuBwdReluOp`（调 `GpuInferOps` `@gpu for` 内核）。
-  每个类 `interface class IOp;` + `void run(rt, i)` 里写原 if/else 分支体（经
-  rt 访问器读参数/张量）。`registerIfaceOps(rt)` 注册 4 个算子。
+- relu 合并为一个算子类，**forward(前向 y=relu(x)) + backward(后向 dX=dY·(x>0)) 双
+  方法**：`ReluOp`（CPU，调 `InferOps`）+ `GpuReluOp`（GPU，调 `GpuInferOps`
+  `@gpu for` 内核）。backward 实现内自检 `rt.trainMode()==1`（与 if/else 分支一致）。
+  `registerIfaceOps(rt)` 用 `registerFwdBwd(2, 51, op, isGpu)` 把同一实例注册到
+  relu 前向槽(2)与反向槽(51)。
 - **验证** `train/op_iface_check.myp`：同一 2 层小图（dense→relu→dense→
   softmaxCE+反向+update）两份 runtime——A 不注册（if/else）、B 注册接口；每步 loss
   + 最终 w1/w2/b1/b2 **逐位 diff=0**（CPU 与 GPU 均 `OP IFACE CHECK OK`），且
   loss 正常下降（0.82→0.58）证明训练闭环仍工作。
-- **迁移模式**：其余 ~63 个 opKind 照此搬——每 opKind 一个类，run() 里复制原分支
-  体；搬完可整体删 if/else。GPU 内核在接口方法内经 vtable 分派验证可行。
+- **迁移模式**：其余算子照此搬——每算子一个类，forward()/backward() 里分别写原
+  if/else 前向/反向分支体（只有单向的算子用 registerFwd/registerBwd 单独注册）；
+  搬完可整体删 if/else。GPU 内核在接口方法内经 vtable 分派验证可行。
 - 回归：3d_seg/convt/3d_unet 训练 + resize3d/dice_softmax/3d_unet 梯度对拍全 OK
   （接口表默认全 null → 未注册路径与改动前完全一致）。
 
