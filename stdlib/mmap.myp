@@ -1,0 +1,48 @@
+// mmap.myp — 内存映射文件（只读，零拷贝）
+// 纯 raw syscall：open(2) / lseek(8) / mmap(9) / munmap(11) / close(3)。
+// 用途：大文件（权重/模型）整文件映射进地址空间，按偏移 O(1) 零拷贝读，
+//       免 fopen/fread 的缓冲拷贝与逐字节函数调用。
+//
+// 依赖编译器内建：__myp_syscall（open/lseek/mmap/munmap/close）、
+// __myp_str_ptr（string → char*）、__myp_mem_load_*（读映射内存，自举独有）。
+import env;
+
+class MmapFile {
+    action:
+        @constructor MmapFile() { base_ = 0; size_ = 0; }
+
+        // 打开并只读映射整个文件。返回 1=成功（失败 base()==0）。
+        int open(string path) {
+            long pa = __myp_str_ptr(path);
+            long fd = __myp_syscall(2, pa, 0, 0, 0, 0, 0);          // open(path, O_RDONLY)
+            if (fd < 0) return 0;
+            long sz = __myp_syscall(8, fd, 0, 2, 0, 0, 0);          // lseek(fd,0,SEEK_END)=文件大小
+            if (sz <= 0) { __myp_syscall(3, fd, 0, 0, 0, 0, 0); return 0; }
+            long b = __myp_syscall(9, 0, sz, 1, 2, fd, 0);          // mmap(0,sz,PROT_READ,MAP_PRIVATE,fd,0)
+            __myp_syscall(3, fd, 0, 0, 0, 0, 0);                    // close fd（MAP_PRIVATE 映射仍有效）
+            if (b < 0) return 0;
+            base_ = b;
+            size_ = sz;
+            return 1;
+        }
+
+        // 解除映射
+        void close() {
+            if (base_ > 0 && size_ > 0) { __myp_syscall(11, base_, size_, 0, 0, 0, 0); }
+            base_ = 0;
+            size_ = 0;
+        }
+
+        long size() { return size_; }
+        long base() { return base_; }
+
+        // ---- O(1) 零拷贝读（越界返回 0）----
+        int u8(long off) { if (off < 0 || off >= size_) return 0; return __myp_mem_load_i8(base_ + off) & 255; }
+        int i32(long off) { if (off < 0 || off + 4 > size_) return 0; return __myp_mem_load_i32(base_ + off); }
+        long i64(long off) { if (off < 0 || off + 8 > size_) return 0; return __myp_mem_load_i64(base_ + off); }
+        double f64(long off) { if (off < 0 || off + 8 > size_) return 0.0; return __myp_mem_load_double(base_ + off); }
+
+    property:
+        long base_;
+        long size_;
+}

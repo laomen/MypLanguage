@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-08-31 — stdlib/mmap.myp + safetensors mmap 零拷贝读（加载 6.3s→2.7s）
+
+### 新增 `stdlib/mmap.myp`：内存映射文件（只读，零拷贝）
+- 纯 raw syscall：open(2) / lseek(8, SEEK_END 取大小) / mmap(9, PROT_READ|MAP_PRIVATE)
+  / munmap(11) / close(3)。mmap 后即 close fd（MAP_PRIVATE 映射保持有效）。
+- `u8/i32/i64/f64(off)`：文件相对偏移 O(1) 零拷贝读（`__myp_mem_load_*`，自举独有
+  内建；`u8` 因 `byte` 是 MYP 类型关键字而改名）。
+
+### safetensors 接入 mmap（`infer/safetensors.myp`）
+- `load()` 里 `mm_.open(path)` 整文件 mmap；`readF32RangeAt` 走 mmap 快路径（免
+  fopen/fseek/fread），mmap 不可用时回退原 fread 逐字节。
+- **坑**：① `mm_` 是 class 属性默认 null，构造器须 `mm_ = new MmapFile()`，否则
+  null 解引用段错误；② `MmapFile.u8(off)` 的 off 是**文件相对偏移**（内部检查
+  `off >= size_`），首版传了 `mm_.base() + off`（绝对地址）→ 越界恒返 0。
+- **验证**：safetensors_test 整张量 bit-exact（maxAbsDiff=0）；qwen2 直连前向
+  权重加载 **6.3s→2.7s（2.3x）**，argmax=785 == transformers。
+
+---
+
 ## 2026-08-28 — safetensors 直连 Qwen2 推理（免 extract_qwen2.py）
 
 ### `llm/qwen2_safetensors_forward.myp`：模型直接从 model.safetensors 跑起来
