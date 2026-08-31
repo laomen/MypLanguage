@@ -9,10 +9,9 @@
 // runtime 分发时按 opKind 查表：前向 opKind → forward()，反向 opKind → backward()。
 // 注册用 registerFwdBwd(fwdKind, bwdKind, op, isGpu) 把同一实例放进前向/反向两个槽。
 //
-// 本文件先迁移 relu：CPU ReluOp + GPU GpuReluOp（opKind 2 前向 / 51 反向）。
-// 后续迁移其余算子照此模式：每算子一个类，forward()/backward() 里写原 if/else 分支体。
-//
-// 验证入口：train/op_iface_check.myp（同一小图 ± 接口注册，loss 逐位一致 + 收敛）。
+// 本文件迁移 relu：CPU ReluOp + GPU GpuReluOp（opKind 2 前向 / 51 反向）+
+// registerIfaceOps(rt)。其余算子见 ops_iface_all.myp（阶段4e3 全量迁移）。
+// 阶段4e4 起 run()/runGpu() 已删 if/else、只留接口分派（首调自动 registerAllIfaceOps）。
 import env;
 import "./runtime.myp";
 import "./ops.myp";

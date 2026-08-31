@@ -6,8 +6,8 @@
 // registerAllIfaceOps(rt) 全量注册：前向 opKind → forward()，反向 opKind → backward()。
 // backward 实现内自检 rt.trainMode()==1（与原 if/else 守卫一致）。
 //
-// 未注册槽回退原 if/else（增量零行为变化）。验证：train/op_iface_check.myp +
-// 全量训练/对拍回归（MYP_IFACE=1 时入口调 registerAllIfaceOps 走全接口路径）。
+// 阶段4e4：run()/runGpu() 已删除 if/else，只保留接口分派——runtime.myp 循环导入
+// 本文件并在首调自动 registerAllIfaceOps(this)（ifaceInit_ 标记），全入口零改动。
 import env;
 import "./runtime.myp";
 import "./ops.myp";

@@ -6,6 +6,32 @@
 
 ---
 
+## 2026-09-01 — 阶段4e4：run()/runGpu() 删除 if/else，只保留全接口分派
+
+### 变更（`infer/runtime.myp` + `ops_iface_all.myp`）
+- `run()`/`runGpu()` 的 **127 个 if/else 分支全部删除**，只保留接口分派：
+  `fwdCpu_/bwdCpu_`（CPU）与 `fwdGpu_/bwdGpu_`（GPU）查表 → `forward/backward`
+  虚表调用。opKind 全覆盖（1-45/50-60/61-71，relu 2/51 经 registerIfaceOps）。
+- **首调自动注册**：`run()/runGpu()` 开头 `if (ifaceInit_ == 0) { ifaceInit_ = 1;
+  registerAllIfaceOps(this); }`——runtime.myp **循环导入** ops_iface_all.myp
+  （`import "./ops_iface_all.myp"`；MYP LoadedSet 去重安全处理循环），全入口
+  零改动，无需逐文件显式注册。
+- 删除已过时的对拍测试 `train/op_iface_check.myp`/`op_iface_full_check.myp`
+  （原为接口 vs if/else 逐位对拍，if/else 已不存在 → 失去意义；正确性由训练/
+  推理回归 + 前期 bit-exact 对拍保证）。
+- 依赖自举编译器 v3.15.199 的接口数组类型修复（`[128 x {ptr,ptr}]`，slot≥64 不再
+  别名）。runtime.myp 末尾保留 `registerFwd/Bwd/FwdBwd` 公共 API（仍可用，但
+  run() 会自动全量注册）。
+
+### 验证
+- 推理：`run_onnx`（cnn_mnist top-3）CPU/GPU 正常；bn_main/onnx_main/conv3d_main
+  推理测试 OK（onnx_main MLP 99%）。
+- 训练（全接口路径）：3d_unet_train / 3d_seg_train **CPU/GPU 均 `TRAIN OK`**
+  （acc 100%、dice→0）。
+- deeplearning 全量入口编译检查通过（无真错误，库文件 no-main 正常）。
+
+---
+
 ## 2026-09-01 — 算子全量接口化迁移（阶段4e3，含自举编译器接口数组 bug 修复）
 
 ### 全量迁移已写（`infer/ops_iface_all.myp`）
