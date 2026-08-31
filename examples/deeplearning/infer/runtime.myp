@@ -8,6 +8,14 @@ import "./ops.myp";
 import "./gpu_ops.myp";
 import "./pb.myp";   // F32（分发时把 BN eps 位型解析为 double）
 
+// 阶段4e POC：算子接口——每个 opKind 可注册一个实现 IOp 的算子对象，
+// run()/runGpu() 分发时优先走接口分派（opsCpu_/opsGpu_ 查表），未注册回退 if/else。
+// 算子对象通过 rt 的公共访问器读参数表/张量表，调用 InferOps/GpuInferOps 静态内核。
+// （MYP interface = fat-pointer vtable，见 docs/manual.md §Interface 与 examples/ad.myp）
+interface IOp {
+    void run(InferenceRuntime rt, int opIdx);
+}
+
 class InferenceRuntime {
     action:
         void init(int arenaCapacity) {
@@ -904,6 +912,41 @@ class InferenceRuntime {
         int opCount() { return opCount_; }
         int tensorOff(int tid) { return tOff_[tid]; }   // 调试用
 
+        // ---- 阶段4e POC：接口算子分派 ----
+        // opsCpu_[k]/opsGpu_[k] 存 opKind k 的算子对象；null = 未注册 → 回退 if/else。
+        void registerOp(int k, IOp op, int isGpu) {
+            if (k < 0 || k >= 128) return;
+            if (isGpu == 1) opsGpu_[k] = op;
+            else opsCpu_[k] = op;
+        }
+        // 公共访问器（接口算子读参数/张量/上下文用）
+        float[] arenaRef() { return arena; }
+        long devRef() { return curDev_; }
+        int trainMode() { return trainMode_; }
+        double lrRef() { return lr_; }
+        int tensorRows(int tid) { return tRows_[tid]; }
+        int tensorCols(int tid) { return tCols_[tid]; }
+        int tensorN(int tid) { return tN_[tid]; }
+        int tensorC(int tid) { return tC_[tid]; }
+        int tensorD(int tid) { return tD_[tid]; }
+        int tensorH(int tid) { return tH_[tid]; }
+        int tensorW(int tid) { return tW_[tid]; }
+        int opAAt(int i) { return opA_[i]; }
+        int opBAt(int i) { return opB_[i]; }
+        int opCAt(int i) { return opC_[i]; }
+        int opDAt(int i) { return opD_[i]; }
+        int opP0At(int i) { return opP0_[i]; }
+        int opP1At(int i) { return opP1_[i]; }
+        int opP2At(int i) { return opP2_[i]; }
+        int opP3At(int i) { return opP3_[i]; }
+        int opP4At(int i) { return opP4_[i]; }
+        int opP5At(int i) { return opP5_[i]; }
+        int opP6At(int i) { return opP6_[i]; }
+        int opP7At(int i) { return opP7_[i]; }
+        int opP8At(int i) { return opP8_[i]; }
+        int opXAt(int i, int j) { return opX_[i * 4 + j]; }
+        int opReluAt(int i) { return opRelu_[i]; }
+
         void run() {
             int prof = 0;
             if (Console.getEnv("MYP_PROF_CPU") == "1") prof = 1;
@@ -911,7 +954,10 @@ class InferenceRuntime {
             while (i < opCount_) {
                 long tOp0 = 0L;
                 if (prof == 1) tOp0 = __myp_now_ms();
-                if (opKind_[i] == 1) {
+                int kk = opKind_[i];
+                if (kk >= 0 && kk < 128 && opsCpu_[kk] != null) {
+                    opsCpu_[kk].run(this, i);
+                } else if (opKind_[i] == 1) {
                     int xa = opA_[i];
                     int wb = opB_[i];
                     int bc = opC_[i];
@@ -1474,6 +1520,7 @@ class InferenceRuntime {
             }
             long tH2D1 = __myp_now_ms();
             long tLoop0 = __myp_now_ms();
+            curDev_ = dev;
             int i = 0;
             while (i < opCount_) {
                 long tOp0 = __myp_now_ms();
@@ -1482,7 +1529,10 @@ class InferenceRuntime {
                     __myp_io_write("op " + Fmt.i(i) + " kind=" + Fmt.i(opKind_[i]) + " xa=" + Fmt.i(opA_[i]) + " xb=" + Fmt.i(opB_[i]) + " xc=" + Fmt.i(opC_[i]) + " xd=" + Fmt.i(opD_[i]) + " szY=" + Fmt.i(tensorSize(opB_[i])) + " P0=" + Fmt.i(opP0_[i]) + " P1=" + Fmt.i(opP1_[i]) + " P2=" + Fmt.i(opP2_[i]) + " P3=" + Fmt.i(opP3_[i]) + " P4=" + Fmt.i(opP4_[i]) + " P5=" + Fmt.i(opP5_[i]) + "\n");
                     __myp_io_fclose();
                 }
-                if (opKind_[i] == 1) {
+                int kk = opKind_[i];
+                if (kk >= 0 && kk < 128 && opsGpu_[kk] != null) {
+                    opsGpu_[kk].run(this, i);
+                } else if (opKind_[i] == 1) {
                     int xa = opA_[i];
                     int wb = opB_[i];
                     int bc = opC_[i];
@@ -2175,6 +2225,9 @@ class InferenceRuntime {
         int[512] opP8_;
         int[2048] opX_;       // 3D：额外参数 [id*4+k]（Conv3D dd/dh/dw/group，MaxPool3D pb/pl/pr）
         int[512] pCval_;      // F8：Pad constant_value（float 位型）
+        IOp[128] opsCpu_;     // 阶段4e POC：接口算子分派表（CPU）
+        IOp[128] opsGpu_;     // 阶段4e POC：接口算子分派表（GPU）
+        long curDev_;         // 阶段4e POC：runGpu 当前设备指针（接口 GPU 算子取 dev）
         long[64] gpuOpMs_;    // GPU profiling：按 opKind 累计耗时（ms，MYP_PROF_GPU=1）
         int[64] gpuOpCnt_;    // GPU profiling：按 opKind 计数
         long[64] cpuOpMs_;    // CPU profiling：按 opKind 累计耗时（ms，MYP_PROF_CPU=1）

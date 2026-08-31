@@ -6,6 +6,40 @@
 
 ---
 
+## 2026-09-01 — 算子拆分 POC：interface 多态分派（阶段4e）
+
+### 背景
+`InferOps`（67 个 CPU static 内核）+ `GpuInferOps`（66 个 GPU 内核）由
+`InferenceRuntime.run()/runGpu()` 的 **127 个 if/else 分支**按 opKind 分发。用户
+提议把算子拆开、用 MYP interface 实现（MYP interface = fat-pointer vtable，手册
+§Interface 明言「适合算子模式」，见 `examples/ad.myp`）。
+
+### 接口分派机制（`infer/runtime.myp`）
+- 新增 `interface IOp { void run(InferenceRuntime rt, int opIdx); }` + 两张分派表
+  `IOp[128] opsCpu_ / opsGpu_`（property，接口数组元素支持）+
+  `registerOp(k, op, isGpu)` + 公共访问器（`arenaRef/devRef/trainMode/lrRef/
+  tensorRows..W/opAAt..opP8At/opXAt/opReluAt`）。
+- `run()`/`runGpu()` 循环开头：`kk=opKind_[i]`，`opsCpu_[kk]/opsGpu_[kk] != null`
+  则 `ops_[kk].run(this, i)`，否则 `else if` 回退原 if/else——**增量、零行为变化**。
+- `curDev_` 字段：runGpu 每轮存当前设备指针，接口 GPU 算子经 `rt.devRef()` 取 dev
+  （原 `dev` 是 runGpu 局部变量，接口方法拿不到，必须存字段）。
+
+### 拆分实现（`infer/op_iface.myp`）
+- relu(2)/bwdRelu(51) 四个算子拆成独立类：`CpuReluOp/CpuBwdReluOp`（调
+  `InferOps`）+ `GpuReluOp/GpuBwdReluOp`（调 `GpuInferOps` `@gpu for` 内核）。
+  每个类 `interface class IOp;` + `void run(rt, i)` 里写原 if/else 分支体（经
+  rt 访问器读参数/张量）。`registerIfaceOps(rt)` 注册 4 个算子。
+- **验证** `train/op_iface_check.myp`：同一 2 层小图（dense→relu→dense→
+  softmaxCE+反向+update）两份 runtime——A 不注册（if/else）、B 注册接口；每步 loss
+  + 最终 w1/w2/b1/b2 **逐位 diff=0**（CPU 与 GPU 均 `OP IFACE CHECK OK`），且
+  loss 正常下降（0.82→0.58）证明训练闭环仍工作。
+- **迁移模式**：其余 ~63 个 opKind 照此搬——每 opKind 一个类，run() 里复制原分支
+  体；搬完可整体删 if/else。GPU 内核在接口方法内经 vtable 分派验证可行。
+- 回归：3d_seg/convt/3d_unet 训练 + resize3d/dice_softmax/3d_unet 梯度对拍全 OK
+  （接口表默认全 null → 未注册路径与改动前完全一致）。
+
+---
+
 ## 2026-09-01 — 3D U-Net 编码-解码：bwdResize3d + Resize 反向图集成 + 编解码训练
 
 ### bwdResize3d（`infer/ops.myp` + `gpu_ops.myp`，opKind 71）

@@ -1,0 +1,170 @@
+// op_iface_check.myp — 阶段4e POC：接口算子分派 vs 内置 if/else 分派 逐位对拍
+//
+// 同一 2 层小网络（dense→relu→dense→softmaxCE + 反向 + update）跑两份 runtime：
+//   A：不注册接口算子（走 run()/runGpu() 的 if/else 分支）
+//   B：registerIfaceOps() 注册 relu(2)/bwdRelu(51) 的接口实现（走 fat-pointer vtable）
+// 每步 loss 与最终权重应逐位一致（接口实现调用的 InferOps/GpuInferOps 内核与 if/else 完全相同）。
+//
+// 运行（须在 examples/ 下）：
+//   ./build/mypc examples/deeplearning/train/op_iface_check.myp -o /tmp/iface_ck --stdlib stdlib
+//   cd examples && /tmp/iface_ck          # CPU：A vs B 逐位
+//   MYP_GPU=1 /tmp/iface_ck               # + GPU：A vs B 逐位
+import env;
+import fmt;
+import cuda;
+import "../infer/runtime.myp";
+import "../infer/op_iface.myp";
+
+class OpIfaceCheck {
+    action:
+        @constructor OpIfaceCheck() {
+            int fails = 0;
+            // A：不注册接口；B：注册接口算子
+            InferenceRuntime A = new InferenceRuntime();
+            A.init(200000);
+            InferenceRuntime B = new InferenceRuntime();
+            B.init(200000);
+            registerIfaceOps(B);
+
+            // 构建图（返回 lossTid；权重以确定性推进式种子填充，A/B 重置种子 → 同权重）
+            seed_ = 7.0;
+            int aLoss = build(A, 0);
+            seed_ = 7.0;
+            int bLoss = build(B, 0);
+
+            // 训练 12 步，逐位对比 loss
+            int s = 0;
+            while (s < 12) {
+                seed_ = 3.0;
+                setData(A, 0);
+                seed_ = 3.0;
+                setData(B, 0);
+                A.setLr(0.05);
+                B.setLr(0.05);
+                A.setTrain(1);
+                B.setTrain(1);
+                step(A);
+                step(B);
+                double la = A.getFlat(aLoss, 0);
+                double lb = B.getFlat(bLoss, 0);
+                double d = la - lb;
+                if (d < 0.0) d = 0.0 - d;
+                if (d > 1.0e-9) fails = fails + 1;
+                if (s < 3 || s >= 11) {
+                    Console.writeString("step " + Fmt.i(s) + " A=" + Fmt.f(la, 6) + " B=" + Fmt.f(lb, 6) + " diff=" + Fmt.f(d, 9));
+                    Console.writeLine("");
+                }
+                s = s + 1;
+            }
+            // 最终权重对比
+            fails = fails + cmpTensor(A, B, "w1");
+            fails = fails + cmpTensor(A, B, "w2");
+            fails = fails + cmpTensor(A, B, "b1");
+            fails = fails + cmpTensor(A, B, "b2");
+
+            if (fails == 0) Console.writeLine("OP IFACE CHECK OK");
+            else Console.writeLine("OP IFACE CHECK FAIL (" + Fmt.i(fails) + ")");
+        }
+
+        void step(InferenceRuntime rt) {
+            if (Console.getEnv("MYP_GPU") == "1") rt.runGpu();
+            else rt.run();
+        }
+
+        // 构建 2 层小网络并返回 lossTid；w/输入用确定性种子
+        int build(InferenceRuntime rt, int tag) {
+            int x = rt.addTensor(2, 4);    // 输入 [inDim=2, batch=4]
+            int w1 = rt.addTensor(3, 2);   // dense1 权重 [3,2]
+            int b1 = rt.addTensor(3, 1);
+            int h1 = rt.addTensor(3, 4);   // dense1 输出
+            int r1 = rt.addTensor(3, 4);   // relu 输出
+            int w2 = rt.addTensor(2, 3);   // dense2 权重 [2,3]
+            int b2 = rt.addTensor(2, 1);
+            int h2 = rt.addTensor(2, 4);   // dense2 输出
+            int lb = rt.addTensor(2, 4);   // label one-hot
+            int dl = rt.addTensor(2, 4);   // dlogits
+            int lo = rt.addTensor(1, 1);   // loss
+            int dx2 = rt.addTensor(3, 4);  // dense2 输入梯度
+            int dw2 = rt.addTensor(2, 3);
+            int db2 = rt.addTensor(2, 1);
+            int dxh = rt.addTensor(3, 4);  // relu 输入梯度
+            int dx = rt.addTensor(2, 4);   // dense1 输入梯度
+            int dw1 = rt.addTensor(3, 2);
+            int db1 = rt.addTensor(3, 1);
+
+            // 权重确定性初始化（seed_ 推进；A/B 各自 reset 到同起点）
+            int j = 0;
+            while (j < 6) { rt.setFlat(w1, j, double(rnd())); j = j + 1; }
+            j = 0; while (j < 3) { rt.setFlat(b1, j, double(rnd())); j = j + 1; }
+            j = 0; while (j < 6) { rt.setFlat(w2, j, double(rnd())); j = j + 1; }
+            j = 0; while (j < 2) { rt.setFlat(b2, j, double(rnd())); j = j + 1; }
+
+            rt.addDense(x, w1, b1, h1);       // kind 1
+            rt.addRelu(h1, r1);               // kind 2 ← 接口
+            rt.addDense(r1, w2, b2, h2);      // kind 1
+            rt.addSoftmaxCE(h2, lb, dl, lo);  // kind 54
+            rt.addBwdDense(dl, r1, w2, dx2, dw2, db2);  // kind 50
+            rt.addBwdRelu(dx2, h1, dxh);      // kind 51 ← 接口
+            rt.addBwdDense(dxh, x, w1, dx, dw1, db1);   // kind 50
+            rt.addUpdate(w2, dw2);
+            rt.addUpdate(b2, db2);
+            rt.addUpdate(w1, dw1);
+            rt.addUpdate(b1, db1);
+            return lo;
+        }
+
+        // 灌输入 x 与 one-hot label（seed_ 推进；A/B 各自 reset 到同起点）
+        // tid：0=x [2,4]；8=label [2,4]（build 顺序固定）
+        void setData(InferenceRuntime rt, int tag) {
+            int n = rt.tensorSize(0);
+            int j = 0;
+            while (j < n) {
+                double v = double(rnd()) * 2.0 - 1.0;
+                rt.setFlat(0, j, v);
+                j = j + 1;
+            }
+            // label one-hot：样本 jj → 类 jj%2
+            int jj = 0;
+            while (jj < 4) {
+                int cls = jj % 2;
+                rt.setFlat(8, cls * 4 + jj, 1.0);
+                rt.setFlat(8, (1 - cls) * 4 + jj, 0.0);
+                jj = jj + 1;
+            }
+        }
+
+        int cmpTensor(InferenceRuntime A, InferenceRuntime B, string name) {
+            // tid 映射：w1=1, b1=2, w2=5, b2=6（build 顺序固定）
+            int tid = 1;
+            if (name == "w1") tid = 1;
+            else if (name == "b1") tid = 2;
+            else if (name == "w2") tid = 5;
+            else if (name == "b2") tid = 6;
+            int n = A.tensorSize(tid);
+            double mx = 0.0;
+            int j = 0;
+            while (j < n) {
+                double d = A.getFlat(tid, j) - B.getFlat(tid, j);
+                if (d < 0.0) d = 0.0 - d;
+                if (d > mx) mx = d;
+                j = j + 1;
+            }
+            Console.writeString(name + " maxDiff=" + Fmt.f(mx, 9));
+            Console.writeLine("");
+            if (mx > 1.0e-6) return 1;
+            return 0;
+        }
+
+        double rnd() {
+            seed_ = (seed_ * 1103515245.0 + 12345.0) % 2147483648.0;
+            return float(int(seed_) % 1000000) / 1000000.0;
+        }
+
+    property:
+        double seed_;
+}
+
+int main() {
+    OpIfaceCheck t = new OpIfaceCheck();
+    return 0;
+}

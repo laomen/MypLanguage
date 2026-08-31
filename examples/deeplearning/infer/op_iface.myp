@@ -1,0 +1,70 @@
+// op_iface.myp — 阶段4e POC：算子拆开，用 interface 实现
+//
+// 演示：把「巨型 if/else 分发」里的算子体搬进各自独立的类，实现统一接口
+//   interface IOp { void run(InferenceRuntime rt, int opIdx); }
+// runtime 分发时优先查 opsCpu_/opsGpu_ 分派表（fat-pointer vtable），未注册回退 if/else。
+//
+// 本文件先迁移 relu(2)/bwdRelu(51) 四个算子（CPU+GPU）作概念验证：
+//   - CpuReluOp / CpuBwdReluOp → 调 InferOps 静态内核
+//   - GpuReluOp / GpuBwdReluOp → 调 GpuInferOps @gpu for 内核（dev 经 rt.devRef()）
+// 后续迁移其余 opKind 只需照此模式：每 opKind 一个类，run() 里写原 if/else 分支体。
+//
+// 验证入口：train/op_iface_check.myp（同一小图 ± 接口注册，loss 逐位一致 + 收敛）。
+import env;
+import "./runtime.myp";
+import "./ops.myp";
+import "./gpu_ops.myp";
+
+// ---- 逐元素激活（opKind 2 relu / 51 bwdRelu），CPU ----
+class CpuReluOp {
+    interface class IOp;
+    action:
+        void run(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            InferOps.relu(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yb), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+}
+class CpuBwdReluOp {
+    interface class IOp;
+    action:
+        void run(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int x = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                InferOps.bwdRelu(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx), rt.tensorRows(x) * rt.tensorCols(x));
+            }
+        }
+}
+
+// ---- 逐元素激活（opKind 2 relu / 51 bwdRelu），GPU（@gpu for 内核）----
+class GpuReluOp {
+    interface class IOp;
+    action:
+        void run(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            GpuInferOps.relu(rt.arenaRef(), rt.tensorRows(xa) * rt.tensorCols(xa), rt.tensorOff(xa), rt.tensorOff(yb), rt.devRef());
+        }
+}
+class GpuBwdReluOp {
+    interface class IOp;
+    action:
+        void run(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int x = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                GpuInferOps.bwdRelu(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx), rt.tensorRows(x) * rt.tensorCols(x));
+            }
+        }
+}
+
+// ---- 注册：把上面 4 个算子注册进 runtime 分派表 ----
+void registerIfaceOps(InferenceRuntime rt) {
+    rt.registerOp(2, new CpuReluOp(), 0);
+    rt.registerOp(51, new CpuBwdReluOp(), 0);
+    rt.registerOp(2, new GpuReluOp(), 1);
+    rt.registerOp(51, new GpuBwdReluOp(), 1);
+}
