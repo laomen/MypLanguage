@@ -501,6 +501,21 @@ class Graph {
                             nKH_[bd] = nKH_[ni]; nKW_[bd] = nKW_[ni];
                             nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
                             nPT_[bd] = nPT_[ni]; nPL_[bd] = nPL_[ni];
+                        } else if (t == "ConvTranspose") {
+                            // 阶段4d：BwdConvTranspose(dy, x, w) → (dx, dw, db)；复制转置卷积参数
+                            int bd = nCount_;
+                            beginNode();
+                            nodeType(bd, "BwdConvTranspose");
+                            nodeIn(bd, 0, gradName(y));
+                            nodeIn(bd, 1, nIn0_[ni]);
+                            nodeIn(bd, 2, nIn1_[ni]);
+                            nodeOut(bd, gradName(nIn0_[ni]));
+                            nodeOut(bd, gradName(nIn1_[ni]));
+                            nodeOut(bd, gradName(nIn2_[ni]));   // 无偏置 → "" → runtime db=-1
+                            endNode();
+                            nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
+                            nPT_[bd] = nPT_[ni]; nPB_[bd] = nPB_[ni];
+                            nPL_[bd] = nPL_[ni]; nPR_[bd] = nPR_[ni];
                         } else if (t == "Conv3D") {
                             // 阶段4：BwdConv3D(dy, x, w) → (dx, dw, db)；复制 3D 卷积参数
                             // （kd/kh/kw 与 group 由 w 张量形状给出；dd/dh/dw 假定 1）
@@ -2195,6 +2210,17 @@ class Graph {
                                        nSD3_[ni], nSH_[ni], nSW_[ni],
                                        nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni],
                                        nPL_[ni], nPR_[ni], nCip_[ni]);
+                } else if (t == "BwdConvTranspose") {
+                    // 阶段4d：ConvTranspose 反向。dy=in0, x=in1, w=in2; out0=dx, out1=dw, out2=db
+                    int dy = tensorId(nIn0_[ni]);
+                    int x = tensorId(nIn1_[ni]);
+                    int w = tensorId(nIn2_[ni]);
+                    int dx = tensorId(nOut0_[ni]);
+                    int dw = tensorId(nOut1_[ni]);
+                    int db = -1;
+                    if (nOut2_[ni] != "") db = tensorId(nOut2_[ni]);
+                    rt.addBwdConvTranspose(dy, x, w, dx, dw, db,
+                                           nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
                 } else if (t == "SoftmaxCE") {
                     // 阶段2：Softmax+CE。in0=logits, in1=label; out0=dlogits, out1=loss
                     int lg = tensorId(nIn0_[ni]);

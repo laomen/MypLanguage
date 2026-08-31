@@ -1,0 +1,183 @@
+// convtranspose_grad_check.myp — 阶段4d：bwdConvTranspose 数值对拍
+// （有限差分 dW/dX + db 直接对拍；GPU 与 CPU 逐元素对拍）
+//
+// 运行（须在 examples/ 下）：
+//   ./build/mypc examples/deeplearning/train/convtranspose_grad_check.myp -o /tmp/convt_gc --stdlib stdlib
+//   cd examples && /tmp/convt_gc            # CPU 对拍
+//   MYP_GPU=1 /tmp/convt_gc                 # + GPU vs CPU 对拍
+
+import env;
+import math;
+import fmt;
+import cuda;
+import gpu;
+import "../infer/ops.myp";
+import "../infer/gpu_ops.myp";
+
+class ConvTransposeGradCheck {
+    action:
+        @constructor ConvTransposeGradCheck() {
+            int fails = 0;
+            seed_ = 424242.0;
+            // x[1,2,4,4]=32, W[2,3,2,2]=24, b[3], y[1,3,8,8]=192
+            int xOff = 0; int wOff = 32; int bOff = 56; int yOff = 59;
+            int dyOff = 251; int dxOff = 443; int dwOff = 475; int dbOff = 499;
+            int xN = 1; int xC = 2; int xH = 4; int xW = 4;
+            int yC = 3; int yH = 8; int yW = 8;
+            int kh = 2; int kw = 2; int sh = 2; int sw = 2;
+            int pt = 1; int pb = 0; int pl = 1; int pr = 0;   // 非对称 padding
+            int CAP = 540;
+            float[] host = new float[CAP];
+            int i = 0;
+            while (i < 32) { host[xOff + i] = float(rnd() * 0.8); i = i + 1; }
+            i = 0; while (i < 24) { host[wOff + i] = float((rnd() * 2.0 - 1.0) * 0.6); i = i + 1; }
+            i = 0; while (i < 3) { host[bOff + i] = float((rnd() * 2.0 - 1.0) * 0.1); i = i + 1; }
+
+            // 前向
+            InferOps.convTranspose(host, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW,
+                                   kh, kw, sh, sw, pt, pb, pl, pr);
+            i = 0; while (i < xN * yC * yH * yW) { host[dyOff + i] = 1.0f; i = i + 1; }
+
+            // CPU 反向
+            float[] cpu = new float[CAP];
+            i = 0; while (i < CAP) { cpu[i] = host[i]; i = i + 1; }
+            InferOps.bwdConvTranspose(cpu, dyOff, xOff, xN, xC, xH, xW, wOff,
+                                      dxOff, dwOff, dbOff, yC, yH, yW,
+                                      kh, kw, sh, sw, pt, pb, pl, pr);
+
+            // 有限差分 dW
+            double eps = 1.0e-3;
+            int[] wi = new int[4]; wi[0] = 0; wi[1] = 1; wi[2] = 12; wi[3] = 23;
+            i = 0;
+            while (i < 4) {
+                int j = wi[i];
+                double a = cpu[dwOff + j];
+                double num = fdW(host, xOff, wOff, bOff, yOff, xN, xC, xH, xW, yC, yH, yW,
+                                 kh, kw, sh, sw, pt, pb, pl, pr, j, eps);
+                Console.writeString("dw[" + Fmt.i(j) + "] analytic=" + Fmt.f(a, 5) + " numeric=" + Fmt.f(num, 5));
+                Console.writeLine("");
+                if (Math.abs(a - num) > 1.0e-2 * (1.0 + Math.abs(a) + Math.abs(num))) fails = fails + 1;
+                i = i + 1;
+            }
+            // 有限差分 dX
+            int[] xi = new int[4]; xi[0] = 0; xi[1] = 1; xi[2] = 17; xi[3] = 31;
+            i = 0;
+            while (i < 4) {
+                int j = xi[i];
+                double a = cpu[dxOff + j];
+                double num = fdX(host, xOff, wOff, bOff, yOff, xN, xC, xH, xW, yC, yH, yW,
+                                 kh, kw, sh, sw, pt, pb, pl, pr, j, eps);
+                Console.writeString("dx[" + Fmt.i(j) + "] analytic=" + Fmt.f(a, 5) + " numeric=" + Fmt.f(num, 5));
+                Console.writeLine("");
+                if (Math.abs(a - num) > 1.0e-2 * (1.0 + Math.abs(a) + Math.abs(num))) fails = fails + 1;
+                i = i + 1;
+            }
+            // db 直接对拍：db[co] = Σ dy = yH*yW = 64
+            i = 0;
+            while (i < yC) {
+                Console.writeString("db[" + Fmt.i(i) + "]=" + Fmt.f(cpu[dbOff + i], 1) + " ");
+                if (Math.abs(cpu[dbOff + i] - float(yH * yW)) > 1.0e-3) fails = fails + 1;
+                i = i + 1;
+            }
+            Console.writeLine("");
+
+            // GPU vs CPU 逐元素对拍
+            if (Cuda.available() == 1) {
+                float[] gpuA = new float[CAP];
+                i = 0; while (i < CAP) { gpuA[i] = host[i]; i = i + 1; }
+                GpuBufferF buf = new GpuBufferF(gpuA, CAP);
+                long dev = buf.devicePtr();
+                buf.copyFromHost(gpuA, 0, 0, CAP);
+                GpuInferOps.bwdConvTranspose(gpuA, dev, dyOff, xOff, xN, xC, xH, xW, wOff,
+                                             dxOff, dwOff, dbOff, yC, yH, yW,
+                                             kh, kw, sh, sw, pt, pb, pl, pr);
+                buf.copyToHost(gpuA, 0, 0, CAP);
+                fails = fails + cmpRange("gpu dx", cpu, gpuA, dxOff, xN * xC * xH * xW);
+                fails = fails + cmpRange("gpu dw", cpu, gpuA, dwOff, xC * yC * kh * kw);
+                fails = fails + cmpRange("gpu db", cpu, gpuA, dbOff, yC);
+            } else {
+                Console.writeLine("GPU SKIP (no device)");
+            }
+
+            if (fails == 0) Console.writeLine("CONVTRANSPOSE GRAD CHECK OK");
+            else Console.writeLine("CONVTRANSPOSE GRAD CHECK FAIL (" + Fmt.i(fails) + ")");
+        }
+
+        // L(w) = Σy，对 w[j] 中心差分
+        double fdW(float[] arena, int xOff, int wOff, int bOff, int yOff,
+                   int xN, int xC, int xH, int xW, int yC, int yH, int yW,
+                   int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr,
+                   int j, double eps) {
+            double wp = arena[wOff + j];
+            arena[wOff + j] = float(wp + eps);
+            InferOps.convTranspose(arena, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW,
+                                   kh, kw, sh, sw, pt, pb, pl, pr);
+            double Lp = sumY(arena, yOff, xN, yC, yH, yW);
+            arena[wOff + j] = float(wp - eps);
+            InferOps.convTranspose(arena, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW,
+                                   kh, kw, sh, sw, pt, pb, pl, pr);
+            double Lm = sumY(arena, yOff, xN, yC, yH, yW);
+            arena[wOff + j] = float(wp);
+            InferOps.convTranspose(arena, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW,
+                                   kh, kw, sh, sw, pt, pb, pl, pr);
+            return (Lp - Lm) / (2.0 * eps);
+        }
+
+        // L(x) = Σy，对 x[j] 中心差分
+        double fdX(float[] arena, int xOff, int wOff, int bOff, int yOff,
+                   int xN, int xC, int xH, int xW, int yC, int yH, int yW,
+                   int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr,
+                   int j, double eps) {
+            double xp = arena[xOff + j];
+            arena[xOff + j] = float(xp + eps);
+            InferOps.convTranspose(arena, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW,
+                                   kh, kw, sh, sw, pt, pb, pl, pr);
+            double Lp = sumY(arena, yOff, xN, yC, yH, yW);
+            arena[xOff + j] = float(xp - eps);
+            InferOps.convTranspose(arena, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW,
+                                   kh, kw, sh, sw, pt, pb, pl, pr);
+            double Lm = sumY(arena, yOff, xN, yC, yH, yW);
+            arena[xOff + j] = float(xp);
+            InferOps.convTranspose(arena, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW,
+                                   kh, kw, sh, sw, pt, pb, pl, pr);
+            return (Lp - Lm) / (2.0 * eps);
+        }
+
+        double sumY(float[] arena, int yOff, int xN, int yC, int yH, int yW) {
+            double s = 0.0;
+            int i = 0;
+            while (i < xN * yC * yH * yW) { s = s + double(arena[yOff + i]); i = i + 1; }
+            return s;
+        }
+
+        int cmpRange(string tag, float[] cpu, float[] gpu, int off, int n) {
+            double maxDiff = 0.0;
+            int bad = 0;
+            int i = 0;
+            while (i < n) {
+                double a = double(cpu[off + i]);
+                double b = double(gpu[off + i]);
+                double d = a - b;
+                if (d < 0.0) d = 0.0 - d;
+                if (d > maxDiff) maxDiff = d;
+                if (d > 1.0e-3 * (1.0 + Math.abs(a) + Math.abs(b))) bad = bad + 1;
+                i = i + 1;
+            }
+            Console.writeString(tag + " n=" + Fmt.i(n) + " maxDiff=" + Fmt.f(maxDiff, 6) + " bad=" + Fmt.i(bad));
+            Console.writeLine("");
+            return bad;
+        }
+
+        double rnd() {
+            seed_ = (seed_ * 1103515245.0 + 12345.0) % 2147483648.0;
+            return float(seed_ % 1000000) / 1000000.0;
+        }
+
+    property:
+        double seed_;
+}
+
+int main() {
+    ConvTransposeGradCheck t = new ConvTransposeGradCheck();
+    return 0;
+}

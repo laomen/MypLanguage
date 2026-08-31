@@ -299,6 +299,19 @@ class InferenceRuntime {
             opX_[id * 4 + 0] = pb; opX_[id * 4 + 1] = pl; opX_[id * 4 + 2] = pr; opX_[id * 4 + 3] = cip;
             opCount_ = opCount_ + 1;
         }
+        // 阶段4d：ConvTranspose 反向（opKind 68）。dy=opA, x=opB, w=opC, dx=opD;
+        // dw=opP0, db=opP1; sh=opP2, sw=opP3, pt=opP4, pb=opP5, pl=opP6, pr=opP7;
+        // kh/kw 从 w 张量形状取（w=[Cin,Cout,kh,kw] → tH_/tW_，同前向 convTranspose）。
+        void addBwdConvTranspose(int dyT, int xT, int wT, int dxT, int dwT, int dbT,
+                                 int sh, int sw, int pt, int pb, int pl, int pr) {
+            int id = opCount_;
+            opKind_[id] = 68;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = wT; opD_[id] = dxT;
+            opP0_[id] = dwT; opP1_[id] = dbT;
+            opP2_[id] = sh; opP3_[id] = sw; opP4_[id] = pt; opP5_[id] = pb;
+            opP6_[id] = pl; opP7_[id] = pr;
+            opCount_ = opCount_ + 1;
+        }
         // 阶段5：RMSNorm（opKind 61）。in=opA, gamma=opB, out=opC; D=opP0, S=opP1, eps=opP2(位型)
         void addRmsNorm(int inT, int gT, int outT, int D, int S, double eps) {
             int id = opCount_;
@@ -1235,6 +1248,19 @@ class InferenceRuntime {
                                               opP6_[i], opP7_[i], opP8_[i],
                                               opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2], opX_[i * 4 + 3]);
                     }
+                } else if (opKind_[i] == 68) {
+                    // 阶段4d：ConvTranspose 反向（CPU，group=1）
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int w = opC_[i]; int dx = opD_[i];
+                        int dw = opP0_[i]; int db = opP1_[i];
+                        int dbOff = -1; if (db >= 0) dbOff = tOff_[db];
+                        InferOps.bwdConvTranspose(arena,
+                            tOff_[dy], tOff_[x], tN_[x], tC_[x], tH_[x], tW_[x],
+                            tOff_[w], tOff_[dx], tOff_[dw], dbOff,
+                            tC_[dy], tH_[dy], tW_[dy],
+                            tH_[w], tW_[w],
+                            opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i]);
+                    }
                 } else if (opKind_[i] == 61) {
                     // 阶段5：RMSNorm
                     int in = opA_[i]; int g = opB_[i]; int out = opC_[i];
@@ -1811,6 +1837,20 @@ class InferenceRuntime {
                                                  opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2],
                                                  opX_[i * 4 + 3]);
                     }
+                } else if (opKind_[i] == 68) {
+                    // 阶段4d：ConvTranspose 反向（GPU，group=1）
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int w = opC_[i]; int dx = opD_[i];
+                        int dw = opP0_[i]; int db = opP1_[i];
+                        int dbOff = -1;
+                        if (db >= 0) dbOff = tOff_[db];
+                        GpuInferOps.bwdConvTranspose(arena, dev,
+                            tOff_[dy], tOff_[x], tN_[x], tC_[x], tH_[x], tW_[x],
+                            tOff_[w], tOff_[dx], tOff_[dw], dbOff,
+                            tC_[dy], tH_[dy], tW_[dy],
+                            tH_[w], tW_[w],
+                            opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i]);
+                    }
                 }
                 string dumpOpStr = Console.getEnv("MYP_DUMP_OP");
                 int dumpOp = -1;
@@ -1964,6 +2004,7 @@ class InferenceRuntime {
             if (k == 43) return "avgpool3d";
             if (k == 44) return "pad3d";
             if (k == 45) return "resize3d";
+            if (k == 68) return "bwdConvTranspose";
             return "kind" + Fmt.i(k);
         }
 

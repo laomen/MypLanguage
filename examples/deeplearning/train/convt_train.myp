@@ -1,0 +1,153 @@
+// convt_train.myp — 阶段4d：ConvTranspose 端到端训练（验证 bwdConvTranspose 图接线）
+//
+// 模型：deeplearning/data/onnx/convt_train.onnx
+//   ConvTranspose(1→2,k2,s2) → ReLU → Flatten(128) → Gemm(128→2) → Softmax
+// 数据：合成 4×4 输入，2 分类——类0=左上 2×2 高亮块、类1=右下 2×2 高亮块（含噪声）。
+// 训练：batch=1 纯 SGD；MYP_GPU=1 走 runGpu（GPU），否则 CPU run()。
+//
+// 运行（须在 examples/ 下）：
+//   deeplearning/infer/tools/onnxvenv/bin/python deeplearning/infer/tools/make_convt_train_onnx.py
+//   ./build/mypc examples/deeplearning/train/convt_train.myp -o /tmp/convt_train --stdlib stdlib && /tmp/convt_train
+
+import env;
+import fmt;
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class ConvtTrain {
+    action:
+        @constructor ConvtTrain() {
+            seed_ = 20260831.0;
+            int NIN = 16;           // 4*4
+            int NTRAIN = 400;
+            int NTEST = 100;
+            int EPOCHS = 30;
+            float[] x = new float[NTRAIN * NIN];
+            int[] y = new int[NTRAIN];
+            genData(x, y, NTRAIN, NIN, 1);
+            float[] xt = new float[NTEST * NIN];
+            int[] yt = new int[NTEST];
+            genData(xt, yt, NTEST, NIN, 2);
+
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(2000000);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.loadTrain("./deeplearning/data/onnx/convt_train.onnx", rt);
+            if (ok == 0) { Console.writeLine("loadTrain failed"); return; }
+            int dataTid = loader.tensorId("data");
+            int labelTid = loader.tensorId("label");
+            int lossTid = loader.tensorId("loss");
+            int probTid = loader.tensorId("prob");
+            if (dataTid < 0 || labelTid < 0 || lossTid < 0 || probTid < 0) {
+                Console.writeLine("tensor not found");
+                return;
+            }
+
+            if (rt.gpuPersistentStart() == 1) {
+                rt.markGpuSync(lossTid);
+                rt.markGpuSync(probTid);
+            }
+
+            int preAcc = testAccuracy(rt, probTid, dataTid, xt, yt, NIN, NTEST);
+            Console.writeString("PRE-TRAIN acc=");
+            Console.write(preAcc);
+            Console.writeString("%");
+            Console.writeLine("");
+
+            double lr = 0.005;
+            int bestAcc = 0;
+            int epoch = 0;
+            while (epoch < EPOCHS) {
+                if (epoch == 15) lr = 0.001;
+                rt.setLr(lr);
+                rt.setTrain(1);
+                double lossSum = 0.0;
+                int s = 0;
+                while (s < NTRAIN) {
+                    int j = 0;
+                    while (j < NIN) { rt.setFlat(dataTid, j, double(x[s * NIN + j])); j = j + 1; }
+                    j = 0; while (j < 2) { rt.setFlat(labelTid, j, 0.0); j = j + 1; }
+                    rt.setFlat(labelTid, y[s], 1.0);
+                    step(rt);
+                    lossSum = lossSum + rt.getFlat(lossTid, 0);
+                    s = s + 1;
+                }
+                int acc = testAccuracy(rt, probTid, dataTid, xt, yt, NIN, NTEST);
+                if (acc > bestAcc) bestAcc = acc;
+                Console.writeString("epoch ");
+                Console.write(epoch);
+                Console.writeString(" loss=");
+                Console.writeFloat(lossSum / NTRAIN);
+                Console.writeString(" acc=");
+                Console.write(acc);
+                Console.writeString("%");
+                Console.writeLine("");
+                epoch = epoch + 1;
+            }
+
+            Console.writeString("CONVT best acc=");
+            Console.write(bestAcc);
+            Console.writeString("%");
+            Console.writeLine("");
+            if (bestAcc >= 90) Console.writeLine("CONVT TRAIN OK");
+            else Console.writeLine("CONVT TRAIN FAIL");
+            rt.gpuPersistentEnd();
+        }
+
+        void genData(float[] out, int[] lab, int n, int NIN, int seedTag) {
+            int H = 4; int W = 4;
+            int s = 0;
+            while (s < n) {
+                int cls = s % 2;
+                int base = s * NIN;
+                int h = 0;
+                while (h < H) {
+                    int w = 0;
+                    while (w < W) {
+                        float v = 0.05f;
+                        if (cls == 0 && h < 2 && w < 2) v = 1.0f;          // 左上块
+                        if (cls == 1 && h >= 2 && w >= 2) v = 1.0f;         // 右下块
+                        v = v + float(rnd() * 0.02);
+                        out[base + h * W + w] = v;
+                        w = w + 1;
+                    }
+                    h = h + 1;
+                }
+                lab[s] = cls;
+                s = s + 1;
+            }
+        }
+
+        int testAccuracy(InferenceRuntime rt, int probTid, int dataTid, float[] xt, int[] yt, int NIN, int n) {
+            rt.setTrain(0);
+            int correct = 0;
+            int s = 0;
+            while (s < n) {
+                int j = 0;
+                while (j < NIN) { rt.setFlat(dataTid, j, double(xt[s * NIN + j])); j = j + 1; }
+                step(rt);
+                int pred = rt.argmax1d(probTid);
+                if (pred == yt[s]) correct = correct + 1;
+                s = s + 1;
+            }
+            return correct * 100 / n;
+        }
+
+        void step(InferenceRuntime rt) {
+            if (Console.getEnv("MYP_GPU") == "1") rt.runGpu();
+            else rt.run();
+        }
+
+        double rnd() {
+            seed_ = (seed_ * 1103515245.0 + 12345.0) % 2147483648.0;
+            return float(seed_ % 1000000) / 1000000.0;
+        }
+
+    property:
+        double seed_;
+}
+
+int main() {
+    ConvtTrain t = new ConvtTrain();
+    return 0;
+}

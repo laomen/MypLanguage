@@ -652,6 +652,134 @@ class InferOps {
             }
         }
 
+        // 反向：y = convTranspose(x, W)（group=1，权重 W[Cin,Cout,kh,kw] 同前向 ONNX 布局）。
+        // 前向 gather：y[n,co,oh,ow] = Σ_{ci,ky,kx} x[n,ci,ih,iw]·W[ci,co,ky,kx]，
+        //   其中 ih=(oh+pt-ky)/sh 整除且 0<=ih<xH（iw 同理）。output_padding 已含在 yH/yW。
+        //   dW[ci,co,ky,kx] = Σ_{n,oh,ow} dy[n,co,oh,ow]·x[n,ci,ih,iw]（ih/iw 同前向整除界内）
+        //   dX[n,ci,ih,iw] = Σ_{co,ky,kx} W[ci,co,ky,kx]·dy[n,co,oh,ow]（oh=ih*sh-pt+ky 界内）
+        //   db[co] = Σ dy[n,co,:,:]（无偏置 dbOff=-1 → 跳过）
+        void bwdConvTranspose(
+            float[] arena,
+            int dyOff, int xOff, int xN, int xC, int xH, int xW,
+            int wOff,
+            int dxOff, int dwOff, int dbOff,
+            int yC, int yH, int yW,
+            int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr
+        ) {
+            int wc = yC * kh * kw;   // dW 布局 [ci,co,ky,kx]：每个 ci 的块大小
+            // 清 dW / dX
+            int i = 0;
+            while (i < xC * yC * kh * kw) { arena[dwOff + i] = 0.0f; i = i + 1; }
+            i = 0;
+            while (i < xN * xC * xH * xW) { arena[dxOff + i] = 0.0f; i = i + 1; }
+            // db[co] = Σ dy
+            if (dbOff >= 0) {
+                int oc = 0;
+                while (oc < yC) {
+                    float s = 0.0f;
+                    int n = 0;
+                    while (n < xN) {
+                        int oy = 0;
+                        while (oy < yH) {
+                            int ox = 0;
+                            while (ox < yW) {
+                                s = s + arena[dyOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox];
+                                ox = ox + 1;
+                            }
+                            oy = oy + 1;
+                        }
+                        n = n + 1;
+                    }
+                    arena[dbOff + oc] = s;
+                    oc = oc + 1;
+                }
+            }
+            // dW（7 重循环：n,co,oh,ow,ci,ky,kx）
+            int n = 0;
+            while (n < xN) {
+                int co = 0;
+                while (co < yC) {
+                    int oy = 0;
+                    while (oy < yH) {
+                        int ox = 0;
+                        while (ox < yW) {
+                            float dy = arena[dyOff + n * yC * yH * yW + co * yH * yW + oy * yW + ox];
+                            int ci = 0;
+                            while (ci < xC) {
+                                int ky = 0;
+                                while (ky < kh) {
+                                    int inum = oy + pt - ky;
+                                    if (inum >= 0 && inum % sh == 0) {
+                                        int ih = inum / sh;
+                                        if (ih >= 0 && ih < xH) {
+                                            int kx = 0;
+                                            while (kx < kw) {
+                                                int wnum = ox + pl - kx;
+                                                if (wnum >= 0 && wnum % sw == 0) {
+                                                    int iw = wnum / sw;
+                                                    if (iw >= 0 && iw < xW) {
+                                                        float xv = arena[xOff + n * xC * xH * xW + ci * xH * xW + ih * xW + iw];
+                                                        int wi = (ci * wc + co * kh * kw) + ky * kw + kx;
+                                                        arena[dwOff + wi] = arena[dwOff + wi] + dy * xv;
+                                                    }
+                                                }
+                                                kx = kx + 1;
+                                            }
+                                        }
+                                    }
+                                    ky = ky + 1;
+                                }
+                                ci = ci + 1;
+                            }
+                            ox = ox + 1;
+                        }
+                        oy = oy + 1;
+                    }
+                    co = co + 1;
+                }
+                n = n + 1;
+            }
+            // dX（7 重循环：n,ci,ih,iw,co,ky,kx）
+            n = 0;
+            while (n < xN) {
+                int ci = 0;
+                while (ci < xC) {
+                    int ih = 0;
+                    while (ih < xH) {
+                        int iw = 0;
+                        while (iw < xW) {
+                            float s = 0.0f;
+                            int co = 0;
+                            while (co < yC) {
+                                int ky = 0;
+                                while (ky < kh) {
+                                    int oh = ih * sh - pt + ky;
+                                    if (oh >= 0 && oh < yH) {
+                                        int kx = 0;
+                                        while (kx < kw) {
+                                            int ow = iw * sw - pl + kx;
+                                            if (ow >= 0 && ow < yW) {
+                                                float wv = arena[wOff + (ci * wc + co * kh * kw) + ky * kw + kx];
+                                                s = s + wv * arena[dyOff + n * yC * yH * yW + co * yH * yW + oh * yW + ow];
+                                            }
+                                            kx = kx + 1;
+                                        }
+                                    }
+                                    ky = ky + 1;
+                                }
+                                co = co + 1;
+                            }
+                            arena[dxOff + n * xC * xH * xW + ci * xH * xW + ih * xW + iw] = s;
+                            iw = iw + 1;
+                        }
+                        ih = ih + 1;
+                    }
+                    ci = ci + 1;
+                }
+                n = n + 1;
+            }
+        }
+
         // ---- CNN 3D 反向（阶段4）：x[N,C,D,H,W]，y[N,yC,yD,yH,yW] ----
 
         // 反向：y = conv3d(x, w, b)。给定 dY[N,yC,yD,yH,yW] → dW（累加）、dX（累加）、db。
