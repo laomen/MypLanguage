@@ -964,7 +964,10 @@ class SubOp {
         void forward(InferenceRuntime rt, int i) {
             int aa = rt.opAAt(i); int bb = rt.opBAt(i); int oc = rt.opCAt(i);
             InferOps.sub(rt.arenaRef(), rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc),
-                         rt.tensorRows(oc) * rt.tensorCols(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i));
+                         rt.tensorRows(oc) * rt.tensorCols(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i),
+                         rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                         rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0),
+                         rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc));
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -976,7 +979,10 @@ class DivOp {
         void forward(InferenceRuntime rt, int i) {
             int aa = rt.opAAt(i); int bb = rt.opBAt(i); int oc = rt.opCAt(i);
             InferOps.div(rt.arenaRef(), rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc),
-                         rt.tensorRows(oc) * rt.tensorCols(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i));
+                         rt.tensorRows(oc) * rt.tensorCols(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i),
+                         rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                         rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0),
+                         rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc));
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -988,7 +994,10 @@ class MulOp {
         void forward(InferenceRuntime rt, int i) {
             int aa = rt.opAAt(i); int bb = rt.opBAt(i); int oc = rt.opCAt(i);
             InferOps.mul(rt.arenaRef(), rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc),
-                         rt.tensorRows(oc) * rt.tensorCols(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i));
+                         rt.tensorRows(oc) * rt.tensorCols(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i),
+                         rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                         rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0),
+                         rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc));
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -1141,7 +1150,10 @@ class GpuSubOp {
         void forward(InferenceRuntime rt, int i) {
             int aa = rt.opAAt(i); int bb = rt.opBAt(i); int oc = rt.opCAt(i);
             GpuInferOps.sub(rt.arenaRef(), rt.tensorRows(oc) * rt.tensorCols(oc),
-                            rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i), rt.devRef());
+                            rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i),
+                            rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                            rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0),
+                            rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc), rt.devRef());
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -1153,7 +1165,10 @@ class GpuDivOp {
         void forward(InferenceRuntime rt, int i) {
             int aa = rt.opAAt(i); int bb = rt.opBAt(i); int oc = rt.opCAt(i);
             GpuInferOps.div(rt.arenaRef(), rt.tensorRows(oc) * rt.tensorCols(oc),
-                            rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i), rt.devRef());
+                            rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i),
+                            rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                            rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0),
+                            rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc), rt.devRef());
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -1165,7 +1180,10 @@ class GpuMulOp {
         void forward(InferenceRuntime rt, int i) {
             int aa = rt.opAAt(i); int bb = rt.opBAt(i); int oc = rt.opCAt(i);
             GpuInferOps.mul(rt.arenaRef(), rt.tensorRows(oc) * rt.tensorCols(oc),
-                            rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i), rt.devRef());
+                            rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opP0At(i), rt.opP1At(i),
+                            rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                            rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0),
+                            rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc), rt.devRef());
         }
         void backward(InferenceRuntime rt, int i) { }
 }

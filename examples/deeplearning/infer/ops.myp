@@ -2615,41 +2615,118 @@ class InferOps {
         // 设计原则：2D/3D 通用。元素级用 flat n；InstanceNorm/ReduceMean 用
         // (N, C, 空间乘积 S)；Split 用 rank≤5 的 5 维解码（2D 时 d4=1，3D 时真实）。
         // 混型运算已由编译器修复（int→double/float 自动提升）：除法直接用 int 除数。
-        // Sub：y = a - b（bSize==1 标量；bSize==n 同尺寸；bSize==C 逐通道广播 [1,C,1,1]）
-        void sub(float[] arena, int aOff, int bOff, int outOff, int n, int bSize, int C, int S) {
+        // Sub：y = a - b（bSize==1 标量；bSize==n 同尺寸；bSize==C 且 b=[1,C,1,1] 逐通道；
+        // 否则 4D 通用 numpy 广播——a/b 各自 4D dims 解码，维=1 → 0）。
+        void sub(float[] arena, int aOff, int bOff, int outOff, int n, int bSize, int C, int S,
+                 int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw,
+                 int on, int oc, int oh, int ow) {
             int i = 0;
             if (bSize <= 1) {
                 double bv = arena[bOff + 0];
                 while (i < n) { double av = arena[aOff + i]; arena[outOff + i] = float(av - bv); i = i + 1; }
-            } else if (bSize == n) {
+            } else if (bSize == n && an == on && ac == oc && ah == oh && aw == ow && bn == on && bc == oc && bh == oh && bw == ow) {
                 while (i < n) { double av = arena[aOff + i]; double bv2 = arena[bOff + i]; arena[outOff + i] = float(av - bv2); i = i + 1; }
-            } else {
-                // 逐通道：b[(i/S)%C]
+            } else if (bSize == C && bn == 1 && bc == C && bh == 1 && bw == 1) {
+                // 逐通道：b[(i/S)%C]（兼容 5D：S=D*H*W）
                 while (i < n) { double av = arena[aOff + i]; double bv2 = arena[bOff + (i / S) % C]; arena[outOff + i] = float(av - bv2); i = i + 1; }
+            } else {
+                // 4D 通用广播：输出 index % 各输入维（维=1 → 0）
+                while (i < n) {
+                    int w3 = i % ow;
+                    int t = i / ow;
+                    int w2 = t % oh;
+                    t = t / oh;
+                    int w1 = t % oc;
+                    int w0 = t / oc;
+                    int a0 = (an == 1) ? 0 : (w0 % an);
+                    int a1 = (ac == 1) ? 0 : (w1 % ac);
+                    int a2 = (ah == 1) ? 0 : (w2 % ah);
+                    int a3 = (aw == 1) ? 0 : (w3 % aw);
+                    int aF = ((a0 * ac + a1) * ah + a2) * aw + a3;
+                    int b0 = (bn == 1) ? 0 : (w0 % bn);
+                    int b1 = (bc == 1) ? 0 : (w1 % bc);
+                    int b2 = (bh == 1) ? 0 : (w2 % bh);
+                    int b3 = (bw == 1) ? 0 : (w3 % bw);
+                    int bF = ((b0 * bc + b1) * bh + b2) * bw + b3;
+                    double av = arena[aOff + aF];
+                    double bv2 = arena[bOff + bF];
+                    arena[outOff + i] = float(av - bv2);
+                    i = i + 1;
+                }
             }
         }
         // Div：y = a / b（同上广播）
-        void div(float[] arena, int aOff, int bOff, int outOff, int n, int bSize, int C, int S) {
+        void div(float[] arena, int aOff, int bOff, int outOff, int n, int bSize, int C, int S,
+                 int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw,
+                 int on, int oc, int oh, int ow) {
             int i = 0;
             if (bSize <= 1) {
                 double bv = arena[bOff + 0];
                 while (i < n) { double av = arena[aOff + i]; arena[outOff + i] = float(av / bv); i = i + 1; }
-            } else if (bSize == n) {
+            } else if (bSize == n && an == on && ac == oc && ah == oh && aw == ow && bn == on && bc == oc && bh == oh && bw == ow) {
                 while (i < n) { double av = arena[aOff + i]; double bv2 = arena[bOff + i]; arena[outOff + i] = float(av / bv2); i = i + 1; }
-            } else {
+            } else if (bSize == C && bn == 1 && bc == C && bh == 1 && bw == 1) {
                 while (i < n) { double av = arena[aOff + i]; double bv2 = arena[bOff + (i / S) % C]; arena[outOff + i] = float(av / bv2); i = i + 1; }
+            } else {
+                while (i < n) {
+                    int w3 = i % ow;
+                    int t = i / ow;
+                    int w2 = t % oh;
+                    t = t / oh;
+                    int w1 = t % oc;
+                    int w0 = t / oc;
+                    int a0 = (an == 1) ? 0 : (w0 % an);
+                    int a1 = (ac == 1) ? 0 : (w1 % ac);
+                    int a2 = (ah == 1) ? 0 : (w2 % ah);
+                    int a3 = (aw == 1) ? 0 : (w3 % aw);
+                    int aF = ((a0 * ac + a1) * ah + a2) * aw + a3;
+                    int b0 = (bn == 1) ? 0 : (w0 % bn);
+                    int b1 = (bc == 1) ? 0 : (w1 % bc);
+                    int b2 = (bh == 1) ? 0 : (w2 % bh);
+                    int b3 = (bw == 1) ? 0 : (w3 % bw);
+                    int bF = ((b0 * bc + b1) * bh + b2) * bw + b3;
+                    double av = arena[aOff + aF];
+                    double bv2 = arena[bOff + bF];
+                    arena[outOff + i] = float(av / bv2);
+                    i = i + 1;
+                }
             }
         }
         // Mul：y = a * b（同上广播）
-        void mul(float[] arena, int aOff, int bOff, int outOff, int n, int bSize, int C, int S) {
+        void mul(float[] arena, int aOff, int bOff, int outOff, int n, int bSize, int C, int S,
+                 int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw,
+                 int on, int oc, int oh, int ow) {
             int i = 0;
             if (bSize <= 1) {
                 double bv = arena[bOff + 0];
                 while (i < n) { double av = arena[aOff + i]; arena[outOff + i] = float(av * bv); i = i + 1; }
-            } else if (bSize == n) {
+            } else if (bSize == n && an == on && ac == oc && ah == oh && aw == ow && bn == on && bc == oc && bh == oh && bw == ow) {
                 while (i < n) { double av = arena[aOff + i]; double bv2 = arena[bOff + i]; arena[outOff + i] = float(av * bv2); i = i + 1; }
-            } else {
+            } else if (bSize == C && bn == 1 && bc == C && bh == 1 && bw == 1) {
                 while (i < n) { double av = arena[aOff + i]; double bv2 = arena[bOff + (i / S) % C]; arena[outOff + i] = float(av * bv2); i = i + 1; }
+            } else {
+                while (i < n) {
+                    int w3 = i % ow;
+                    int t = i / ow;
+                    int w2 = t % oh;
+                    t = t / oh;
+                    int w1 = t % oc;
+                    int w0 = t / oc;
+                    int a0 = (an == 1) ? 0 : (w0 % an);
+                    int a1 = (ac == 1) ? 0 : (w1 % ac);
+                    int a2 = (ah == 1) ? 0 : (w2 % ah);
+                    int a3 = (aw == 1) ? 0 : (w3 % aw);
+                    int aF = ((a0 * ac + a1) * ah + a2) * aw + a3;
+                    int b0 = (bn == 1) ? 0 : (w0 % bn);
+                    int b1 = (bc == 1) ? 0 : (w1 % bc);
+                    int b2 = (bh == 1) ? 0 : (w2 % bh);
+                    int b3 = (bw == 1) ? 0 : (w3 % bw);
+                    int bF = ((b0 * bc + b1) * bh + b2) * bw + b3;
+                    double av = arena[aOff + aF];
+                    double bv2 = arena[bOff + bF];
+                    arena[outOff + i] = float(av * bv2);
+                    i = i + 1;
+                }
             }
         }
         // Sqrt：y = sqrt(x)

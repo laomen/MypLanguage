@@ -1507,8 +1507,19 @@ int inferShapes(Graph graph) {
                         graph.addShapeD4(onm, d0, d1, d2, d3);
                         j = j + 1;
                     }
-                } else if (t == "Sub" || t == "Div" || t == "Mul" || t == "Sqrt") {
-                    // F8：秩无关逐元素（输出形状 = 输入 0；标量/同形状广播）
+                } else if (t == "Sub" || t == "Div" || t == "Mul") {
+                    // 阶段三：统一 numpy 广播——输出 = a/b 逐维 max（无 shape 的输入按 1）
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    int b = graph.compilerShapeIdx(graph.nodeInAt(i, 1));
+                    int od0 = graph.compilerShapeDim(a, 0), od1 = graph.compilerShapeDim(a, 1), od2 = graph.compilerShapeDim(a, 2), od3 = graph.compilerShapeDim(a, 3);
+                    if (b >= 0) {
+                        if (graph.compilerShapeDim(b, 0) > od0) od0 = graph.compilerShapeDim(b, 0);
+                        if (graph.compilerShapeDim(b, 1) > od1) od1 = graph.compilerShapeDim(b, 1);
+                        if (graph.compilerShapeDim(b, 2) > od2) od2 = graph.compilerShapeDim(b, 2);
+                        if (graph.compilerShapeDim(b, 3) > od3) od3 = graph.compilerShapeDim(b, 3);
+                    }
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), od0, od1, od2, od3);
+                } else if (t == "Sqrt") {
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     graph.copyShape(graph.compilerNodeOutput(i, 0), a);
                 } else if (t == "ReduceMean" || t == "ReduceSum" || t == "ReduceMax" || t == "ReduceMin") {

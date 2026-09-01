@@ -415,21 +415,33 @@ class GraphCompiler {
                 } else if (code == OpCode.SUB()) {
                     int b = tensorId(graph.nodeInAt(ni, 1));
                     int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                    int bs = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
                     int ss = graph.compilerShapeDim(is, 2) * graph.compilerShapeDim(is, 3);
                     if (graph.compilerShapeR5(is) == 1) ss = graph.compilerShapeDim(is, 2) * graph.compilerShapeDim(is, 3) * graph.compilerShapeDim(is, 4);
-                    rt.addSub(a, b, out, graph.compilerShapeDim(is, 1), ss);
+                    int an = graph.compilerShapeDim(is, 0), ac = graph.compilerShapeDim(is, 1), ah = graph.compilerShapeDim(is, 2), aw = graph.compilerShapeDim(is, 3);
+                    int bn = 1, bc = 1, bh = 1, bw = 1;
+                    if (bs >= 0) { bn = graph.compilerShapeDim(bs, 0); bc = graph.compilerShapeDim(bs, 1); bh = graph.compilerShapeDim(bs, 2); bw = graph.compilerShapeDim(bs, 3); }
+                    rt.addSub(a, b, out, graph.compilerShapeDim(is, 1), ss, an, ac, ah, aw, bn, bc, bh, bw);
                 } else if (code == OpCode.DIV()) {
                     int b = tensorId(graph.nodeInAt(ni, 1));
                     int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                    int bs = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
                     int ss = graph.compilerShapeDim(is, 2) * graph.compilerShapeDim(is, 3);
                     if (graph.compilerShapeR5(is) == 1) ss = graph.compilerShapeDim(is, 2) * graph.compilerShapeDim(is, 3) * graph.compilerShapeDim(is, 4);
-                    rt.addDiv(a, b, out, graph.compilerShapeDim(is, 1), ss);
+                    int an = graph.compilerShapeDim(is, 0), ac = graph.compilerShapeDim(is, 1), ah = graph.compilerShapeDim(is, 2), aw = graph.compilerShapeDim(is, 3);
+                    int bn = 1, bc = 1, bh = 1, bw = 1;
+                    if (bs >= 0) { bn = graph.compilerShapeDim(bs, 0); bc = graph.compilerShapeDim(bs, 1); bh = graph.compilerShapeDim(bs, 2); bw = graph.compilerShapeDim(bs, 3); }
+                    rt.addDiv(a, b, out, graph.compilerShapeDim(is, 1), ss, an, ac, ah, aw, bn, bc, bh, bw);
                 } else if (code == OpCode.MUL()) {
                     int b = tensorId(graph.nodeInAt(ni, 1));
                     int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                    int bs = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
                     int ss = graph.compilerShapeDim(is, 2) * graph.compilerShapeDim(is, 3);
                     if (graph.compilerShapeR5(is) == 1) ss = graph.compilerShapeDim(is, 2) * graph.compilerShapeDim(is, 3) * graph.compilerShapeDim(is, 4);
-                    rt.addMul(a, b, out, graph.compilerShapeDim(is, 1), ss);
+                    int an = graph.compilerShapeDim(is, 0), ac = graph.compilerShapeDim(is, 1), ah = graph.compilerShapeDim(is, 2), aw = graph.compilerShapeDim(is, 3);
+                    int bn = 1, bc = 1, bh = 1, bw = 1;
+                    if (bs >= 0) { bn = graph.compilerShapeDim(bs, 0); bc = graph.compilerShapeDim(bs, 1); bh = graph.compilerShapeDim(bs, 2); bw = graph.compilerShapeDim(bs, 3); }
+                    rt.addMul(a, b, out, graph.compilerShapeDim(is, 1), ss, an, ac, ah, aw, bn, bc, bh, bw);
                 } else if (code == OpCode.SQRT()) {
                     rt.addSqrt(a, out);
                 } else if (code == OpCode.REDUCE_MEAN() || code == OpCode.REDUCE_SUM() || code == OpCode.REDUCE_MAX() || code == OpCode.REDUCE_MIN()) {

@@ -1,0 +1,90 @@
+// bcast_main.myp — 阶段三：统一 numpy 广播（Sub/Div/Mul 4D）端到端测试
+// bcast_test.onnx（opset13，12 输入 6 输出）：覆盖同形状/标量/逐通道[1,C,1,1]/
+// W 广播/HW 广播/b 放大输出。ORT 参考由 make_bcast_onnx.py 生成（blob 拼接）。
+import env;
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class BcastTestApp {
+    action:
+        @constructor BcastTestApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(4096);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load("./deeplearning/data/onnx/bcast_test.onnx", rt);
+            if (ok == 0) { Console.writeLine("load failed"); return; }
+            Console.writeString("graph: ops=");
+            Console.writeLong(rt.opCount());
+            Console.writeLine("");
+
+            string[] inNames = new string[12];
+            inNames[0] = "a"; inNames[1] = "b"; inNames[2] = "a2"; inNames[3] = "bscalar";
+            inNames[4] = "a3"; inNames[5] = "bchan"; inNames[6] = "a4"; inNames[7] = "bw";
+            inNames[8] = "a5"; inNames[9] = "bhw"; inNames[10] = "a6"; inNames[11] = "b6";
+            double[] buf = new double[128];
+            int k = 0;
+            while (k < 12) {
+                int t = loader.tensorId(inNames[k]);
+                if (t < 0) { Console.writeLine("in not found: " + inNames[k]); return; }
+                readF32("./deeplearning/data/onnx/bcast_in_" + inNames[k] + ".f32", buf, rt.tensorSize(t));
+                int i = 0;
+                while (i < rt.tensorSize(t)) { rt.setFlat(t, i, buf[i]); i = i + 1; }
+                k = k + 1;
+            }
+            rt.run();
+
+            // ORT blob：out1(24)+out2(24)+out3(48)+out4(24)+out5(24)+out6(24)=168
+            double[] blob = new double[256];
+            readF32("./deeplearning/data/onnx/bcast_test_ort.bin", blob, 168);
+            int badAll = 0;
+            double maxAll = 0.0;
+            int[] outOff = new int[6];
+            outOff[0] = 0; outOff[1] = 24; outOff[2] = 48; outOff[3] = 96; outOff[4] = 120; outOff[5] = 144;
+            int[] outCnt = new int[6];
+            outCnt[0] = 24; outCnt[1] = 24; outCnt[2] = 48; outCnt[3] = 24; outCnt[4] = 24; outCnt[5] = 24;
+            string[] outNames = new string[6];
+            outNames[0] = "out1"; outNames[1] = "out2"; outNames[2] = "out3"; outNames[3] = "out4"; outNames[4] = "out5"; outNames[5] = "out6";
+            k = 0;
+            while (k < 6) {
+                int t = loader.tensorId(outNames[k]);
+                if (t < 0) { Console.writeLine("out not found: " + outNames[k]); return; }
+                int j = 0;
+                while (j < outCnt[k]) {
+                    double rv = blob[outOff[k] + j];
+                    double dv = rt.getFlat(t, j) - rv;
+                    if (dv < 0.0) dv = 0.0 - dv;
+                    if (dv > maxAll) maxAll = dv;
+                    if (dv > 1.0e-4) badAll = badAll + 1;
+                    j = j + 1;
+                }
+                k = k + 1;
+            }
+            Console.writeString("max diff vs ORT: ");
+            Console.writeFloat(maxAll);
+            Console.writeString("  bad=");
+            Console.writeLong(badAll);
+            Console.writeLine("");
+            if (badAll == 0 && maxAll <= 1.0e-4) Console.writeLine("BCAST ALL OK");
+            else Console.writeLine("BCAST MISMATCH");
+        }
+
+        void readF32(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                out[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+}
+
+int main() { BcastTestApp app = new BcastTestApp(); return 0; }

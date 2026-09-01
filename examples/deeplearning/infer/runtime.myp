@@ -1057,9 +1057,39 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
         // Sub / Div / Mul（opKind 31-33）：逐元素（b 标量/同尺寸/逐通道广播；C=通道数, S=空间乘积）
-        void addSub(int aTid, int bTid, int outTid, int C, int S) { int id = opCount_; opKind_[id] = 31; opA_[id] = aTid; opB_[id] = bTid; opC_[id] = outTid; opP0_[id] = C; opP1_[id] = S; opCount_ = opCount_ + 1; }
-        void addDiv(int aTid, int bTid, int outTid, int C, int S) { int id = opCount_; opKind_[id] = 32; opA_[id] = aTid; opB_[id] = bTid; opC_[id] = outTid; opP0_[id] = C; opP1_[id] = S; opCount_ = opCount_ + 1; }
-        void addMul(int aTid, int bTid, int outTid, int C, int S) { int id = opCount_; opKind_[id] = 33; opA_[id] = aTid; opB_[id] = bTid; opC_[id] = outTid; opP0_[id] = C; opP1_[id] = S; opCount_ = opCount_ + 1; }
+        void addSub(int aTid, int bTid, int outTid, int C, int S,
+                    int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw) {
+            int id = opCount_;
+            opKind_[id] = 31;
+            opA_[id] = aTid; opB_[id] = bTid; opC_[id] = outTid;
+            opP0_[id] = C; opP1_[id] = S;
+            opP2_[id] = an; opP3_[id] = ac; opP4_[id] = ah; opP5_[id] = aw;
+            opP6_[id] = bn; opP7_[id] = bc; opP8_[id] = bh;
+            opX_[id * 4 + 0] = bw;
+            opCount_ = opCount_ + 1;
+        }
+        void addDiv(int aTid, int bTid, int outTid, int C, int S,
+                    int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw) {
+            int id = opCount_;
+            opKind_[id] = 32;
+            opA_[id] = aTid; opB_[id] = bTid; opC_[id] = outTid;
+            opP0_[id] = C; opP1_[id] = S;
+            opP2_[id] = an; opP3_[id] = ac; opP4_[id] = ah; opP5_[id] = aw;
+            opP6_[id] = bn; opP7_[id] = bc; opP8_[id] = bh;
+            opX_[id * 4 + 0] = bw;
+            opCount_ = opCount_ + 1;
+        }
+        void addMul(int aTid, int bTid, int outTid, int C, int S,
+                    int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw) {
+            int id = opCount_;
+            opKind_[id] = 33;
+            opA_[id] = aTid; opB_[id] = bTid; opC_[id] = outTid;
+            opP0_[id] = C; opP1_[id] = S;
+            opP2_[id] = an; opP3_[id] = ac; opP4_[id] = ah; opP5_[id] = aw;
+            opP6_[id] = bn; opP7_[id] = bc; opP8_[id] = bh;
+            opX_[id * 4 + 0] = bw;
+            opCount_ = opCount_ + 1;
+        }
         // Sqrt（opKind 34）：y = sqrt(x)
         void addSqrt(int inTid, int outTid) { int id = opCount_; opKind_[id] = 34; opA_[id] = inTid; opB_[id] = outTid; opCount_ = opCount_ + 1; }
         // InstanceNormalization（opKind 35）：per-(n,c) 空间归一化（秩无关，S=空间乘积）
