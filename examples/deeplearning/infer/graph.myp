@@ -122,6 +122,11 @@ class Graph {
         string valueName(int value) { if (value < 0 || value >= sCount_) return ""; return shName_[value]; }
         int nodeAlive(int node) { if (node < 0 || node >= nCount_ || nType_[node] == "") return 0; return 1; }
         int nodeInputValue(int node, int slot) { if (node < 0 || node >= nCount_ || slot < 0 || slot >= 5) return -1; return shapeIdx(nodeInAt(node, slot)); }
+        // Phase 1 interface freeze：后续 Graph 组件只依赖这些按 ID 的领域 API，
+        // 不直接访问 nIn*/nOut*/nType_ 等内部 SoA 数组。
+        int nodeOperand(int node, int slot) { return nodeInputValue(node, slot); }
+        int nodeResult(int node, int slot) { return nodeOutputValue(node, slot); }
+        int nodeIsAlive(int node) { return nodeAlive(node); }
         int nodeOutputValue(int node, int slot) {
             if (node < 0 || node >= nCount_ || slot < 0 || slot >= 4) return -1;
             string out = "";
@@ -146,6 +151,61 @@ class Graph {
             if (key == NodeField.UPSW()) return F32.toDouble(nUpSW_[node]);
             return 0.0;
         }
+        int attrInt(int node, int key) {
+            if (node < 0 || node >= nCount_) return 0;
+            if (key == NodeField.TRANSB()) return nTransB_[node];
+            if (key == NodeField.AXIS()) return nAxis_[node];
+            if (key == NodeField.GROUP()) return nGroup_[node];
+            if (key == NodeField.SH()) return nSH_[node];
+            if (key == NodeField.SW()) return nSW_[node];
+            if (key == NodeField.PT()) return nPT_[node];
+            if (key == NodeField.PL()) return nPL_[node];
+            if (key == NodeField.PB()) return nPB_[node];
+            if (key == NodeField.PR()) return nPR_[node];
+            if (key == NodeField.DH()) return nDH_[node];
+            if (key == NodeField.DW()) return nDW_[node];
+            if (key == NodeField.KH()) return nKH_[node];
+            if (key == NodeField.KW()) return nKW_[node];
+            if (key == NodeField.EPS_INT()) return nEpsInt_[node];
+            if (key == NodeField.HAS_EPS()) return nHasEps_[node];
+            if (key == NodeField.ALPHA_INT()) return nAlphaInt_[node];
+            if (key == NodeField.HAS_ALPHA()) return nHasAlpha_[node];
+            if (key == NodeField.CONST_VAL()) return nConstVal_[node];
+            if (key == NodeField.CONST_OFF()) return nConstOff_[node];
+            if (key == NodeField.CONST_LEN()) return nConstLen_[node];
+            if (key == NodeField.PERM0()) return nP0_[node];
+            if (key == NodeField.PERM1()) return nP1_[node];
+            if (key == NodeField.PERM2()) return nP2_[node];
+            if (key == NodeField.PERM3()) return nP3_[node];
+            if (key == NodeField.PERM_N()) return nPc_[node];
+            if (key == NodeField.MODE()) return nMode_[node];
+            if (key == NodeField.TRANSFORM()) return nTransform_[node];
+            if (key == NodeField.UPSH()) return nUpSH_[node];
+            if (key == NodeField.UPSW()) return nUpSW_[node];
+            if (key == NodeField.KEEP()) return nKeep_[node];
+            if (key == NodeField.AXES0()) return nAx0_[node];
+            if (key == NodeField.AXES1()) return nAx1_[node];
+            if (key == NodeField.AXES2()) return nAx2_[node];
+            if (key == NodeField.AXES3()) return nAx3_[node];
+            if (key == NodeField.AXES_N()) return nAxN_[node];
+            if (key == NodeField.CIP()) return nCip_[node];
+            if (key == NodeField.PADMODE()) return nPadMode_[node];
+            if (key == NodeField.OPH()) return nOutPadH_[node];
+            if (key == NodeField.OPW()) return nOutPadW_[node];
+            if (key == NodeField.SPLIT0()) return nSp0_[node];
+            if (key == NodeField.SPLIT1()) return nSp1_[node];
+            if (key == NodeField.SPLIT2()) return nSp2_[node];
+            if (key == NodeField.SPLIT3()) return nSp3_[node];
+            if (key == NodeField.SPLIT_N()) return nSplitN_[node];
+            if (key == NodeField.SD3()) return nSD3_[node];
+            if (key == NodeField.DD3()) return nDD3_[node];
+            if (key == NodeField.KD3()) return nKD3_[node];
+            if (key == NodeField.PDT()) return nPDT_[node];
+            if (key == NodeField.PDB()) return nPDB_[node];
+            if (key == NodeField.CAST_TO()) return nCastTo_[node];
+            return 0;
+        }
+        void setAttrInt(int node, int key, int value) { nodeInt(node, key, value); }
         // IR-P3d：统一数组属性访问（取代 buildRuntime 的 [node*N+k] 手算偏移）。
         // key：0=SlAx [node*4+k]，1=SlSt，2=SlSp，3=PadB，4=PadE，5=PadB5 [node*5+k]，
         //     6=SplitSt，7=SplitLn。
@@ -161,6 +221,17 @@ class Graph {
             if (key == 7) return nSplitLn_[node * 4 + k];
             return 0;
         }
+        void setAttrIntArr(int node, int key, int k, int value) {
+            if (node < 0 || node >= nCount_ || k < 0) return;
+            if (key == 0) nSlAx_[node * 4 + k] = value;
+            else if (key == 1) nSlSt_[node * 4 + k] = value;
+            else if (key == 2) nSlSp_[node * 4 + k] = value;
+            else if (key == 3) nPadB_[node * 4 + k] = value;
+            else if (key == 4) nPadE_[node * 4 + k] = value;
+            else if (key == 5) nPadB5_[node * 5 + k] = value;
+            else if (key == 6) nSplitSt_[node * 4 + k] = value;
+            else if (key == 7) nSplitLn_[node * 4 + k] = value;
+        }
         // 唯一输入改写入口。P0 只失效索引；P1 再演进为增量维护与 analysis manager。
         void replaceNodeInput(int node, int slot, int value) {
             if (node < 0 || node >= nCount_ || slot < 0 || slot >= 5 || value < 0 || value >= sCount_) return;
@@ -168,6 +239,7 @@ class Graph {
             duValid_ = 0;
             analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
         }
+        void replaceOperand(int node, int slot, int value) { replaceNodeInput(node, slot, value); }
         // P2 rewrite 原语：把 oldValue 的每条精确 Use（包含重复 operand）改接到 newValue。
         // 图输出是值的隐式消费者：名称指向 oldValue 的 goName_ 一并改接到 newValue，因此
         // replaceAllUses 也覆盖 graph-output rewrite（P2d）。必须先 ensureDefUse；扫描 use
@@ -203,6 +275,10 @@ class Graph {
             else nOut3_[node] = newName;
             duValid_ = 0;
             analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
+        }
+        void replaceResultValue(int node, int slot, int value) {
+            if (value < 0 || value >= sCount_) return;
+            replaceResult(node, slot, shName_[value]);
         }
         // P3c：canonical 删除原语——tombstone 节点并标死其（融合的）有效输出。
         // 等价于旧的手写 `nType_[i]=""; markDeadTensor(effectiveOut(i))`，并统一失效 DefUse。
@@ -303,6 +379,22 @@ class Graph {
             return bad == 0 ? 1 : 0;
         }
         int shapeRank5(string name) { int s = shapeIdx(name); if (s < 0) return 0; return shR5_[s]; }
+        int valueRank(int value) { if (value < 0 || value >= sCount_) return 0; return shR5_[value] == 1 ? 5 : 4; }
+        int valueDim(int value, int axis) {
+            if (value < 0 || value >= sCount_) return 0;
+            if (axis == 0) return shD0_[value];
+            if (axis == 1) return shD1_[value];
+            if (axis == 2) return shD2_[value];
+            if (axis == 3) return shD3_[value];
+            if (axis == 4 && shR5_[value] == 1) return shD4_[value];
+            return 0;
+        }
+        int valueKind(int value) { if (value < 0 || value >= sCount_) return Kind.FC_ACT(); return shKind_[value]; }
+        int valueIsDead(int value) { if (value < 0 || value >= sCount_) return 1; return shDead_[value]; }
+        int valueIsNHWC(int value) { if (value < 0 || value >= sCount_) return 0; return shNHWC_[value]; }
+        void setValueKind(int value, int kind) { if (value >= 0 && value < sCount_) shKind_[value] = kind; }
+        void markValueDead(int value) { if (value >= 0 && value < sCount_) shDead_[value] = 1; }
+        void setValueNHWC(int value, int enabled) { if (value >= 0 && value < sCount_) shNHWC_[value] = enabled; }
         // 张量元素总数（按形状表 dims；图输入/输出张量无 runtime 2D 投影，须用此取 size）
         int shapeElementCount(string name) {
             int s = shapeIdx(name);
@@ -315,6 +407,17 @@ class Graph {
             int d4 = shD4_[s]; if (d4 == 0) d4 = 1;
             int n = d0 * d1 * d2 * d3;
             if (shR5_[s] == 1) n = n * d4;
+            return n;
+        }
+        int valueElementCount(int value) {
+            if (value < 0 || value >= sCount_) return -1;
+            int d0 = shD0_[value]; if (d0 == 0) d0 = 1;
+            int d1 = shD1_[value]; if (d1 == 0) d1 = 1;
+            int d2 = shD2_[value]; if (d2 == 0) d2 = 1;
+            int d3 = shD3_[value]; if (d3 == 0) d3 = 1;
+            int d4 = shD4_[value]; if (d4 == 0) d4 = 1;
+            int n = d0 * d1 * d2 * d3;
+            if (shR5_[value] == 1) n = n * d4;
             return n;
         }
         int rawSt(int i, int k) { return nSt3_[i * 3 + k]; }
@@ -402,6 +505,16 @@ class Graph {
             wNHWC_[wCount_] = 0; wBN_[wCount_] = 0; wBNOnly_[wCount_] = 0;
             wCount_ = wCount_ + 1;
         }
+        int weightCount() { return wCount_; }
+        string weightName(int weight) { if (weight < 0 || weight >= wCount_) return ""; return wName_[weight]; }
+        int weightRows(int weight) { if (weight < 0 || weight >= wCount_) return 0; return wRows_[weight]; }
+        int weightCols(int weight) { if (weight < 0 || weight >= wCount_) return 0; return wCols_[weight]; }
+        int weightDType(int weight) { if (weight < 0 || weight >= wCount_) return 0; return wType_[weight]; }
+        int weightKind(int weight) { if (weight < 0 || weight >= wCount_) return 0; return wKind_[weight]; }
+        int weightOffset(int weight) { if (weight < 0 || weight >= wCount_) return -1; return wOff_[weight]; }
+        int weightLength(int weight) { if (weight < 0 || weight >= wCount_) return 0; return wLen_[weight]; }
+        int weightRole(int weight) { if (weight < 0 || weight >= wCount_) return 0; return wRole_[weight]; }
+        void setWeightRole(int weight, int role) { if (weight >= 0 && weight < wCount_) wRole_[weight] = role; }
         void addGraphOutput(string nm) { if (goCount_ < 64) { goName_[goCount_] = nm; goCount_ = goCount_ + 1; } }
         void addGraphInput(string nm) { if (giCount_ < 64) { giName_[giCount_] = nm; giCount_ = giCount_ + 1; } }
         int graphInputCount() { return giCount_; }

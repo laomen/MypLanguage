@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-01 — 阶段一接口冻结：Graph 领域级访问器
+
+### 变更（`infer/graph.myp`）
+- 在不搬迁 SoA 字段、不改变现有 pass 行为的前提下，补齐后续 Graph 组件的稳定接口：
+  `nodeOperand/nodeResult/nodeIsAlive`、`attrInt/setAttrInt`、`attrIntArr/setAttrIntArr`、
+  `replaceOperand/replaceResultValue`、`valueRank/valueDim/valueKind/valueElementCount`、
+  `weightName/weightDType/weightOffset/weightLength` 等。
+- 统一规则：后续模块只通过领域级 API 读写节点、属性、shape、weight 和 mutation；不得直接
+  访问 `nIn*`、`shD*`、`wOff_`、`planOff_` 等私有 SoA 数组。
+- 为后续 `GraphNodes/GraphShapes/GraphWeights/GraphAnalysis/GraphOptimizer/GraphPlanner/
+  GraphCompiler` 抽取冻结兼容边界；现有 `Graph`、`OnnxLoader` 公共 API 保持不变。
+
+### 验证
+- `resnet_main` 在 `MYP_GPU=1 MYP_IR_VERIFY=1` 下通过，output sum **336.658**。
+- `train/grad_check.myp` 编译通过；`git diff --check` 通过。
+
+---
+
 ## 2026-09-01 — 修复 MYP_IR_VERIFY 在 Resize/Pad 上的悬空输入（隐藏 IR 一致性 bug）
 
 ### 背景
