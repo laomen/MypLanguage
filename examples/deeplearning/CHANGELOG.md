@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-09-01 — 阶段四 G5：LogSoftmax + Embedding 算子
+
+- **LogSoftmax（opKind 79）**：沿 axis 稳定 log-softmax。`consumerKindOf`
+  LogSoftmax → CNN_ACT；inferShapes copyShape（同 element-wise）；`axis` 属性
+  （默认 -1，负轴 +rank）；graph_compiler 按图维度算 `outer/axisDim/inner`
+  （张量视作 [outer, axisDim, inner] 行优先）；CPU/GPU kernel 每 (outer,inner)
+  列 max + Σexp + lse（稳定版）。
+- **Embedding（opKind 80）**：row-major 查表 `out[s*D+d] = w[ids[s]*D+d]`
+  （ONNX 无标准 Embedding op，常规用 Gather(axis=0) 表达——本 op 作为框架层
+  查表算子）。`classifyShapes` 权重表 FC_W transB=1（直接拷贝）+ ids 标
+  SHAPE/INT64 dead；inferShapes out[S,D,1,1]；graph_compiler `readI64Init` 读
+  ids → 临时 f32 张量；kernel clamp ids 越界。
+- `ops_iface_all` 补 `LogSoftmaxOp/GpuLogSoftmaxOp/EmbeddingOp/GpuEmbeddingOp` +
+  `registerFwd(79/80)`。
+- 新增 `tools/make_logsoftmax_onnx.py`（opset13：x[1,2,3,4] axis=1，x*2 拉开
+  范围测稳定性）+ `logsoftmax_main.myp`（LOGSOFTMAX ALL OK，CPU+GPU max diff
+  4.8e-7 = float 精度）；`embedding_rt_main.myp` 直接 runtime 单测（w[5,4]
+  线性 + ids=[1,3,0]，EMBEDDING ALL OK，CPU+GPU max diff 0）。
+- 回归：36/36 infer_tests + grad_check（GRAD CHECK OK）+ ResNet output sum
+  `336.658`。
+
 ## 2026-09-01 — 阶段四 G5：Squeeze + Gather 算子
 
 - **Squeeze（opKind 77）**：去 size-1 维。`consumerKindOf` Squeeze → CNN_ACT；

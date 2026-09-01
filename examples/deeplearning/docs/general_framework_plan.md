@@ -299,19 +299,26 @@ OpKind
   新增 `tools/make_squeeze_onnx.py`/`make_gather_onnx.py` +
   `squeeze_main.myp`/`gather_main.myp`（SQUEEZE/GATHER ALL OK，CPU+GPU max diff
   0 vs ORT）。
+- **已完成：LogSoftmax + Embedding**（commit `d3bd44f`）。**LogSoftmax**（opKind
+  79）：沿 axis 稳定 log-softmax（outer/axisDim/inner，负轴 +rank，每列
+  max+Σexp+lse），CPU+GPU max diff 4.8e-7（float 精度）。**Embedding**（opKind
+  80）：row-major 查表 out[s*D+d]=w[ids[s]*D+d]（ONNX 无标准 op，用 Gather
+  axis=0 表达；本 op 作框架层查表），ids int64 初始器标 dead + readI64Init 读
+  临时 f32 张量，CPU+GPU max diff 0（直接 runtime 单测）。
 - **已完成：阶段七 Unsupported op 诊断**（commit `627a58c`）。loader 解析时检测
   未知 ONNX op → 打印 op 类型/节点索引/输入名 + `badOp_` 标记 → `load()` 返回 0
   （显式失败而非静默错误/段错误）。OpCode 补 `CONSTANT(57)` 防误报。
-- **已验证**：34/34 infer_tests + grad_check（L0=1.92528，GRAD CHECK OK）在
+- **已验证**：36/36 infer_tests + grad_check（L0=1.92528，GRAD CHECK OK）在
   `MYP_GPU=1 MYP_IR_VERIFY=1` 下全部通过；ResNet output sum `336.658`。关键
   提交：`8a38beb`（G2 基础）、`9508a10`（DATA role）、`88d0fd2`（G3 负轴）、
   `0440a18`（Reduce 族）、`627a58c`（op 诊断）、`bad6242`（Expand）、
-  `6552144`（Where）、`0b4eeb2`（Tile）、`9f5dfee`（Squeeze+Gather）。
-- **下一步**：G3 剩余（broadcast/ShapeExpr/dtype 转换规则）与阶段四第一优先级
-  算子已全部完成（Gather/Expand/Where/Tile/Squeeze/ReduceSum-Max-Min）。当前
-  模型集为 4D/5D 静态 shape + 全 FLOAT + 同形状广播，broadcast 统一与 ShapeExpr
-  无模型驱动——按「不为没有目标的模式提前堆代码」，优先推进有合成测试可验证的
-  算子补全（如第二优先级 LogSoftmax/Embedding，或训练/生成式模型专项）。
+  `6552144`（Where）、`0b4eeb2`（Tile）、`9f5dfee`（Squeeze+Gather）、
+  `d3bd44f`（LogSoftmax+Embedding）。
+- **下一步**：G3 剩余（broadcast/ShapeExpr/dtype 转换规则）与第二优先级训练/
+  生成式模型专项（Dropout 训练/推理语义、Checkpoint、梯度累积、混合精度）。
+  当前模型集为 4D/5D 静态 shape + 全 FLOAT + 同形状广播，broadcast 统一与
+  ShapeExpr 无模型驱动——按「不为没有目标的模式提前堆代码」，优先推进有合成
+  测试可验证的算子补全。
 
 ## 5. 阶段三：Shape、DType 与 Broadcast 基础层
 
@@ -350,10 +357,12 @@ OpKind
 
 ### 第二优先级：训练和生成式模型
 
-- Attention
-- KV cache
-- RoPE
-- GELU 完整版本
+- Attention（✅ 已有 opKind 62）
+- KV cache（✅ 已有）
+- RoPE（✅ 已有 opKind 66）
+- GELU 完整版本（✅ 已有 opKind 65）
+- `LogSoftmax`（✅ 完成，commit `d3bd44f`）
+- `Embedding`（✅ 完成，commit `d3bd44f`，框架层 row-major 查表；ONNX 常规用 Gather axis=0）
 - Dropout 的训练/推理语义
 - Checkpoint、梯度累积和混合精度
 
