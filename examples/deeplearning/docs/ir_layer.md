@@ -195,6 +195,7 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | **P2a** | pattern-match/rewrite 基建 + 迁移一个低风险融合（Conv→Relu）；新增 Add(x,0)、Mul(x,1) 等恒等简化 | **已实施首条 rewrite**：严格标量初始器的 Add(x,0)/Mul(x,1)，DefUse 重连后 tombstone | identity_fold.onnx：3 ops→1 Softmax，结果匹配 numpy |
 | **P2b** | 迁移既有单-use 融合为 pattern 描述 | **已实施**：Conv/InstanceNorm→Relu、GAP→Flatten、Conv→BN 全部以 `matchSingleUseOp` 取代 consumer 扫描；后端协议不变 | BN 专项逐位 OK、ops2d vs ORT 4.77e-7、skip U-Net GPU 100% |
 | **P2c** | DCE 消费 DefUseAnalysis | **已实施**：每轮 DCE 前重建 use 表，按 `valueUseCount` 删除死节点 | identity 3→1、CONST FOLD OK、skip U-Net GPU 100% |
+| **P2d** | 图输出 rewrite（`replaceAllUses` 覆盖隐式消费者 + 指纹含 `goName_`） | **已实施**：`Add(x,0)`/`Mul(x,1)` 输出直接是图输出也能折叠，图输出名改指保留值 | identity_fold 双输出 1 op、skip U-Net GPU 100% |
 | **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | 零变化（重构） | infer_tests + grad_check + opt_check |
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
 
@@ -326,8 +327,8 @@ P1b 将 existing pass 的返回 `ok` 扩展为不改变 MYP 方法签名的 Grap
   后续 BN 参数检查、权重折叠和无 bias 合成逻辑原样保留，避免把数值 rewrite 与匹配迁移混合。
 
 **后续 P2b 范围**：所有既有单-use融合均已改走 matcher；Conv→BN 的数值属性/权重 rewrite
-仍待 P3 schema 化。图输出 rewrite、
-`replaceResult/eraseNode` 仍未实现，恒等 pass 因此明确跳过图输出。
+仍待 P3 schema 化。图输出 rewrite 已在 P2d 落地（`replaceAllUses` 把图输出作为隐式
+消费者一并改接）；`replaceResult/eraseNode` 仍为占位，由 value-replacement 场景按需补齐。
 
 ## 14. 实施状态：P2c（2026-09-02）
 
@@ -339,5 +340,22 @@ fixed-point 语义，但去除了每个候选节点都扫描全图的 `liveConsu
 验证：identity 链 `Add(0)→Mul(1)` 经 rewrite+DCE 后 runtime 仅 1 个 Softmax；`const_main`
 输出保持正确（`CONST FOLD OK`）；带跳跃连接 U-Net 的训练图在 `MYP_IR_VERIFY=1` 下 GPU
 acc 100%。
+
+## 15. 实施状态：P2d（2026-09-02）
+
+value-replacement rewrite 的图输出能力补全：
+
+- `replaceAllUses` 把图输出当作值的隐式消费者：`goName_` 指向旧值的条目全部改接为新值。
+  「折叠某节点后其输出恰好是图输出」的场景不再需要单独一套 graph-output rewrite；后续
+  任何基于 `replaceAllUses` 的 rewrite 自动获得图输出支持。
+- `analysisFingerprint` 加入 `goName_`：图输出名是 planMemory persist（Liveness）的依赖，
+  此前指纹不覆盖它，纯图输出 rename 可能被误判为 changed=0 而保留过期分析。
+- `foldIdentityOps` 移除 `isGraphOutput` 跳过：`Add(x,0)`/`Mul(x,1)` 的输出即使直接是图
+  输出也能折叠，图输出名改指保留值，原输出张量 tombstone 后不再登记（buildRuntime 跳过）。
+
+验证：identity_fold 夹具新增第二输出 `out2 = Add(data2, 0)`。优化后 runtime 仍 1 op，
+图输出名由 `out2` 重命名为 `data2`，`tensorId("out2")` 消失，读数与 data2 缓冲 `[10,20]`
+一致。回归（BN/ops2d/const/ONNX MLP/skip U-Net GPU 训练）全部通过；训练路径
+`buildReverseGraph`（依赖 Softmax 图输出定位）与图输出 rename 无冲突。
 
 ---

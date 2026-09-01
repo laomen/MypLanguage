@@ -1,5 +1,7 @@
 // identity_fold_main.myp — IR-P2: Add(x,0) / Mul(x,1) pattern rewrite regression.
 // 生成器图：data -> Add(0) -> Mul(1) -> Softmax；优化后运行时只应保留 Softmax。
+// 第二输出 out2 = Add(data2, 0)：P2d 图输出 rewrite 应把图输出名重命名为 data2，
+// 并删除 out2 张量（tensorId("out2") < 0），读数与 data2 缓冲一致。
 import env;
 import fmt;
 import "../infer/runtime.myp";
@@ -15,10 +17,21 @@ class IdentityFoldMain {
             if (ok == 0) { Console.writeLine("IDENTITY FOLD LOAD FAIL"); return; }
             int data = loader.tensorId("data");
             int prob = loader.tensorId("prob");
-            if (data < 0 || prob < 0) { Console.writeLine("IDENTITY FOLD TENSOR FAIL"); return; }
+            int data2 = loader.tensorId("data2");
+            if (data < 0 || prob < 0 || data2 < 0) { Console.writeLine("IDENTITY FOLD TENSOR FAIL"); return; }
+            // P2d：图输出 rewrite —— 第二输出名必须是 data2（out2 已被折叠重命名）
+            if (loader.graphOutputName(1) != "data2") {
+                Console.writeString("IDENTITY FOLD GO RENAME FAIL got=");
+                Console.writeString(loader.graphOutputName(1));
+                Console.writeLine("");
+                return;
+            }
+            if (loader.tensorId("out2") >= 0) { Console.writeLine("IDENTITY FOLD OUT2 LEAK"); return; }
             rt.setFlat(data, 0, 1.0);
             rt.setFlat(data, 1, 2.0);
             rt.setFlat(data, 2, 3.0);
+            rt.setFlat(data2, 0, 10.0);
+            rt.setFlat(data2, 1, 20.0);
             rt.run();
             double p0 = rt.getFlat(prob, 0);
             double p1 = rt.getFlat(prob, 1);
@@ -30,6 +43,10 @@ class IdentityFoldMain {
             if (Math.abs(p0 - e0) > 1.0e-5) bad = 1;
             if (Math.abs(p1 - e1) > 1.0e-5) bad = 1;
             if (Math.abs(p2 - e2) > 1.0e-5) bad = 1;
+            // out2 现在指向 data2 的缓冲：必须读到 [10, 20]
+            double q0 = rt.getFlat(data2, 0);
+            double q1 = rt.getFlat(data2, 1);
+            if (q0 != 10.0 || q1 != 20.0) bad = 1;
             Console.writeString("identity runtime ops=");
             Console.write(rt.opCount());
             Console.writeLine("");

@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P2d：图输出 rewrite（replaceAllUses 覆盖隐式消费者）
+
+### 变更（`infer/graph.myp`）
+- `replaceAllUses(oldValue,newValue)` 把**图输出也视为值的隐式消费者**：`goName_` 指向
+  oldValue 的条目一并改接为 newValue，与既有精确 `(userNode,operandSlot)` edge 重连共用
+  同一条 mutation API。后续所有 value-replacement rewrite 自动获得图输出支持。
+- `analysisFingerprint` 计入 `goName_`（图输出名是 planMemory persist / Liveness 依赖），
+  纯图输出 rename 不再被指纹误判为 changed=0。
+- `foldIdentityOps` 解除「跳过图输出」限制：`Add(x,0)`/`Mul(x,1)` 的输出即使直接是图输出
+  也能折叠，图输出名改指保留值（如 `Add(data2,0)→data2`），原输出张量 tombstone 后不再登记。
+
+### 验证
+- `make_identity_fold_onnx.py` 扩展第二输出 `out2 = Add(data2, zero2)`；优化后 runtime 仍
+  **1 op**，`graphOutputName(1) == "data2"`、`tensorId("out2") < 0`、`out2` 读数 == data2
+  缓冲 `[10,20]`，`IDENTITY FOLD OK`（`MYP_IR_VERIFY=1`）。
+- 回归：BN fold/standalone/norelu max diff **0**；ops2d vs ORT **4.76837e-07**；`const_main`
+  `CONST FOLD OK`；ONNX MLP **99%**；带跳跃连接 3D U-Net GPU 训练 **acc 100%**（训练路径
+  `buildReverseGraph` 与图输出 rename 无冲突）。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P2b：Conv→Relu 融合迁移到 DefUse Pattern/Rewrite
 
 ### 变更（`infer/graph.myp`）

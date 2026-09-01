@@ -240,7 +240,9 @@ class Graph {
             analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
         }
         // P2 rewrite 原语：把 oldValue 的每条精确 Use（包含重复 operand）改接到 newValue。
-        // 必须先 ensureDefUse；扫描 use 快照期间只改 node 输入，最后一次性失效索引。
+        // 图输出是值的隐式消费者：名称指向 oldValue 的 goName_ 一并改接到 newValue，因此
+        // replaceAllUses 也覆盖 graph-output rewrite（P2d）。必须先 ensureDefUse；扫描 use
+        // 快照期间只改 node 输入，最后一次性失效索引。
         void replaceAllUses(int oldValue, int newValue) {
             if (oldValue < 0 || newValue < 0 || oldValue >= sCount_ || newValue >= sCount_) return;
             ensureDefUse();
@@ -251,6 +253,13 @@ class Graph {
                 int slot = valueUseSlot(oldValue, use);
                 if (user >= 0 && slot >= 0) nodeIn(user, slot, shName_[newValue]);
                 use = use + 1;
+            }
+            string oldName = shName_[oldValue];
+            string newName = shName_[newValue];
+            int g = 0;
+            while (g < goCount_) {
+                if (goName_[g] == oldName) goName_[g] = newName;
+                g = g + 1;
             }
             duValid_ = 0;
             analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
@@ -548,6 +557,12 @@ class Graph {
                 hash = (hash * 131L + long(nFused_[node] + nNHWC_[node])) % 2147483647L;
                 node = node + 1;
             }
+            // 图输出名影响 planMemory 的 persist（Liveness 依赖），改写时必须计入指纹。
+            int g = 0;
+            while (g < goCount_) {
+                hash = hashIRText(hash, goName_[g]);
+                g = g + 1;
+            }
             int value = 0;
             while (value < sCount_) {
                 hash = hashIRText(hash, shName_[value]);
@@ -561,8 +576,8 @@ class Graph {
             }
             return hash;
         }
-        // P2：只处理严格标量初始化器的 Add(x,0) / Mul(x,1)。不折叠图输出，避免在 P2
-        // 引入 graph-output rewrite；不处理近似值、动态标量或 broadcast，保持数值语义严格。
+        // P2：只处理严格标量初始化器的 Add(x,0) / Mul(x,1)。图输出作为隐式消费者由
+        // replaceAllUses 一并改接（P2d）；不处理近似值、动态标量或 broadcast，保持数值语义严格。
         int isScalarInitValue(string name, double expect) {
             int wi = initIdx(name);
             if (wi < 0 || wLen_[wi] != 4) return 0;
@@ -581,7 +596,7 @@ class Graph {
                 string op = nType_[node];
                 if (op != "Add" && op != "Mul") { node = node + 1; continue; }
                 string output = effectiveOut(node);
-                if (output == "" || isGraphOutput(output) == 1) { node = node + 1; continue; }
+                if (output == "") { node = node + 1; continue; }
                 double identity = (op == "Add") ? 0.0 : 1.0;
                 int in0 = nodeInputValue(node, 0);
                 int in1 = nodeInputValue(node, 1);
