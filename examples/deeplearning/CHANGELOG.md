@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-09-01 — 阶段4e5：LLM 算子 GPU 覆盖补全 → 接口框架 CPU+GPU 100%（通用化推进）
+
+### 变更（`infer/gpu_ops.myp` + `ops_iface_all.myp`）
+- **4 个新通用 GpuInferOps 内核**（补 61-67 GPU 缺口；rmsnorm/layernorm/gelu 已有）：
+  `gatherRows`（thread-per-output-element）、`rope`（thread-per-(h,a,s) 对，写旋转两行）、
+  `attention`（thread=(head,i)，scOff 须 [heads*S*S]）、`attentionCached`（thread=head，
+  scOff 须 [heads*len]）——对齐 ops.myp InferOps 语义 + 既有「resident 单数组 + @gpu for」
+  模式（无原子、无 stream，与 rmsnorm/layernorm/gelu 一致）。
+- **7 个 Gpu* 接口类**（GpuRmsNormOp/GpuAttentionOp/GpuGatherRowsOp/GpuLayerNormOp/
+  GpuGeluOp/GpuRopeOp/GpuAttentionCachedOp）——rmsNorm/layerNorm 复用通用内核 + arena
+  尾部 stOff（rt.statsOffRef()）。
+- **注册**：`registerAllIfaceOps` 61-67 改为 CPU+GPU 双注册 → `runGpu()` 现可统一分派
+  **全部 opKind 1-71**（接口框架 CPU+GPU 100% 覆盖，无 if/else 回退）。
+- 删 registerAllIfaceOps 头部"LLM 61-67 runGpu 无分支只注册 CPU"过时注释。
+
+### 验证（`infer_tests/llm_runtime_gpu_main.myp` 新回归）
+- 静态图含 gatherRows→rmsNorm→attention(因果,GQA)→rope→gelu→layerNorm + 独立
+  attentionCached decode，A=CPU run()、B=GPU runGpu()，同种子填充：
+  **各输出 maxDiff=0 → `LLM RUNTIME GPU CHECK OK`**（CPU/GPU 均）。
+- 回归：3d_unet/3d_seg 训练 CPU+GPU、run_onnx 推理、distilgpt2_forward 全 OK。
+
+---
+
 ## 2026-09-01 — 阶段4e4：run()/runGpu() 删除 if/else，只保留全接口分派
 
 ### 变更（`infer/runtime.myp` + `ops_iface_all.myp`）

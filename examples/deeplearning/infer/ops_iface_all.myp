@@ -1474,6 +1474,99 @@ class AttentionCachedOp {
 }
 
 // =====================================================================
+// LLM 算子 GPU 类（opKind 61-67；2026-09-01 补全 → runGpu() 全 opKind 统一分派）
+// =====================================================================
+
+// ---- rmsNorm（GPU，复用通用 GpuInferOps.rmsnorm，stOff 用 arena 尾部暂存）----
+class GpuRmsNormOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int in = rt.opAAt(i); int g = rt.opBAt(i); int out = rt.opCAt(i);
+            int D = rt.opP0At(i); int S = rt.opP1At(i);
+            GpuInferOps.rmsnorm(rt.arenaRef(), D * S, rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(out),
+                                D, S, F32.toDouble(rt.opP2At(i)), rt.devRef(), rt.statsOffRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- attention（GPU，scOff 须 [heads*S*S]）----
+class GpuAttentionOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int q = rt.opAAt(i); int k = rt.opBAt(i); int v = rt.opCAt(i); int out = rt.opDAt(i); int sc = rt.opP0At(i);
+            int D = rt.opP1At(i); int S = rt.opP2At(i); int heads = rt.opP3At(i);
+            GpuInferOps.attention(rt.arenaRef(), heads * S, rt.tensorOff(q), rt.tensorOff(k), rt.tensorOff(v),
+                                  rt.tensorOff(out), rt.tensorOff(sc), D, S, heads, rt.opP4At(i), rt.opP5At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- gatherRows（GPU）----
+class GpuGatherRowsOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int e = rt.opAAt(i); int ids = rt.opBAt(i); int out = rt.opCAt(i);
+            int vocab = rt.opP0At(i); int D = rt.opP1At(i); int S = rt.opP2At(i);
+            GpuInferOps.gatherRows(rt.arenaRef(), D * S, rt.tensorOff(e), rt.tensorOff(ids), rt.tensorOff(out),
+                                   vocab, D, S, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- layerNorm（GPU，复用 GpuInferOps.layernorm，stOff 用 arena 尾部暂存）----
+class GpuLayerNormOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int in = rt.opAAt(i); int g = rt.opBAt(i); int b = rt.opCAt(i); int out = rt.opDAt(i);
+            int D = rt.opP0At(i); int S = rt.opP1At(i);
+            GpuInferOps.layernorm(rt.arenaRef(), D * S, rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(b), rt.tensorOff(out),
+                                  D, S, F32.toDouble(rt.opP2At(i)), rt.devRef(), rt.statsOffRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- gelu（GPU，复用 GpuInferOps.gelu）----
+class GpuGeluOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int in = rt.opAAt(i); int out = rt.opBAt(i);
+            GpuInferOps.gelu(rt.arenaRef(), rt.opP0At(i), rt.tensorOff(in), rt.tensorOff(out), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- rope（GPU）----
+class GpuRopeOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int x = rt.opAAt(i); int cos = rt.opBAt(i); int sin = rt.opCAt(i);
+            int D = rt.opP0At(i); int S = rt.opP1At(i); int heads = rt.opP2At(i);
+            GpuInferOps.rope(rt.arenaRef(), heads * (D / heads / 2) * S, rt.tensorOff(x), rt.tensorOff(cos),
+                             rt.tensorOff(sin), D, S, heads, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- attentionCached（GPU，scOff 须 [heads*len]）----
+class GpuAttentionCachedOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int q = rt.opAAt(i); int kc = rt.opBAt(i); int vc = rt.opCAt(i); int out = rt.opDAt(i); int sc = rt.opP0At(i);
+            int D = rt.opP1At(i); int stride = rt.opP2At(i); int len = rt.opP3At(i); int heads = rt.opP4At(i);
+            GpuInferOps.attentionCached(rt.arenaRef(), heads, rt.tensorOff(q), rt.tensorOff(kc), rt.tensorOff(vc),
+                                        rt.tensorOff(out), rt.tensorOff(sc), D, stride, len, heads, rt.opP5At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// =====================================================================
 // GPU 算子类（第 5 批：ConvTranspose / 3D / 训练 loss）
 // =====================================================================
 
@@ -1675,7 +1768,8 @@ class GpuDiceLossOp {
 }
 
 // ---- 全量注册：relu + 本文件所有算子（前向/反向 × CPU/GPU）----
-// 未注册槽回退原 if/else。LLM 算子（61-67）runGpu 无分支 → 只注册 CPU。
+// 61-71 全 opKind 均注册 CPU+GPU（2026-09-01 起含 LLM 61-67）→ run()/runGpu()
+// 统一接口分派，无 if/else 回退。
 void registerAllIfaceOps(InferenceRuntime rt) {
     registerIfaceOps(rt);   // relu（2/51，CPU+GPU）
     rt.registerFwdBwd(1, 50, new DenseOp(), 0);          rt.registerFwdBwd(1, 50, new GpuDenseOp(), 1);
@@ -1726,12 +1820,12 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerBwd(54, new SoftmaxCeOp(), 0);            rt.registerBwd(54, new GpuSoftmaxCeOp(), 1);
     rt.registerBwd(55, new UpdateOp(), 0);               rt.registerBwd(55, new GpuUpdateOp(), 1);
     rt.registerBwd(69, new DiceLossOp(), 0);             rt.registerBwd(69, new GpuDiceLossOp(), 1);
-    // LLM 算子 CPU-only（runGpu 无分支，不注册 GPU）
-    rt.registerFwd(61, new RmsNormOp(), 0);
-    rt.registerFwd(62, new AttentionOp(), 0);
-    rt.registerFwd(63, new GatherRowsOp(), 0);
-    rt.registerFwd(64, new LayerNormOp(), 0);
-    rt.registerFwd(65, new GeluOp(), 0);
-    rt.registerFwd(66, new RopeOp(), 0);
-    rt.registerFwd(67, new AttentionCachedOp(), 0);
+    // LLM 算子（61-67，2026-09-01 起 CPU+GPU 全注册 → runGpu 统一分派）
+    rt.registerFwd(61, new RmsNormOp(), 0);           rt.registerFwd(61, new GpuRmsNormOp(), 1);
+    rt.registerFwd(62, new AttentionOp(), 0);         rt.registerFwd(62, new GpuAttentionOp(), 1);
+    rt.registerFwd(63, new GatherRowsOp(), 0);        rt.registerFwd(63, new GpuGatherRowsOp(), 1);
+    rt.registerFwd(64, new LayerNormOp(), 0);         rt.registerFwd(64, new GpuLayerNormOp(), 1);
+    rt.registerFwd(65, new GeluOp(), 0);              rt.registerFwd(65, new GpuGeluOp(), 1);
+    rt.registerFwd(66, new RopeOp(), 0);              rt.registerFwd(66, new GpuRopeOp(), 1);
+    rt.registerFwd(67, new AttentionCachedOp(), 0);   rt.registerFwd(67, new GpuAttentionCachedOp(), 1);
 }

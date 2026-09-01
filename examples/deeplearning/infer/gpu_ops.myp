@@ -2383,6 +2383,152 @@ class GpuInferOps {
                 }
             }
         }
+        // ==================== LLM 算子 GPU 内核补全（2026-09-01，opKind 62/63/66/67）====================
+        // 对齐 ops.myp InferOps 语义 + 本文件「resident 单数组 + @gpu for」模式，配合
+        // ops_iface_all.myp 的 Gpu* 接口类 → runGpu() 全 opKind 统一分派（接口框架
+        // CPU+GPU 100% 覆盖）。rmsnorm(61)/layernorm(64)/gelu(65) 已有，此处补
+        // gatherRows/rope/attention/attentionCached。
+
+        // gatherRows（opKind 63）：embedding 查表。eOff:[vocab,D]，idOff:[S]（token id），
+        // xOff:[D,S] 输出。thread-per-output-element：x[d*S+s] = e[id(s)*D + d]。
+        void gatherRows(float[] a, int work, int eOff, int idOff, int xOff, int vocab, int D, int S, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int dd = int(p / long(S));
+                    int ss = int(p % long(S));
+                    int id = int(a[idOff + ss]);
+                    if (id < 0) id = 0;
+                    if (id >= vocab) id = vocab - 1;
+                    a[xOff + int(p)] = a[eOff + id * D + dd];
+                }
+            }
+        }
+
+        // rope（opKind 66）：RoPE（Llama 逐头、head_dim 内半配对）。xOff:[D,S] 原地，
+        // cosOff/sinOff:[dh/2,S]。thread-per-(h,a,s) 对（每线程写旋转的两行元素）。
+        void rope(float[] a, int work, int xOff, int cosOff, int sinOff, int D, int S, int heads, long dev) {
+            int dh = D / heads;
+            int half = dh / 2;
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int ss = int(p % long(S));
+                    int rem = int(p / long(S));
+                    int aa = rem % half;
+                    int h = rem / half;
+                    int i0 = (h * dh + aa) * S + ss;
+                    int i1 = (h * dh + half + aa) * S + ss;
+                    double x0 = double(a[xOff + i0]);
+                    double x1 = double(a[xOff + i1]);
+                    double c = double(a[cosOff + aa * S + ss]);
+                    double si = double(a[sinOff + aa * S + ss]);
+                    a[xOff + i0] = float(x0 * c - x1 * si);
+                    a[xOff + i1] = float(x0 * si + x1 * c);
+                }
+            }
+        }
+
+        // attention（opKind 62）：满序列缩放点积注意力（可选因果）。q/k/v/out:[D,S]
+        // （行=特征，列=token），causal 时 j>i → -1e30。scOff 须 [heads*S*S]
+        // （每 (head,i) 独立 score 行，多 head/query 并行不竞争）。thread=(head,i)。
+        void attention(float[] a, int work, int qOff, int kOff, int vOff, int outOff, int scOff,
+                       int D, int S, int heads, int causal, int groups, long dev) {
+            int dh = D / heads;
+            double scale = 1.0 / Math.sqrt(double(dh));
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int bh = int(p / long(S));
+                    int i = int(p % long(S));
+                    int kvh = bh / groups;
+                    int sb = (bh * S + i) * S;
+                    int j = 0;
+                    while (j < S) {
+                        double sum = 0.0;
+                        int d = 0;
+                        while (d < dh) {
+                            sum = sum + double(a[qOff + (bh * dh + d) * S + i]) * double(a[kOff + (kvh * dh + d) * S + j]);
+                            d = d + 1;
+                        }
+                        double sc = sum * scale;
+                        if (causal == 1 && j > i) sc = -1.0e30;
+                        a[scOff + sb + j] = float(sc);
+                        j = j + 1;
+                    }
+                    float maxv = a[scOff + sb + 0];
+                    j = 1;
+                    while (j < S) { if (a[scOff + sb + j] > maxv) maxv = a[scOff + sb + j]; j = j + 1; }
+                    double sumE = 0.0;
+                    j = 0;
+                    while (j < S) {
+                        double e = Math.exp(double(a[scOff + sb + j]) - double(maxv));
+                        a[scOff + sb + j] = float(e);
+                        sumE = sumE + e;
+                        j = j + 1;
+                    }
+                    j = 0;
+                    while (j < S) { a[scOff + sb + j] = float(double(a[scOff + sb + j]) / sumE); j = j + 1; }
+                    int d = 0;
+                    while (d < dh) {
+                        double sum = 0.0;
+                        int j2 = 0;
+                        while (j2 < S) {
+                            sum = sum + double(a[scOff + sb + j2]) * double(a[vOff + (kvh * dh + d) * S + j2]);
+                            j2 = j2 + 1;
+                        }
+                        a[outOff + (bh * dh + d) * S + i] = float(sum);
+                        d = d + 1;
+                    }
+                }
+            }
+        }
+
+        // attentionCached（opKind 67）：KV cache 增量注意力（decode 每步一个 token）。
+        // qOff:[D]，kcOff/vcOff:[kvD,stride]（缓存容量/行步长，位置沿列，前 len 列参与），
+        // outOff:[D]，scOff 须 [heads*len]（每头独立 score 行）。thread=head。
+        void attentionCached(float[] a, int work, int qOff, int kcOff, int vcOff, int outOff, int scOff,
+                             int D, int stride, int len, int heads, int groups, long dev) {
+            int dh = D / heads;
+            double scale = 1.0 / Math.sqrt(double(dh));
+            @gpu for (long b = 0L; b < long(work); b = b + 1L) resident(a = dev) {
+                if (b < work) {
+                    int kvh = int(b) / groups;
+                    int i = 0;
+                    while (i < len) {
+                        double sum = 0.0;
+                        int d = 0;
+                        while (d < dh) {
+                            sum = sum + double(a[qOff + int(b) * dh + d]) * double(a[kcOff + (kvh * dh + d) * stride + i]);
+                            d = d + 1;
+                        }
+                        a[scOff + int(b) * len + i] = float(sum * scale);
+                        i = i + 1;
+                    }
+                    float maxv = a[scOff + int(b) * len + 0];
+                    i = 1;
+                    while (i < len) { if (a[scOff + int(b) * len + i] > maxv) maxv = a[scOff + int(b) * len + i]; i = i + 1; }
+                    double sumE = 0.0;
+                    i = 0;
+                    while (i < len) {
+                        double e = Math.exp(double(a[scOff + int(b) * len + i]) - double(maxv));
+                        a[scOff + int(b) * len + i] = float(e);
+                        sumE = sumE + e;
+                        i = i + 1;
+                    }
+                    i = 0;
+                    while (i < len) { a[scOff + int(b) * len + i] = float(double(a[scOff + int(b) * len + i]) / sumE); i = i + 1; }
+                    int d = 0;
+                    while (d < dh) {
+                        double sum = 0.0;
+                        int i2 = 0;
+                        while (i2 < len) {
+                            sum = sum + double(a[scOff + int(b) * len + i2]) * double(a[vcOff + (kvh * dh + d) * stride + i2]);
+                            i2 = i2 + 1;
+                        }
+                        a[outOff + int(b) * dh + d] = float(sum);
+                        d = d + 1;
+                    }
+                }
+            }
+        }
         // ReduceMean 激进优化（全 resident 单数组版，2026-08-12）：并行归约替代
         // 原"单线程串行"（mode 0 原 1 线程串行 total；mode 1 原每通道 1 线程串行 S）。
         // stats 写入 arena 尾部预留区 stOff，全设备计算（单数组 resident，无原子）。

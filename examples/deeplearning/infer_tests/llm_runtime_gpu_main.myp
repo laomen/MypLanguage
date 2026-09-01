@@ -1,0 +1,145 @@
+// llm_runtime_gpu_main.myp — 阶段4e5：LLM 算子 61-67 走 runtime 接口分派，CPU vs GPU 逐位对拍
+//
+// 构建含 gatherRows(63)/rmsNorm(61)/attention(62)/rope(66)/gelu(65)/layerNorm(64)/
+// attentionCached(67) 的静态图，A=CPU run()、B=GPU runGpu()（均经 registerAllIfaceOps
+// 自动注册的接口分派），同数据填充后比较各输出张量 maxDiff。
+// 验证 runGpu() 现可统一分派全 opKind（含 LLM 61-67 的 Gpu* 接口类）。
+//
+// 运行（须在 examples/ 下）：
+//   ./build/mypc examples/deeplearning/infer_tests/llm_runtime_gpu_main.myp -o /tmp/llm_rtg --stdlib stdlib
+//   cd examples && /tmp/llm_rtg          # CPU 分派（打印各 op 输出）
+//   MYP_GPU=1 /tmp/llm_rtg               # + GPU 分派对拍
+import env;
+import fmt;
+import "../infer/runtime.myp";
+
+class LLMRuntimeGpuCheck {
+    action:
+        @constructor LLMRuntimeGpuCheck() {
+            InferenceRuntime A = new InferenceRuntime();
+            A.init(400000);
+            InferenceRuntime B = new InferenceRuntime();
+            B.init(400000);
+            // 自动注册在首调 run()/runGpu() 时发生（无需显式 registerAllIfaceOps）
+
+            int D = 64; int S = 8; int heads = 4; int groups = 2; int dh = 16;
+            int vocab = 32; int kvD = (D / heads) * (heads / groups);   // kvD=32
+            int stride = 16; int len = 8;
+            double eps = 1.0e-5;
+
+            // ---- 前向链（gatherRows→rmsNorm→attention→rope→gelu→layerNorm）----
+            int eA = A.addTensor(vocab, D);       int eB = B.addTensor(vocab, D);
+            int idsA = A.addTensor(1, S);         int idsB = B.addTensor(1, S);
+            int embA = A.addTensor(D, S);         int embB = B.addTensor(D, S);
+            int gA = A.addTensor(D, 1);           int gB = B.addTensor(D, 1);
+            int rmsA = A.addTensor(D, S);         int rmsB = B.addTensor(D, S);
+            int scA = A.addTensor(heads * S * S, 1);  int scB = B.addTensor(heads * S * S, 1);
+            int attA = A.addTensor(D, S);         int attB = B.addTensor(D, S);
+            int cosA = A.addTensor(dh / 2, S);    int cosB = B.addTensor(dh / 2, S);
+            int sinA = A.addTensor(dh / 2, S);    int sinB = B.addTensor(dh / 2, S);
+            int g2A = A.addTensor(D, 1);          int g2B = B.addTensor(D, 1);
+            int b2A = A.addTensor(D, 1);          int b2B = B.addTensor(D, 1);
+            int lnA = A.addTensor(D, S);          int lnB = B.addTensor(D, S);
+
+            A.addGatherRows(eA, idsA, embA, vocab, D, S);
+            A.addRmsNorm(embA, gA, rmsA, D, S, eps);
+            A.addAttention(rmsA, rmsA, rmsA, attA, scA, D, S, heads, 1, groups);
+            A.addRope(attA, cosA, sinA, D, S, heads);
+            A.addGelu(attA, lnA, D * S);   // gelu 输出直接写 lnA 槽（避免再多张量）
+            A.addLayerNorm(lnA, g2A, b2A, lnA, D, S, eps);
+            B.addGatherRows(eB, idsB, embB, vocab, D, S);
+            B.addRmsNorm(embB, gB, rmsB, D, S, eps);
+            B.addAttention(rmsB, rmsB, rmsB, attB, scB, D, S, heads, 1, groups);
+            B.addRope(attB, cosB, sinB, D, S, heads);
+            B.addGelu(attB, lnB, D * S);
+            B.addLayerNorm(lnB, g2B, b2B, lnB, D, S, eps);
+
+            // ---- 独立 decode（attentionCached）----
+            int qA = A.addTensor(D, 1);   int qB = B.addTensor(D, 1);
+            int kcA = A.addTensor(kvD, stride);  int kcB = B.addTensor(kvD, stride);
+            int vcA = A.addTensor(kvD, stride);  int vcB = B.addTensor(kvD, stride);
+            int scdA = A.addTensor(heads * len, 1);  int scdB = B.addTensor(heads * len, 1);
+            int odA = A.addTensor(D, 1);   int odB = B.addTensor(D, 1);
+            A.addAttentionCached(qA, kcA, vcA, odA, scdA, D, stride, len, heads, groups);
+            B.addAttentionCached(qB, kcB, vcB, odB, scdB, D, stride, len, heads, groups);
+
+            // ---- 确定性填充（A/B 同种子）----
+            double seed = 1.0;
+            fill(A, B, eA, eB, vocab * D, seed);
+            seed = 2.0; fill(A, B, idsA, idsB, S, seed);
+            seed = 3.0; fill(A, B, gA, gB, D, seed);
+            seed = 4.0; fill(A, B, cosA, cosB, (dh / 2) * S, seed);
+            seed = 5.0; fill(A, B, sinA, sinB, (dh / 2) * S, seed);
+            seed = 6.0; fill(A, B, g2A, g2B, D, seed);
+            seed = 7.0; fill(A, B, b2A, b2B, D, seed);
+            seed = 8.0; fill(A, B, qA, qB, D, seed);
+            seed = 9.0; fill(A, B, kcA, kcB, kvD * stride, seed);
+            seed = 10.0; fill(A, B, vcA, vcB, kvD * stride, seed);
+            // ids 取整（0..vocab-1）
+            int z = 0;
+            while (z < S) {
+                double v = A.getFlat(idsA, z) * 0.3;
+                int iv = int(v);
+                if (iv < 0) iv = 0;
+                if (iv >= vocab) iv = vocab - 1;
+                A.setFlat(idsA, z, double(iv));
+                B.setFlat(idsB, z, double(iv));
+                z = z + 1;
+            }
+
+            int fails = 0;
+            step(A, B);
+            // 注意：runGpu 默认只在 GPU 可用时执行；无 GPU 时 runGpu 走 CPU 回退 → 仍对拍
+            fails = fails + cmp(A, B, rmsA, rmsB, "rmsNorm");
+            fails = fails + cmp(A, B, attA, attB, "attention");
+            fails = fails + cmp(A, B, lnA, lnB, "gelu+layerNorm");
+            fails = fails + cmp(A, B, odA, odB, "attentionCached");
+            if (fails == 0) Console.writeLine("LLM RUNTIME GPU CHECK OK");
+            else Console.writeLine("LLM RUNTIME GPU CHECK FAIL (" + Fmt.i(fails) + ")");
+        }
+
+        // A 走 CPU run()，B 走 GPU runGpu()（MYP_GPU=1；无 GPU 时 runGpu 回退 CPU）
+        void step(InferenceRuntime A, InferenceRuntime B) {
+            A.run();
+            if (Console.getEnv("MYP_GPU") == "1") B.runGpu();
+            else B.run();
+        }
+
+        void fill(InferenceRuntime A, InferenceRuntime B, int ta, int tb, int n, double seed) {
+            int i = 0;
+            while (i < n) {
+                seed = seed * 1103515245.0 + 12345.0;
+                double u = seed / 2147483648.0;
+                double frac = u - double(int(u));
+                double v = (frac - 0.5) * 0.5;
+                A.setFlat(ta, i, v);
+                B.setFlat(tb, i, v);
+                i = i + 1;
+            }
+        }
+
+        int cmp(InferenceRuntime A, InferenceRuntime B, int ta, int tb, string name) {
+            int sz = A.tensorSize(ta);
+            double maxd = 0.0;
+            int bad = 0;
+            int i = 0;
+            while (i < sz) {
+                double a = A.getFlat(ta, i);
+                double b = B.getFlat(tb, i);
+                double d = a - b;
+                if (d < 0.0) d = 0.0 - d;
+                if (d > maxd) maxd = d;
+                if (d > 1.0e-4) bad = bad + 1;   // GPU float32 累积容差
+                i = i + 1;
+            }
+            Console.writeString(name + ": maxDiff=" + Fmt.f(maxd, 6) + " bad=" + Fmt.i(bad) + " of " + Fmt.i(sz));
+            Console.writeLine("");
+            if (bad == 0) return 0;
+            return 1;
+        }
+}
+
+int main() {
+    LLMRuntimeGpuCheck d = new LLMRuntimeGpuCheck();
+    return 0;
+}
