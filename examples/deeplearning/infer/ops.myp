@@ -1172,7 +1172,7 @@ class InferOps {
             }
         }
 
-        // 融合 Conv+残差Add（P4-2，opKind=73）：与 conv 同，输出直接加残差张量（同形状同布局）。
+        // 融合 Conv+残差Add（P4-2/3，opKind=73）：与 conv 同，输出直接加残差张量（同形状同布局），可接 doRelu。
         void convResidual(
             float[] arena,
             int xOff, int xN, int xC, int xH, int xW,
@@ -1181,7 +1181,7 @@ class InferOps {
             int rOff,
             int kh, int kw,
             int sh, int sw, int pt, int pb, int pl, int pr,
-            int dh, int dw, int group
+            int dh, int dw, int group, int doRelu
         ) {
             int cpg = xC / group;
             int ocpg = yC / group;
@@ -1218,9 +1218,11 @@ class InferOps {
                             }
                             ic = ic + 1;
                         }
-                        // 残差与输出同形状同布局：同内偏移相加
+                        // 残差与输出同形状同布局：同内偏移相加；P4-3：可接 doRelu
                         int yoff = yOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox;
-                        arena[yoff] = sum + arena[rOff + (yoff - yOff)];
+                        float v = sum + arena[rOff + (yoff - yOff)];
+                        if (doRelu == 1 && v < 0.0f) v = 0.0f;
+                        arena[yoff] = v;
                         oc = oc + 1;
                     }
                 }

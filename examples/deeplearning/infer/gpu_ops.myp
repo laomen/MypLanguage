@@ -282,7 +282,7 @@ class GpuInferOps {
             }
         }
 
-        // 融合 Conv+残差Add（P4-2，opKind=73）：与 conv 同，输出直接加残差（同布局同偏移）。
+        // 融合 Conv+残差Add（P4-2/3，opKind=73）：与 conv 同，输出直接加残差（同布局同偏移），可接 doRelu。
         void convResidual(float[] a, int work,
                   int xOff, int xN, int xC, int xH, int xW,
                   int wOff, int bOff,
@@ -290,7 +290,7 @@ class GpuInferOps {
                   int rOff,
                   int kh, int kw,
                   int sh, int sw, int pt, int pb, int pl, int pr,
-                  int dh, int dw, int group, long dev) {
+                  int dh, int dw, int group, int doRelu, long dev) {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     long ox = p % yW;
@@ -324,7 +324,9 @@ class GpuInferOps {
                         }
                         ic = ic + 1;
                     }
-                    a[yOff + p] = sum + a[rOff + p];   // 残差同布局：p 即输出内偏移
+                    float v = sum + a[rOff + p];   // 残差同布局：p 即输出内偏移
+                    if (doRelu == 1 && v < 0.0f) v = 0.0f;   // P4-3：可接 doRelu
+                    a[yOff + p] = v;
                 }
             }
         }

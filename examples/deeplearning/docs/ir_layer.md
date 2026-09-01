@@ -202,6 +202,7 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 
 > P4 进展：**P4-1 已实施**（2026-09-02）——恒等折叠支持任意形状/广播常量张量（`isConstValue`）。
 > **P4-2 已实施**（2026-09-02）——残差 `Conv+Add` 融合（新 opKind 73 + `FUSE_CONV_ADD` + planMemory nIn3_/nIn4_）。
+> **P4-3 已实施**（2026-09-02）——残差融合折叠 Add 后 Relu（doRelu 内核）+ `FUSE_CONV_ADD` 训练门控。
 
 ## 6. 收益（预期）
 
@@ -486,5 +487,22 @@ U-Net GPU 训练全回归绿。
 推理 ~80ms（原 96ms，-17%）；ResNet50 CPU 同 fusion 输出一致；resnet18 top-5
 [236,237,238,896,897] 与参考一致；BN/ops2d/const/ONNX MLP/conv3d/skip U-Net GPU 训练
 acc 100% + grad check 全回归绿。
+
+## 23. 实施状态：P4-3（2026-09-02）
+
+残差融合补全：折叠 Add 后的 Relu（`Conv→Add→Relu` → 单 op）。
+
+- `convResidual` 内核加 `doRelu`（**后置**：conv+residual 再过 relu）；runtime `addConvResidual`
+  增加 doRelu 参数（存 `opRelu_`），iface 透传。
+- `fuseConvAdd` 在融合 Conv→Add 后，若 Add 输出唯一消费是 Relu → 一并折叠（conv nRelu_=1、
+  有效输出改接 relu 输出、tombstone Relu、标死 add 中间张量）。
+- **训练安全**：`convResidual` 无 backward，`FUSE_CONV_ADD` 现仅在推理路径运行（Graph
+  `trainingMode_` 标志：optimize=0、optimizeTrain=1 时跳过）。
+- 约束说明：pre-activation（`Conv→Relu→Add`，relu 已融合进 conv）仍不融合——与 doRelu 后置
+  语义不同。
+
+验证：ResNet50 GPU ops 88→72→**56**、`residual_fused=16`、top-1 lakeside(10.328) 逐位一致、
+稳态 ~80ms；CPU 同 fusion 输出一致；全回归绿（含训练路径 3D U-Net acc 100% + grad check +
+MNIST train 97%，确认训练门控无回归）。
 
 ---

@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P4.3：残差融合折叠 Add 后 Relu + 训练门控
+
+### 变更
+- `convResidual` 内核加 doRelu（后置：conv+residual 再过 relu）；runtime `addConvResidual`
+  增加 doRelu 参数（存 opRelu_），iface 透传。
+- `fuseConvAdd` 融合 Conv→Add 后折叠后续 Relu（`Conv→Add→Relu` → 单 op）。
+- `FUSE_CONV_ADD` 仅推理运行（`trainingMode_` 门控；convResidual 无 backward）。
+
+### 验证
+- ResNet50 GPU ops 88→72→56、`residual_fused=16`、top-1 lakeside(10.328) 逐位一致、稳态
+  ~80ms；CPU 输出一致。
+- 全回归绿：identity/BN/ops2d/const/ONNX MLP/conv3d、skip U-Net GPU 训练 acc 100% +
+  grad check、MNIST train 97%（`MYP_IR_VERIFY=1`）。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P4.2：残差 Conv+Add 融合
 
 ### 变更

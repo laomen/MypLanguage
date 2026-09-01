@@ -508,11 +508,11 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
 
-        // 融合 Conv+残差Add（P4-2，opKind=73）：卷积输出直接加残差张量写入 out。
-        // 参数同 addConv；残差 tid 存 opX_[id*4+0]（residual 与 out 同形状同布局）。
+        // 融合 Conv+残差Add（P4-2/3，opKind=73）：卷积输出直接加残差张量写入 out，可接 doRelu。
+        // 参数同 addConv；残差 tid 存 opX_[id*4+0]（residual 与 out 同形状同布局），doRelu 存 opRelu_。
         void addConvResidual(int inTid, int wTid, int bTid, int outTid, int residTid,
                              int strideH, int strideW, int padT, int padB, int padL, int padR,
-                             int dilH, int dilW, int group) {
+                             int dilH, int dilW, int group, int doRelu) {
             int id = opCount_;
             opKind_[id] = 73;
             opA_[id] = inTid;
@@ -523,6 +523,7 @@ class InferenceRuntime {
             opP4_[id] = padL; opP5_[id] = padR; opP6_[id] = dilH; opP7_[id] = dilW;
             opP8_[id] = group;
             opX_[id * 4 + 0] = residTid;
+            opRelu_[id] = doRelu;
             opCount_ = opCount_ + 1;
         }
 

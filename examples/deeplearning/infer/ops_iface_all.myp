@@ -332,7 +332,7 @@ class ConvResidualOp {
                 rt.tensorOff(rd),
                 rt.tensorH(wb), rt.tensorW(wb),
                 rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
-                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opReluAt(i));
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -465,7 +465,7 @@ class GpuConvResidualOp {
                 rt.tensorOff(rd),
                 rt.tensorH(wb), rt.tensorW(wb),
                 rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
-                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.devRef());
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opReluAt(i), rt.devRef());
         }
         void backward(InferenceRuntime rt, int i) { }
 }
