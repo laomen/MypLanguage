@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-02 — 阶段四：BatchMatMul（4D batch matmul + batch 广播）
+
+- inferShapes MatMul：A/B 任一 rank≥3 → batch 维逐维 max 广播 + 最后两维
+  matmul（`[max(ab0,bb0), max(ab1,bb1), M, N]`）；2D → 保持 `[d0(A), d1(B)]`。
+- **修复 classifyShapes MatMul 输出 kind**：从强制 FC_ACT 改为沿用主输入 kind
+  ——4D 输入 → CNN_ACT（4D 张量注册）。原 FC_ACT 把 batch 输出 [1,2,3,5]
+  注册成 2D size=2 → 输出全错。
+- graph_compiler MATMUL wiring：4D 输入 → `rt.addBatchMatmul`（opKind 82），
+  2D → `rt.addMatmul`（opKind 6）不变。runtime addBatchMatmul（opP0=aM,
+  opP1=aK, opP2=bN, opP3-8=batch dims）。
+- ops/gpu_ops `matmulBcast` kernel：thread-per-output-element，batch 维
+  `% 输入 batch 维`（维=1 → 0），K 归约。
+- 新增 `tools/make_bmm_onnx.py`（A[1,2,3,4]@B[1,2,4,5] + A2[1,1,3,4]@B2[1,2,4,5]
+  batch 广播）+ `infer_tests/bmm_main.myp`（BMM ALL OK，CPU+GPU max diff
+  2.4e-7 vs ORT）。
+- 回归：43/43 infer_tests + grad_check（GRAD CHECK OK）+ ResNet output sum
+  `336.658`（2D MatMul 无破坏）。
+
 ## 2026-09-02 — 阶段三：动态 batch 输入 shape 注入 + 编译期 specialization
 
 - **修复 `parseDim` 动态维解析 bug**：默认 `v=1` → `v=0`。ONNX 动态维用"空

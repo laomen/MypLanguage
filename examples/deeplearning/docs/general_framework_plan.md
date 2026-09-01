@@ -400,10 +400,11 @@ OpKind
 - `Tile`（✅ 完成，commit `0b4eeb2`）
 - `Squeeze`（✅ 完成，commit `9f5dfee`）
 - `ReduceSum/ReduceMax/ReduceMin`（✅ 完成，commit `0440a18` + `62b8b21`）
-- 完整 broadcast 的 `MatMul/BatchMatMul`
-- `LogSoftmax`
-- `LayerNorm/RMSNorm`
-- `Embedding`
+- 完整 broadcast 的 `MatMul/BatchMatMul`（✅ 完成，commit `a0646dc`：4D batch
+  matmul + batch 维逐维 max 广播；2D 路径不变）
+- `LogSoftmax`（✅ 完成，commit `d3bd44f`）
+- `LayerNorm/RMSNorm`（✅ 已有 opKind 64/61）
+- `Embedding`（✅ 完成，commit `d3bd44f`）
 
 ### 第二优先级：训练和生成式模型
 
