@@ -1611,6 +1611,12 @@ class Sema {
 
         void analyze(AstTU tu) {
             tu_ = tu;
+            // MYP_SEMA_TIMING=1：analyze 分段计时（P0 增量编译诊断；默认关闭不影响对拍）。
+            int timing = 0;
+            string tvs = Console.getEnv("MYP_SEMA_TIMING");
+            if (Str.len(tvs) != 0 && tvs == "1") timing = 1;
+            long t0 = 0, tPass0 = 0, tTopF = 0, tPassA = 0;
+            if (timing != 0) t0 = __myp_now_ms();
             registerIntrinsics();
             if (autoMain_ != 0) injectAutoMainIfNeeded(tu);
             // Pass 0：递归 type alias 检测（type A = A / type A = B, B = A）。
@@ -2096,6 +2102,7 @@ class Sema {
                 }
                 return;
             }
+            if (timing != 0) tPass0 = __myp_now_ms();
             // 顶层 mapping：处理 where 子句与 lambda 节点
             for (int mi = 0; mi < tu.mappings().size(); mi = mi + 1) {
                 analyzeMapping(tu.mappings().get(mi));
@@ -2135,6 +2142,7 @@ class Sema {
                 curGeneric_.clear();
             }
             int ncls = tu.classes().size();
+            if (timing != 0) tTopF = __myp_now_ms();
             // === F4-G2b：全局双 pass 类访问（复现 C++ Pass1/Pass2 作用域弹出）===
             // C++ visitClassDecl(Pass1) 解析属性类型 → 触发泛型实例化#1（实例名声明在
             // 类作用域，结束时弹出）；随后 Pass2 以新作用域访问 action body，此时
@@ -2231,6 +2239,7 @@ class Sema {
                 }
                 sym_.leaveScope();  // ← 弹出属性作用域：prop 触发的泛型实例从符号表移除
             }
+            if (timing != 0) tPassA = __myp_now_ms();
             // ---- Pass B：全部类的 action/function body（新作用域，复现 C++ Pass2）----
             // C++ 主循环用 tu.classes.size() 动态上界：body 分析期间新创建的类
             // （嵌套 lambda / 泛型实例）也会被后续迭代访问。固定 ncls 会漏掉
@@ -2418,6 +2427,14 @@ class Sema {
                     sym_.leaveScope();
                 }
                 inStruct_ = 0;
+            }
+            if (timing != 0) {
+                long tEnd = __myp_now_ms();
+                Console.writeLine("SEMA timing: Pass0+collect=" + (tPass0 - t0)
+                    + "ms  topFunc+mapping=" + (tTopF - tPass0)
+                    + "ms  PassA(prop/decl+genInst)=" + (tPassA - tTopF)
+                    + "ms  PassB(body)=" + (tEnd - tPassA)
+                    + "ms  total=" + (tEnd - t0) + "ms");
             }
         }
 

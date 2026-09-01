@@ -27,6 +27,24 @@
 
 ## 编译器版本历史
 
+### v3.15.200 — 退出全量环收集跳过（编译/推理加速 21.5s → 5.7s，3.8x）
+
+**非破坏性**（runtime_myp 退出路径）。perf 实测定位编译慢真正根因：**`ccAddrOk`
+占 87.87%**（此前误判为 sema/LLVM 后端——selfhost 分段计时证明 compile() 内部
+仅 ~5.7s，大头在 main 返回后 `myp_free_all` 的全量环收集）。机制：`alloc.myp
+myp_free_all` 退出时调 `myp_collect_cycles()`——对**全部 live 对象**（编译器跑完
+3d_unet_train 后 25 万+ 对象，分散在数千 chunk）markGray 级联释放，每对象
+`myp_release`→`ccAddrOk` 慢路径遍历全 chunk 链（O(1) okHint 快路径在跨 chunk
+场景命中率低）→ **O(N×chunks) ≈ 8 亿次内存读 → ~15s**。修复：`myp_free_all`
+退出时**默认跳过环收集**（进程退出 OS 回收全部内存；环收集仅为了让
+`myp_mem_report` 不把环报为泄漏）。`MYP_MEM_REPORT=1` 或 `MYP_FULL_EXIT_CC=1`
+时保留收集（mem_report 需环已回收才报真泄漏）。收益：单次编译 21.5s → 5.7s
+（3.8x）、峰值内存 214MB → 170MB；一次性 CLI 程序（编译器/推理）退出全部提速。
+附带：selfhost 加 `MYP_SEMA_TIMING`/`MYP_COMPILE_TIMING` 分段计时（前端/sema/
+codegen/link/退出各阶段，编译诊断用）。回归：3d_unet_train `3D UNET TRAIN OK`
+acc=100%、llm_runtime_gpu_main `LLM RUNTIME GPU CHECK OK`、hello exit=42 全
+正常；自举 2 级 MD5 一致（aee3b37b）。
+
 ### v3.15.199 — selfhost 定长接口数组类型修复（`IOp[128]` 错成 `[128 x ptr]` 溢出别名）
 
 **非破坏性**（selfhost codegen）。自举编译器 `IrEmit.llvmType` 对定长数组用简单

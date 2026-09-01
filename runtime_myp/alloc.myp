@@ -982,10 +982,19 @@ ffi void myp_release_class_slices_from_depth(long depth);   // region.myp
 ffi void myp_region_free_all();                             // region.myp
 ffi void myp_restore_term();                                // term.myp（raw 模式还原）
 ffi void myp_mem_report();                                  // diag.myp（MYP_MEM_REPORT=1）
+ffi string myp_env_get(string name);                        // env.myp
+ffi int myp_strlen(string s);                               // str.myp（O(1) 头 len）
 void myp_free_all() {
-    // 先回收引用环（退出时安全点：工作线程已 join，main 局部 ARC 槽已释放）——
-    // 之后 myp_mem_report 才只报真泄漏（环不算泄漏）。
-    myp_collect_cycles();
+    // 退出时默认跳过全量环收集：进程退出 OS 回收全部内存；环收集仅为了让
+    // myp_mem_report 不把环报为泄漏。大程序（编译器/推理框架）退出时有 25 万+
+    // live 对象 × 数千 chunk，markGray 级联每对象 ccAddrOk 慢路径遍历全链 →
+    // 可占退出耗时 70%+（perf 实测 ccAddrOk 87.87%）。MYP_MEM_REPORT=1 或
+    // MYP_FULL_EXIT_CC=1 时保留收集（mem_report 需环已回收才报真泄漏）。
+    string memrep = myp_env_get("MYP_MEM_REPORT");
+    string fullcc = myp_env_get("MYP_FULL_EXIT_CC");
+    if ((myp_strlen(memrep) > 0 && memrep[0] == '1') || (myp_strlen(fullcc) > 0 && fullcc[0] == '1')) {
+        myp_collect_cycles();
+    }
     // MYP_MEM_REPORT=1 时先打泄漏报告（此时 main 局部 ARC 槽已释放 → 只剩泄漏/
     // 程序期对象；arena 尚未 reset，myp_type_name 的计数拷贝仍可分配）。
     myp_mem_report();

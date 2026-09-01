@@ -472,6 +472,12 @@ class LoadedSet {
         // codegen try 入口 myp_try_escape 逃逸，v3.12.44）；-O0/-O1/-O3 显式覆盖，
         // MYP_SELF_OPT=0 强制关闭（调试/对比）。
         int compile(ArrayList<string> files, string outPath, string stdlib, string packagePath, int emitLlvmOnly, int testMode, int autoMain, int optLevel, int libraryMode, int freestanding) {
+            // MYP_COMPILE_TIMING=1：compile 阶段计时（P0 增量编译诊断；默认关闭不影响对拍）。
+            int timing = 0;
+            string tvs = Console.getEnv("MYP_COMPILE_TIMING");
+            if (Str.len(tvs) != 0 && tvs == "1") timing = 1;
+            long tc0 = 0, tcFront = 0, tcDerive = 0, tcSema = 0, tcCg = 0;
+            if (timing != 0) tc0 = __myp_now_ms();
             string file = files.get(0);
             if (Fs.exists(file) == 0) {
                 Console.writeLine("Error: cannot open file '" + file + "'");
@@ -551,6 +557,7 @@ class LoadedSet {
             }
             // 语法/import 错误必须短路——之前 diag.reset() 把 parser 诊断清掉，
             // missing_semicolon 等负例被静默放行。
+            if (timing != 0) tcFront = __myp_now_ms();
             if (diag.errorCount() != 0) {
                 Frontend.printDiagnostics(diag);
                 return 1;
@@ -563,17 +570,20 @@ class LoadedSet {
             }
             Sema se = new Sema(diag);
             se.setAutoMain(autoMain);
+            if (timing != 0) tcDerive = __myp_now_ms();
             se.expandMacros(tu);
             se.analyze(tu);
             if (diag.errorCount() != 0) {
                 Frontend.printDiagnostics(diag);
                 return 1;
             }
+            if (timing != 0) tcSema = __myp_now_ms();
             CodeGen cg = new CodeGen();
             cg.setTestMode(testMode);
             cg.setLibraryMode(libraryMode);
             cg.setFreestanding(freestanding);
             string ir = cg.generate(tu);
+            if (timing != 0) tcCg = __myp_now_ms();
             // A4：打印编译期警告（C++ 镜像：@coro 过小栈等）
             ArrayList<string> warns = cg.warnings();
             for (int wi = 0; wi < warns.size(); wi = wi + 1) {
@@ -586,9 +596,28 @@ class LoadedSet {
             of.close();
             if (emitLlvmOnly != 0) {
                 Console.writeLine("LLVM IR saved: " + llPath);
+                if (timing != 0) {
+                    long tcEnd = __myp_now_ms();
+                    Console.writeLine("COMPILE timing: frontend=" + (tcFront - tc0)
+                        + "ms  derive=" + (tcDerive - tcFront)
+                        + "ms  macro+sema=" + (tcSema - tcDerive)
+                        + "ms  codegen=" + (tcCg - tcSema)
+                        + "ms  write+link=" + (tcEnd - tcCg)
+                        + "ms  total=" + (tcEnd - tc0) + "ms");
+                }
                 return 0;
             }
-            return Link.link(llPath, outPath, stdlib, optLevel, libraryMode, freestanding);
+            int lrc = Link.link(llPath, outPath, stdlib, optLevel, libraryMode, freestanding);
+            if (timing != 0) {
+                long tcEnd = __myp_now_ms();
+                Console.writeLine("COMPILE timing: frontend=" + (tcFront - tc0)
+                    + "ms  derive=" + (tcDerive - tcFront)
+                    + "ms  macro+sema=" + (tcSema - tcDerive)
+                    + "ms  codegen=" + (tcCg - tcSema)
+                    + "ms  write+link=" + (tcEnd - tcCg)
+                    + "ms  total=" + (tcEnd - tc0) + "ms");
+            }
+            return lrc;
         }
 }
 
@@ -865,7 +894,15 @@ class LoadedSet {
 
 // CLI 分发（main() 只允许实例创建 + 顶层函数调用）
 int selfMain() {
-    return Cli.run();
+    long mt0 = __myp_now_ms();
+    int code = Cli.run();
+    long mt1 = __myp_now_ms();
+    // MYP_COMPILE_TIMING 同门控：打印 selfMain 内部耗时（此后为进程退出清理）。
+    string mtv = Console.getEnv("MYP_COMPILE_TIMING");
+    if (Str.len(mtv) != 0 && mtv == "1") {
+        Console.writeLine("MAIN: selfMain=" + (mt1 - mt0) + "ms (exit cleanup after)");
+    }
+    return code;
 }
 
 int main() {
