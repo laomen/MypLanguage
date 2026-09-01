@@ -499,7 +499,7 @@ class OnnxLoader {
         int parseDim(int off, int len) {
             int end = off + len;
             pb_.seek(off);
-            int v = 1;
+            int v = 0;   // 默认 0 = 动态维；有 dim_value（f==1）覆盖为真实值
             while (pb_.pos() < end) {
                 int f = pb_.nextTag();
                 if (f == -1) break;
@@ -507,7 +507,7 @@ class OnnxLoader {
                 else if (f == 2) { int l = pb_.readLen(); int po = pb_.payloadOff(); pb_.skipBytes(l); v = 0; }   // dim_param：动态维 → 0
                 else { pb_.skipField(); }
             }
-            return v;   // 动态维（dim_param 或 dim_value=0）返回 0，供 inferShapes 覆盖
+            return v;   // 动态维（空 dim / dim_param / dim_value=0）返回 0，供 setInputShape/inferShapes 覆盖
         }
 
     property:
