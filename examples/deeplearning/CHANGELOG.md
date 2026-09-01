@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-02 — 阶段五：算子选择（BatchMatMul batch=1 降级 2D matmul）
+
+- ops.myp `matmulBcast`：`ob0==ob1==1`（batch 维全 1，等价普通 2D matmul
+  [M,K]×[K,N]）→ 降级 `InferOps.matmul`（@parallel GEMM），否则原串行
+  thread-per-output。
+- gpu_ops.myp 同条件 → `GpuInferOps.matmul`（内部按 outDim/batch 规模选择
+  denseTiled 分块 GEMM vs thread-per-output）——**大矩阵 batch=1 的 BatchMatMul
+  获得分块 GEMM 收益**。
+- 回归：`infer_tests/opselect_main.myp`（两个 batch 全 1 MatMul：
+  [1,1,16,24]@[1,1,24,8] 大 + [1,1,8,8]@[1,1,8,8] 小，双输出）——OPSELECT
+  ALL OK，CPU+GPU max diff <2e-6，op 表仍 2× opKind 82（kernel 内分派）。
+- 阶段五「先做且 ROI 明确」5 项全部完成（常量去重/死权重裁剪/形状值传播/
+  Conv 1x1/算子选择）。
+
+---
+
 ## 2026-09-02 — 阶段五：Conv 1x1 专用 lowering（opKind 83，GEMM 化）
 
 - graph_compiler CONV wiring：`kh==kw==1 && stride==1 && 无 padding && dil==1 &&

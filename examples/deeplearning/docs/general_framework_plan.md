@@ -443,7 +443,10 @@ OpKind
 4. **Conv 1x1 专用 lowering**：✅ 已完成（2026-09-02，opKind 83 `conv1x1`
    GEMM 化——thread-per-output-pixel × 通道归约，无窗口循环；1x1+ReLU 也走它；
    `infer_tests/conv1x1_main.myp` 回归 CPU+GPU 通过，断言 op 表含 83）。
-5. **算子选择**：根据 shape、dtype、layout 和 backend capability 选择 plain/tiled/library kernel。
+5. **算子选择**：✅ 已完成（2026-09-02，BatchMatMul batch 维全 1 降级 2D
+   matmul——CPU @parallel GEMM / GPU denseTiled 分块 GEMM；`infer_tests/
+   opselect_main.myp` 回归 CPU+GPU 通过）。**阶段五「先做且 ROI 明确」5 项
+   全部完成**。
 
 ### 后续实现
 
