@@ -202,6 +202,7 @@ class OpCode {
         int CONSTANT() { return 57; }
         int EXPAND() { return 58; }
         int WHERE() { return 75; }
+        int TILE() { return 76; }
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -260,6 +261,7 @@ class OpCode {
             if (t == "Constant") return OpCode.CONSTANT();
             if (t == "Expand") return OpCode.EXPAND();
             if (t == "Where") return OpCode.WHERE();
+            if (t == "Tile") return OpCode.TILE();
             if (t == "Resize") return OpCode.RESIZE();
             if (t == "Upsample") return OpCode.UPSAMPLE();
             return OpCode.UNKNOWN();

@@ -2492,6 +2492,30 @@ class InferOps {
             }
         }
 
+        // Tile（G5）：沿各维按倍数复制 out = tile(in, repeats)。
+        // 输入 4D id0-3、输出 4D od0-3（odX = idX × repeatsX）。逐元素 decode：
+        // 输出 index % 输入维（维=1 → 0）。与 expand 同构但输入维可为任意倍数。
+        void tile(float[] arena, int inOff, int outOff, int work,
+                  int id0, int id1, int id2, int id3,
+                  int od0, int od1, int od2, int od3) {
+            int i = 0;
+            while (i < work) {
+                int x3 = i % od3;
+                int t = i / od3;
+                int x2 = t % od2;
+                t = t / od2;
+                int x1 = t % od1;
+                int x0 = t / od1;
+                int c0 = (id0 == 1) ? 0 : (x0 % id0);
+                int c1 = (id1 == 1) ? 0 : (x1 % id1);
+                int c2 = (id2 == 1) ? 0 : (x2 % id2);
+                int c3 = (id3 == 1) ? 0 : (x3 % id3);
+                int inFlat = ((c0 * id1 + c1) * id2 + c2) * id3 + c3;
+                arena[outOff + i] = arena[inOff + inFlat];
+                i = i + 1;
+            }
+        }
+
         // ---- F8：秩无关逐元素 / 规约 / 归一化 / 分割 / 上采样 ----
         // 设计原则：2D/3D 通用。元素级用 flat n；InstanceNorm/ReduceMean 用
         // (N, C, 空间乘积 S)；Split 用 rank≤5 的 5 维解码（2D 时 d4=1，3D 时真实）。

@@ -1229,6 +1229,35 @@ class GpuWhereOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
+// ---- tile（opKind 76 前向；G5 沿各维按倍数复制）----
+class TileOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.tile(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd),
+                          rt.tensorRows(yd) * rt.tensorCols(yd),
+                          rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i),
+                          rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- tile（GPU，opKind 76）----
+class GpuTileOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            GpuInferOps.tile(rt.arenaRef(), rt.tensorRows(yd) * rt.tensorCols(yd),
+                             rt.tensorOff(xa), rt.tensorOff(yd),
+                             rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i),
+                             rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i),
+                             rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- instancenorm（GPU）----
 class GpuInstanceNormOp {
     interface class IOp;
@@ -1975,6 +2004,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(34, new SqrtOp(), 0);                 rt.registerFwd(34, new GpuSqrtOp(), 1);
     rt.registerFwd(74, new ExpandOp(), 0);               rt.registerFwd(74, new GpuExpandOp(), 1);
     rt.registerFwd(75, new WhereOp(), 0);                rt.registerFwd(75, new GpuWhereOp(), 1);
+    rt.registerFwd(76, new TileOp(), 0);                 rt.registerFwd(76, new GpuTileOp(), 1);
     rt.registerFwd(35, new InstanceNormOp(), 0);         rt.registerFwd(35, new GpuInstanceNormOp(), 1);
     rt.registerFwd(36, new AvgpoolOp(), 0);              rt.registerFwd(36, new GpuAvgpoolOp(), 1);
     rt.registerFwd(37, new AvgpoolNhwcOp(), 0);          rt.registerFwd(37, new GpuAvgpoolNhwcOp(), 1);

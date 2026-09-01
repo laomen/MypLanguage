@@ -966,6 +966,19 @@ class InferenceRuntime {
             opD_[id] = outT;
             opCount_ = opCount_ + 1;
         }
+        // Tile（opKind 76）：沿各维按倍数复制 out = tile(in, repeats)。
+        // 输入 4D 维度 id0-3（opP0-3），输出 4D 维度 od0-3（opP4-7）。
+        void addTile(int inTid, int outTid,
+                     int id0, int id1, int id2, int id3,
+                     int od0, int od1, int od2, int od3) {
+            int id = opCount_;
+            opKind_[id] = 76;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = id0; opP1_[id] = id1; opP2_[id] = id2; opP3_[id] = id3;
+            opP4_[id] = od0; opP5_[id] = od1; opP6_[id] = od2; opP7_[id] = od3;
+            opCount_ = opCount_ + 1;
+        }
         // Split（opKind 29）：沿 axis 复制 [start, start+len)（一个输出一个 op）
         // d0..d4 为输入 5 维（2D 时 d4=1）；len = 该输出沿 axis 长度
         void addSplit(int inTid, int outTid, int axis, int start, int len,

@@ -2739,6 +2739,29 @@ class GpuInferOps {
                 }
             }
         }
+        // Tile（G5）：沿各维按倍数复制 out = tile(in, repeats)。输出 index % 输入维
+        // （维=1 → 0）。thread-per-output-element。
+        void tile(float[] a, int work, int inOff, int outOff,
+                  int id0, int id1, int id2, int id3,
+                  int od0, int od1, int od2, int od3, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int i = int(p);
+                    int x3 = i % od3;
+                    int t = i / od3;
+                    int x2 = t % od2;
+                    t = t / od2;
+                    int x1 = t % od1;
+                    int x0 = t / od1;
+                    int c0 = (id0 == 1) ? 0 : (x0 % id0);
+                    int c1 = (id1 == 1) ? 0 : (x1 % id1);
+                    int c2 = (id2 == 1) ? 0 : (x2 % id2);
+                    int c3 = (id3 == 1) ? 0 : (x3 % id3);
+                    int inFlat = ((c0 * id1 + c1) * id2 + c2) * id3 + c3;
+                    a[outOff + i] = a[inOff + inFlat];
+                }
+            }
+        }
         // InstanceNormalization：逐 (n,c) 线程，S 上归约（float 累加）
         // 激进优化（2026-08-12）：3 阶段满并行，替代原"每通道 1 线程 × 串行 3 趟"
         // （原实现 work=N*C 个线程，每线程串行 3 趟 7M double → GPU 欠利用，占推理 87%）。
