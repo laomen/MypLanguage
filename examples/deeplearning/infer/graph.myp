@@ -526,8 +526,8 @@ class Graph {
             else if (pass == IRPassKind.INFER_SHAPES()) ok = inferShapes();
             else if (pass == IRPassKind.CLASSIFY()) { classifyShapes(); ok = 1; }
             else if (pass == IRPassKind.FUSE_BN()) ok = fuseConvBN();
-            else if (pass == IRPassKind.FUSE_CONV_RELU()) ok = fuseConvRelu();
-            else if (pass == IRPassKind.FUSE_RELU()) ok = fuseReluOp();
+            else if (pass == IRPassKind.FUSE_CONV_RELU()) ok = optimizer_.fuseConvRelu(this);
+            else if (pass == IRPassKind.FUSE_RELU()) ok = optimizer_.fuseReluOp(this);
             else if (pass == IRPassKind.FUSE_GAP_FLATTEN()) ok = optimizer_.fuseGapFlatten(this);
             else if (pass == IRPassKind.DCE()) ok = optimizer_.eliminateDeadNodes(this);
             else if (pass == IRPassKind.LAYOUT_NHWC()) ok = layoutNHWC();
@@ -1699,34 +1699,6 @@ class Graph {
             double m = f32At(weights_.get(mean, WeightField.OFFSET()) + oc * 4);
             double bb = f32At(weights_.get(bias, WeightField.OFFSET()) + oc * 4);
             return (b - m) * bnInvStd(wi, oc) + bb;
-        }
-        int fuseConvRelu() {
-            int i = 0;
-            while (i < nodes_.count()) {
-                if (nodeOp(i) != OpCode.CONV()) { i = i + 1; continue; }
-                string eff = effectiveOut(i);
-                if (isGraphOutput(eff) == 1) { i = i + 1; continue; }   // 中间张量不能是图输出
-                int j = matchSingleUseOp(valueId(eff), "Relu", 0);
-                if (j < 0) { i = i + 1; continue; }
-                fuseReluIntoProducer(i, j);
-                i = i + 1;
-            }
-            return 1;
-        }
-        int fuseReluOp() {
-            // G6：InstanceNormalization→Relu 融合（IN 输出直接过 ReLU，省一次 arena 往返）。
-            // 注：Add→Relu 融合实测因 arena 布局变化反回退（relu 中间张量不分配→conv 缓存命中变差），不启用。
-            int i = 0;
-            while (i < nodes_.count()) {
-                if (nodeOp(i) != OpCode.INSTANCE_NORM()) { i = i + 1; continue; }
-                string eff = effectiveOut(i);
-                if (isGraphOutput(eff) == 1) { i = i + 1; continue; }
-                int j = matchSingleUseOp(valueId(eff), "Relu", 0);
-                if (j < 0) { i = i + 1; continue; }
-                fuseReluIntoProducer(i, j);
-                i = i + 1;
-            }
-            return 1;
         }
         int isGraphOutput(string name) {
             int i = 0;

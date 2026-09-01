@@ -124,6 +124,36 @@ class GraphOptimizer {
             return changed;
         }
 
+        // Conv→Relu 融合（doRelu 后置单内核）。
+        int fuseConvRelu(Graph graph) {
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                if (graph.nodeOp(i) != OpCode.CONV()) { i = i + 1; continue; }
+                string eff = graph.compilerEffectiveOut(i);
+                if (graph.compilerIsGraphOutput(eff) == 1) { i = i + 1; continue; }   // 中间张量不能是图输出
+                int j = graph.matchSingleUseOp(graph.valueId(eff), "Relu", 0);
+                if (j < 0) { i = i + 1; continue; }
+                graph.fuseReluIntoProducer(i, j);
+                i = i + 1;
+            }
+            return 1;
+        }
+
+        // G6：InstanceNormalization→Relu 融合（IN 输出直接过 ReLU，省一次 arena 往返）。
+        int fuseReluOp(Graph graph) {
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                if (graph.nodeOp(i) != OpCode.INSTANCE_NORM()) { i = i + 1; continue; }
+                string eff = graph.compilerEffectiveOut(i);
+                if (graph.compilerIsGraphOutput(eff) == 1) { i = i + 1; continue; }
+                int j = graph.matchSingleUseOp(graph.valueId(eff), "Relu", 0);
+                if (j < 0) { i = i + 1; continue; }
+                graph.fuseReluIntoProducer(i, j);
+                i = i + 1;
+            }
+            return 1;
+        }
+
         int runPipeline(IGraphOptimizeHost host) {
             if (Console.getEnv("MYP_NO_REUSE") == "1") host.enableNoReuseForOptimizer();
             host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链
