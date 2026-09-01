@@ -1258,6 +1258,57 @@ class GpuTileOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
+// ---- squeeze（opKind 77 前向；去 size-1 维，数据不变 → 连续拷贝）----
+class SqueezeOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.copyFlat(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- squeeze（GPU，opKind 77）----
+class GpuSqueezeOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            GpuInferOps.copyFlat(rt.arenaRef(), rt.tensorRows(xa) * rt.tensorCols(xa), rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- gather（opKind 78 前向；沿 axis 按 indices 收集）----
+class GatherOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int dt = rt.opAAt(i); int it = rt.opBAt(i); int ot = rt.opCAt(i);
+            int work = rt.tensorRows(ot) * rt.tensorCols(ot);
+            InferOps.gather(rt.arenaRef(), rt.tensorOff(dt), rt.tensorOff(it), rt.tensorOff(ot), work,
+                            rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                            rt.tensorN(ot), rt.tensorC(ot), rt.tensorH(ot), rt.tensorW(ot));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- gather（GPU，opKind 78）----
+class GpuGatherOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int dt = rt.opAAt(i); int it = rt.opBAt(i); int ot = rt.opCAt(i);
+            int work = rt.tensorRows(ot) * rt.tensorCols(ot);
+            GpuInferOps.gather(rt.arenaRef(), work, rt.tensorOff(dt), rt.tensorOff(it), rt.tensorOff(ot),
+                               rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                               rt.tensorN(ot), rt.tensorC(ot), rt.tensorH(ot), rt.tensorW(ot),
+                               rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- instancenorm（GPU）----
 class GpuInstanceNormOp {
     interface class IOp;
@@ -2005,6 +2056,8 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(74, new ExpandOp(), 0);               rt.registerFwd(74, new GpuExpandOp(), 1);
     rt.registerFwd(75, new WhereOp(), 0);                rt.registerFwd(75, new GpuWhereOp(), 1);
     rt.registerFwd(76, new TileOp(), 0);                 rt.registerFwd(76, new GpuTileOp(), 1);
+    rt.registerFwd(77, new SqueezeOp(), 0);              rt.registerFwd(77, new GpuSqueezeOp(), 1);
+    rt.registerFwd(78, new GatherOp(), 0);               rt.registerFwd(78, new GpuGatherOp(), 1);
     rt.registerFwd(35, new InstanceNormOp(), 0);         rt.registerFwd(35, new GpuInstanceNormOp(), 1);
     rt.registerFwd(36, new AvgpoolOp(), 0);              rt.registerFwd(36, new GpuAvgpoolOp(), 1);
     rt.registerFwd(37, new AvgpoolNhwcOp(), 0);          rt.registerFwd(37, new GpuAvgpoolNhwcOp(), 1);

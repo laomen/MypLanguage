@@ -2762,6 +2762,35 @@ class GpuInferOps {
                 }
             }
         }
+        // Gather（G5）：沿 axis 按 indices 收集。thread-per-output-element。
+        // indices 存 float arena（int→float），读 int(a[iOff+k])；负索引 +dim，clamp。
+        void gather(float[] a, int work, int dOff, int iOff, int oOff,
+                    int axis, int lenIdx, int dn, int dc, int dh, int dw,
+                    int on, int oc, int oh, int ow, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int i = int(p);
+                    int w3 = i % ow;
+                    int t = i / ow;
+                    int w2 = t % oh;
+                    t = t / oh;
+                    int w1 = t % oc;
+                    int w0 = t / oc;
+                    int axIdx = (axis == 0) ? w0 : ((axis == 1) ? w1 : ((axis == 2) ? w2 : w3));
+                    int dim = (axis == 0) ? dn : ((axis == 1) ? dc : ((axis == 2) ? dh : dw));
+                    int id = int(a[iOff + axIdx]);
+                    if (id < 0) id = id + dim;
+                    if (id < 0) id = 0;
+                    if (id >= dim) id = dim - 1;
+                    int dn2 = (axis == 0) ? id : w0;
+                    int dc2 = (axis == 1) ? id : w1;
+                    int dh2 = (axis == 2) ? id : w2;
+                    int dw2 = (axis == 3) ? id : w3;
+                    int dFlat = ((dn2 * dc + dc2) * dh + dh2) * dw + dw2;
+                    a[oOff + i] = a[dOff + dFlat];
+                }
+            }
+        }
         // InstanceNormalization：逐 (n,c) 线程，S 上归约（float 累加）
         // 激进优化（2026-08-12）：3 阶段满并行，替代原"每通道 1 线程 × 串行 3 趟"
         // （原实现 work=N*C 个线程，每线程串行 3 趟 7M double → GPU 欠利用，占推理 87%）。

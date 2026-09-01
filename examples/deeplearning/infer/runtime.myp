@@ -979,6 +979,28 @@ class InferenceRuntime {
             opP4_[id] = od0; opP5_[id] = od1; opP6_[id] = od2; opP7_[id] = od3;
             opCount_ = opCount_ + 1;
         }
+        // Squeeze（opKind 77）：去掉 size-1 维。数据不变 → 连续拷贝（同 reshape）。
+        void addSqueeze(int inTid, int outTid) {
+            int id = opCount_;
+            opKind_[id] = 77;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opCount_ = opCount_ + 1;
+        }
+        // Gather（opKind 78）：沿 axis 按 indices 收集（数据 Gather）。
+        // data=opA, indices=opB, out=opC; axis=opP0, lenIdx=opP1, data 4D=opP2-5。
+        // 输出 4D 维度由 forward 从 outT 的 tN_/tC_/tH_/tW_ 读取。
+        void addGather(int dT, int iT, int outT, int axis, int lenIdx,
+                       int dn, int dc, int dh, int dw) {
+            int id = opCount_;
+            opKind_[id] = 78;
+            opA_[id] = dT;
+            opB_[id] = iT;
+            opC_[id] = outT;
+            opP0_[id] = axis; opP1_[id] = lenIdx;
+            opP2_[id] = dn; opP3_[id] = dc; opP4_[id] = dh; opP5_[id] = dw;
+            opCount_ = opCount_ + 1;
+        }
         // Split（opKind 29）：沿 axis 复制 [start, start+len)（一个输出一个 op）
         // d0..d4 为输入 5 维（2D 时 d4=1）；len = 该输出沿 axis 长度
         void addSplit(int inTid, int outTid, int axis, int start, int len,

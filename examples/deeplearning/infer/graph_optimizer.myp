@@ -468,7 +468,7 @@ class GraphOptimizer {
             while (i < graph.nodeCount()) {
                 if (graph.nodeInAt(i, 0) == name || graph.nodeInAt(i, 1) == name || graph.nodeInAt(i, 2) == name) {
                     string t = graph.nodeTypeAt(i);
-                    if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization" || t == "Expand" || t == "Where" || t == "Tile") return Kind.CNN_ACT();   // G4/G5：Expand/Where/Tile 是 4D 广播数据
+                    if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization" || t == "Expand" || t == "Where" || t == "Tile" || t == "Squeeze" || t == "Gather") return Kind.CNN_ACT();   // G4/G5：4D 广播/数据算子
                     if (t == "Conv3D" || t == "MaxPool3D" || t == "AveragePool3D") return Kind.CNN_ACT();   // 3D
                     // F8：Concat/Transpose/Reshape 等 —— 若张量本身 4D 则按 CNN 激活
                     int s = graph.compilerShapeIdx(name);
@@ -527,6 +527,10 @@ class GraphOptimizer {
                     markInt64Param(graph, graph.nodeInAt(i, 1));
                 } else if (t == "Tile") {
                     // G5：Tile repeats 参数（int64）不登记为 f32 张量
+                    markInt64Param(graph, graph.nodeInAt(i, 1));
+                } else if (t == "Gather") {
+                    // G5：数据 Gather 的 indices（int64 初始器）不登记为 f32 张量
+                    // （graph_compiler 用 readI64Init 读；形状链 Gather 由 foldShapeChains 折叠）
                     markInt64Param(graph, graph.nodeInAt(i, 1));
                 } else if (t == "Slice") {
                     // F8：starts/ends/axes/steps 参数初始器（int64）不登记为 f32 张量
@@ -1331,6 +1335,48 @@ int inferShapes(Graph graph) {
                                      graph.compilerShapeDim(a, 1) * r1,
                                      graph.compilerShapeDim(a, 2) * r2,
                                      graph.compilerShapeDim(a, 3) * r3);
+                } else if (t == "Squeeze") {
+                    // G5：去掉 size-1 维（axes 属性；无 axes → 全 size-1 维）。
+                    // 数据不变（连续拷贝）；输出 = 去维后保持轴顺序 + 左对齐补 1 到 4D。
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int[] d = new int[4];
+                    d[0] = graph.compilerShapeDim(a, 0); d[1] = graph.compilerShapeDim(a, 1); d[2] = graph.compilerShapeDim(a, 2); d[3] = graph.compilerShapeDim(a, 3);
+                    int[] keep = new int[4];
+                    keep[0] = 1; keep[1] = 1; keep[2] = 1; keep[3] = 1;
+                    int nAx = graph.compilerAttr(i, NodeField.AXES_N());
+                    if (nAx <= 0) {
+                        int k = 0;
+                        while (k < 4) { if (d[k] == 1) keep[k] = 0; k = k + 1; }
+                    } else {
+                        int k = 0;
+                        while (k < nAx && k < 4) {
+                            int ax = (k == 0) ? graph.compilerAttr(i, NodeField.AXES0()) : ((k == 1) ? graph.compilerAttr(i, NodeField.AXES1()) : ((k == 2) ? graph.compilerAttr(i, NodeField.AXES2()) : graph.compilerAttr(i, NodeField.AXES3())));
+                            if (ax < 0) ax = ax + 4;
+                            if (ax >= 0 && ax < 4) keep[ax] = 0;
+                            k = k + 1;
+                        }
+                    }
+                    int[] od = new int[4];
+                    int n = 0;
+                    int k = 0;
+                    while (k < 4) { if (keep[k] == 1) { od[n] = d[k]; n = n + 1; } k = k + 1; }
+                    while (n < 4) { od[n] = 1; n = n + 1; }
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), od[0], od[1], od[2], od[3]);
+                } else if (t == "Gather") {
+                    // G5：沿 axis 按 indices 收集（数据 Gather；indices int64 初始器）。
+                    // 输出 = data dims 替换 axis 维为 len(indices)。形状链 Gather 已折叠跳过。
+                    if (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0) { i = i + 1; continue; }
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int axis = graph.compilerAttr(i, NodeField.AXIS());
+                    if (axis < 0) axis = 0;
+                    int lenIdx = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 64);
+                    if (lenIdx <= 0) return 0;
+                    int od0 = graph.compilerShapeDim(a, 0), od1 = graph.compilerShapeDim(a, 1), od2 = graph.compilerShapeDim(a, 2), od3 = graph.compilerShapeDim(a, 3);
+                    if (axis == 0) od0 = lenIdx;
+                    else if (axis == 1) od1 = lenIdx;
+                    else if (axis == 2) od2 = lenIdx;
+                    else od3 = lenIdx;
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), od0, od1, od2, od3);
                 } else if (t == "Concat") {
                     // F8：沿 axis 拼接（2-3 输入），输出 = 各输入沿 axis 之和，其余维同输入0
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;

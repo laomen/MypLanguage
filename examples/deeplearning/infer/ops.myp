@@ -2516,6 +2516,36 @@ class InferOps {
             }
         }
 
+        // Gather（G5）：沿 axis 按 indices 收集。data 4D dn/dc/dh/dw，out 4D on/oc/oh/ow
+        // （out 的 axis 维 = lenIdx，其余维 = data 对应维）。indices 存 float arena
+        // （int→float，<2^24 精确），读 int(a[iOff+k])；负索引 +dim，越界 clamp。
+        void gather(float[] arena, int dOff, int iOff, int oOff, int work,
+                    int axis, int lenIdx, int dn, int dc, int dh, int dw,
+                    int on, int oc, int oh, int ow) {
+            int i = 0;
+            while (i < work) {
+                int w3 = i % ow;
+                int t = i / ow;
+                int w2 = t % oh;
+                t = t / oh;
+                int w1 = t % oc;
+                int w0 = t / oc;
+                int axIdx = (axis == 0) ? w0 : ((axis == 1) ? w1 : ((axis == 2) ? w2 : w3));
+                int dim = (axis == 0) ? dn : ((axis == 1) ? dc : ((axis == 2) ? dh : dw));
+                int id = int(arena[iOff + axIdx]);
+                if (id < 0) id = id + dim;
+                if (id < 0) id = 0;
+                if (id >= dim) id = dim - 1;
+                int dn2 = (axis == 0) ? id : w0;
+                int dc2 = (axis == 1) ? id : w1;
+                int dh2 = (axis == 2) ? id : w2;
+                int dw2 = (axis == 3) ? id : w3;
+                int dFlat = ((dn2 * dc + dc2) * dh + dh2) * dw + dw2;
+                arena[oOff + i] = arena[dOff + dFlat];
+                i = i + 1;
+            }
+        }
+
         // ---- F8：秩无关逐元素 / 规约 / 归一化 / 分割 / 上采样 ----
         // 设计原则：2D/3D 通用。元素级用 flat n；InstanceNorm/ReduceMean 用
         // (N, C, 空间乘积 S)；Split 用 rank≤5 的 5 维解码（2D 时 d4=1，3D 时真实）。
