@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-09-02 — 阶段三：动态 batch 输入 shape 注入 + 编译期 specialization
+
+- **修复 `parseDim` 动态维解析 bug**：默认 `v=1` → `v=0`。ONNX 动态维用"空
+  dim"（未设置 dim_value，protobuf 省略默认 0）表示，被解析为 1 → 输入/输出
+  登记 d0=1 → inferShapes 的 `addShapeD4` 覆盖条件（任一维==0）永不触发 →
+  注入 batch 后输出 batch 仍为 1。修复后空 dim / dim_param / dim_value=0 全部
+  → 0，`setInputShape`/inferShapes 覆盖正常。
+- 新增 `tools/make_dynbatch_onnx.py`（opset13 Conv：x[N,1,5,5] → y[N,1,3,3]，
+  batch 动态 dim_param）+ `infer_tests/dynbatch_main.myp`（`setInputShape`
+  注入 batch=2 → DYNBATCH ALL OK，CPU+GPU max diff 4.8e-7 vs ORT，out size=18
+  非 9）。验证"加载时输入 shape 注入 + 编译期 specialization"。
+- 回归：42/42 infer_tests + grad_check（GRAD CHECK OK）+ ResNet output sum
+  `336.658`。
+
 ## 2026-09-01 — 阶段三：BF16 权重 dtype 转换（BFLOAT16 → float32）
 
 - `graph.myp` writeWeight 加 dtype==16 分支：每 2 字节 = F32 高 16 位，

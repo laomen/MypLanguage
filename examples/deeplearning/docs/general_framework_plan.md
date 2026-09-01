@@ -378,11 +378,17 @@ OpKind
   `bfloat16_data`（字段 16）。ORT CPU 不支持 BF16 → `make_bf16_onnx.py` 用
   numpy 手算参考；`bf16_main.myp`：BF16 ALL OK，CPU+GPU max diff 6e-8。
   阶段三 dtype 转换（FP16/BF16）完成，剩 INT8（需量化 scale/zero_point 语义）。
+- **已完成：动态 batch 输入 shape 注入 + specialization**（commit `d48904b`）。
+  **修复 `parseDim`**：默认 v=0（原来 1）——ONNX 动态维是"空 dim"（未设置
+  dim_value，protobuf 省略默认 0），解析为 1 → 登记 d0=1 → inferShapes
+  `addShapeD4` 覆盖条件（任一维==0）不触发 → 注入 batch 后输出 batch 卡 1；
+  修复后空/dim_param/dim_value=0 全 → 0，`setInputShape`/覆盖正常。
+  `make_dynbatch_onnx.py`（x[N,1,5,5] Conv → y[N,1,3,3]）+ `dynbatch_main.myp`
+  （注入 batch=2，DYNBATCH ALL OK，out size=18 非 9）。
 - **G3 ReduceMean 负轴归一化**已完成（见阶段二进度区）；Reduce axes/keepdims/
   空 axes 语义统一仍在 Reduce 族共用归一化内。
-- **待办**：ShapeExpr（常量/输入维度表达式）、动态 batch 输入 shape 注入 +
-  specialization（loader 已有 setInputShape 框架，需端到端验证）、INT8
-  dtype 转换规则。
+- **待办**：ShapeExpr（常量/输入维度表达式）、INT8 dtype 转换（需量化
+  scale/zero_point 语义，非量化模型场景少）。
 
 ## 6. 阶段四：算子覆盖优先级
 
