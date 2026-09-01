@@ -352,6 +352,22 @@ OpKind
 
 先支持“加载时输入 shape 注入 + 编译期 shape specialization”，再考虑完整运行时动态 shape。对于当前 3D U-Net，完整动态 shape 不是优先需求。
 
+### 当前进度（2026-09-01）
+
+- **已完成：统一 numpy 广播（Sub/Div/Mul 4D）**（commit `eec0b50`）。inferShapes
+  Sub/Div/Mul 输出 = a/b 逐维 max（广播合并）；kernel 保留标量/同尺寸/逐通道
+  快路径 + 新增通用 4D 广播 fallback（输出 index % 各输入维，维=1 → 0，复用
+  where/tile decode 模式）；forward 从 out tid 读输出 dims（免额外参数槽）。
+  **修复**：同尺寸快路径收紧为 a/b/out 三维全同（`bSize==n` 在 a 广播时误判 →
+  a 越界读）。新增 `tools/make_bcast_onnx.py`（opset13，12 输入 6 输出覆盖
+  同形状/标量/逐通道/W/HW/b 放大）+ `infer_tests/bcast_main.myp`（BCAST ALL OK，
+  CPU+GPU max diff 0 vs ORT）。
+- **G3 ReduceMean 负轴归一化**已完成（见阶段二进度区）；Reduce axes/keepdims/
+  空 axes 语义统一仍在 Reduce 族共用归一化内。
+- **待办**：ShapeExpr（常量/输入维度表达式）、动态 batch 输入 shape 注入 +
+  specialization（3D coarse_model 已有 setInputShape 先例）、FP16/BF16/INT8
+  dtype 转换规则、Add 的广播统一（当前同尺寸；bias 场景由 BN 折叠覆盖）。
+
 ## 6. 阶段四：算子覆盖优先级
 
 ### 第一优先级：提高模型覆盖率

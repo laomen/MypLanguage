@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-01 — 阶段三：统一 numpy 广播（Sub/Div/Mul 4D）
+
+- inferShapes Sub/Div/Mul 输出 = a/b 逐维 max（广播合并），替代 `copyShape(a)`
+  （修正 b 比 a 大时输出 shape 过小的潜在 bug）。
+- runtime `addSub/addDiv/addMul` 传 a/b 4D dims（opP2-5=a、opP6-8+bw=opX0=b）；
+  forward 从 out tid 的 `tN_/tC_/tH_/tW_` 读输出 dims（免额外参数槽）。
+- ops/gpu_ops sub/div/mul kernel：保留标量/同尺寸/逐通道快路径 + 新增通用 4D
+  numpy 广播 fallback（输出 index % 各输入维，维=1 → 0，复用 where/tile decode）。
+- **修复**：同尺寸快路径从 `bSize==n` 收紧为 `an==on..aw==ow && bn==on..bw==ow`
+  （b 元素数=输出但 a 更小、a 广播时 bSize==n 误判同尺寸 → a 越界读）。
+- 新增 `tools/make_bcast_onnx.py`（opset13，12 输入 6 输出：同形状/标量/逐通道
+  [1,C,1,1]/W 广播/HW 广播/b 放大输出）+ `infer_tests/bcast_main.myp`
+  （BCAST ALL OK，CPU+GPU max diff 0 vs ORT）。
+- 回归：39/39 infer_tests + grad_check（GRAD CHECK OK）+ ResNet output sum
+  `336.658`。
+
 ## 2026-09-01 — 阶段四 G5：Dropout 算子（推理恒等 / 训练随机 mask）
 
 - OpCode `DROPOUT(81)` + `opCode` 映射；`consumerKindOf` Dropout → CNN_ACT；
