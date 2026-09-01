@@ -1004,6 +1004,19 @@ class SqrtOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
+// ---- expand（opKind 74 前向；G4 broadcast 复制）----
+class ExpandOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.expand(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd),
+                            rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i),
+                            rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- instancenorm（opKind 35 前向）----
 class InstanceNormOp {
     interface class IOp;
@@ -1164,6 +1177,21 @@ class GpuSqrtOp {
         void forward(InferenceRuntime rt, int i) {
             int xa = rt.opAAt(i); int yd = rt.opBAt(i);
             GpuInferOps.sqrt1(rt.arenaRef(), rt.tensorRows(yd) * rt.tensorCols(yd), rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- expand（GPU，opKind 74）----
+class GpuExpandOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            GpuInferOps.expand(rt.arenaRef(), rt.tensorRows(yd) * rt.tensorCols(yd),
+                               rt.tensorOff(xa), rt.tensorOff(yd),
+                               rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i),
+                               rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i),
+                               rt.devRef());
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -1912,6 +1940,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(32, new DivOp(), 0);                  rt.registerFwd(32, new GpuDivOp(), 1);
     rt.registerFwd(33, new MulOp(), 0);                  rt.registerFwd(33, new GpuMulOp(), 1);
     rt.registerFwd(34, new SqrtOp(), 0);                 rt.registerFwd(34, new GpuSqrtOp(), 1);
+    rt.registerFwd(74, new ExpandOp(), 0);               rt.registerFwd(74, new GpuExpandOp(), 1);
     rt.registerFwd(35, new InstanceNormOp(), 0);         rt.registerFwd(35, new GpuInstanceNormOp(), 1);
     rt.registerFwd(36, new AvgpoolOp(), 0);              rt.registerFwd(36, new GpuAvgpoolOp(), 1);
     rt.registerFwd(37, new AvgpoolNhwcOp(), 0);          rt.registerFwd(37, new GpuAvgpoolNhwcOp(), 1);

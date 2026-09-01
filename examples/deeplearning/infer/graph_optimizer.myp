@@ -468,7 +468,7 @@ class GraphOptimizer {
             while (i < graph.nodeCount()) {
                 if (graph.nodeInAt(i, 0) == name || graph.nodeInAt(i, 1) == name || graph.nodeInAt(i, 2) == name) {
                     string t = graph.nodeTypeAt(i);
-                    if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization") return Kind.CNN_ACT();
+                    if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization" || t == "Expand") return Kind.CNN_ACT();   // G4：Expand 是 4D 广播
                     if (t == "Conv3D" || t == "MaxPool3D" || t == "AveragePool3D") return Kind.CNN_ACT();   // 3D
                     // F8：Concat/Transpose/Reshape 等 —— 若张量本身 4D 则按 CNN 激活
                     int s = graph.compilerShapeIdx(name);
@@ -522,6 +522,9 @@ class GraphOptimizer {
                     markGeneric4DConst(graph, graph.nodeInAt(i, 0));
                     if (t == "Concat") { markGeneric4DConst(graph, graph.nodeInAt(i, 1)); markGeneric4DConst(graph, graph.nodeInAt(i, 2)); }
                     if (t == "Reshape") markInt64Param(graph, graph.nodeInAt(i, 1));   // shape 参数（int64）不登记为 f32 张量
+                } else if (t == "Expand") {
+                    // G4：Expand shape 参数（int64）不登记为 f32 张量
+                    markInt64Param(graph, graph.nodeInAt(i, 1));
                 } else if (t == "Slice") {
                     // F8：starts/ends/axes/steps 参数初始器（int64）不登记为 f32 张量
                     markInt64Param(graph, graph.nodeInAt(i, 1));
@@ -1255,6 +1258,25 @@ int inferShapes(Graph graph) {
                         d = d + 1;
                     }
                     if (inferIdx >= 0 && prod > 0) outd[inferIdx] = total / prod;
+                    int od0 = 1, od1 = 1, od2 = 1, od3 = 1;
+                    if (sc >= 1) od0 = outd[0];
+                    if (sc >= 2) od1 = outd[1];
+                    if (sc >= 3) od2 = outd[2];
+                    if (sc >= 4) od3 = outd[3];
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), od0, od1, od2, od3);
+                } else if (t == "Expand") {
+                    // G4：broadcast 复制。目标形状来自 int64 输入[1]；输入维=1 时沿该维复制。
+                    // 输出 = 目标形状（左对齐广播，rank 不足时前置补 1）。
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int sc = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8);
+                    if (sc <= 0) return 0;
+                    int[] outd = new int[8];
+                    int d = 0;
+                    while (d < sc) { outd[d] = int(graph.compilerI64Tmp(d)); d = d + 1; }
+                    // 左对齐：目标 rank=sc，输入 rank 前置补 1 到 sc
+                    int inRank = graph.compilerShapeR5(a) == 1 ? 5 : 4;
+                    int off = sc - inRank;
+                    if (off < 0) off = 0;
                     int od0 = 1, od1 = 1, od2 = 1, od3 = 1;
                     if (sc >= 1) od0 = outd[0];
                     if (sc >= 2) od1 = outd[1];

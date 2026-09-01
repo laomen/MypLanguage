@@ -942,6 +942,19 @@ class InferenceRuntime {
             opP6_[id] = mode; opP7_[id] = transform;
             opCount_ = opCount_ + 1;
         }
+        // Expand（opKind 74）：broadcast 复制。输入 4D 维度 id0-3，输出 4D 维度 od0-3
+        // （输入维=1 时沿该维复制；opP0-3=od, opP4-7=id）
+        void addExpand(int inTid, int outTid,
+                       int id0, int id1, int id2, int id3,
+                       int od0, int od1, int od2, int od3) {
+            int id = opCount_;
+            opKind_[id] = 74;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = od0; opP1_[id] = od1; opP2_[id] = od2; opP3_[id] = od3;
+            opP4_[id] = id0; opP5_[id] = id1; opP6_[id] = id2; opP7_[id] = id3;
+            opCount_ = opCount_ + 1;
+        }
         // Split（opKind 29）：沿 axis 复制 [start, start+len)（一个输出一个 op）
         // d0..d4 为输入 5 维（2D 时 d4=1）；len = 该输出沿 axis 长度
         void addSplit(int inTid, int outTid, int axis, int start, int len,
