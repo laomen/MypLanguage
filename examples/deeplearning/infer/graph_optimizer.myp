@@ -1129,7 +1129,13 @@ int inferShapes(Graph graph) {
                 // Concat shapeIdx 失败 "DBG fail inferShapes"）。
                 if (t == "Shape" || t == "Constant" || t == "Cast" || t == "ReduceProd" || t == "Unsqueeze" || t == "Gather" ||
                     (t == "Slice" && (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 || graph.compilerI64ChainAlive(graph.nodeInAt(i, 0)) == 1)) ||
-                    (t == "Concat" && (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 || graph.compilerI64Count(graph.nodeInAt(i, 1)) > 0))) {
+                    (t == "Concat" && (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 || graph.compilerI64Count(graph.nodeInAt(i, 1)) > 0)) ||
+                    // G5：int64 四则/ReduceSum/Expand 形状链——仅当数据输入是 int64 链时
+                    // 拦截折叠（float 数据四则/ReduceSum 是运行时算子，走下方正常分支）。
+                    ((t == "Add" || t == "Sub" || t == "Mul" || t == "Div") &&
+                     graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 && graph.compilerI64Count(graph.nodeInAt(i, 1)) > 0) ||
+                    (t == "ReduceSum" && graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0) ||
+                    (t == "Expand" && (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 || graph.compilerI64ChainAlive(graph.nodeInAt(i, 0)) == 1))) {
                     foldShapeChains(graph);
                     if (graph.nodeTypeAt(i) != "") { i = i + 1; continue; }   // 仍未折叠：跳过
                     t = "";
@@ -1810,6 +1816,62 @@ int foldShapeChains(Graph graph) {
                         long[] v = new long[1];
                         v[0] = prod;
                         graph.compilerI64Reg(graph.compilerNodeOutput(i, 0), v, 1);
+                        graph.compilerSetNodeType(i, "");
+                    }
+                } else if (t == "ReduceSum") {
+                    // G5：int64 形状链上的 ReduceSum（与 ReduceProd 并列；全归约求和）。
+                    if (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0) {
+                        int c = graph.compilerI64Count(graph.nodeInAt(i, 0));
+                        long sum = 0L;
+                        int k = 0;
+                        while (k < c) { sum = sum + graph.compilerI64Get(graph.nodeInAt(i, 0), k); k = k + 1; }
+                        long[] v = new long[1];
+                        v[0] = sum;
+                        graph.compilerI64Reg(graph.compilerNodeOutput(i, 0), v, 1);
+                        graph.compilerSetNodeType(i, "");
+                    }
+                } else if (t == "Add" || t == "Sub" || t == "Mul" || t == "Div") {
+                    // G5：int64 形状链上的四则运算（Resize sizes 链的 dim*2 / dim/2 等）。
+                    // 仅当两输入都是 int64 链时折叠（float 数据四则是运行时算子，不折叠）。
+                    if (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 && graph.compilerI64Count(graph.nodeInAt(i, 1)) > 0) {
+                        int c0 = graph.compilerI64Count(graph.nodeInAt(i, 0));
+                        int c1 = graph.compilerI64Count(graph.nodeInAt(i, 1));
+                        int n = c0; if (c1 > n) n = c1;
+                        if (n > 32) n = 32;
+                        long[] v = new long[64];
+                        int k = 0;
+                        while (k < n) {
+                            long a = (c0 == 1) ? graph.compilerI64Get(graph.nodeInAt(i, 0), 0) : graph.compilerI64Get(graph.nodeInAt(i, 0), k);
+                            long b = (c1 == 1) ? graph.compilerI64Get(graph.nodeInAt(i, 1), 0) : graph.compilerI64Get(graph.nodeInAt(i, 1), k);
+                            if (t == "Add") v[k] = a + b;
+                            else if (t == "Sub") v[k] = a - b;
+                            else if (t == "Mul") v[k] = a * b;
+                            else if (b != 0L) v[k] = a / b;
+                            else v[k] = 0L;
+                            k = k + 1;
+                        }
+                        graph.compilerI64Reg(graph.compilerNodeOutput(i, 0), v, n);
+                        graph.compilerSetNodeType(i, "");
+                    }
+                } else if (t == "Expand") {
+                    // G5：int64 形状链上的 Expand（shape 输入[1]给出目标长度；数据长度=1 时
+                    // 沿该维复制）。仅当数据输入是 int64 链时折叠（float 数据 Expand 是运行时算子）。
+                    if (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0) {
+                        int sc = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8);
+                        int target = 1;
+                        if (sc > 0) target = int(graph.compilerI64Tmp(0));
+                        if (sc > 1) { target = 1; int k = 0; while (k < sc) { target = target * int(graph.compilerI64Tmp(k)); k = k + 1; } }
+                        int c0 = graph.compilerI64Count(graph.nodeInAt(i, 0));
+                        if (target > 32) target = 32;
+                        long[] v = new long[64];
+                        int k = 0;
+                        if (c0 == 1) {
+                            long val = graph.compilerI64Get(graph.nodeInAt(i, 0), 0);
+                            while (k < target) { v[k] = val; k = k + 1; }
+                        } else {
+                            while (k < target && k < c0) { v[k] = graph.compilerI64Get(graph.nodeInAt(i, 0), k); k = k + 1; }
+                        }
+                        graph.compilerI64Reg(graph.compilerNodeOutput(i, 0), v, k);
                         graph.compilerSetNodeType(i, "");
                     }
                 } else if (t == "Unsqueeze") {

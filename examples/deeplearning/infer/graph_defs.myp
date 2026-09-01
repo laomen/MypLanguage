@@ -208,6 +208,7 @@ class OpCode {
         int LOG_SOFTMAX() { return 79; }
         int EMBEDDING() { return 80; }
         int DROPOUT() { return 81; }
+        int SHAPE() { return 82; }           // G5：形状链节点（Shape，被 foldShapeChains 折叠）
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -274,6 +275,7 @@ class OpCode {
             if (t == "Dropout") return OpCode.DROPOUT();
             if (t == "Resize") return OpCode.RESIZE();
             if (t == "Upsample") return OpCode.UPSAMPLE();
+            if (t == "Shape") return OpCode.SHAPE();
             return OpCode.UNKNOWN();
         }
         // 节点保护 trait：非 0 表示受 DCE 保护。1=stateful（就地改权重/累加），
