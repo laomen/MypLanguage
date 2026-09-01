@@ -78,12 +78,31 @@ class ResnetInferApp {
             if (useGpu == 1) { Console.writeString(Cuda.name()); Console.writeString(" (GPU)"); }
             else { Console.writeString("CPU"); }
             Console.writeLine("");
+            // P5b：推理持久化（MYP_GPU_PERSIST=1）——权重一次性驻留，仅 D2H 输出，
+            // 测稳态吞吐（warmup + 多帧平均）。默认（无该 env）保持原单帧整块传输语义。
+            int persist = 0;
+            if (Console.getEnv("MYP_GPU_PERSIST") == "1" && useGpu == 1) {
+                if (rt.gpuInferStart(outTid) == 1) persist = 1;
+            }
+            int reps = 1;
+            if (persist == 1) reps = 20;
+            if (persist == 1) {
+                // warmup：权重已在 gpuInferStart 上传，首帧只跑算子 + D2H 输出
+                rt.runGpu();
+            }
             long t0 = __myp_now_ms();
-            if (useGpu == 1) rt.runGpu();
-            else rt.run();
+            int r = 0;
+            while (r < reps) {
+                if (useGpu == 1) rt.runGpu();
+                else rt.run();
+                r = r + 1;
+            }
             long t1 = __myp_now_ms();
-            Console.writeString("ResNet50 inference: ");
-            Console.writeLong(t1 - t0);
+            if (persist == 1) rt.gpuInferEnd();
+            Console.writeString("ResNet50 inference");
+            if (persist == 1) Console.writeString(" (persist avg " + Fmt.i(reps) + ")");   // 稳态平均
+            Console.writeString(": ");
+            Console.writeLong((t1 - t0) / reps);
             Console.writeLine(" ms");
             Console.writeLine("");
 

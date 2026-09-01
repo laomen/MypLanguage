@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-09-XX — 阶段 P5b：推理持久化（权重驻留 + 输出-only D2H）
+
+### 变更（`infer/runtime.myp`）
+- 新增 `gpuInferStart(outTid)` / `gpuInferEnd()`：复用训练持久化机制，使**推理**
+  也能把权重一次性驻留显存。此后每次 `runGpu` 只增量 H2D 置脏输入 + 只 D2H 输出
+  张量（`markGpuSync`），不再整块 arena 往返（原单帧推理每次 ~100MB H2D + 整块
+  D2H 含全部权重）。
+- `resnet_main.myp`/`r18_main.myp`：`MYP_GPU_PERSIST=1` 时启用持久化推理 +
+  warmup + 20 帧稳态平均（默认无 env 保持原单帧整块传输语义，回归不变）。
+
+### 验证
+- ResNet50 GPU 单帧 **38 → 15ms**（稳态，2.5×；profile H2D/D2H=0ms、ops-loop ~15ms）。
+  自 P5 前 95ms 累计 **6.3×**；output sum 336.658 逐位一致。
+- ResNet18 GPU 9 → 0ms（<1ms 稳态），output sum 1331.47 逐位一致。
+- 回归全绿：residual_add/MLP 99%/BN/ops2d/const/identity/conv3d + conv2d_gen
+  diff=0 + MNIST train 97%。
+
+---
+
 ## 2026-09-XX — 阶段 P5：2D 卷积 tiled（implicit GEMM + 共享内存）
 
 ### 变更（`infer/gpu_ops.myp`）

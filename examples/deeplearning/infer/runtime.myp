@@ -1152,6 +1152,33 @@ class InferenceRuntime {
             gpuSyncN_ = gpuSyncN_ + 1;
         }
 
+        // ============ 推理持久化（P5b，2026-09-01）============
+        // 推理默认每次 runGpu 都整块 arena H2D（~100MB 权重）+ 整块 D2H（含全部权重）。
+        // 推理持久化：权重一次性驻留显存，之后每次 runGpu 只增量 H2D 置脏输入 + 只
+        // D2H 输出张量（markGpuSync 标记）。用于单模型多帧推理（视频/批量/服务）。
+        // 返回 1 表示进入持久化推理模式（输出张量 outTid 已标记 D2H），0 表示失败
+        // （无 GPU 或设备分配失败）——调用方此时走原 runGpu 路径。
+        int gpuInferStart(int outTid) {
+            if (GpuBackend.available() != 1) return 0;
+            if (gpuPersist_ == 1) return 1;
+            gpuArena_ = new GpuBufferF(arena, arenaCap_);
+            if (gpuArena_.valid() != 1) return 0;
+            gpuPersist_ = 1;
+            int t = 0;
+            while (t < tensorCount_) { dirtyTid_[t] = 0; t = t + 1; }
+            if (outTid >= 0) markGpuSync(outTid);
+            return 1;
+        }
+
+        // 结束推理持久化：整块 D2H 取回 + 释放设备 arena。
+        void gpuInferEnd() {
+            if (gpuPersist_ == 1) {
+                gpuArena_.copyToHost(arena, 0, 0, arenaCap_);
+                gpuArena_.free();
+                gpuPersist_ = 0;
+            }
+        }
+
         // GPU 执行：M3 设备驻留。
         // 整块 arena 一次 H2D 到设备（GpuBufferF），各算子 resident(a=dev) 直接
         // 操作设备内存（零逐算子传输），最后一次 D2H 取回。

@@ -64,12 +64,27 @@ class R18InferApp {
             if (useGpu == 1) { Console.writeString(Cuda.name()); Console.writeString(" (GPU)"); }
             else { Console.writeString("CPU"); }
             Console.writeLine("");
+            // P5b：推理持久化（MYP_GPU_PERSIST=1）——权重一次性驻留，仅 D2H 输出，测稳态吞吐。
+            int persist = 0;
+            if (Console.getEnv("MYP_GPU_PERSIST") == "1" && useGpu == 1) {
+                if (rt.gpuInferStart(outTid) == 1) persist = 1;
+            }
+            int reps = 1;
+            if (persist == 1) reps = 20;
+            if (persist == 1) rt.runGpu();   // warmup
             long t0 = __myp_now_ms();
-            if (useGpu == 1) rt.runGpu();
-            else rt.run();
+            int r = 0;
+            while (r < reps) {
+                if (useGpu == 1) rt.runGpu();
+                else rt.run();
+                r = r + 1;
+            }
             long t1 = __myp_now_ms();
-            Console.writeString("ResNet18 inference: ");
-            Console.writeLong(t1 - t0);
+            if (persist == 1) rt.gpuInferEnd();
+            Console.writeString("ResNet18 inference");
+            if (persist == 1) Console.writeString(" (persist avg " + Fmt.i(reps) + ")");
+            Console.writeString(": ");
+            Console.writeLong((t1 - t0) / reps);
             Console.writeLine(" ms");
 
             // 输出 checksum（onnxruntime 参考 0.101261）

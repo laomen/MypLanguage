@@ -206,6 +206,9 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 > **P4-3b 已实施**（2026-09-02）——残差融合专用回归测试。
 > **P5 已实施**（2026-09-02）——2D 卷积 tiled 内核（`conv2dTiled`，implicit GEMM + 共享内存），
 > 图优化与后端执行两个维度的性能里程碑；ResNet50 GPU 95→37ms（2.6×），逐位一致。
+> **P5b 已实施**（2026-09-02）——推理持久化（`gpuInferStart`/`gpuInferEnd`）：权重一次性
+> 驻留显存，每次 runGpu 只增量 H2D 脏输入 + 只 D2H 输出；ResNet50 GPU 单帧 38→15ms
+> （稳态 2.5×，累计 95→15ms = 6.3×），逐位一致。
 
 ## 6. 收益（预期）
 
