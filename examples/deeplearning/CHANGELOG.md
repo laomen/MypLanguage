@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-02 — 阶段五：形状值传播（int64 四则/ReduceSum/Expand 形状链折叠）
+
+- `foldShapeChains` 新增 int64 形状链算子：**Add/Sub/Mul/Div 四则**（Resize sizes
+  链的 dim*2 / dim/2，标量广播，Div 除零→0）、**ReduceSum**（与 ReduceProd 并列，
+  全归约求和）、**Expand**（shape 输入[1]给出目标长度，数据长度=1 沿维复制）。
+- `inferShapes` 顶部形状链节点识别扩展：四则（两输入均 int64 链）/ReduceSum/
+  Expand 仅当数据输入是 int64 链时拦截折叠（float 数据四则/ReduceSum 是运行时
+  算子，走下方正常分支，不受影响）。
+- `OpCode` 注册 `Shape(82)` + `opCode()` 映射——Shape 本是受支持形状链节点，
+  但未注册导致 onnx_loader unsupported 诊断误报。
+- 回归：`infer_tests/shapeprop_main.myp`（Shape→Slice→Mul(dim,2)→Concat 链驱动
+  Resize sizes）——CPU+GPU max diff 4.8e-7 vs ORT，输出 [1,1,8,8] 正确。
+- **Resize 测试坑**：ORT 默认 `coordinate_transformation_mode=half_pixel`（loader
+  TRANSFORM 默认 0=align_corners）且 nearest 默认 `round_prefer_floor`（内核用
+  int()=floor）——测试须显式指定 asymmetric+floor 才能与 ORT 对齐。
+
+---
+
 ## 2026-09-02 — 阶段五：常量去重（内容相同初始器合并）
 
 - graph_optimizer `eliminateDeadNodes` 内 DCE + 死权重裁剪后新增常量去重：两两
