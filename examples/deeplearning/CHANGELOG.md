@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P4.3b：残差融合专用回归
+
+### 新增
+- `infer/tools/make_residual_add_onnx.py` + `infer_tests/residual_add_main.myp`：
+  Conv→Add(residual)→Relu 合成模型，断言 `fusedAddCount==1`，CPU+GPU vs numpy
+  max diff 3.58e-7（opKind 73 doRelu 独立回归，此前仅 ResNet 端到端覆盖）。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P4.3：残差融合折叠 Add 后 Relu + 训练门控
 
 ### 变更

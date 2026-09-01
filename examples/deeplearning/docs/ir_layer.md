@@ -203,6 +203,7 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 > P4 进展：**P4-1 已实施**（2026-09-02）——恒等折叠支持任意形状/广播常量张量（`isConstValue`）。
 > **P4-2 已实施**（2026-09-02）——残差 `Conv+Add` 融合（新 opKind 73 + `FUSE_CONV_ADD` + planMemory nIn3_/nIn4_）。
 > **P4-3 已实施**（2026-09-02）——残差融合折叠 Add 后 Relu（doRelu 内核）+ `FUSE_CONV_ADD` 训练门控。
+> **P4-3b 已实施**（2026-09-02）——残差融合专用回归测试。
 
 ## 6. 收益（预期）
 
@@ -504,5 +505,14 @@ acc 100% + grad check 全回归绿。
 验证：ResNet50 GPU ops 88→72→**56**、`residual_fused=16`、top-1 lakeside(10.328) 逐位一致、
 稳态 ~80ms；CPU 同 fusion 输出一致；全回归绿（含训练路径 3D U-Net acc 100% + grad check +
 MNIST train 97%，确认训练门控无回归）。
+
+## 24. 实施状态：P4-3b（2026-09-02）
+
+残差融合专用回归（此前 opKind 73 仅被 ResNet 端到端覆盖）：
+
+- 新 `infer/tools/make_residual_add_onnx.py` + `infer_tests/residual_add_main.myp`：
+  `data[1,4,8,8] → Conv(w,b,s1 p1) → Add(residual) → Relu → prob`。
+- 断言 `fusedAddCount==1`（整链融成单 opKind 73 doRelu）；CPU+GPU 输出 vs numpy 参考
+  max diff 3.58e-7。独立锁定融合正确性，与 ResNet 端到端互为补充。
 
 ---
