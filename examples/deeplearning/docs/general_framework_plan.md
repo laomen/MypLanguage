@@ -362,11 +362,17 @@ OpKind
   a 越界读）。新增 `tools/make_bcast_onnx.py`（opset13，12 输入 6 输出覆盖
   同形状/标量/逐通道/W/HW/b 放大）+ `infer_tests/bcast_main.myp`（BCAST ALL OK，
   CPU+GPU max diff 0 vs ORT）。
+- **已完成：Add 统一 numpy 广播（4D）**（commit `9cc8841`）。Add 从 element-wise
+  copyShape 拆出 → 逐维 max；runtime `addAdd` 传 a/b dims（doRelu 保留）；kernel
+  标量/同尺寸/逐通道 [1,C,1,1]/通用 4D 广播 fallback（doRelu 融合贯穿）；
+  graph_compiler ADD + GRAD_ACC wiring 传 dims。bcast 测试扩展 out7/out8（Add
+  同形状 + 逐通道 bias），8 输出 BCAST ALL OK，CPU+GPU max diff 0 vs ORT。
+  至此 **Add/Sub/Mul/Div 四元逐元素 op 全部支持统一 4D numpy 广播**。
 - **G3 ReduceMean 负轴归一化**已完成（见阶段二进度区）；Reduce axes/keepdims/
   空 axes 语义统一仍在 Reduce 族共用归一化内。
 - **待办**：ShapeExpr（常量/输入维度表达式）、动态 batch 输入 shape 注入 +
   specialization（3D coarse_model 已有 setInputShape 先例）、FP16/BF16/INT8
-  dtype 转换规则、Add 的广播统一（当前同尺寸；bias 场景由 BN 折叠覆盖）。
+  dtype 转换规则。
 
 ## 6. 阶段四：算子覆盖优先级
 

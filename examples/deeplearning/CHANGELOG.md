@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-09-01 — 阶段三：Add 统一 numpy 广播（4D）
+
+- inferShapes Add 从 element-wise copyShape 拆出 → a/b 逐维 max（广播合并）。
+- runtime `addAdd` 传 a/b 4D dims（opP0-3=a、opP4-7=b），doRelu 保留 opRelu_；
+  graph_compiler ADD + GRAD_ACC wiring 传 dims。
+- ops/gpu_ops add kernel：标量 / 同尺寸（a/b/out 三维全同）/ 逐通道 [1,C,1,1] /
+  通用 4D 广播 fallback；doRelu 融合贯穿所有路径。
+- bcast 测试扩展 out7（Add 同形状）+ out8（Add 逐通道 bias）——8 输出
+  BCAST ALL OK，CPU+GPU max diff 0 vs ORT。
+- 回归：39/39 infer_tests + grad_check（GRAD CHECK OK）+ ResNet output sum
+  `336.658`。
+
 ## 2026-09-01 — 阶段三：统一 numpy 广播（Sub/Div/Mul 4D）
 
 - inferShapes Sub/Div/Mul 输出 = a/b 逐维 max（广播合并），替代 `copyShape(a)`
