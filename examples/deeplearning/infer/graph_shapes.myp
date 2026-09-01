@@ -1,0 +1,161 @@
+// graph_shapes.myp — Shape table storage and accessors for Graph IR.
+// Owns all shape state previously stored in Graph: names, dims, rank5 flag,
+// kind, NHWC marker, dead marker, and count.
+import "./graph_defs.myp";
+
+class GraphShapes {
+    action:
+        @constructor GraphShapes() { sCount_ = 0; }
+
+        void reset() { sCount_ = 0; }
+        int count() { return sCount_; }
+
+        int idx(string name) {
+            int i = 0;
+            while (i < sCount_) {
+                if (shName_[i] == name) return i;
+                i = i + 1;
+            }
+            return -1;
+        }
+
+        string nameAt(int value) { if (value < 0 || value >= sCount_) return ""; return shName_[value]; }
+        int d0(int value) { if (value < 0 || value >= sCount_) return 0; return shD0_[value]; }
+        int d1(int value) { if (value < 0 || value >= sCount_) return 0; return shD1_[value]; }
+        int d2(int value) { if (value < 0 || value >= sCount_) return 0; return shD2_[value]; }
+        int d3(int value) { if (value < 0 || value >= sCount_) return 0; return shD3_[value]; }
+        int d4(int value) { if (value < 0 || value >= sCount_) return 0; return shD4_[value]; }
+        int r5(int value) { if (value < 0 || value >= sCount_) return 0; return shR5_[value]; }
+        int kindAt(int value) { if (value < 0 || value >= sCount_) return Kind.FC_ACT(); return shKind_[value]; }
+        int nhwcAt(int value) { if (value < 0 || value >= sCount_) return 0; return shNHWC_[value]; }
+        int deadAt(int value) { if (value < 0 || value >= sCount_) return 1; return shDead_[value]; }
+
+        void setKindAt(int value, int kind) { if (value >= 0 && value < sCount_) shKind_[value] = kind; }
+        void setNhwcAt(int value, int enabled) { if (value >= 0 && value < sCount_) shNHWC_[value] = enabled; }
+        void setDeadAt(int value, int dead) { if (value >= 0 && value < sCount_) shDead_[value] = dead; }
+
+        int shapeKind(string name) {
+            int i = idx(name);
+            if (i < 0) return Kind.FC_ACT();
+            return shKind_[i];
+        }
+        void setShapeKind(string name, int kind) {
+            int i = idx(name);
+            if (i >= 0) shKind_[i] = kind;
+        }
+        void markDeadTensor(string name) {
+            int s = idx(name);
+            if (s >= 0) shDead_[s] = 1;
+        }
+        void setShapeNHWC(string name) {
+            int s = idx(name);
+            if (s >= 0) shNHWC_[s] = 1;
+        }
+
+        void addShapeD(string name, int[] dims, int dimCount) {
+            int ad0 = 1; int ad1 = 1; int ad2 = 1; int ad3 = 1; int ad4 = 1;
+            if (dimCount >= 1) ad0 = dims[0];
+            if (dimCount >= 2) ad1 = dims[1];
+            if (dimCount >= 3) ad2 = dims[2];
+            if (dimCount >= 4) ad3 = dims[3];
+            if (dimCount >= 5) ad4 = dims[4];
+            if (dimCount >= 5) addShapeD5(name, ad0, ad1, ad2, ad3, ad4);
+            else addShapeD4(name, ad0, ad1, ad2, ad3);
+        }
+        void addShapeD4(string name, int d0, int d1, int d2, int d3) {
+            int ex = idx(name);
+            if (ex >= 0) {
+                if (shD0_[ex] == 0 || shD1_[ex] == 0 || shD2_[ex] == 0 || shD3_[ex] == 0) {
+                    shD0_[ex] = d0; shD1_[ex] = d1; shD2_[ex] = d2; shD3_[ex] = d3; shR5_[ex] = 0;
+                }
+                return;
+            }
+            shName_[sCount_] = name;
+            shD0_[sCount_] = d0;
+            shD1_[sCount_] = d1;
+            shD2_[sCount_] = d2;
+            shD3_[sCount_] = d3;
+            shKind_[sCount_] = Kind.FC_ACT();
+            shDead_[sCount_] = 0;
+            shNHWC_[sCount_] = 0;
+            shR5_[sCount_] = 0;
+            sCount_ = sCount_ + 1;
+        }
+        void addShapeD5(string name, int d0, int d1, int d2, int d3, int d4) {
+            int ex = idx(name);
+            if (ex >= 0) {
+                if (shD0_[ex] == 0 || shD1_[ex] == 0 || shD2_[ex] == 0 || shD3_[ex] == 0 || shD4_[ex] == 0) {
+                    shD0_[ex] = d0; shD1_[ex] = d1; shD2_[ex] = d2; shD3_[ex] = d3; shD4_[ex] = d4; shR5_[ex] = 1;
+                }
+                return;
+            }
+            shName_[sCount_] = name;
+            shD0_[sCount_] = d0;
+            shD1_[sCount_] = d1;
+            shD2_[sCount_] = d2;
+            shD3_[sCount_] = d3;
+            shD4_[sCount_] = d4;
+            shKind_[sCount_] = Kind.FC_ACT();
+            shDead_[sCount_] = 0;
+            shNHWC_[sCount_] = 0;
+            shR5_[sCount_] = 1;
+            sCount_ = sCount_ + 1;
+        }
+        void copyShape(string name, int src) {
+            if (shR5_[src] == 1) addShapeD5(name, shD0_[src], shD1_[src], shD2_[src], shD3_[src], shD4_[src]);
+            else addShapeD4(name, shD0_[src], shD1_[src], shD2_[src], shD3_[src]);
+        }
+        void setShape(string name, int d0, int d1, int d2, int d3, int d4, int is5) {
+            int s = idx(name);
+            if (s < 0) { addShapeD5(name, d0, d1, d2, d3, d4); return; }
+            shD0_[s] = d0; shD1_[s] = d1; shD2_[s] = d2; shD3_[s] = d3; shD4_[s] = d4; shR5_[s] = is5;
+        }
+
+        int shapeRank5(string name) { int s = idx(name); if (s < 0) return 0; return shR5_[s]; }
+        int valueRank(int value) { if (value < 0 || value >= sCount_) return 0; return shR5_[value] == 1 ? 5 : 4; }
+        int valueDim(int value, int axis) {
+            if (value < 0 || value >= sCount_) return 0;
+            if (axis == 0) return shD0_[value];
+            if (axis == 1) return shD1_[value];
+            if (axis == 2) return shD2_[value];
+            if (axis == 3) return shD3_[value];
+            if (axis == 4 && shR5_[value] == 1) return shD4_[value];
+            return 0;
+        }
+        int shapeElementCount(string name) {
+            int s = idx(name);
+            if (s < 0) return -1;
+            int d0 = shD0_[s]; if (d0 == 0) d0 = 1;
+            int d1 = shD1_[s]; if (d1 == 0) d1 = 1;
+            int d2 = shD2_[s]; if (d2 == 0) d2 = 1;
+            int d3 = shD3_[s]; if (d3 == 0) d3 = 1;
+            int d4 = shD4_[s]; if (d4 == 0) d4 = 1;
+            int n = d0 * d1 * d2 * d3;
+            if (shR5_[s] == 1) n = n * d4;
+            return n;
+        }
+        int valueElementCount(int value) {
+            if (value < 0 || value >= sCount_) return -1;
+            int d0 = shD0_[value]; if (d0 == 0) d0 = 1;
+            int d1 = shD1_[value]; if (d1 == 0) d1 = 1;
+            int d2 = shD2_[value]; if (d2 == 0) d2 = 1;
+            int d3 = shD3_[value]; if (d3 == 0) d3 = 1;
+            int d4 = shD4_[value]; if (d4 == 0) d4 = 1;
+            int n = d0 * d1 * d2 * d3;
+            if (shR5_[value] == 1) n = n * d4;
+            return n;
+        }
+
+    property:
+        string[512] shName_;
+        int[512] shD0_;
+        int[512] shD1_;
+        int[512] shD2_;
+        int[512] shD3_;
+        int[512] shD4_;
+        int[512] shR5_;
+        int[512] shKind_;
+        int[512] shNHWC_;
+        int[512] shDead_;
+        int sCount_;
+}
