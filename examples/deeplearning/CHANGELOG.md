@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-09-01 — 阶段一：GraphCompiler 拥有完整 lowering（buildRuntime 迁出）
+
+### 变更
+- `infer/graph_compiler.myp`：新增 `lower(Graph, InferenceRuntime)`，拥有完整
+  IR→runtime lowering——张量登记、op 接线、权重写入（原 Graph.buildRuntime）。
+- `infer/graph.myp`：新增 `compiler*` 公共访问器（shape/plan/node/attr/weight/
+  padCval/reduceMode/diceWMode），供 GraphCompiler 跨 MYP property 边界查询；
+  删除 buildRuntime 方法，`lowerRuntime` 委托 `compiler_.lower(this, rt)`。
+- 关键：MYP 一个类只能实现一个 `interface class`，故 lowering 不用第二个 host
+  interface，而用循环 import + 具体 `Graph` 参数（探针验证可用）。
+- 桥接必须置于 `action:` 段（此前误落 `function:` → 跨类不可调用）。
+
+### 验证（全绿）
+- resnet output sum **336.658**、bn 三用例、coarse（591ms 写出输出）、
+  grad_check GRAD CHECK OK、split/residual_add/conv3d/const/pad/slice 全部在
+  `MYP_GPU=1 MYP_IR_VERIFY=1` 下通过。
+
+---
+
 ## 2026-09-01 — 阶段一接口冻结：Graph 领域级访问器
 
 ### 变更（`infer/graph.myp`）

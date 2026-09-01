@@ -135,11 +135,24 @@ void eraseNode(int node);
   rank、kind、layout、dead 标记和计数；`Graph` 通过 `shapes_` facade 转发，旧的
   `shName_`/`shD*`/`shR5_`/`shKind_`/`shNHWC_`/`shDead_`/`sCount_` 已从 Graph
   property 移除。
-- **已验证**：16 个 infer_tests 在 `MYP_GPU=1 MYP_IR_VERIFY=1` 下通过；ResNet
-  output sum `336.658`。GraphShapes 切片提交为 `f6f969a`。
-- **下一步：`GraphWeights`**。必须同时迁移 weight metadata、原始文件读取所需的
-  byte source、int64/f32 constant pool 和 BN fold metadata；只抽取 getter 外壳不算
-  完成，迁移期间不允许保留两份可写状态。
+- **已完成：`GraphWeights`**。独立拥有权重元数据与常量池；`Graph` 通过 `weights_`
+  facade 转发，旧 `w*` 字段移除。
+- **已完成：`GraphNodes` + `GraphNodeAttrs`**。节点记录（type/input/output/count）
+  与全部属性、数组属性、融合/布局元数据均迁出；`Graph` 无节点 SoA。
+- **已完成：`GraphAnalysis` / `GraphPlanner` / `GraphCompiler`（mapping + lowering）**。
+  DefUse/topo/pass-result 状态、内存规划区域、runtime tensor 映射及完整
+  `buildRuntime` lowering 算法均迁出。`GraphCompiler.lower(Graph, rt)` 经 `compiler*`
+  公共访问器跨类查询，`Graph` 只保留组合与 host 转发。
+- **已完成：`GraphOptimizer` orchestration**。推理/训练 pipeline 编排（runPipeline/
+  optimize/optimizeTrain）移入 `GraphOptimizer`，经唯一 `IGraphOptimizeHost` 回调
+  Graph 执行具体 pass。
+- **已验证**：16 个 infer_tests + 训练在 `MYP_GPU=1 MYP_IR_VERIFY=1` 下通过；
+  ResNet output sum `336.658`。关键提交：`f6f969a`（Shapes）、`1e2589d`（Weights）、
+  `493d31b`/`87b8665`/`83220b8`（Nodes）、`8cce71d`（Analysis）、`9e14439`（Planner）、
+  `9a2fb26`（Compiler mapping）、`732f30e`（Compiler lowering）、`824c376`（Optimizer）。
+- **下一步：`GraphOptimizer` 具体 pass 算法迁移**。`inferShapes`/`fuseConv*`/
+  `foldConstants` 等约 40 个 pass 方法仍留在 Graph；迁移需按 `GraphCompiler.lower`
+  已验证的「具体 Graph 参数 + 公共访问器」模式推进，先取一个低依赖 pass 试点。
 
 `GraphWeights` 的迁移边界进一步固定为：
 
@@ -155,6 +168,32 @@ GraphWeights
 `GraphWeights` 不依赖 `InferenceRuntime`，也不负责决定节点是否使用某个权重；
 节点到权重的语义仍由 `GraphNodes`/`GraphOptimizer` 决定。`GraphCompiler` 只能通过
 `weightRead`、`weightInfo` 和 `writeWeight` 读取它，不能访问 weight 数组。
+
+### MYP 实现决策（已通过探针验证）
+
+MYP `struct` 的字段可以被其他类直接读写；定长数组字段也可正常修改。因此
+`GraphWeights` 采用 `struct` 而不是带几十个 setter 的 class：
+
+```myp
+struct GraphWeights {
+  string[256] name;
+  int[256] rows;
+  int[256] cols;
+  int count;
+}
+
+class Graph {
+  action:
+    void setWeightRow(int id, int value) { weights_.rows[id] = value; }
+  property:
+    GraphWeights weights_;
+}
+```
+
+迁移规则：先把完整字段组放入 `GraphWeights`，再按字段组把 Graph 内的直接访问改为
+`weights_.field`；全部引用迁完后删除 Graph 中旧字段。迁移期间允许编译器逐字段报错，
+但不允许最终保留两份可写权重状态。此次探针提交前缀为 `array_owner_probe`，验证了
+class setter 和 struct array direct access 两种路径均可编译运行。
 
 ### 验收标准
 
