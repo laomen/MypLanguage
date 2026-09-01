@@ -6,6 +6,39 @@
 
 ---
 
+## 2026-09-01 — 修复 MYP_IR_VERIFY 在 Resize/Pad 上的悬空输入（隐藏 IR 一致性 bug）
+
+### 背景
+`MYP_IR_VERIFY=1` 下 coarse/fine/seg_liver 报 `DBG fail verifyIR/topoSort`（既有的、
+被调试路径掩盖的结构性 bug）：`verifyIR` 检查每个活节点的 5 个输入槽都必须在
+shape 表登记且 DefUse 边一致，但折叠类 pass 会把参数链折叠后留下悬空输入引用。
+
+### 根因（两类，同一模式）
+- **Resize**：`foldShapeChains`（管线第 1 步）折叠 sizes 链并把生产者节点
+  `nType_=""` erase，但 `inferShapes` 尚未为这些中间张量登记 shape →
+  Resize 的 `nIn3_`（sizes）仍指向已折叠张量，`shapeIdx` 返回 -1。
+- **Pad**：pads/constant_value 参数同样被折叠链 erase，Pad 的 `nIn1_`/`nIn2_`
+  悬空。
+- `buildRuntime` 的 Resize/Pad 分支只读折叠后的 `nRsz*_` / `nPadB_`/`nPadE_`/
+  `nPadCval_`，**从不读悬空输入槽** → 运行期无影响，但违反 verifyIR 不变量。
+
+### 修复（`infer/graph.myp`，纯悬空清理，零计算变化）
+- `foldShapeChains` Resize/Upsample 分支：成功折叠出 `nRszD_/H_/W_` 后清空
+  `nIn3_[i]`。
+- `inferShapes` Pad 分支（3D/4D 两路）：折叠出 `nPadB5_/nPadE5_`（或
+  `nPadB_/nPadE_`）与 `nPadCval_` 后清空 `nIn1_[i]`/`nIn2_[i]`。
+- `verifyIR`：失败时打印具体 node/type/slot/输入名（仅 `MYP_IR_VERIFY=1` 下），
+  便于定位后续同类问题。
+
+### 验证
+- `MYP_IR_VERIFY=1` 下 coarse/fine/seg_liver/coarselike32 + 16 个 infer_tests
+  全绿（此前 coarse/fine/seg_liver 均 fail verifyIR）。
+- 训练路径：grad_check「GRAD CHECK OK」+ 3d_liver_grad_check/cnn_train 编译通过。
+- 输出位一致：coarse 98MB 输出与修复前 **byte-identical**；resnet sum 336.658、
+  r18 1331.47、residual_add/conv3d/coarselike32/bn/ops2d/const/act 全 OK。
+
+---
+
 ## 2026-09-XX — graph.myp 拆分：常量类移入 graph_defs.myp（纯重构，零行为变化）
 
 ### 背景
