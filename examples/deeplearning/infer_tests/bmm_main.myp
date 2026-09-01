@@ -1,0 +1,88 @@
+// bmm_main.myp — 阶段四：BatchMatMul（4D batch matmul + batch 广播）端到端测试
+// bmm_test.onnx（opset13，4 输入 2 输出）：A[1,2,3,4]@B[1,2,4,5]→out1[1,2,3,5]；
+// A2[1,1,3,4]@B2[1,2,4,5]→out2[1,2,3,5]（A batch=1 广播）。ORT 参考拼接 blob。
+import env;
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class BmmTestApp {
+    action:
+        @constructor BmmTestApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(4096);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load("./deeplearning/data/onnx/bmm_test.onnx", rt);
+            if (ok == 0) { Console.writeLine("load failed"); return; }
+            Console.writeString("graph: ops=");
+            Console.writeLong(rt.opCount());
+            Console.writeLine("");
+
+            string[] inNames = new string[4];
+            inNames[0] = "A"; inNames[1] = "B"; inNames[2] = "A2"; inNames[3] = "B2";
+            double[] buf = new double[128];
+            int k = 0;
+            while (k < 4) {
+                int t = loader.tensorId(inNames[k]);
+                if (t < 0) { Console.writeLine("in not found: " + inNames[k]); return; }
+                readF32("./deeplearning/data/onnx/bmm_in_" + inNames[k] + ".f32", buf, rt.tensorSize(t));
+                int i = 0;
+                while (i < rt.tensorSize(t)) { rt.setFlat(t, i, buf[i]); i = i + 1; }
+                k = k + 1;
+            }
+            rt.run();
+
+            // ORT blob：out1(30)+out2(30)=60
+            double[] blob = new double[128];
+            readF32("./deeplearning/data/onnx/bmm_test_ort.bin", blob, 60);
+            int badAll = 0;
+            double maxAll = 0.0;
+            int[] outOff = new int[2];
+            outOff[0] = 0; outOff[1] = 30;
+            string[] outNames = new string[2];
+            outNames[0] = "out1"; outNames[1] = "out2";
+            k = 0;
+            while (k < 2) {
+                int t = loader.tensorId(outNames[k]);
+                if (t < 0) { Console.writeLine("out not found: " + outNames[k]); return; }
+                int m = rt.tensorSize(t);
+                if (m != 30) { Console.writeString(outNames[k] + " size="); Console.writeLong(m); Console.writeLine(" (expect 30)"); }
+                int j = 0;
+                while (j < 30) {
+                    double rv = blob[outOff[k] + j];
+                    double dv = rt.getFlat(t, j) - rv;
+                    if (dv < 0.0) dv = 0.0 - dv;
+                    if (dv > maxAll) maxAll = dv;
+                    if (dv > 1.0e-4) badAll = badAll + 1;
+                    j = j + 1;
+                }
+                k = k + 1;
+            }
+            Console.writeString("max diff vs ORT: ");
+            Console.writeFloat(maxAll);
+            Console.writeString("  bad=");
+            Console.writeLong(badAll);
+            Console.writeLine("");
+            if (badAll == 0 && maxAll <= 1.0e-4) Console.writeLine("BMM ALL OK");
+            else Console.writeLine("BMM MISMATCH");
+        }
+
+        void readF32(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                out[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+}
+
+int main() { BmmTestApp app = new BmmTestApp(); return 0; }

@@ -479,6 +479,22 @@ class InferenceRuntime {
             opD_[id] = 0;
             opCount_ = opCount_ + 1;
         }
+        // BatchMatMul（opKind 82）：4D batch matmul，A [ab0,ab1,M,K] × B [bb0,bb1,K,N]
+        // → [ob0,ob1,M,N]（batch 维逐维 max 广播，维=1 → 0）。
+        // aM=opP0, aK=opP1, bN=opP2, ab0=opP3, ab1=opP4, bb0=opP5, bb1=opP6, ob0=opP7, ob1=opP8。
+        void addBatchMatmul(int aTid, int bTid, int outTid,
+                            int aM, int aK, int bN,
+                            int ab0, int ab1, int bb0, int bb1, int ob0, int ob1) {
+            int id = opCount_;
+            opKind_[id] = 82;
+            opA_[id] = aTid;
+            opB_[id] = bTid;
+            opC_[id] = outTid;
+            opP0_[id] = aM; opP1_[id] = aK; opP2_[id] = bN;
+            opP3_[id] = ab0; opP4_[id] = ab1; opP5_[id] = bb0; opP6_[id] = bb1;
+            opP7_[id] = ob0; opP8_[id] = ob1;
+            opCount_ = opCount_ + 1;
+        }
 
         void addConv(int inTid, int wTid, int bTid, int outTid,
                      int strideH, int strideW, int padT, int padB, int padL, int padR,

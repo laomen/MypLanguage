@@ -582,7 +582,8 @@ class GraphOptimizer {
                 int k = Kind.FC_ACT();
                 if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool") k = Kind.CNN_ACT();
                 else if (t == "Conv3D" || t == "MaxPool3D" || t == "AveragePool3D") k = Kind.CNN_ACT();   // 3D
-                else if (t == "Gemm" || t == "MatMul" || t == "Flatten") k = Kind.FC_ACT();
+                else if (t == "Gemm" || t == "Flatten") k = Kind.FC_ACT();
+                else if (t == "MatMul") k = shapeKindOf(graph, graph.nodeInAt(i, 0));   // 阶段四：4D 输入 → CNN_ACT（batch matmul）
                 else {
                     // Relu / Sigmoid / Softmax / Add：沿用主输入 kind
                     k = shapeKindOf(graph, graph.nodeInAt(i, 0));
@@ -1246,7 +1247,17 @@ int inferShapes(Graph graph) {
                 } else if (t == "MatMul") {
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int b = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (graph.compilerValueExists(graph.nodeInAt(i, 1)) == 0) return 0;
-                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), graph.compilerShapeDim(a, 0), graph.compilerShapeDim(b, 1), 1, 1);
+                    int ar = graph.compilerShapeR5(a) == 1 ? 5 : 4;
+                    int br = graph.compilerShapeR5(b) == 1 ? 5 : 4;
+                    if (ar >= 3 && br >= 3) {
+                        // 阶段四：BatchMatMul——batch 维逐维 max 广播 + 最后两维 matmul
+                        // A [ab0,ab1,M,K] × B [bb0,bb1,K,N] → [max(ab0,bb0), max(ab1,bb1), M, N]
+                        int od0 = graph.compilerShapeDim(a, 0); if (graph.compilerShapeDim(b, 0) > od0) od0 = graph.compilerShapeDim(b, 0);
+                        int od1 = graph.compilerShapeDim(a, 1); if (graph.compilerShapeDim(b, 1) > od1) od1 = graph.compilerShapeDim(b, 1);
+                        graph.addShapeD4(graph.compilerNodeOutput(i, 0), od0, od1, graph.compilerShapeDim(a, 2), graph.compilerShapeDim(b, 3));
+                    } else {
+                        graph.addShapeD4(graph.compilerNodeOutput(i, 0), graph.compilerShapeDim(a, 0), graph.compilerShapeDim(b, 1), 1, 1);
+                    }
                 } else if (t == "Add") {
                     // 阶段三：统一 numpy 广播——输出 = a/b 逐维 max（无 shape 的输入按 1）
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;

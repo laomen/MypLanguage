@@ -80,6 +80,35 @@ class GpuInferOps {
                 }
             }
         }
+        // BatchMatMul（阶段四）：4D batch matmul。A [ab0,ab1,M,K] × B [bb0,bb1,K,N] →
+        // [ob0,ob1,M,N]。batch 维逐维 max 广播（维=1 → 0）。thread-per-output-element。
+        void matmulBcast(float[] a, int work, int aOff, int bOff, int oOff,
+                         int aM, int aK, int bN,
+                         int ab0, int ab1, int bb0, int bb1, int ob0, int ob1, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int n = int(p % long(bN));
+                    int t = int(p / long(bN));
+                    int m = t % aM;
+                    t = t / aM;
+                    int ob1_ = t % ob1;
+                    int ob0_ = t / ob1;
+                    int ab0_ = (ab0 == 1) ? 0 : (ob0_ % ab0);
+                    int ab1_ = (ab1 == 1) ? 0 : (ob1_ % ab1);
+                    int bb0_ = (bb0 == 1) ? 0 : (ob0_ % bb0);
+                    int bb1_ = (bb1 == 1) ? 0 : (ob1_ % bb1);
+                    int aBase = ((ab0_ * ab1 + ab1_) * aM + m) * aK;
+                    int bRowBase = ((bb0_ * bb1 + bb1_) * aK) * bN;
+                    float sum = 0.0f;
+                    int k = 0;
+                    while (k < aK) {
+                        sum = sum + a[aOff + aBase + k] * a[bOff + bRowBase + k * bN + n];
+                        k = k + 1;
+                    }
+                    a[oOff + ((ob0_ * ob1 + ob1_) * aM + m) * bN + n] = sum;
+                }
+            }
+        }
 
         // §2.3 ② 分块 GEMM（dense 用）：y[outDim,batch] = W[outDim,xRows]·x[xRows,batch]
         // （+bias）。块 = 32×32 输出 tile；K 分块（BK=32）载 W/x tile 到共享；256 线程

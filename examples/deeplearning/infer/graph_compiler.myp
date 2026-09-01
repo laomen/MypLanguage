@@ -100,7 +100,24 @@ class GraphCompiler {
                     rt.addDense(a, w, b, out);
                 } else if (code == OpCode.MATMUL()) {
                     int w = tensorId(graph.nodeInAt(ni, 1));
-                    rt.addMatmul(a, w, out);
+                    int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                    int ws = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
+                    int ar = graph.compilerShapeR5(is) == 1 ? 5 : 4;
+                    int br = graph.compilerShapeR5(ws) == 1 ? 5 : 4;
+                    if (ar >= 3 && br >= 3) {
+                        // 阶段四：BatchMatMul——batch 维逐维 max + 最后两维 matmul
+                        int aM = graph.compilerShapeDim(is, 2), aK = graph.compilerShapeDim(is, 3);
+                        int bN = graph.compilerShapeDim(ws, 3);
+                        int os = graph.compilerShapeIdx(graph.compilerEffectiveOut(ni));
+                        if (os < 0) return 0;
+                        int ob0 = graph.compilerShapeDim(os, 0), ob1 = graph.compilerShapeDim(os, 1);
+                        rt.addBatchMatmul(a, w, out, aM, aK, bN,
+                                          graph.compilerShapeDim(is, 0), graph.compilerShapeDim(is, 1),
+                                          graph.compilerShapeDim(ws, 0), graph.compilerShapeDim(ws, 1),
+                                          ob0, ob1);
+                    } else {
+                        rt.addMatmul(a, w, out);
+                    }
                 } else if (code == OpCode.ADD()) {
                     int b = tensorId(graph.nodeInAt(ni, 1));
                     int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
