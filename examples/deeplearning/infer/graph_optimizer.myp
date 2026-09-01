@@ -65,6 +65,65 @@ class GraphOptimizer {
             return 1;
         }
 
+        // x op identity（x+0 / x*1 / x-0 / x/1）折叠。Add/Mul 可交换，id op x 也合法。
+        int foldIdentityOps(Graph graph) {
+            int changed = 0;
+            int node = 0;
+            while (node < graph.nodeCount()) {
+                int code = graph.nodeOp(node);
+                int commutable = 0;
+                if (code == OpCode.ADD() || code == OpCode.MUL()) commutable = 1;
+                else if (code != OpCode.SUB() && code != OpCode.DIV()) { node = node + 1; continue; }
+                string output = graph.compilerEffectiveOut(node);
+                if (output == "") { node = node + 1; continue; }
+                double identity = (code == OpCode.ADD() || code == OpCode.SUB()) ? 0.0 : 1.0;
+                int in0 = graph.nodeInputValue(node, 0);
+                int in1 = graph.nodeInputValue(node, 1);
+                int keep = -1;
+                // x op id（四种全适用）；Add/Mul 可交换，id op x 也合法
+                if (graph.isConstValue(graph.nodeInAt(node, 1), identity) == 1) keep = in0;
+                else if (commutable == 1 && graph.isConstValue(graph.nodeInAt(node, 0), identity) == 1) keep = in1;
+                int out = graph.nodeOutputValue(node, 0);
+                if (keep >= 0 && out >= 0) {
+                    graph.replaceAllUses(out, keep);
+                    graph.compilerEraseNode(node);   // P3c：canonical 删除原语
+                    changed = 1;
+                }
+                node = node + 1;
+            }
+            return changed;
+        }
+
+        // P2e：连续激活合并 Relu(Relu(x)) → Relu(x)。内层 producer 可以是独立 Relu 节点，
+        // 或已融合（nFused_+nRelu_，如 ConvRelu）的 producer——其有效输出已过 ReLU，外层
+        // Relu 冗余。外层输出改接内层有效输出（replaceAllUses 覆盖图输出 rename），tombstone 外层。
+        int foldDoubleRelu(Graph graph) {
+            int changed = 0;
+            int node = 0;
+            while (node < graph.nodeCount()) {
+                if (graph.nodeOp(node) != OpCode.RELU()) { node = node + 1; continue; }
+                string outName = graph.compilerEffectiveOut(node);
+                if (outName == "") { node = node + 1; continue; }
+                int in = graph.nodeInputValue(node, 0);
+                int prod = graph.valueProducer(in);
+                int alreadyRelu = 0;
+                if (prod >= 0) {
+                    if (graph.nodeOp(prod) == OpCode.RELU()) alreadyRelu = 1;
+                    else if (graph.compilerAttrFused(prod) == 1 && graph.compilerAttrRelu(prod) == 1) alreadyRelu = 1;
+                }
+                if (alreadyRelu == 0) { node = node + 1; continue; }
+                int out = graph.nodeOutputValue(node, 0);
+                int innerOut = graph.nodeOutputValue(prod, 0);
+                if (out >= 0 && innerOut >= 0) {
+                    graph.replaceAllUses(out, innerOut);
+                    graph.compilerEraseNode(node);   // P3c：canonical 删除原语
+                    changed = 1;
+                }
+                node = node + 1;
+            }
+            return changed;
+        }
+
         int runPipeline(IGraphOptimizeHost host) {
             if (Console.getEnv("MYP_NO_REUSE") == "1") host.enableNoReuseForOptimizer();
             host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链

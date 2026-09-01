@@ -494,64 +494,6 @@ class Graph {
             }
             return 1;
         }
-        int foldIdentityOps() {
-            int changed = 0;
-            int node = 0;
-            while (node < nodes_.count()) {
-                int code = nodeOp(node);
-                int commutable = 0;
-                if (code == OpCode.ADD() || code == OpCode.MUL()) commutable = 1;
-                else if (code != OpCode.SUB() && code != OpCode.DIV()) { node = node + 1; continue; }
-                string output = effectiveOut(node);
-                if (output == "") { node = node + 1; continue; }
-                double identity = (code == OpCode.ADD() || code == OpCode.SUB()) ? 0.0 : 1.0;
-                int in0 = nodeInputValue(node, 0);
-                int in1 = nodeInputValue(node, 1);
-                int keep = -1;
-                // x op id（四种全适用：x+0 / x*1 / x-0 / x/1）；Add/Mul 可交换，id op x 也合法
-                if (isConstValue(nodes_.inputAt(node, 1), identity) == 1) keep = in0;
-                else if (commutable == 1 && isConstValue(nodes_.inputAt(node, 0), identity) == 1) keep = in1;
-                int out = nodeOutputValue(node, 0);
-                if (keep >= 0 && out >= 0) {
-                    replaceAllUses(out, keep);
-                    eraseNode(node);   // P3c：canonical 删除原语
-                    changed = 1;
-                }
-                node = node + 1;
-            }
-            return changed;
-        }
-        // P2e：连续激活合并 Relu(Relu(x)) → Relu(x)。内层 producer 可以是独立 Relu 节点，
-        // 或已融合（nFused_+nRelu_，如 ConvRelu）的 producer——其有效输出已过 ReLU，外层
-        // Relu 冗余。外层输出改接内层有效输出（replaceAllUses 覆盖图输出 rename），tombstone 外层。
-        int foldDoubleRelu() {
-            int changed = 0;
-            int node = 0;
-            while (node < nodes_.count()) {
-                if (nodeOp(node) != OpCode.RELU()) { node = node + 1; continue; }
-                string outName = effectiveOut(node);
-                if (outName == "") { node = node + 1; continue; }
-                int in = nodeInputValue(node, 0);
-                int prod = valueProducer(in);
-                int alreadyRelu = 0;
-                if (prod >= 0) {
-                    if (nodeOp(prod) == OpCode.RELU()) alreadyRelu = 1;
-                    else if (attrs_.fused(prod) == 1 && attrs_.relu(prod) == 1) alreadyRelu = 1;
-                }
-                if (alreadyRelu == 0) { node = node + 1; continue; }
-                int out = nodeOutputValue(node, 0);
-                int innerOut = nodeOutputValue(prod, 0);
-                if (out >= 0 && innerOut >= 0) {
-                    replaceAllUses(out, innerOut);
-                    eraseNode(node);   // P3c：canonical 删除原语
-                    changed = 1;
-                }
-                node = node + 1;
-            }
-            return changed;
-        }
-        // P2b pattern primitive：value 必须恰有一个 use，且用户 op 与 operand slot 精确匹配。
-        // Use edge 是 (user,slot)，因此 Mul(x,x) 等重复 use 不会被误判成单消费者。
         int matchSingleUseOp(int value, string op, int slot) {
             if (value < 0 || valueUseCount(value) != 1) return -1;
             int user = valueUseNode(value, 0);
@@ -589,8 +531,8 @@ class Graph {
             else if (pass == IRPassKind.FUSE_GAP_FLATTEN()) ok = optimizer_.fuseGapFlatten(this);
             else if (pass == IRPassKind.DCE()) ok = optimizer_.eliminateDeadNodes(this);
             else if (pass == IRPassKind.LAYOUT_NHWC()) ok = layoutNHWC();
-            else if (pass == IRPassKind.IDENTITY_FOLD()) { foldIdentityOps(); ok = 1; }
-            else if (pass == IRPassKind.FOLD_RELU()) { foldDoubleRelu(); ok = 1; }
+            else if (pass == IRPassKind.IDENTITY_FOLD()) { optimizer_.foldIdentityOps(this); ok = 1; }
+            else if (pass == IRPassKind.FOLD_RELU()) { optimizer_.foldDoubleRelu(this); ok = 1; }
             else if (pass == IRPassKind.FUSE_CONV_ADD()) ok = fuseConvAdd();
             analysis_.setLastPassOk(ok);
             analysis_.setLastPassChanged(0);
@@ -2604,6 +2546,7 @@ class Graph {
         // 节点属性查询
         int compilerAttr(int node, int key) { return attrs_.get(node, key); }
         int compilerAttrRelu(int node) { return attrs_.relu(node); }
+        int compilerAttrFused(int node) { return attrs_.fused(node); }
         int compilerAttrNhwc(int node) { return attrs_.nhwc(node); }
         int compilerAttrOutputCount(int node) { return attrs_.outputCount(node); }
         int compilerAttrSliceCount(int node) { return attrs_.sliceCount(node); }
