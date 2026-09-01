@@ -1196,6 +1196,39 @@ class GpuExpandOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
+// ---- where（opKind 75 前向；G5 逐元素选择 cond ? x : y）----
+class WhereOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int ct = rt.opAAt(i); int xt = rt.opBAt(i); int yt = rt.opCAt(i); int ot = rt.opDAt(i);
+            int work = rt.tensorRows(ot) * rt.tensorCols(ot);
+            InferOps.where1(rt.arenaRef(), rt.tensorOff(ct), rt.tensorOff(xt), rt.tensorOff(yt), rt.tensorOff(ot), work,
+                           rt.tensorC(ot), rt.tensorH(ot), rt.tensorW(ot),
+                           rt.tensorN(ct), rt.tensorC(ct), rt.tensorH(ct), rt.tensorW(ct),
+                           rt.tensorN(xt), rt.tensorC(xt), rt.tensorH(xt), rt.tensorW(xt),
+                           rt.tensorN(yt), rt.tensorC(yt), rt.tensorH(yt), rt.tensorW(yt));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- where（GPU，opKind 75）----
+class GpuWhereOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int ct = rt.opAAt(i); int xt = rt.opBAt(i); int yt = rt.opCAt(i); int ot = rt.opDAt(i);
+            int work = rt.tensorRows(ot) * rt.tensorCols(ot);
+            GpuInferOps.where1(rt.arenaRef(), work, rt.tensorOff(ct), rt.tensorOff(xt), rt.tensorOff(yt), rt.tensorOff(ot),
+                              rt.tensorC(ot), rt.tensorH(ot), rt.tensorW(ot),
+                              rt.tensorN(ct), rt.tensorC(ct), rt.tensorH(ct), rt.tensorW(ct),
+                              rt.tensorN(xt), rt.tensorC(xt), rt.tensorH(xt), rt.tensorW(xt),
+                              rt.tensorN(yt), rt.tensorC(yt), rt.tensorH(yt), rt.tensorW(yt),
+                              rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- instancenorm（GPU）----
 class GpuInstanceNormOp {
     interface class IOp;
@@ -1941,6 +1974,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(33, new MulOp(), 0);                  rt.registerFwd(33, new GpuMulOp(), 1);
     rt.registerFwd(34, new SqrtOp(), 0);                 rt.registerFwd(34, new GpuSqrtOp(), 1);
     rt.registerFwd(74, new ExpandOp(), 0);               rt.registerFwd(74, new GpuExpandOp(), 1);
+    rt.registerFwd(75, new WhereOp(), 0);                rt.registerFwd(75, new GpuWhereOp(), 1);
     rt.registerFwd(35, new InstanceNormOp(), 0);         rt.registerFwd(35, new GpuInstanceNormOp(), 1);
     rt.registerFwd(36, new AvgpoolOp(), 0);              rt.registerFwd(36, new GpuAvgpoolOp(), 1);
     rt.registerFwd(37, new AvgpoolNhwcOp(), 0);          rt.registerFwd(37, new GpuAvgpoolNhwcOp(), 1);

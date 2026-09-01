@@ -468,7 +468,7 @@ class GraphOptimizer {
             while (i < graph.nodeCount()) {
                 if (graph.nodeInAt(i, 0) == name || graph.nodeInAt(i, 1) == name || graph.nodeInAt(i, 2) == name) {
                     string t = graph.nodeTypeAt(i);
-                    if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization" || t == "Expand") return Kind.CNN_ACT();   // G4：Expand 是 4D 广播
+                    if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization" || t == "Expand" || t == "Where") return Kind.CNN_ACT();   // G4/G5：Expand/Where 是 4D 广播数据
                     if (t == "Conv3D" || t == "MaxPool3D" || t == "AveragePool3D") return Kind.CNN_ACT();   // 3D
                     // F8：Concat/Transpose/Reshape 等 —— 若张量本身 4D 则按 CNN 激活
                     int s = graph.compilerShapeIdx(name);
@@ -1282,6 +1282,32 @@ int inferShapes(Graph graph) {
                     if (sc >= 2) od1 = outd[1];
                     if (sc >= 3) od2 = outd[2];
                     if (sc >= 4) od3 = outd[3];
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), od0, od1, od2, od3);
+                } else if (t == "Where") {
+                    // G5：逐元素选择 out = cond ? x : y（三输入广播，缺省维=1）。
+                    // 输出 = cond/x/y 逐维 max（广播合并）；无 shape 的输入按 1。
+                    int c = graph.compilerShapeIdx(graph.nodeInAt(i, 0));
+                    int x = graph.compilerShapeIdx(graph.nodeInAt(i, 1));
+                    int y = graph.compilerShapeIdx(graph.nodeInAt(i, 2));
+                    int od0 = 1, od1 = 1, od2 = 1, od3 = 1;
+                    if (c >= 0) {
+                        if (graph.compilerShapeDim(c, 0) > od0) od0 = graph.compilerShapeDim(c, 0);
+                        if (graph.compilerShapeDim(c, 1) > od1) od1 = graph.compilerShapeDim(c, 1);
+                        if (graph.compilerShapeDim(c, 2) > od2) od2 = graph.compilerShapeDim(c, 2);
+                        if (graph.compilerShapeDim(c, 3) > od3) od3 = graph.compilerShapeDim(c, 3);
+                    }
+                    if (x >= 0) {
+                        if (graph.compilerShapeDim(x, 0) > od0) od0 = graph.compilerShapeDim(x, 0);
+                        if (graph.compilerShapeDim(x, 1) > od1) od1 = graph.compilerShapeDim(x, 1);
+                        if (graph.compilerShapeDim(x, 2) > od2) od2 = graph.compilerShapeDim(x, 2);
+                        if (graph.compilerShapeDim(x, 3) > od3) od3 = graph.compilerShapeDim(x, 3);
+                    }
+                    if (y >= 0) {
+                        if (graph.compilerShapeDim(y, 0) > od0) od0 = graph.compilerShapeDim(y, 0);
+                        if (graph.compilerShapeDim(y, 1) > od1) od1 = graph.compilerShapeDim(y, 1);
+                        if (graph.compilerShapeDim(y, 2) > od2) od2 = graph.compilerShapeDim(y, 2);
+                        if (graph.compilerShapeDim(y, 3) > od3) od3 = graph.compilerShapeDim(y, 3);
+                    }
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), od0, od1, od2, od3);
                 } else if (t == "Concat") {
                     // F8：沿 axis 拼接（2-3 输入），输出 = 各输入沿 axis 之和，其余维同输入0

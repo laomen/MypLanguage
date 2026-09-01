@@ -955,6 +955,17 @@ class InferenceRuntime {
             opP4_[id] = id0; opP5_[id] = id1; opP6_[id] = id2; opP7_[id] = id3;
             opCount_ = opCount_ + 1;
         }
+        // Where（opKind 75）：逐元素选择 out = cond ? x : y（三输入，各自 4D 广播）。
+        // cond/x/y/out 的 4D 维度由 forward 从各自 tid 的 tN_/tC_/tH_/tW_ 读取（dim=1 广播）。
+        void addWhere(int condT, int xT, int yT, int outT) {
+            int id = opCount_;
+            opKind_[id] = 75;
+            opA_[id] = condT;
+            opB_[id] = xT;
+            opC_[id] = yT;
+            opD_[id] = outT;
+            opCount_ = opCount_ + 1;
+        }
         // Split（opKind 29）：沿 axis 复制 [start, start+len)（一个输出一个 op）
         // d0..d4 为输入 5 维（2D 时 d4=1）；len = 该输出沿 axis 长度
         void addSplit(int inTid, int outTid, int axis, int start, int len,

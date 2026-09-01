@@ -1,0 +1,94 @@
+// where_main.myp — G5：Where（逐元素选择 cond ? x : y）端到端测试
+// where_test.onnx（opset13）：cond[1,2,1,1] ? x[1,2,3,4] : y[1,2,3,4] → out[1,2,3,4]
+// cond 的 H/W 维=1 → 广播（同时验证选择 + 广播）。输入/ORT 参考由 make_where_onnx.py 生成。
+import env;
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class WhereTestApp {
+    action:
+        @constructor WhereTestApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(2048);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load("./deeplearning/data/onnx/where_test.onnx", rt);
+            if (ok == 0) { Console.writeLine("load failed"); return; }
+            Console.writeString("graph: ops=");
+            Console.writeLong(rt.opCount());
+            Console.writeLine("");
+
+            int inC = loader.tensorId("cond");
+            int inX = loader.tensorId("x");
+            int inY = loader.tensorId("y");
+            int outT = loader.tensorId("out");
+            if (inC < 0 || inX < 0 || inY < 0 || outT < 0) { Console.writeLine("tensor not found"); return; }
+            double[] buf = new double[64];
+            readF32("./deeplearning/data/onnx/where_cond.f32", buf, rt.tensorSize(inC));
+            int i = 0;
+            while (i < rt.tensorSize(inC)) { rt.setFlat(inC, i, buf[i]); i = i + 1; }
+            readF32("./deeplearning/data/onnx/where_x.f32", buf, rt.tensorSize(inX));
+            i = 0;
+            while (i < rt.tensorSize(inX)) { rt.setFlat(inX, i, buf[i]); i = i + 1; }
+            readF32("./deeplearning/data/onnx/where_y.f32", buf, rt.tensorSize(inY));
+            i = 0;
+            while (i < rt.tensorSize(inY)) { rt.setFlat(inY, i, buf[i]); i = i + 1; }
+            rt.run();
+            int m = rt.tensorSize(outT);
+            Console.writeString("out size=");
+            Console.writeLong(m);
+            Console.writeLine("");
+            int okC = checkOut(rt, outT, "./deeplearning/data/onnx/where_test_ort.bin", m);
+            if (okC == 1) Console.writeLine("WHERE ALL OK");
+            else Console.writeLine("WHERE MISMATCH");
+        }
+
+        void readF32(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                out[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        int checkOut(InferenceRuntime rt, int tid, string path, int n) {
+            if (tid < 0) return 0;
+            int fd = __myp_io_fopen(path, "rb");
+            double maxD = 0.0;
+            int bad = 0;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                double rv = F32.toDouble(bits);
+                double dv = rt.getFlat(tid, i) - rv;
+                if (dv < 0.0) dv = 0.0 - dv;
+                if (dv > maxD) maxD = dv;
+                if (dv > 1.0e-4) bad = bad + 1;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString("max diff vs ORT: ");
+            Console.writeFloat(maxD);
+            Console.writeString("  bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            if (maxD <= 1.0e-4) return 1;
+            return 0;
+        }
+}
+
+int main() { WhereTestApp app = new WhereTestApp(); return 0; }

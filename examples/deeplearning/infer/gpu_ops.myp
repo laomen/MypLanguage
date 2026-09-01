@@ -2702,6 +2702,43 @@ class GpuInferOps {
                 }
             }
         }
+        // Where（G5）：逐元素选择 out = cond ? x : y，三输入各自 4D 广播
+        // （维=1 → 0，其余 % 输入维）。thread-per-output-element。
+        // 注意：`where` 是 MYP 保留字（mapping 过滤），函数名用 where1。
+        void where1(float[] a, int work, int cOff, int xOff, int yOff, int oOff,
+                   int oc, int oh, int ow,
+                   int cn, int cc, int ch, int cw,
+                   int xn, int xc, int xh, int xw,
+                   int yn, int yc, int yh, int yw, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int i = int(p);
+                    int w3 = i % ow;
+                    int t = i / ow;
+                    int w2 = t % oh;
+                    t = t / oh;
+                    int w1 = t % oc;
+                    int w0 = t / oc;
+                    int c0 = (cn == 1) ? 0 : (w0 % cn);
+                    int c1 = (cc == 1) ? 0 : (w1 % cc);
+                    int c2 = (ch == 1) ? 0 : (w2 % ch);
+                    int c3 = (cw == 1) ? 0 : (w3 % cw);
+                    int cFlat = ((c0 * cc + c1) * ch + c2) * cw + c3;
+                    int x0 = (xn == 1) ? 0 : (w0 % xn);
+                    int x1 = (xc == 1) ? 0 : (w1 % xc);
+                    int x2 = (xh == 1) ? 0 : (w2 % xh);
+                    int x3 = (xw == 1) ? 0 : (w3 % xw);
+                    int xFlat = ((x0 * xc + x1) * xh + x2) * xw + x3;
+                    int y0 = (yn == 1) ? 0 : (w0 % yn);
+                    int y1 = (yc == 1) ? 0 : (w1 % yc);
+                    int y2 = (yh == 1) ? 0 : (w2 % yh);
+                    int y3 = (yw == 1) ? 0 : (w3 % yw);
+                    int yFlat = ((y0 * yc + y1) * yh + y2) * yw + y3;
+                    if (a[cOff + cFlat] > float(0.0)) { a[oOff + i] = a[xOff + xFlat]; }
+                    else { a[oOff + i] = a[yOff + yFlat]; }
+                }
+            }
+        }
         // InstanceNormalization：逐 (n,c) 线程，S 上归约（float 累加）
         // 激进优化（2026-08-12）：3 阶段满并行，替代原"每通道 1 线程 × 串行 3 趟"
         // （原实现 work=N*C 个线程，每线程串行 3 趟 7M double → GPU 欠利用，占推理 87%）。
