@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P1a：AnalysisManager 有效性管理 + 固定 Pass Dispatcher
+
+### 变更（`infer/graph.myp`）
+- 新 `IRAnalysis` 位集（DefUse/Topo/Liveness）与 Graph 的 `analysisValid_`、全局及各分析
+  generation；`invalidateAnalyses(mask)`/`markIRMutation()` 统一管理缓存失效。
+- 新 `IRPassKind` + `runIRPass`：把既有 fold/infer/classify/fuse/DCE/layout 的固定调用顺序
+  纳入 dispatcher。旧 pass 保持原实现和顺序；每个成功 pass 后保守使全部分析失效。
+- `rebuildDefUse`、`topoSort`、`planMemory` 分别标记当前 generation 的 DefUse/Topo/Liveness
+  有效；反向图追加 Bwd*/Update 后显式失效，避免训练第二阶段读取前向图的分析缓存。
+
+### 验证
+- `MYP_IR_VERIFY=1`：ONNX MLP 推理 **99%**；带跳跃连接 3D U-Net GPU 训练 **acc 100%**。
+- P1a 仅实现保守失效；`PassResult.changed/preservedAnalyses` 与不动点迭代留在 P1b，避免
+  在现有 SoA pass 尚未迁移时做不可靠的精确缓存保留。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P0：优化 IR 访问器 + 精确 DefUseAnalysis（零行为变化）
 
 ### 变更（`infer/graph.myp`）

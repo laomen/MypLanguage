@@ -189,7 +189,8 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | 阶段 | 内容 | 行为 | 验证 |
 |---|---|---|---|
 | **P0** | 稳定 NodeId/ValueId、Use(user,slot)、访问器、mutation API、`rebuildDefUse`、`verifyIR`；先只在导入后/每个既有 graph mutation pass 后重建，新增只读示例 pass | **已实施**：Shape table index=ValueId；压缩 use 链表（最大 5×512 边）；topoSort 改用索引 | ONNX MLP 99%、skip U-Net GPU 100%，均以 `MYP_IR_VERIFY=1` 运行 |
-| **P1** | AnalysisManager（DefUse/Shape/Topo/Liveness）+ PassResult/changed/preserved 契约；既有 pass 逐个包装，`runPassPipeline` 由管理器驱动 | 零变化 | infer_tests 全量 + 图结构快照 |
+| **P1a** | AnalysisManager 的保守有效性管理 + 固定 pass dispatcher | **已实施**：`IRAnalysis` valid 位/generation；每个旧 pass 后 ALL 失效；DefUse/Topo/Liveness 在重建点标记有效；`runIRPass` 驱动原固定顺序 | ONNX MLP 99%、skip U-Net GPU 100%，均以 `MYP_IR_VERIFY=1` 运行 |
+| **P1b** | `PassResult{ok,changed,preservedAnalyses}` + required analysis 声明；把保守失效收紧为按 pass 精确保留 | 零变化 | infer_tests 全量 + 图结构快照 |
 | **P2** | pattern-match/rewrite 基建 + 迁移一个低风险融合（Conv→Relu）；新增 Add(x,0)、Mul(x,1) 等恒等简化 | 输出不变（优化只删冗余） | 与 `MYP_OLD_IR=1` 逐位对比 |
 | **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | 零变化（重构） | infer_tests + grad_check + opt_check |
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
@@ -221,10 +222,11 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 
 1. **P0**：先落地稳定 id、Use edge、mutation API、验证器与可重建 def-use；这是所有 rewrite
   的正确性地基。
-2. **P1**：再落地 analysis invalidation 与 PassResult 契约；没有 changed/preserved 不能安全做
+2. **P1a**：先落地保守 analysis invalidation 和固定 dispatcher（已完成）。
+3. **P1b**：再加 `PassResult` 与精确 preserved 契约；没有 changed/preserved 不能安全做
   不动点 rewrite。
-3. **P2**：在上述基建稳定后才做 pattern-match/rewrite，先迁移一个既有融合，再增加恒等简化。
-4. P3 枚举/schema 与 P4 性能优化后置，避免重构、语义改动、性能调优在同一个阶段叠加。
+4. **P2**：在上述基建稳定后才做 pattern-match/rewrite，先迁移一个既有融合，再增加恒等简化。
+5. P3 枚举/schema 与 P4 性能优化后置，避免重构、语义改动、性能调优在同一个阶段叠加。
 
 ## 9. 实施状态：P0（2026-09-02）
 
@@ -244,5 +246,23 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 
 **P0 边界**：尚未把所有旧 pass 改为 mutation API，也没有增量 use-edge 维护、PassManager、
 analysis invalidation 或 op enum；这些严格留给 P1-P3，避免在已验证图优化路径中混入重构。
+
+## 10. 实施状态：P1a（2026-09-02）
+
+P1a 先实现可验证的最小 AnalysisManager，而不改变任一既有 pass 的优化语义：
+
+- `IRAnalysis` 定义 `DEF_USE/TOPO/LIVENESS` 位；Graph 持有 `analysisValid_`、全局
+  `analysisGeneration_`，以及各分析的生成 generation。
+- `invalidateAnalyses(mask)` 是唯一失效入口；`markIRMutation()` 对旧 SoA 直写 pass
+  使用保守 `ALL` 失效。每次 mutation generation 增加，`duValid_` 和 topo order 同步清除。
+- `rebuildDefUse()`、`topoSort()`、`planMemory()` 分别记录 DefUse、Topo、Liveness 为当前
+  generation 有效。对外暴露 `analysisValid` 与 generation getter，供后续 pass/测试断言。
+- `IRPassKind + runIRPass` 以固定顺序分派现有 fold/infer/classify/fuse/DCE/layout pass；
+  仅在 pass 成功后标记 mutation。`runPassPipeline` 的顺序和失败处理保持旧行为。
+- `buildReverseGraph()` 追加 Bwd*/Update 节点后显式 `markIRMutation()`，保证训练图第二次
+  topoSort 绝不消费前向图的 def-use/topo/liveness 缓存。
+
+**P1a 边界**：旧 pass 不报告 `changed`，因此每个成功 pass 都保守失效；尚未实现 PassResult、
+required/preserved analysis 声明或不动点迭代。它们是 P1b 的目标，也是开始 P2 rewrite 前的门槛。
 
 ---
