@@ -369,6 +369,11 @@ class OnnxLoader {
                     payloadLen = pb_.readLen();
                     payloadOff = pb_.payloadOff();
                     pb_.skipBytes(payloadLen);  // 前进游标，跳过 payload（仅记录偏移，稍后从 file_ 读取）
+                } else if (f == 6) {   // float16_data(6)：packed 2 字节/元素（阶段三 FP16 权重）
+                    payloadKind = 4;
+                    payloadLen = pb_.readLen();
+                    payloadOff = pb_.payloadOff();
+                    pb_.skipBytes(payloadLen);
                 } else if (f == 7) {   // int64_data(7)：packed varint（F8：Reshape shape / Slice 参数）
                     payloadKind = 3;
                     payloadLen = pb_.readLen();

@@ -715,11 +715,39 @@ class Graph {
         void setShapeNHWC(string name) {
             shapes_.setShapeNHWC(name);
         }
+        // IEEE half (F16) → F32 位型（阶段三：FP16 权重 dtype 转换规则）
+        int halfToF32Bits(int h) {
+            int sign = (h >> 15) & 1;
+            int exp = (h >> 10) & 31;
+            int man = h & 1023;
+            if (exp == 0) {
+                if (man == 0) return sign << 31;
+                int e = -14;
+                while ((man & 1024) == 0) { man = man << 1; e = e - 1; }
+                man = man & 1023;
+                exp = e + 127;
+            } else if (exp == 31) {
+                return (sign << 31) | (255 << 23) | (man << 13);
+            } else {
+                exp = exp - 15 + 127;
+            }
+            return (sign << 31) | (exp << 23) | (man << 13);
+        }
         void writeWeight(InferenceRuntime rt, int wi, int tid) {
             int off = weights_.get(wi, WeightField.OFFSET());
             int count = weights_.get(wi, WeightField.LENGTH()) / 4;
             int j = 0;
-            if (weights_.get(wi, WeightField.ROLE()) == 3) {
+            if (weights_.get(wi, WeightField.DTYPE()) == 10) {
+                // 阶段三：FP16 权重（dtype 10）——每 2 字节 half → float（直接 wire 顺序拷贝）
+                int cnt = weights_.get(wi, WeightField.LENGTH()) / 2;
+                j = 0;
+                while (j < cnt) {
+                    int h = file_[off + j * 2] | (file_[off + j * 2 + 1] << 8);
+                    int bits = halfToF32Bits(h);
+                    rt.setFlat(tid, j, F32.toDouble(bits));
+                    j = j + 1;
+                }
+            } else if (weights_.get(wi, WeightField.ROLE()) == 3) {
                 // CNN 偏置：直接拷贝（G3：BN 折叠则应用偏置公式；G4：无原偏置卷积由 BN 合成）
                 j = 0;
                 while (j < count) {
