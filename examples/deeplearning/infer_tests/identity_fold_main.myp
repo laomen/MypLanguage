@@ -1,7 +1,10 @@
-// identity_fold_main.myp — IR-P2: Add(x,0) / Mul(x,1) pattern rewrite regression.
-// 生成器图：data -> Add(0) -> Mul(1) -> Softmax；优化后运行时只应保留 Softmax。
-// 第二输出 out2 = Add(data2, 0)：P2d 图输出 rewrite 应把图输出名重命名为 data2，
-// 并删除 out2 张量（tensorId("out2") < 0），读数与 data2 缓冲一致。
+// identity_fold_main.myp — IR-P2 pattern rewrite regression.
+// 生成器图（tools/make_identity_fold_onnx.py）：
+//   data -> Add(0) -> Mul(1) -> Softmax -> prob    链式恒等折叠 → 1 Softmax
+//   data2 -> Add(0) -> out2    图输出 rewrite → data2
+//   data3 -> Relu -> relu3a -> Relu -> out3    连续 Relu 合并 → 1 Relu，out3→relu3a
+//   data4 -> Sub(0) -> Div(1) -> out4    Sub(x,0)/Div(x,1) 恒等折叠 → data4
+// 优化后 runtime 共 2 ops（Softmax + Relu）；四个图输出 prob/data2/relu3a/data4。
 import env;
 import fmt;
 import "../infer/runtime.myp";
@@ -18,20 +21,28 @@ class IdentityFoldMain {
             int data = loader.tensorId("data");
             int prob = loader.tensorId("prob");
             int data2 = loader.tensorId("data2");
-            if (data < 0 || prob < 0 || data2 < 0) { Console.writeLine("IDENTITY FOLD TENSOR FAIL"); return; }
-            // P2d：图输出 rewrite —— 第二输出名必须是 data2（out2 已被折叠重命名）
-            if (loader.graphOutputName(1) != "data2") {
-                Console.writeString("IDENTITY FOLD GO RENAME FAIL got=");
-                Console.writeString(loader.graphOutputName(1));
-                Console.writeLine("");
-                return;
+            int data3 = loader.tensorId("data3");
+            int data4 = loader.tensorId("data4");
+            if (data < 0 || prob < 0 || data2 < 0 || data3 < 0 || data4 < 0) { Console.writeLine("IDENTITY FOLD TENSOR FAIL"); return; }
+            // 图输出 rewrite：out2→data2（P2d）、out3→relu3a（P2e 双 Relu）、out4→data4（P2e Sub/Div）
+            if (loader.graphOutputName(1) != "data2") { Console.writeLine("IDENTITY FOLD GO2 RENAME FAIL got=" + loader.graphOutputName(1)); return; }
+            if (loader.graphOutputName(2) != "relu3a") { Console.writeLine("IDENTITY FOLD GO3 RENAME FAIL got=" + loader.graphOutputName(2)); return; }
+            if (loader.graphOutputName(3) != "data4") { Console.writeLine("IDENTITY FOLD GO4 RENAME FAIL got=" + loader.graphOutputName(3)); return; }
+            // 折叠的中间/输出张量名不应残留
+            if (loader.tensorId("out2") >= 0 || loader.tensorId("out3") >= 0 || loader.tensorId("out4") >= 0 || loader.tensorId("sub4") >= 0) {
+                Console.writeLine("IDENTITY FOLD LEAK"); return;
             }
-            if (loader.tensorId("out2") >= 0) { Console.writeLine("IDENTITY FOLD OUT2 LEAK"); return; }
             rt.setFlat(data, 0, 1.0);
             rt.setFlat(data, 1, 2.0);
             rt.setFlat(data, 2, 3.0);
             rt.setFlat(data2, 0, 10.0);
             rt.setFlat(data2, 1, 20.0);
+            rt.setFlat(data3, 0, -1.0);
+            rt.setFlat(data3, 1, 0.5);
+            rt.setFlat(data3, 2, 3.0);
+            rt.setFlat(data3, 3, -2.0);
+            rt.setFlat(data4, 0, 7.0);
+            rt.setFlat(data4, 1, -7.0);
             rt.run();
             double p0 = rt.getFlat(prob, 0);
             double p1 = rt.getFlat(prob, 1);
@@ -43,14 +54,16 @@ class IdentityFoldMain {
             if (Math.abs(p0 - e0) > 1.0e-5) bad = 1;
             if (Math.abs(p1 - e1) > 1.0e-5) bad = 1;
             if (Math.abs(p2 - e2) > 1.0e-5) bad = 1;
-            // out2 现在指向 data2 的缓冲：必须读到 [10, 20]
-            double q0 = rt.getFlat(data2, 0);
-            double q1 = rt.getFlat(data2, 1);
-            if (q0 != 10.0 || q1 != 20.0) bad = 1;
+            // 图输出 rewrite 后各输出读保留值缓冲：out2→data2、out3→relu3a、out4→data4
+            if (rt.getFlat(data2, 0) != 10.0 || rt.getFlat(data2, 1) != 20.0) bad = 1;
+            int relu3a = loader.tensorId("relu3a");
+            if (relu3a < 0) bad = 1;
+            if (rt.getFlat(relu3a, 0) != 0.0 || rt.getFlat(relu3a, 1) != 0.5 || rt.getFlat(relu3a, 2) != 3.0 || rt.getFlat(relu3a, 3) != 0.0) bad = 1;
+            if (rt.getFlat(data4, 0) != 7.0 || rt.getFlat(data4, 1) != -7.0) bad = 1;
             Console.writeString("identity runtime ops=");
             Console.write(rt.opCount());
             Console.writeLine("");
-            if (rt.opCount() == 1 && bad == 0) Console.writeLine("IDENTITY FOLD OK");
+            if (rt.opCount() == 2 && bad == 0) Console.writeLine("IDENTITY FOLD OK");
             else Console.writeLine("IDENTITY FOLD FAIL");
         }
 }

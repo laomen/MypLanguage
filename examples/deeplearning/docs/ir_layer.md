@@ -196,6 +196,7 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | **P2b** | 迁移既有单-use 融合为 pattern 描述 | **已实施**：Conv/InstanceNorm→Relu、GAP→Flatten、Conv→BN 全部以 `matchSingleUseOp` 取代 consumer 扫描；后端协议不变 | BN 专项逐位 OK、ops2d vs ORT 4.77e-7、skip U-Net GPU 100% |
 | **P2c** | DCE 消费 DefUseAnalysis | **已实施**：每轮 DCE 前重建 use 表，按 `valueUseCount` 删除死节点 | identity 3→1、CONST FOLD OK、skip U-Net GPU 100% |
 | **P2d** | 图输出 rewrite（`replaceAllUses` 覆盖隐式消费者 + 指纹含 `goName_`） | **已实施**：`Add(x,0)`/`Mul(x,1)` 输出直接是图输出也能折叠，图输出名改指保留值 | identity_fold 双输出 1 op、skip U-Net GPU 100% |
+| **P2e** | 恒等族扩展 + 连续激活合并（`Sub(x,0)`/`Div(x,1)`、`Relu(Relu(x))`→`Relu(x)`） | **已实施**：foldIdentityOps 扩展 Sub/Div（恒等操作数仅限 slot1）；新增 `FOLD_RELU`（含融合 `ConvRelu→Relu`） | identity_fold 双 Relu+Sub/Div 链 2 ops、skip U-Net GPU 100% |
 | **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | 零变化（重构） | infer_tests + grad_check + opt_check |
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
 
@@ -357,5 +358,25 @@ value-replacement rewrite 的图输出能力补全：
 图输出名由 `out2` 重命名为 `data2`，`tensorId("out2")` 消失，读数与 data2 缓冲 `[10,20]`
 一致。回归（BN/ops2d/const/ONNX MLP/skip U-Net GPU 训练）全部通过；训练路径
 `buildReverseGraph`（依赖 Softmax 图输出定位）与图输出 rename 无冲突。
+
+## 16. 实施状态：P2e（2026-09-02）
+
+恒等/代数简化族扩展 + 连续激活合并：
+
+- `foldIdentityOps` 从 Add/Mul 扩展到 Sub/Div：`Sub(x,0)`/`Div(x,1)` 按严格标量初始器
+  折叠，但恒等操作数**只允许在 slot1**（`Sub(0,x)=-x`、`Div(1,x)=1/x` 非恒等，不折叠）；
+  Add/Mul 仍允许可交换（`Add(0,x)`/`Mul(1,x)`）。
+- 新 `FOLD_RELU` pass（IRPassKind 12，声明 DefUse）：`Relu(Relu(x))→Relu(x)`。内层
+  producer 可以是独立 Relu 节点，或已融合 producer（`nFused_+nRelu_`，如 ConvRelu 的
+  有效输出已过 ReLU）——外层 Relu 冗余。外层输出改接内层有效输出（`replaceAllUses`
+  覆盖图输出 rename），tombstone 外层。
+- 数值语义严格：Relu 幂等恒真（max(0,max(0,x))=max(0,x)）；`Sub(x,0)`/`Div(x,1)` 对
+  全部 IEEE 值（含 ±0/Inf/NaN）逐位保持。
+
+验证：identity_fold 夹具新增 `data3→Relu→Relu→out3`（双 Relu 合并）与
+`data4→Sub(0)→Div(1)→out4`（Sub/Div 链折叠）；优化后 runtime 共 **2 ops**（Softmax
++ 1 Relu），图输出改名 `out3→relu3a`、`out4→data4`，读数与保留值缓冲一致。回归
+（BN/ops2d/const/ONNX MLP/ResNet GPU/skip U-Net GPU 训练）全部通过；ResNet 真实
+ConvRelu→Add 残差路径不受 FOLD_RELU 影响（无冗余外层 Relu，dce=0）。
 
 ---

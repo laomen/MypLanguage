@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P2e：恒等简化族扩展 + 连续激活合并
+
+### 变更（`infer/graph.myp`）
+- `foldIdentityOps` 扩展到 Sub/Div：`Sub(x,0)`/`Div(x,1)` 按严格标量初始器折叠；恒等
+  操作数仅允许 slot1（`Sub(0,x)=-x`、`Div(1,x)=1/x` 非恒等不折叠），Add/Mul 仍可交换。
+- 新 `FOLD_RELU` pass（IRPassKind 12，声明 DefUse）：`Relu(Relu(x))→Relu(x)`，内层
+  producer 可为独立 Relu 或已融合（`nFused_+nRelu_`，如 ConvRelu）的 producer——有效
+  输出已过 ReLU 则外层 Relu 冗余；外层输出改接内层有效输出（含图输出 rename）。
+
+### 验证
+- `make_identity_fold_onnx.py` 新增 `data3→Relu→Relu→out3`（双 Relu 合并）与
+  `data4→Sub(0)→Div(1)→out4`（Sub/Div 链折叠）；优化后 runtime **2 ops**（Softmax+
+  Relu），图输出 `out3→relu3a`、`out4→data4`，读数一致，`IDENTITY FOLD OK`。
+- 回归：BN maxDiff 0、ops2d 4.77e-7、CONST FOLD OK、ONNX MLP 99%、ResNet GPU top-1
+  lakeside(10.328) 逐位一致、skip U-Net GPU 训练 acc 100%。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P2d：图输出 rewrite（replaceAllUses 覆盖隐式消费者）
 
 ### 变更（`infer/graph.myp`）

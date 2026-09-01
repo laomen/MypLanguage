@@ -115,6 +115,7 @@ class IRPassKind {
         int DCE() { return 9; }
         int LAYOUT_NHWC() { return 10; }
         int IDENTITY_FOLD() { return 11; }  // P2：Add(x,0)/Mul(x,1)，依赖 DefUse
+        int FOLD_RELU() { return 12; }      // P2e：连续激活合并 Relu(Relu(x))→Relu(x)，依赖 DefUse
 }
 
 class Graph {
@@ -158,6 +159,7 @@ class Graph {
         // P1c：P2 rewrite pass 首次声明 DefUse；legacy pass 直接扫描 SoA，依赖为 0。
         int passRequiredAnalyses(int pass) {
             if (pass == IRPassKind.IDENTITY_FOLD()) return IRAnalysis.DEF_USE();
+            if (pass == IRPassKind.FOLD_RELU()) return IRAnalysis.DEF_USE();
             if (pass == IRPassKind.FUSE_BN()) return IRAnalysis.DEF_USE();
             if (pass == IRPassKind.FUSE_CONV_RELU()) return IRAnalysis.DEF_USE();
             if (pass == IRPassKind.FUSE_RELU()) return IRAnalysis.DEF_USE();
@@ -576,8 +578,9 @@ class Graph {
             }
             return hash;
         }
-        // P2：只处理严格标量初始化器的 Add(x,0) / Mul(x,1)。图输出作为隐式消费者由
-        // replaceAllUses 一并改接（P2d）；不处理近似值、动态标量或 broadcast，保持数值语义严格。
+        // P2：只处理严格标量初始化器的恒等折叠：Add(x,0)/Mul(x,1)（操作数可交换）、
+        // Sub(x,0)/Div(x,1)（恒等操作数必须在 slot1：x-0 / x÷1）。图输出作为隐式消费者
+        // 由 replaceAllUses 一并改接（P2d）；不处理近似值、动态标量或 broadcast，保持数值语义严格。
         int isScalarInitValue(string name, double expect) {
             int wi = initIdx(name);
             if (wi < 0 || wLen_[wi] != 4) return 0;
@@ -594,20 +597,53 @@ class Graph {
             int node = 0;
             while (node < nCount_) {
                 string op = nType_[node];
-                if (op != "Add" && op != "Mul") { node = node + 1; continue; }
+                int commutable = 0;
+                if (op == "Add" || op == "Mul") commutable = 1;
+                else if (op != "Sub" && op != "Div") { node = node + 1; continue; }
                 string output = effectiveOut(node);
                 if (output == "") { node = node + 1; continue; }
-                double identity = (op == "Add") ? 0.0 : 1.0;
+                double identity = (op == "Add" || op == "Sub") ? 0.0 : 1.0;
                 int in0 = nodeInputValue(node, 0);
                 int in1 = nodeInputValue(node, 1);
                 int keep = -1;
-                if (isScalarInitValue(nIn0_[node], identity) == 1) keep = in1;
-                else if (isScalarInitValue(nIn1_[node], identity) == 1) keep = in0;
+                // x op id（四种全适用：x+0 / x*1 / x-0 / x/1）；Add/Mul 可交换，id op x 也合法
+                if (isScalarInitValue(nIn1_[node], identity) == 1) keep = in0;
+                else if (commutable == 1 && isScalarInitValue(nIn0_[node], identity) == 1) keep = in1;
                 int out = nodeOutputValue(node, 0);
                 if (keep >= 0 && out >= 0) {
                     replaceAllUses(out, keep);
                     nType_[node] = "";
                     markDeadTensor(output);
+                    changed = 1;
+                }
+                node = node + 1;
+            }
+            return changed;
+        }
+        // P2e：连续激活合并 Relu(Relu(x)) → Relu(x)。内层 producer 可以是独立 Relu 节点，
+        // 或已融合（nFused_+nRelu_，如 ConvRelu）的 producer——其有效输出已过 ReLU，外层
+        // Relu 冗余。外层输出改接内层有效输出（replaceAllUses 覆盖图输出 rename），tombstone 外层。
+        int foldDoubleRelu() {
+            int changed = 0;
+            int node = 0;
+            while (node < nCount_) {
+                if (nType_[node] != "Relu") { node = node + 1; continue; }
+                string outName = effectiveOut(node);
+                if (outName == "") { node = node + 1; continue; }
+                int in = nodeInputValue(node, 0);
+                int prod = valueProducer(in);
+                int alreadyRelu = 0;
+                if (prod >= 0) {
+                    if (nType_[prod] == "Relu") alreadyRelu = 1;
+                    else if (nFused_[prod] == 1 && nRelu_[prod] == 1) alreadyRelu = 1;
+                }
+                if (alreadyRelu == 0) { node = node + 1; continue; }
+                int out = nodeOutputValue(node, 0);
+                int innerOut = nodeOutputValue(prod, 0);
+                if (out >= 0 && innerOut >= 0) {
+                    replaceAllUses(out, innerOut);
+                    nType_[node] = "";
+                    markDeadTensor(outName);
                     changed = 1;
                 }
                 node = node + 1;
@@ -654,6 +690,7 @@ class Graph {
             else if (pass == IRPassKind.DCE()) ok = eliminateDeadNodes();
             else if (pass == IRPassKind.LAYOUT_NHWC()) ok = layoutNHWC();
             else if (pass == IRPassKind.IDENTITY_FOLD()) { foldIdentityOps(); ok = 1; }
+            else if (pass == IRPassKind.FOLD_RELU()) { foldDoubleRelu(); ok = 1; }
             lastPassOk_ = ok;
             lastPassChanged_ = 0;
             lastPassPreserved_ = 0;
@@ -694,6 +731,7 @@ class Graph {
             runIRPass(IRPassKind.FUSE_RELU());
             runIRPass(IRPassKind.FUSE_GAP_FLATTEN());
             if (runIRPassToFixpoint(IRPassKind.IDENTITY_FOLD(), 4) == 0) { Console.writeLine("DBG fail identityFold"); return 0; }
+            if (runIRPassToFixpoint(IRPassKind.FOLD_RELU(), 4) == 0) { Console.writeLine("DBG fail foldRelu"); return 0; }
             runIRPass(IRPassKind.DCE());
             if (doNHWC_ == 1) { if (runIRPass(IRPassKind.LAYOUT_NHWC()) == 0) { Console.writeLine("DBG fail layoutNHWC"); return 0; } }
             if (topoSort() == 0) { Console.writeLine("DBG fail topoSort"); return 0; }
