@@ -41,15 +41,64 @@
 ### 推荐模块
 
 ```text
-Graph
-├── GraphNodes       # 节点、输入输出、属性、删除/替换
-├── GraphShapes      # shape、rank、dtype、layout
-├── GraphWeights     # initializer、常量、权重布局
+GraphFacade
+├── GraphNodes       # NodeId、输入输出、属性、删除/替换
+├── GraphShapes      # ValueId 的 shape、rank、dtype、layout
+├── GraphWeights     # WeightId、initializer、常量、权重布局
 ├── GraphAnalysis    # DefUse、Topo、Liveness、Verifier
 ├── GraphOptimizer   # pass 实现与 pipeline
-├── GraphPlanner     # 生命周期与 arena 规划
-└── GraphCompiler    # Graph -> InferenceRuntime
+├── GraphPlanner     # 生命周期、arena 区域与持久化
+└── GraphCompiler    # Graph IR -> InferenceRuntime
 ```
+
+`GraphFacade` 是唯一对外暴露的组合对象。各子模块不直接访问其他模块的属性，
+只通过 facade 的领域级 API 交换 `NodeId`、`ValueId`、`WeightId` 和计算结果。
+因此 MYP 的 property 私有规则不会阻止拆分；getter/setter 是实现手段，但不应把
+173 个并行数组原样暴露出去。
+
+依赖方向固定为：
+
+```text
+GraphNodes ──────┐
+GraphShapes ─────┼──> GraphAnalysis ──> GraphOptimizer
+GraphWeights ────┘          │                 │
+                            └──────────────> GraphPlanner
+GraphOptimizer ───────────────────────────> GraphCompiler
+GraphShapes + GraphWeights ────────────────> GraphCompiler
+```
+
+禁止反向依赖：`GraphNodes` 不依赖 optimizer，`GraphAnalysis` 不依赖 runtime，
+`GraphCompiler` 不修改 IR。训练反向图属于 `GraphOptimizer` 的一个 graph-building
+pass，不能继续把 Bwd*/Update 特殊逻辑塞进 runtime 或各个数据表。
+
+### 各模块所有权
+
+| 模块 | 拥有的数据 | 允许提供的核心 API |
+|---|---|---|
+| `GraphNodes` | `nType_`、`nIn*`、`nOut*`、节点属性和融合标志 | `addNode`、`nodeOp`、`nodeInput`、`nodeOutput`、`attr*`、`replaceOperand`、`eraseNode` |
+| `GraphShapes` | `shName_`、`shD*`、`shR5_`、`shKind_`、`shNHWC_`、`shDead_` | `addShape`、`shapeOf`、`shapeDim`、`shapeElementCount`、`setShapeKind`、`markDead` |
+| `GraphWeights` | `w*`、`file_`、int64/f32 常量池 | `addWeight`、`weightInfo`、`readF32`、`readI64`、`registerConstant`、`writeWeight` |
+| `GraphAnalysis` | `du*`、`planOrder_`、analysis generation/cache | `ensureDefUse`、`valueProducer`、`valueUses`、`topoOrder`、`verifyIR` |
+| `GraphOptimizer` | pass 状态与 pipeline 顺序 | `runPass`、`runToFixpoint`、`optimize`、`buildReverseGraph` |
+| `GraphPlanner` | `plan*`、区域复用和 persist 标志 | `planMemory`、`plannedOffset`、`peakMemory` |
+| `GraphCompiler` | IR 到 runtime 的临时映射 | `buildRuntime`、`runtimeTensorId` |
+
+### 接口层规则
+
+所有跨模块写操作必须经过 mutation API：
+
+```myp
+int addNode(int op, int[] operands, int[] results);
+void replaceOperand(int node, int slot, int value);
+void replaceAllUses(int oldValue, int newValue);
+void replaceResult(int node, int slot, int value);
+void eraseNode(int node);
+void setShape(int value, int rank, int[] dims);
+void setAttrInt(int node, int key, int value);
+```
+
+接口必须返回明确的失败值，并在 debug 模式提供 node/value 上下文。不得让外部
+模块直接写 `nIn0_`、`shD0_`、`wOff_` 或 `planOff_`。
 
 ### 实施方式
 
@@ -64,12 +113,21 @@ void replaceAllUses(int oldValue, int newValue);
 void eraseNode(int node);
 ```
 
-第一批先抽取 `GraphAnalysis` 和 `GraphShapes`，原因是：
+### 完整迁移顺序
 
-- DefUse/Topo/Verifier 边界清晰；
-- shape 访问已经存在多个统一入口；
-- 能直接验证“组合 + getter/setter”是否适合 MYP；
-- 对后续 CSE、动态 shape 和内存规划都有基础收益。
+虽然最终七个模块都要抽取，但不能按文件从上到下机械搬运。推荐四个可回滚切片：
+
+1. **接口冻结**：保留现有 `Graph` 对外 API；把 `node*`、`shape*`、`weight*`、
+  `attr*`、mutation 和 analysis API 补齐，旧实现仍在 Graph 内。
+2. **数据域搬迁**：先搬 `GraphShapes` 和 `GraphWeights`，再搬 `GraphNodes`；
+  facade 转发旧 API，所有现有 pass 仍能运行。
+3. **分析与执行搬迁**：搬 `GraphAnalysis`、`GraphPlanner`、`GraphCompiler`；
+  分别验证 DefUse/Topo、内存规划、runtime wiring。
+4. **策略搬迁**：最后搬 `GraphOptimizer` 和 pipeline；GraphFacade 只保留组合、
+  配置和生命周期，不再包含 pass 实现。
+
+每一步都允许短期保留兼容转发，但禁止新代码继续直接访问旧数组。全部迁移完成后，
+再决定是否把 SoA 换成对象式 Node/Value；这不是阶段一的前置条件。
 
 ### 验收标准
 
@@ -78,6 +136,9 @@ void eraseNode(int node);
 - `MYP_IR_VERIFY=1` 下所有模型通过。
 - 每个活节点的输入、输出、shape、DefUse、producer 和 use edge 可单独验证。
 - `Graph` 不再直接依赖另一组件的私有数组。
+- 七个模块可以独立编译/测试；GraphFacade 的公共 API 和 `OnnxLoader` API 不变。
+- `GraphCompiler` 是唯一允许依赖 `InferenceRuntime` 的 Graph 子模块。
+- 所有 pass 通过 mutation API 改图，任何直接数组访问都只允许暂时存在于尚未迁移的旧实现。
 
 ## 4. 阶段二：强类型 Value 与统一张量描述
 
