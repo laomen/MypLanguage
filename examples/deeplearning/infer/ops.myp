@@ -2194,6 +2194,50 @@ class InferOps {
                 i = i + 1;
             }
         }
+        // Concat 反向（opKind 72）：把输出梯度 dy 散射回各输入梯度 dx0/dx1/dx2。
+        // 布局同 concat 前向（4D 视图 + axis + 各输入轴长 ax0/1/2）。concat 是双射
+        // （每个输出元素唯一对应一个输入元素）→ 直接赋值，无需清零/累加。
+        // 2 输入时 dx2Off=-1（which 不会=2，不访问）。U-Net 跳跃连接：axis=1（C）
+        // 5D 视图 od3 折叠 H*W。
+        void bwdConcat(float[] arena, int dyOff, int dx0Off, int dx1Off, int dx2Off,
+                       int axis, int nIn, int od0, int od1, int od2, int od3,
+                       int ax0, int ax1, int ax2) {
+            int total = od0 * od1 * od2 * od3;
+            int i = 0;
+            while (i < total) {
+                int x3 = i % od3;
+                int t = i / od3;
+                int x2 = t % od2;
+                t = t / od2;
+                int x1 = t % od1;
+                int x0 = t / od1;
+                int ac = 0;
+                if (axis == 0) ac = x0;
+                else if (axis == 1) ac = x1;
+                else if (axis == 2) ac = x2;
+                else ac = x3;
+                int which = 0;
+                int local = ac;
+                int aLen = ax0;
+                if (local >= aLen) {
+                    local = local - aLen;
+                    which = 1;
+                    aLen = ax1;
+                    if (nIn >= 3 && local >= aLen) { local = local - aLen; which = 2; aLen = ax2; }
+                }
+                int dxOff = 0;
+                if (which == 0) dxOff = dx0Off;
+                else if (which == 1) dxOff = dx1Off;
+                else dxOff = dx2Off;
+                int inFlat = 0;
+                if (axis == 0) inFlat = ((local * od1 + x1) * od2 + x2) * od3 + x3;
+                else if (axis == 1) inFlat = ((x0 * aLen + local) * od2 + x2) * od3 + x3;
+                else if (axis == 2) inFlat = ((x0 * od1 + x1) * aLen + local) * od3 + x3;
+                else inFlat = ((x0 * od1 + x1) * od2 + x2) * aLen + local;
+                arena[dxOff + inFlat] = arena[dyOff + i];
+                i = i + 1;
+            }
+        }
         // Transpose：按 perm 转置 4D 张量（pc = perm 元素数，0 = 缺省反转）
         void transpose(float[] arena, int offIn, int offOut,
                        int id0, int id1, int id2, int id3,

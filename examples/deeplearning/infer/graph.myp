@@ -610,6 +610,21 @@ class Graph {
                                 nMode_[bd] = nMode_[ni];
                                 nTransform_[bd] = nTransform_[ni];
                             }
+                        } else if (t == "Concat") {
+                            // U-Net 跳跃连接反向：BwdConcat(dy, x0, x1, x2) → (dx0, dx1, dx2)。
+                            // nIn1_/nIn2_/nIn3_ = 原输入（buildRuntime 查轴长）；nOut0-2 = 各输入梯度。
+                            int bd = nCount_;
+                            beginNode();
+                            nodeType(bd, "BwdConcat");
+                            nodeIn(bd, 0, gradName(y));
+                            nodeIn(bd, 1, nIn0_[ni]);
+                            nodeIn(bd, 2, nIn1_[ni]);
+                            nodeIn(bd, 3, nIn2_[ni]);
+                            nodeOut(bd, gradName(nIn0_[ni]));
+                            nodeOut(bd, gradName(nIn1_[ni]));
+                            nodeOut(bd, gradName(nIn2_[ni]));
+                            endNode();
+                            nAxis_[bd] = nAxis_[ni];
                         }
                         // Softmax 由 CE 处理；Conv3D/池化等暂不支持（梯度 0，跳过）
                     }
@@ -640,6 +655,67 @@ class Graph {
                     endNode();
                 }
                 wi = wi + 1;
+            }
+            // 5c) 多消费者梯度（U-Net 跳跃连接）：skip 张量（如 r1/r3）同时被编码器
+            //     算子与 Concat 消费 → 梯度名被多反向节点产出。BwdConcat 与主 producer
+            //     存在依赖环（编码器反向依赖 concat 上游输出 u#g），不能靠执行顺序累加。
+            //     改用显式累加：主 producer 输出改 g_a、BwdConcat 输出改 g_b、加
+            //     GradAcc(g_a, g_b) → g（纯前向 Add，消费者读 g）。
+            int cc = 0;
+            while (cc < nCount_) {
+                if (nType_[cc] == "BwdConcat") {
+                    int slot = 0;
+                    while (slot < 3) {
+                        string g;
+                        if (slot == 0) g = nOut0_[cc];
+                        else if (slot == 1) g = nOut1_[cc];
+                        else g = nOut2_[cc];
+                        if (g != "" && Str.len(g) >= 2 && Str.substring(g, Str.len(g) - 2, Str.len(g)) == "#g") {
+                            int other = -1;
+                            int jj = 0;
+                            while (jj < nCount_) {
+                                if (jj != cc && nType_[jj] != "" && nType_[jj] != "BwdConcat") {
+                                    if (nOut0_[jj] == g || nOut1_[jj] == g || nOut2_[jj] == g || nOut3_[jj] == g) { other = jj; jj = nCount_; }
+                                }
+                                jj = jj + 1;
+                            }
+                            if (other >= 0) {
+                                string ga = g + "_a";
+                                string gb = g + "_b";
+                                if (slot == 0) nOut0_[cc] = gb;
+                                else if (slot == 1) nOut1_[cc] = gb;
+                                else nOut2_[cc] = gb;
+                                if (nOut0_[other] == g) nOut0_[other] = ga;
+                                else if (nOut1_[other] == g) nOut1_[other] = ga;
+                                else if (nOut2_[other] == g) nOut2_[other] = ga;
+                                else if (nOut3_[other] == g) nOut3_[other] = ga;
+                                // 登记 g_a/g_b 形状（同 g）
+                                int gs = shapeIdx(g);
+                                if (gs >= 0) {
+                                    if (shR5_[gs] == 1) {
+                                        addShapeD5(ga, shD0_[gs], shD1_[gs], shD2_[gs], shD3_[gs], shD4_[gs]);
+                                        addShapeD5(gb, shD0_[gs], shD1_[gs], shD2_[gs], shD3_[gs], shD4_[gs]);
+                                    } else {
+                                        addShapeD4(ga, shD0_[gs], shD1_[gs], shD2_[gs], shD3_[gs]);
+                                        addShapeD4(gb, shD0_[gs], shD1_[gs], shD2_[gs], shD3_[gs]);
+                                    }
+                                    setShapeKind(ga, shKind_[gs]);
+                                    setShapeKind(gb, shKind_[gs]);
+                                }
+                                // GradAcc 纯前向累加节点
+                                int an = nCount_;
+                                beginNode();
+                                nodeType(an, "GradAcc");
+                                nodeIn(an, 0, ga);
+                                nodeIn(an, 1, gb);
+                                nodeOut(an, g);
+                                endNode();
+                            }
+                        }
+                        slot = slot + 1;
+                    }
+                }
+                cc = cc + 1;
             }
             return 1;
         }
@@ -1980,6 +2056,7 @@ class Graph {
                 if (producerIdx(nIn0_[i]) >= 0) indeg[i] = indeg[i] + 1;
                 if (producerIdx(nIn1_[i]) >= 0) indeg[i] = indeg[i] + 1;
                 if (producerIdx(nIn2_[i]) >= 0) indeg[i] = indeg[i] + 1;
+                if (producerIdx(nIn3_[i]) >= 0) indeg[i] = indeg[i] + 1;
                 i = i + 1;
             }
             planOrderCount_ = 0;
@@ -2024,6 +2101,7 @@ class Graph {
                     if (nIn0_[j] == out) dec = dec + 1;
                     if (nIn1_[j] == out) dec = dec + 1;
                     if (nIn2_[j] == out) dec = dec + 1;
+                    if (nIn3_[j] == out) dec = dec + 1;
                     if (o1 != "" && nIn0_[j] == o1) dec = dec + 1;
                     if (o1 != "" && nIn1_[j] == o1) dec = dec + 1;
                     if (o1 != "" && nIn2_[j] == o1) dec = dec + 1;
@@ -2084,6 +2162,7 @@ class Graph {
                 int persist = 0;
                 if (producer < 0) persist = 1;            // 权重 / 图输入
                 if (lastUse < 0) { persist = 1; lastUse = nCount_ - 1; }  // 图输出
+                if (isGraphOutput(shName_[si]) == 1) persist = 1;   // 图输出：run 后用户仍读，缓冲不可复用
                 if (noReuse_ == 1) persist = 1;            // 调试：不复用
                 int best = -1;
                 if (persist == 0) {
@@ -2464,6 +2543,43 @@ class Graph {
                     int s2 = shapeIdx(nIn2_[ni]);
                     if (s2 >= 0) ax2 = (axis == 0) ? shD0_[s2] : ((axis == 1) ? shD1_[s2] : ((axis == 2) ? shD2_[s2] : shD3_[s2]));
                     rt.addConcat(a, b, c, out, axis, nIn, od0, od1, od2, od3, ax0, ax1, ax2);
+                } else if (t == "BwdConcat") {
+                    // Concat 反向（U-Net 跳跃连接）。dy=in0, x0/x1/x2=in1/2/3（查轴长）;
+                    // out0/1/2 = 各输入梯度。多消费者冲突路输出带 "_own" 后缀 →
+                    // strip 后累加进主梯度（bwdConcat 内核为累加语义，且 BwdConcat
+                    // 已依赖主 producer → 主先清零写、本算子后累加）。
+                    int dy = tensorId(nIn0_[ni]);
+                    string dxn0 = nOut0_[ni];
+                    if (Str.len(dxn0) >= 5 && Str.substring(dxn0, Str.len(dxn0) - 4, Str.len(dxn0)) == "_own") dxn0 = Str.substring(dxn0, 0, Str.len(dxn0) - 4);
+                    int dx0 = tensorId(dxn0);
+                    string dxn1 = nOut1_[ni];
+                    if (Str.len(dxn1) >= 5 && Str.substring(dxn1, Str.len(dxn1) - 4, Str.len(dxn1)) == "_own") dxn1 = Str.substring(dxn1, 0, Str.len(dxn1) - 4);
+                    int dx1 = tensorId(dxn1);
+                    string dxn2 = nOut2_[ni];
+                    if (Str.len(dxn2) >= 5 && Str.substring(dxn2, Str.len(dxn2) - 4, Str.len(dxn2)) == "_own") dxn2 = Str.substring(dxn2, 0, Str.len(dxn2) - 4);
+                    int dx2 = tensorId(dxn2);
+                    int nIn = 2;
+                    if (dx2 >= 0) nIn = 3;
+                    int axis = nAxis_[ni];
+                    if (axis < 0) axis = 0;
+                    int os = shapeIdx(nIn0_[ni]);   // dy 形状 = 原 Concat 输出
+                    int is5 = 0;
+                    int od0 = 1, od1 = 1, od2 = 1, od3 = 1;
+                    if (os >= 0) {
+                        od0 = shD0_[os]; od1 = shD1_[os]; od2 = shD2_[os]; od3 = shD3_[os];
+                        if (shR5_[os] == 1) od3 = shD3_[os] * shD4_[os];
+                    }
+                    int ax0 = 0, ax1 = 0, ax2 = 0;
+                    int s0 = shapeIdx(nIn1_[ni]);
+                    if (s0 >= 0) ax0 = (axis == 0) ? shD0_[s0] : ((axis == 1) ? shD1_[s0] : ((axis == 2) ? shD2_[s0] : shD3_[s0]));
+                    int s1 = shapeIdx(nIn2_[ni]);
+                    if (s1 >= 0) ax1 = (axis == 0) ? shD0_[s1] : ((axis == 1) ? shD1_[s1] : ((axis == 2) ? shD2_[s1] : shD3_[s1]));
+                    int s2 = shapeIdx(nIn3_[ni]);
+                    if (nIn >= 3 && s2 >= 0) ax2 = (axis == 0) ? shD0_[s2] : ((axis == 1) ? shD1_[s2] : ((axis == 2) ? shD2_[s2] : shD3_[s2]));
+                    rt.addBwdConcat(dy, dx0, dx1, dx2, axis, nIn, od0, od1, od2, od3, ax0, ax1, ax2);
+                } else if (t == "GradAcc") {
+                    // 多消费者梯度累加：g = g_a + g_b（纯前向 Add，输出 g）
+                    rt.addAdd(tensorId(nIn0_[ni]), tensorId(nIn1_[ni]), tensorId(nOut0_[ni]), 0);
                 } else if (t == "Transpose") {
                     // F8：perm 转置（输入维度 = 输入形状表）
                     int p0 = nP0_[ni], p1 = nP1_[ni], p2 = nP2_[ni], p3 = nP3_[ni];

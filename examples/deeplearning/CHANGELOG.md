@@ -6,7 +6,45 @@
 
 ---
 
-## 2026-09-01 — 阶段4e5：LLM 算子 GPU 覆盖补全 → 接口框架 CPU+GPU 100%（通用化推进）
+## 2026-09-XX — 阶段4f：3D U-Net 带跳跃连接（5D Concat 反向 bwdConcat + 多消费者梯度累加）
+
+### 目标
+U-Net 编码器-解码器加入**跳跃连接**（skip connection，channel 维 Concat）并端到端训练：
+完整补上此前 3d_unet_train 注释中的待办「无跳跃连接——需 5D Concat 反向留后续」。
+
+### 变更
+- **`infer/ops.myp` + `infer/gpu_ops.myp`**：新 `bwdConcat` 反向内核（opKind 72，CPU+GPU）。
+  concat 是双射（每输出元素唯一对应一输入元素）→ 直接散射赋值；布局同前向 concat
+  （4D 视图 + axis + 各输入轴长 ax0/1/2，5D 时 od3 折叠 H*W）。
+- **`infer/runtime.myp`**：`addBwdConcat`（opKind 72，opA=dy, opB/C/D=dx0/1/2, opP0-8=axis/nIn/od0-3/ax0-2）。
+- **`infer/ops_iface_all.myp`**：`BwdConcatOp` + `GpuBwdConcatOp`（registerBwd(72) CPU+GPU）。
+- **`infer/graph.myp`**：
+  - `buildReverseGraph` 加 **Concat → BwdConcat** 分支（反向图集成；nAxis 复制）。
+  - **多消费者梯度累加（关键）**：跳跃张量（r1/r3）同时被编码器 Conv 与 Concat 消费 →
+    其梯度名被**多个反向节点重复产出** → topoSort 按输出名 over-decrement → 死锁；
+    且 BwdConcat 与主 producer 存在依赖环（编码器反向依赖 concat 上游 u#g），不能靠
+    执行顺序累加。方案：主 producer 输出改 `g_a`、BwdConcat 输出改 `g_b`、加纯前向
+    **GradAcc 节点** `Add(g_a,g_b) → g`（buildRuntime 接 `rt.addAdd`）；topoSort 支持
+    in3 入度。
+  - **planMemory 图输出缓冲修复（训练失败根因）**：`prob`（图输出）被 DiceLoss 消费后
+    lastUse≠-1 → 被判可复用 → 缓冲被 GradAcc 输出复用 → GradAcc（softmax 之后执行）
+    覆盖 prob → softmax 概率变 logits → Dice loss 塌缩 → 训练 acc 不升。修复：图输出
+    （`isGraphOutput`）强制 persist=1，缓冲不参与复用。
+- **`infer/tools/make_3d_unet_skip_onnx.py`（新）**：生成带跳跃连接 3D U-Net
+  （`data/onnx/3d_unet_skip.onnx`）：编码 Conv3D×2→MaxPool×2 + 解码 Resize→Concat(skip)→Conv3D→
+  Resize→Concat(skip)→Conv3D×2→Softmax；8³ 输入、2 类分割、axis=1（C 维）跳跃。
+- **`train/3d_unet_skip_train.myp`（新）**：跳跃 U-Net 端到端训练（Dice loss，SGD）。
+- **`train/3d_unet_skip_grad_check.myp`（新）**：全图梯度对拍（e1_w/e4_w/d1_w/d3_w 采样，
+  解析梯度 vs 中心差分；e1_w 含 concat 路径、e4_w 含 r3→cat1 路径）。
+
+### 验证
+- `3d_unet_skip_train`：**CPU 与 GPU（MYP_GPU=1）均训练至 acc 100%**（epoch 0 即 100%，
+  数据为 d<4 纯块 50/50）。
+- `3d_unet_skip_grad_check`：**CPU 与 GPU 均 GRAD CHECK OK**（e1_w 全链含 concat 路径梯度匹配）。
+- `infer/tools/concat_check.myp`（新，bwdConcat 内核对拍）：CONCAT-FWD/BWDCONCAT OK。
+- 回归：3d_unet（无跳跃）100%、conv3d/resize3d/dice grad_check OK（planMemory 改动无副作用）。
+
+---
 
 ### 变更（`infer/gpu_ops.myp` + `ops_iface_all.myp`）
 - **4 个新通用 GpuInferOps 内核**（补 61-67 GPU 缺口；rmsnorm/layernorm/gelu 已有）：

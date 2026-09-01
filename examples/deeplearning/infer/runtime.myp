@@ -796,6 +796,23 @@ class InferenceRuntime {
             opP6_[id] = ax0; opP7_[id] = ax1; opP8_[id] = ax2;
             opCount_ = opCount_ + 1;
         }
+        // Concat 反向（opKind 72）：dy → (dx0, dx1, dx2)。参数布局同 addConcat
+        // （axis/nIn/输出 4D 视图 od0-3/各输入轴长 ax0-2）；dx2T=-1 表示 2 输入。
+        void addBwdConcat(int dyT, int dx0T, int dx1T, int dx2T, int axis, int nIn,
+                          int od0, int od1, int od2, int od3,
+                          int ax0, int ax1, int ax2) {
+            int id = opCount_;
+            opKind_[id] = 72;
+            opA_[id] = dyT;
+            opB_[id] = dx0T;
+            opC_[id] = dx1T;
+            opD_[id] = dx2T;
+            opP0_[id] = axis;
+            opP1_[id] = nIn;
+            opP2_[id] = od0; opP3_[id] = od1; opP4_[id] = od2; opP5_[id] = od3;
+            opP6_[id] = ax0; opP7_[id] = ax1; opP8_[id] = ax2;
+            opCount_ = opCount_ + 1;
+        }
         // Transpose：perm 转置（pc=perm 元素数；0=缺省反转）
         // id0..id3 = 输入 4D 维度（内存行优先序）
         void addTranspose(int inTid, int outTid, int p0, int p1, int p2, int p3, int pc,

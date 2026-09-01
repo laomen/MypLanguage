@@ -1767,6 +1767,42 @@ class GpuDiceLossOp {
         }
 }
 
+// ---- concat 反向（opKind 72；5D U-Net 跳跃连接，CPU）----
+// 反向图生成独立 BwdConcat 节点（dy → dx0/dx1/dx2），前向 ConcatOp(25) 的
+// backward 保持空（concat 前向节点不承载反向）。
+class BwdConcatOp {、
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int dx0 = rt.opBAt(i); int dx1 = rt.opCAt(i); int dx2 = rt.opDAt(i);
+                int dx2Off = -1; if (dx2 >= 0) dx2Off = rt.tensorOff(dx2);
+                InferOps.bwdConcat(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(dx0), rt.tensorOff(dx1), dx2Off,
+                                   rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                                   rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+            }
+        }
+}
+
+// ---- concat 反向（GPU）----
+class GpuBwdConcatOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int dx0 = rt.opBAt(i); int dx1 = rt.opCAt(i); int dx2 = rt.opDAt(i);
+                int dx2Off = -1; if (dx2 >= 0) dx2Off = rt.tensorOff(dx2);
+                GpuInferOps.bwdConcat(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(dx0), rt.tensorOff(dx1), dx2Off,
+                                      rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                                      rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+            }
+        }
+}
+
 // ---- 全量注册：relu + 本文件所有算子（前向/反向 × CPU/GPU）----
 // 61-71 全 opKind 均注册 CPU+GPU（2026-09-01 起含 LLM 61-67）→ run()/runGpu()
 // 统一接口分派，无 if/else 回退。
@@ -1820,6 +1856,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerBwd(54, new SoftmaxCeOp(), 0);            rt.registerBwd(54, new GpuSoftmaxCeOp(), 1);
     rt.registerBwd(55, new UpdateOp(), 0);               rt.registerBwd(55, new GpuUpdateOp(), 1);
     rt.registerBwd(69, new DiceLossOp(), 0);             rt.registerBwd(69, new GpuDiceLossOp(), 1);
+    rt.registerBwd(72, new BwdConcatOp(), 0);            rt.registerBwd(72, new GpuBwdConcatOp(), 1);
     // LLM 算子（61-67，2026-09-01 起 CPU+GPU 全注册 → runGpu 统一分派）
     rt.registerFwd(61, new RmsNormOp(), 0);           rt.registerFwd(61, new GpuRmsNormOp(), 1);
     rt.registerFwd(62, new AttentionOp(), 0);         rt.registerFwd(62, new GpuAttentionOp(), 1);

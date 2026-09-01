@@ -2035,6 +2035,45 @@ class GpuInferOps {
                 }
             }
         }
+        // Concat 反向（opKind 72）：thread-per-output-element，每线程把 dy 散射到
+        // 唯一对应的输入 dx 位置（concat 双射 → 无竞争、无需清零）。布局同前向。
+        void bwdConcat(float[] a, long dev, int dyOff, int dx0Off, int dx1Off, int dx2Off,
+                       int axis, int nIn, int od0, int od1, int od2, int od3,
+                       int ax0, int ax1, int ax2) {
+            @gpu for (long p = 0L; p < long(od0 * od1 * od2 * od3); p = p + 1L) resident(a = dev) {
+                if (p < od0 * od1 * od2 * od3) {
+                    int i = int(p);
+                    int x3 = i % od3;
+                    int t = i / od3;
+                    int x2 = t % od2;
+                    t = t / od2;
+                    int x1 = t % od1;
+                    int x0 = t / od1;
+                    int ac = x3;
+                    if (axis == 0) ac = x0;
+                    else if (axis == 1) ac = x1;
+                    else if (axis == 2) ac = x2;
+                    int which = 0;
+                    int local = ac;
+                    int aLen = ax0;
+                    if (local >= aLen) {
+                        local = local - aLen;
+                        which = 1;
+                        aLen = ax1;
+                        if (nIn >= 3 && local >= aLen) { local = local - aLen; which = 2; aLen = ax2; }
+                    }
+                    int dxOff = dx0Off;
+                    if (which == 1) dxOff = dx1Off;
+                    else if (which == 2) dxOff = dx2Off;
+                    int inFlat = 0;
+                    if (axis == 0) inFlat = ((local * od1 + x1) * od2 + x2) * od3 + x3;
+                    else if (axis == 1) inFlat = ((x0 * aLen + local) * od2 + x2) * od3 + x3;
+                    else if (axis == 2) inFlat = ((x0 * od1 + x1) * aLen + local) * od3 + x3;
+                    else inFlat = ((x0 * od1 + x1) * od2 + x2) * aLen + local;
+                    a[dxOff + inFlat] = a[dyOff + i];
+                }
+            }
+        }
         // Transpose：按 perm 转置 4D（pc = perm 元素数，0 = 缺省反转）
         void transpose(float[] a, int work, int offIn, int offOut,
                        int id0, int id1, int id2, int id3,

@@ -1,0 +1,101 @@
+// 3d_unet_concat_check.myp — bwdConcat 内核数值对拍（独立，不依赖 runtime）
+// 验证：concat 前向 + bwdConcat 反向散射正确（axis=1，4D 视图 od=[N,C,D,HW]）。
+// 布局：两个 [1,3,2,2] 输入沿 C 拼接 → [1,6,2,2]。
+// 前向：out[C,H,W] = (C<3)? in0[C,H,W] : in1[C-3,H,W]
+// 反向：dy[C,H,W](C<3) → dx0[C,H,W]；dy[C,H,W](C>=3) → dx1[C-3,H,W]
+import env;
+import fmt;
+import "../ops.myp";
+
+class ConcatCheck {
+    action:
+        @constructor ConcatCheck() {
+            int n0 = 12;        // 输入0 [1,3,2,2]
+            int n1 = 12;        // 输入1
+            int nOut = 24;      // 输出 [1,6,2,2]
+            float[] arena = new float[200];
+            int off0 = 0, off1 = 12, offO = 24, offDy = 48, offDx0 = 72, offDx1 = 84;
+            // 填输入（确定性）：in0[c,h,w] = 1.0 + c*10 + h*100 + w*1000
+            int c = 0;
+            while (c < 3) {
+                int h = 0;
+                while (h < 2) {
+                    int w = 0;
+                    while (w < 2) {
+                        arena[off0 + c * 4 + h * 2 + w] = float(1 + c * 10 + h * 100 + w * 1000);
+                        arena[off1 + c * 4 + h * 2 + w] = float(2 + c * 10 + h * 100 + w * 1000);
+                        w = w + 1;
+                    }
+                    h = h + 1;
+                }
+                c = c + 1;
+            }
+            // 前向 concat
+            InferOps.concat(arena, off0, off1, -1, offO, 1, 6, 2, 2, 3, 3, 0, 1, 2);
+            // 验证前向
+            int ok = 1;
+            c = 0;
+            while (c < 6) {
+                int h = 0;
+                while (h < 2) {
+                    int w = 0;
+                    while (w < 2) {
+                        float expect = (c < 3) ? arena[off0 + c * 4 + h * 2 + w] : arena[off1 + (c - 3) * 4 + h * 2 + w];
+                        float got = arena[offO + c * 4 + h * 2 + w];
+                        if (expect != got) { ok = 0; }
+                        w = w + 1;
+                    }
+                    h = h + 1;
+                }
+                c = c + 1;
+            }
+            Console.writeString(ok == 1 ? "CONCAT-FWD OK" : "CONCAT-FWD FAIL");
+            Console.writeLine("");
+
+            // 填 dy 已知值：dy[C,H,W] = 0.5 + C*0.01 + H*0.001 + W*0.0001
+            int i = 0;
+            while (i < nOut) { arena[offDy + i] = 0.5f + float(i) * 0.01f; i = i + 1; }
+            // 反向 bwdConcat
+            InferOps.bwdConcat(arena, offDy, offDx0, offDx1, -1, 1, 2, 1, 6, 2, 2, 3, 3, 0);
+            // 验证 dx0：dx0[C,H,W] = dy[C,H,W]（C<3）
+            int okb = 1;
+            c = 0;
+            while (c < 3) {
+                int h = 0;
+                while (h < 2) {
+                    int w = 0;
+                    while (w < 2) {
+                        float expect = arena[offDy + c * 4 + h * 2 + w];
+                        float got = arena[offDx0 + c * 4 + h * 2 + w];
+                        if (expect != got) { okb = 0; }
+                        w = w + 1;
+                    }
+                    h = h + 1;
+                }
+                c = c + 1;
+            }
+            // 验证 dx1：dx1[L,H,W] = dy[L+3,H,W]
+            c = 0;
+            while (c < 3) {
+                int h = 0;
+                while (h < 2) {
+                    int w = 0;
+                    while (w < 2) {
+                        float expect = arena[offDy + (c + 3) * 4 + h * 2 + w];
+                        float got = arena[offDx1 + c * 4 + h * 2 + w];
+                        if (expect != got) { okb = 0; }
+                        w = w + 1;
+                    }
+                    h = h + 1;
+                }
+                c = c + 1;
+            }
+            Console.writeString(okb == 1 ? "BWDCONCAT OK" : "BWDCONCAT FAIL");
+            Console.writeLine("");
+        }
+}
+
+int main() {
+    ConcatCheck t = new ConcatCheck();
+    return 0;
+}
