@@ -111,6 +111,9 @@ class Graph {
         // 训练损失模式：0=SoftmaxCE（默认），1=Dice（分割，阶段4d）
         void setLossMode(int v) { lossMode_ = v; }
         int lossMode() { return lossMode_; }
+        // 类不平衡 Dice：0=等权（默认），1=逆频率加权（setDiceWMode）
+        void setDiceWMode(int v) { diceWMode_ = v; }
+        int diceWMode() { return diceWMode_; }
         int fuseCount() { return fuseCount_; }
         int gapCount() { return gapCount_; }
         int dceCount() { return dceCount_; }
@@ -2374,11 +2377,12 @@ class Graph {
                     }
                 } else if (t == "DiceLoss") {
                     // 阶段4d：Dice loss。in0=prob, in1=label; out0=dprob, out1=loss
+                    // wMode：0=等权，1=逆频率加权（类不平衡，如真实肝脏前景 ~5%）
                     int p = tensorId(nIn0_[ni]);
                     int y = tensorId(nIn1_[ni]);
                     int dp = tensorId(nOut0_[ni]);
                     int lo = tensorId(nOut1_[ni]);
-                    rt.addDiceLoss(p, y, dp, lo, 1.0e-5);
+                    rt.addDiceLoss(p, y, dp, lo, diceWMode_);
                 } else if (t == "BwdSoftmax") {
                     // 阶段4d：Softmax 反向。in0=dprob, in1=prob; out0=dlogit
                     int dp = tensorId(nIn0_[ni]);
@@ -3040,6 +3044,7 @@ class Graph {
         int noReuse_;            // 调试：1 = 内存规划不复用区域（MYP_NO_REUSE=1）
         int doNHWC_;             // G2：布局变换开关（setLayoutNHWC）
         int lossMode_;           // 训练损失模式：0=SoftmaxCE，1=Dice（setLossMode）
+        int diceWMode_;          // Dice 类权重：0=等权，1=逆频率（setDiceWMode）
 
         string[64] goName_;      // 图输出名（G1 融合安全）
         int goCount_;

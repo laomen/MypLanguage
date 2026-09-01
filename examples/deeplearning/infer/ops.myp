@@ -479,10 +479,32 @@ class InferOps {
         // p,y: [rows=C 类别, cols=S 空间]，y 为 one-hot。
         // 反向：dp[c,s] = -(2/rows)·(y[c,s]·B_c - A_c)/B_c²（B_c=Σp+Σy+eps，A_c=Σp·y）。
         void diceLoss(float[] arena, int pOff, int yOff, int dpOff, int lossOff,
-                      int rows, int cols, double eps) {
-            double sumLoss = 0.0;
+                      int rows, int cols, int wMode) {
+            // 类权重（归一化，防 loss 尺度爆炸）：wMode=0 等权（w_c=1，W=rows →
+            // wc=1/rows 与旧版逐位一致）；wMode=1 逆频率 w_c=1/(freq_c+0.001)、
+            // wc=w_c/Σw——小前景类梯度上采样，缓解类不平衡（真实肝脏前景 ~5% 时防
+            // 塌缩到全背景）。loss = 1 - Σ_c wc_c·Dice_c 有界。eps=1e-5（B 平滑）。
+            double eps = 1.0e-5;
+            double[] w = new double[32];
+            double W = 0.0;
             int c = 0;
             while (c < rows) {
+                double wc = 1.0;
+                if (wMode == 1) {
+                    double freq = 0.0;
+                    int s = 0;
+                    while (s < cols) { freq = freq + double(arena[yOff + c * cols + s]); s = s + 1; }
+                    freq = freq / double(cols);
+                    wc = 1.0 / (freq + 0.001);
+                }
+                w[c] = wc;
+                W = W + wc;
+                c = c + 1;
+            }
+            double sumLoss = 0.0;
+            c = 0;
+            while (c < rows) {
+                double wc = w[c] / W;
                 double sumP = 0.0;
                 double sumY = 0.0;
                 double sumPY = 0.0;
@@ -497,9 +519,9 @@ class InferOps {
                 }
                 double B = sumP + sumY + eps;
                 double dice = 2.0 * sumPY / B;
-                sumLoss = sumLoss + dice;
-                // 梯度（含 1/rows 归一化）
-                double denom = 2.0 / double(rows) / (B * B);
+                sumLoss = sumLoss + wc * dice;
+                // 梯度（含权重；wMode=0 时 wc=1/rows 与旧版一致）
+                double denom = wc * 2.0 / (B * B);
                 s = 0;
                 while (s < cols) {
                     double yv = arena[yOff + c * cols + s];
@@ -509,7 +531,7 @@ class InferOps {
                 }
                 c = c + 1;
             }
-            arena[lossOff] = float(1.0 - sumLoss / double(rows));
+            arena[lossOff] = float(1.0 - sumLoss);
         }
 
         // Softmax 反向（阶段4d）：dProb → dLogit。dlogit[i] = p[i]·(dp[i] - Σ_j p[j]·dp[j])

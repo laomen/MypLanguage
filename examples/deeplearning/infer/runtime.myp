@@ -326,12 +326,12 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
         // 阶段4d：Dice loss（opKind 69）。p=opA(prob), y=opB(label), dp=opC, loss=opD;
-        // eps=opP0（位型）；rows/cols 取 prob 张量 tRows_/tCols_。
-        void addDiceLoss(int pT, int yT, int dpT, int lossT, double eps) {
+        // rows/cols 取 prob 张量 tRows_/tCols_。wMode=opP1（0=等权，1=归一化逆频率）。
+        void addDiceLoss(int pT, int yT, int dpT, int lossT, int wMode) {
             int id = opCount_;
             opKind_[id] = 69;
             opA_[id] = pT; opB_[id] = yT; opC_[id] = dpT; opD_[id] = lossT;
-            opP0_[id] = F32.toBits(eps);
+            opP1_[id] = wMode;
             opCount_ = opCount_ + 1;
         }
         // 阶段4d：Softmax 反向（opKind 70）。dprob=opA, prob=opB, dlogit=opC

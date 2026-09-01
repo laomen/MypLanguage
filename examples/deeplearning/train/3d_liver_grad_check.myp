@@ -1,0 +1,118 @@
+// 3d_liver_grad_check.myp — 阶段4g：16³ 类不平衡分割模型全图反向梯度对拍
+// 验证：3d_liver.onnx（16³ 带跳跃 U-Net）的反向梯度（含 bwdConcat + GradAcc）正确。
+// lr=0 + train 模式，扰动权重中心差分 vs 解析梯度。
+// 数据：固定椭球肝脏形态（前景 ~5%），单样本。
+//
+// 运行（须在 examples/ 下）：
+//   deeplearning/infer/tools/onnxvenv/bin/python deeplearning/infer/tools/make_3d_liver_onnx.py
+//   ./build/mypc examples/deeplearning/train/3d_liver_grad_check.myp -o /tmp/u_lgc --stdlib stdlib
+//   cd examples && MYP_GPU=0 /tmp/u_lgc    # CPU（慢）；MYP_GPU=1 走 GPU（快）
+
+import env;
+import fmt;
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class LiverGradCheck {
+    action:
+        @constructor LiverGradCheck() {
+            seed_ = 20260901.0;
+            int D = 16; int H = 16; int W = 16;
+            int NIN = D * H * W;
+            float[] x = new float[NIN];
+            int d = 0;
+            while (d < D) {
+                int h = 0;
+                while (h < H) {
+                    int w = 0;
+                    while (w < W) {
+                        int v = d * H * W + h * W + w;
+                        // 固定椭球：中心 7.5，半径 4.2/3.4/3.0（~5% 体积）
+                        double cx = 7.5, cy = 7.5, cz = 7.5;
+                        double a = 4.2, bb = 3.4, cc = 3.0;
+                        double dd = (double(d) - cx) * (double(d) - cx) / (a * a)
+                                  + (double(h) - cy) * (double(h) - cy) / (bb * bb)
+                                  + (double(w) - cz) * (double(w) - cz) / (cc * cc);
+                        x[v] = 0.05f;
+                        if (dd < 1.0) x[v] = 1.0f;
+                        w = w + 1;
+                    }
+                    h = h + 1;
+                }
+                d = d + 1;
+            }
+
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(8000000);
+            OnnxLoader loader = new OnnxLoader();
+            loader.setLossMode(1);
+            int ok = loader.loadTrain("./deeplearning/data/onnx/3d_liver.onnx", rt);
+            if (ok == 0) { Console.writeLine("loadTrain failed"); return; }
+            int dataTid = loader.tensorId("data");
+            int labelTid = loader.tensorId("label");
+            int lossTid = loader.tensorId("loss");
+            if (dataTid < 0 || labelTid < 0 || lossTid < 0) { Console.writeLine("tensor missing"); return; }
+
+            int j = 0;
+            while (j < NIN) { rt.setFlat(dataTid, j, double(x[j])); j = j + 1; }
+            j = 0;
+            while (j < NIN) {
+                double fg = (x[j] > 0.5f) ? 1.0 : 0.0;
+                rt.setFlat(labelTid, j, double((fg > 0.5) ? 0.0 : 1.0));        // 类0=背景
+                rt.setFlat(labelTid, NIN + j, double((fg > 0.5) ? 1.0 : 0.0));  // 类1=前景
+                j = j + 1;
+            }
+
+            int fails = 0;
+            string[] wnames = new string[4];
+            wnames[0] = "e1_w"; wnames[1] = "e4_w"; wnames[2] = "d1_w"; wnames[3] = "d3_w";
+            double eps = 1.0e-3;
+            rt.setLr(0.0);
+            int wi = 0;
+            while (wi < 4) {
+                int wTid = loader.tensorId(wnames[wi]);
+                int gTid = loader.tensorId(wnames[wi] + "#g");
+                if (wTid < 0 || gTid < 0) { Console.writeLine("w missing " + wnames[wi]); wi = wi + 1; continue; }
+                int wsz = rt.tensorSizeDebug(wTid);
+                int[] idx = new int[3];
+                idx[0] = 0; idx[1] = wsz / 3; idx[2] = wsz - 1;
+                int k = 0;
+                while (k < 3) {
+                    int e = idx[k];
+                    rt.setTrain(1);
+                    step(rt);
+                    double analytic = rt.getFlat(gTid, e);
+                    double base = rt.getFlat(wTid, e);
+                    rt.setFlat(wTid, e, base + eps);
+                    step(rt);
+                    double Lp = rt.getFlat(lossTid, 0);
+                    rt.setFlat(wTid, e, base - eps);
+                    step(rt);
+                    double Lm = rt.getFlat(lossTid, 0);
+                    rt.setFlat(wTid, e, base);
+                    double numeric = (Lp - Lm) / (2.0 * eps);
+                    Console.writeString(wnames[wi] + "[" + Fmt.i(e) + "] ana=" + Fmt.f(analytic, 5) + " num=" + Fmt.f(numeric, 5));
+                    Console.writeLine("");
+                    if (Math.abs(analytic - numeric) > 5.0e-2 * (1.0 + Math.abs(analytic) + Math.abs(numeric))) fails = fails + 1;
+                    k = k + 1;
+                }
+                wi = wi + 1;
+            }
+
+            if (fails == 0) Console.writeLine("3D LIVER GRAD CHECK OK");
+            else Console.writeLine("3D LIVER GRAD CHECK FAIL (" + Fmt.i(fails) + ")");
+        }
+
+        void step(InferenceRuntime rt) {
+            if (Console.getEnv("MYP_GPU") == "1") rt.runGpu();
+            else rt.run();
+        }
+
+    property:
+        double seed_;
+}
+
+int main() {
+    LiverGradCheck t = new LiverGradCheck();
+    return 0;
+}

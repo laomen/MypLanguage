@@ -1389,7 +1389,7 @@ class DiceLossOp {
             if (rt.trainMode() == 1) {
                 int p = rt.opAAt(i); int y = rt.opBAt(i); int dp = rt.opCAt(i); int lo = rt.opDAt(i);
                 InferOps.diceLoss(rt.arenaRef(), rt.tensorOff(p), rt.tensorOff(y), rt.tensorOff(dp), rt.tensorOff(lo),
-                                  rt.tensorRows(p), rt.tensorCols(p), F32.toDouble(rt.opP0At(i)));
+                                  rt.tensorRows(p), rt.tensorCols(p), rt.opP1At(i));
             }
         }
 }
@@ -1761,8 +1761,8 @@ class GpuDiceLossOp {
         void backward(InferenceRuntime rt, int i) {
             if (rt.trainMode() == 1) {
                 int p = rt.opAAt(i); int y = rt.opBAt(i); int dp = rt.opCAt(i); int lo = rt.opDAt(i);
-                GpuInferOps.diceLoss(rt.arenaRef(), rt.devRef(), rt.tensorOff(p), rt.tensorOff(y), rt.tensorOff(dp), rt.tensorOff(lo),
-                                     rt.tensorRows(p), rt.tensorCols(p), F32.toDouble(rt.opP0At(i)));
+                GpuInferOps.diceLoss(rt.arenaRef(), rt.devRef(), rt.statsOffRef(), rt.tensorOff(p), rt.tensorOff(y), rt.tensorOff(dp), rt.tensorOff(lo),
+                                     rt.tensorRows(p), rt.tensorCols(p), rt.opP1At(i));
             }
         }
 }
@@ -1770,7 +1770,7 @@ class GpuDiceLossOp {
 // ---- concat 反向（opKind 72；5D U-Net 跳跃连接，CPU）----
 // 反向图生成独立 BwdConcat 节点（dy → dx0/dx1/dx2），前向 ConcatOp(25) 的
 // backward 保持空（concat 前向节点不承载反向）。
-class BwdConcatOp {、
+class BwdConcatOp {
     interface class IOp;
     action:
         void forward(InferenceRuntime rt, int i) { }

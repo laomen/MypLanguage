@@ -46,7 +46,7 @@ class DiceSoftmaxGradCheck {
             // CPU：diceLoss + bwdSoftmax
             float[] cpu = new float[CAP];
             i = 0; while (i < CAP) { cpu[i] = host[i]; i = i + 1; }
-            InferOps.diceLoss(cpu, probOff, labelOff, dpOff, lossOff, C, N, epsD);
+            InferOps.diceLoss(cpu, probOff, labelOff, dpOff, lossOff, C, N, 0);
             InferOps.bwdSoftmax(cpu, probOff, dpOff, dlogitOff, C, N);
 
             // 1) bwdSoftmax 有限差分：L=Σ prob，dL/dprob=1 → dlogit 应为 0（softmax 行和=1）
@@ -75,8 +75,9 @@ class DiceSoftmaxGradCheck {
                 GpuBufferF buf = new GpuBufferF(gpuA, CAP);
                 long dev = buf.devicePtr();
                 buf.copyFromHost(gpuA, 0, 0, CAP);
+                int stOffG = 200;   // GPU diceLoss stats 区（arena 内未用区，需 3*C+1 槽）
                 GpuInferOps.softmax(gpuA, C * N, logitOff, probOff, C, N, dev);
-                GpuInferOps.diceLoss(gpuA, dev, probOff, labelOff, dpOff, lossOff, C, N, epsD);
+                GpuInferOps.diceLoss(gpuA, dev, stOffG, probOff, labelOff, dpOff, lossOff, C, N, 0);
                 GpuInferOps.bwdSoftmax(gpuA, dev, probOff, dpOff, dlogitOff, C, N);
                 buf.copyToHost(gpuA, 0, 0, CAP);
                 fails = fails + cmpRange("gpu dlogit", cpu, gpuA, dlogitOff, C * N);
@@ -100,11 +101,11 @@ class DiceSoftmaxGradCheck {
             double xp = arena[logitOff + j];
             arena[logitOff + j] = float(xp + eps);
             InferOps.softmax(arena, logitOff, probOff, C, N);
-            InferOps.diceLoss(arena, probOff, labelOff, dpScratch, lossOff, C, N, epsD);
+            InferOps.diceLoss(arena, probOff, labelOff, dpScratch, lossOff, C, N, 0);
             double Lp = arena[lossOff];
             arena[logitOff + j] = float(xp - eps);
             InferOps.softmax(arena, logitOff, probOff, C, N);
-            InferOps.diceLoss(arena, probOff, labelOff, dpScratch, lossOff, C, N, epsD);
+            InferOps.diceLoss(arena, probOff, labelOff, dpScratch, lossOff, C, N, 0);
             double Lm = arena[lossOff];
             arena[logitOff + j] = float(xp);
             InferOps.softmax(arena, logitOff, probOff, C, N);

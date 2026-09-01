@@ -32,6 +32,7 @@ class OnnxLoader {
             g_.resetCounts();
             if (doNHWC_ == 1) g_.setLayoutNHWC(1);
             if (lossMode_ == 1) g_.setLossMode(1);
+            if (diceWMode_ == 1) g_.setDiceWMode(1);
             pb_.init(file_, fileLen_);
             if (parseModel() == 0) return 0;
             int k = 0;
@@ -58,6 +59,9 @@ class OnnxLoader {
         // 训练损失模式：0=SoftmaxCE（默认），1=Dice（分割）
         void setLossMode(int v) { lossMode_ = v; }
         int lossMode() { return lossMode_; }
+        // Dice 类权重：0=等权（默认），1=逆频率加权（类不平衡分割）
+        void setDiceWMode(int v) { diceWMode_ = v; }
+        int diceWMode() { return diceWMode_; }
         int fuseCount() { return g_.fuseCount(); }
         int gapCount() { return g_.gapCount(); }
         int dceCount() { return g_.dceCount(); }
@@ -468,6 +472,7 @@ class OnnxLoader {
         Graph g_;
         int doNHWC_;
         int lossMode_;          // 训练损失模式：0=SoftmaxCE，1=Dice
+        int diceWMode_;         // Dice 类权重：0=等权，1=逆频率加权
         string[8] inpName_;     // P3：输入形状注入表
         int[8] inpD0_;
         int[8] inpD1_;

@@ -391,54 +391,110 @@ class GpuInferOps {
         // → dpOff=dProb[C,N], lossOff。每类一个线程串行统计 sumP/sumY/sumPY，
         // 写 dp；loss 由独立单线程 kernel 重算汇总（跨线程无 barrier，不能在同一
         // kernel 内由 thread0 读其他线程的 sum）。
-        void diceLoss(float[] a, long dev, int pOff, int yOff, int dpOff, int lossOff,
-                      int rows, int cols, double eps) {
-            @gpu for (long p = 0L; p < long(rows); p = p + 1L) resident(a = dev) {
-                if (p < long(rows)) {
-                    long c = p;
-                    double sumP = 0.0;
-                    double sumY = 0.0;
-                    double sumPY = 0.0;
-                    long s = 0L;
-                    while (s < long(cols)) {
-                        double pv = double(a[pOff + c * long(cols) + s]);
-                        double yv = double(a[yOff + c * long(cols) + s]);
-                        sumP = sumP + pv;
-                        sumY = sumY + yv;
-                        sumPY = sumPY + pv * yv;
-                        s = s + 1L;
-                    }
-                    double B = sumP + sumY + eps;
-                    double denom = 2.0 / double(rows) / (B * B);
-                    s = 0L;
-                    while (s < long(cols)) {
-                        double yv = double(a[yOff + c * long(cols) + s]);
-                        a[dpOff + c * long(cols) + s] = float(0.0 - denom * (yv * B - sumPY));
-                        s = s + 1L;
+        void diceLoss(float[] a, long dev, int stOff, int pOff, int yOff, int dpOff, int lossOff,
+                      int rows, int cols, int wMode) {
+            if (wMode == 1) {
+                // 归一化逆频率（stOff 为 stats 区）：K1 每类 w_c→stOff+c；K2 单线程
+                // W=Σ→stOff+rows；K3 每类梯度(wc=w_c/W)+写 loss 项 stOff+rows+1+c；
+                // K4 单线程 loss=1-Σ项。eps=1e-5（B 平滑）。
+                @gpu for (long p = 0L; p < long(rows); p = p + 1L) resident(a = dev) {
+                    if (p < long(rows)) {
+                        long c = p;
+                        double freq = 0.0;
+                        long s = 0L;
+                        while (s < long(cols)) { freq = freq + double(a[yOff + c * long(cols) + s]); s = s + 1L; }
+                        freq = freq / double(cols);
+                        a[stOff + c] = float(1.0 / (freq + 0.001));
                     }
                 }
-            }
-            @gpu for (long p = 0L; p < 1L; p = p + 1L) resident(a = dev) {
-                double sumLoss = 0.0;
-                long c = 0L;
-                while (c < long(rows)) {
-                    double sumP = 0.0;
-                    double sumY = 0.0;
-                    double sumPY = 0.0;
-                    long s = 0L;
-                    while (s < long(cols)) {
-                        double pv = double(a[pOff + c * long(cols) + s]);
-                        double yv = double(a[yOff + c * long(cols) + s]);
-                        sumP = sumP + pv;
-                        sumY = sumY + yv;
-                        sumPY = sumPY + pv * yv;
-                        s = s + 1L;
-                    }
-                    double B = sumP + sumY + eps;
-                    sumLoss = sumLoss + 2.0 * sumPY / B;
-                    c = c + 1L;
+                @gpu for (long p = 0L; p < 1L; p = p + 1L) resident(a = dev) {
+                    double W = 0.0;
+                    long c = 0L;
+                    while (c < long(rows)) { W = W + double(a[stOff + c]); c = c + 1L; }
+                    a[stOff + long(rows)] = float(W);
                 }
-                a[lossOff] = float(1.0 - sumLoss / double(rows));
+                @gpu for (long p = 0L; p < long(rows); p = p + 1L) resident(a = dev) {
+                    if (p < long(rows)) {
+                        long c = p;
+                        double wc = double(a[stOff + c]) / double(a[stOff + long(rows)]);
+                        double sumP = 0.0;
+                        double sumY = 0.0;
+                        double sumPY = 0.0;
+                        long s = 0L;
+                        while (s < long(cols)) {
+                            double pv = double(a[pOff + c * long(cols) + s]);
+                            double yv = double(a[yOff + c * long(cols) + s]);
+                            sumP = sumP + pv;
+                            sumY = sumY + yv;
+                            sumPY = sumPY + pv * yv;
+                            s = s + 1L;
+                        }
+                        double B = sumP + sumY + 1.0e-5;
+                        double denom = wc * 2.0 / (B * B);
+                        s = 0L;
+                        while (s < long(cols)) {
+                            double yv = double(a[yOff + c * long(cols) + s]);
+                            a[dpOff + c * long(cols) + s] = float(0.0 - denom * (yv * B - sumPY));
+                            s = s + 1L;
+                        }
+                        a[stOff + long(rows) + 1L + c] = float(wc * 2.0 * sumPY / B);
+                    }
+                }
+                @gpu for (long p = 0L; p < 1L; p = p + 1L) resident(a = dev) {
+                    double sumLoss = 0.0;
+                    long c = 0L;
+                    while (c < long(rows)) { sumLoss = sumLoss + double(a[stOff + long(rows) + 1L + c]); c = c + 1L; }
+                    a[lossOff] = float(1.0 - sumLoss);
+                }
+            } else {
+                // 等权（wc=1/rows）：原 2-kernel 逻辑，eps=1e-5
+                @gpu for (long p = 0L; p < long(rows); p = p + 1L) resident(a = dev) {
+                    if (p < long(rows)) {
+                        long c = p;
+                        double sumP = 0.0;
+                        double sumY = 0.0;
+                        double sumPY = 0.0;
+                        long s = 0L;
+                        while (s < long(cols)) {
+                            double pv = double(a[pOff + c * long(cols) + s]);
+                            double yv = double(a[yOff + c * long(cols) + s]);
+                            sumP = sumP + pv;
+                            sumY = sumY + yv;
+                            sumPY = sumPY + pv * yv;
+                            s = s + 1L;
+                        }
+                        double B = sumP + sumY + 1.0e-5;
+                        double denom = 2.0 / double(rows) / (B * B);
+                        s = 0L;
+                        while (s < long(cols)) {
+                            double yv = double(a[yOff + c * long(cols) + s]);
+                            a[dpOff + c * long(cols) + s] = float(0.0 - denom * (yv * B - sumPY));
+                            s = s + 1L;
+                        }
+                    }
+                }
+                @gpu for (long p = 0L; p < 1L; p = p + 1L) resident(a = dev) {
+                    double sumLoss = 0.0;
+                    long c = 0L;
+                    while (c < long(rows)) {
+                        double sumP = 0.0;
+                        double sumY = 0.0;
+                        double sumPY = 0.0;
+                        long s = 0L;
+                        while (s < long(cols)) {
+                            double pv = double(a[pOff + c * long(cols) + s]);
+                            double yv = double(a[yOff + c * long(cols) + s]);
+                            sumP = sumP + pv;
+                            sumY = sumY + yv;
+                            sumPY = sumPY + pv * yv;
+                            s = s + 1L;
+                        }
+                        double B = sumP + sumY + 1.0e-5;
+                        sumLoss = sumLoss + 2.0 * sumPY / B;
+                        c = c + 1L;
+                    }
+                    a[lossOff] = float(1.0 - sumLoss / double(rows));
+                }
             }
         }
 

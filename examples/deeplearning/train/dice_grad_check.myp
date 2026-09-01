@@ -37,7 +37,7 @@ class DiceGradCheck {
             }
 
             double eps = 1.0e-3;
-            InferOps.diceLoss(arena, pOff, yOff, dpOff, lossOff, C, S, 1.0e-7);
+            InferOps.diceLoss(arena, pOff, yOff, dpOff, lossOff, C, S, 0);
             Console.writeString("loss=");
             Console.writeFloat(arena[lossOff]);
             Console.writeLine("");
@@ -66,10 +66,10 @@ class DiceGradCheck {
         double fd(float[] arena, int pOff, int yOff, int lossOff, int scratch, int C, int S, int j, double eps) {
             double pp = arena[pOff + j];
             arena[pOff + j] = float(pp + eps);
-            InferOps.diceLoss(arena, pOff, yOff, scratch, lossOff, C, S, 1.0e-7);
+            InferOps.diceLoss(arena, pOff, yOff, scratch, lossOff, C, S, 0);
             double Lp = arena[lossOff];
             arena[pOff + j] = float(pp - eps);
-            InferOps.diceLoss(arena, pOff, yOff, scratch, lossOff, C, S, 1.0e-7);
+            InferOps.diceLoss(arena, pOff, yOff, scratch, lossOff, C, S, 0);
             double Lm = arena[lossOff];
             arena[pOff + j] = float(pp);
             return (Lp - Lm) / (2.0 * eps);

@@ -6,7 +6,38 @@
 
 ---
 
-## 2026-09-XX — 阶段4f：3D U-Net 带跳跃连接（5D Concat 反向 bwdConcat + 多消费者梯度累加）
+## 2026-09-XX — 阶段4g：类不平衡 Dice loss（归一化逆频率加权）→ 肝脏形态合成分割训练
+
+### 目标
+真实肝脏 CT 中前景（肝脏）仅占 ~5% 体素（类不平衡）——等权 Dice 会塌缩到全背景。
+为框架加**类不平衡 Dice loss**，并用肝脏形态合成数据验证小前景可学，为真实 seg_liver 铺路。
+
+### 变更
+- **`infer/ops.myp` + `infer/gpu_ops.myp`**：`diceLoss` 加 `wMode` 参数：
+  - `wMode=0` 等权（逐位兼容旧版）；`wMode=1` **归一化逆频率加权**
+    `w_c = 1/(freq_c+0.001)`、`wc = w_c/Σw` → `loss = 1 - Σ_c wc_c·Dice_c` **有界**。
+  - **关键教训**：未归一化逆频率（wc 直接用 1/freq）会让随机初始 loss ≈ -5.8（Σw 大 →
+    loss 大负 → 大梯度 → 第一步就把 softmax 推饱和 → 训练卡死 0.489）。归一化后
+    随机初始 loss≈0.34、全背景 loss≈0.95（强推学前景）。
+  - **GPU 跨类归约**：wMode=1 用 runtime stats 区（`rt.statsOffRef`）分 4 核
+    （K1 每类 w_c→stOff+c；K2 单线程 W=Σ→stOff+rows；K3 每类梯度+写 loss 项；
+    K4 单线程 loss=1-Σ）。**去掉 eps 参数**（固定 1e-5）以容纳 stOff（GPU 10 参上限）。
+- **`runtime.myp`**：`addDiceLoss` 去 eps，`opP1=wMode`；`onnx_loader`/`graph` 加
+  `setDiceWMode(1)` 透传（DiceLoss 节点接线）。
+- **新**：`make_3d_liver_onnx.py`（16³ 带跳跃 U-Net）、`3d_liver_train.myp`（肝脏形态
+  合成：前景 ~5% 模糊边界椭球 + 噪声；`MYP_DICE_WMODE`/`MYP_LIVER_FIXED`/`MYP_LIVER_SMALL`
+  控制）、`3d_liver_grad_check.myp`（16³ 全图梯度对拍）、`dice_weighted_grad_check.myp`
+  （加权梯度有限差分 + GPU 对拍）。
+
+### 验证
+- **等权（wMode=0）fg-DSC=0（塌缩全背景）** vs **归一化加权（wMode=1）fg-DSC=1.0**
+  （GPU）/ **0.949**（CPU 小规模）——类不平衡问题解决，`LIVER 3D TRAIN OK`。
+- `dice_weighted_grad_check`：CPU 有限差分匹配 + GPU maxDiff=0/lossDiff=0。
+- `3d_liver_grad_check`：16³ 全图梯度（含 concat 路径）GRAD CHECK OK。
+- 回归：dice_grad_check / dice_softmax_grad_check OK（wMode=0 等权逐位兼容）；
+  `3d_unet_skip_train`（等权）acc 100% 无回归。
+
+---
 
 ### 目标
 U-Net 编码器-解码器加入**跳跃连接**（skip connection，channel 维 Concat）并端到端训练：
