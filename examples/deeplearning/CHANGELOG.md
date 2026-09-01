@@ -6,6 +6,19 @@
 
 ---
 
+## 2026-09-01 — 阶段三：FP16 权重 dtype 转换（FLOAT16 → float32）
+
+- `graph.myp` 加 `halfToF32Bits`（IEEE half → F32 位型，含亚正规归一化）；
+  `writeWeight` 加 dtype==10 分支：每 2 字节 half → float，直接 wire 顺序拷贝
+  （不转置；FP16 权重为常见直读场景）。
+- `onnx_loader` parseTensor 支持 `float16_data`（字段 6，packed 2 字节/元素）；
+  raw_data（f==9）存 FP16 时由 writeWeight 按 dtype==10 读 2 字节（已覆盖）。
+- 新增 `tools/make_fp16_onnx.py`（opset13：x[1,1,5,5] → Conv(W/B FLOAT16) →
+  y[1,1,3,3]）+ `infer_tests/fp16_main.myp`（FP16 ALL OK，CPU+GPU max diff 0
+  vs ORT）。
+- 回归：40/40 infer_tests + grad_check（GRAD CHECK OK）+ ResNet output sum
+  `336.658`。
+
 ## 2026-09-01 — 阶段三：Add 统一 numpy 广播（4D）
 
 - inferShapes Add 从 element-wise copyShape 拆出 → a/b 逐维 max（广播合并）。

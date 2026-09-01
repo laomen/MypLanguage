@@ -368,10 +368,15 @@ OpKind
   graph_compiler ADD + GRAD_ACC wiring 传 dims。bcast 测试扩展 out7/out8（Add
   同形状 + 逐通道 bias），8 输出 BCAST ALL OK，CPU+GPU max diff 0 vs ORT。
   至此 **Add/Sub/Mul/Div 四元逐元素 op 全部支持统一 4D numpy 广播**。
+- **已完成：FP16 权重 dtype 转换**（commit `859b876`）。`graph.myp` 加
+  `halfToF32Bits`（IEEE half → F32，含亚正规）；`writeWeight` dtype==10 分支每
+  2 字节 half → float（直接 wire 拷贝）；`onnx_loader` parseTensor 支持
+  `float16_data`（字段 6）。`make_fp16_onnx.py`（opset13 Conv W/B FLOAT16）+
+  `fp16_main.myp`：FP16 ALL OK，CPU+GPU max diff 0 vs ORT。
 - **G3 ReduceMean 负轴归一化**已完成（见阶段二进度区）；Reduce axes/keepdims/
   空 axes 语义统一仍在 Reduce 族共用归一化内。
 - **待办**：ShapeExpr（常量/输入维度表达式）、动态 batch 输入 shape 注入 +
-  specialization（3D coarse_model 已有 setInputShape 先例）、FP16/BF16/INT8
+  specialization（loader 已有 setInputShape 框架，需端到端验证）、BF16/INT8
   dtype 转换规则。
 
 ## 6. 阶段四：算子覆盖优先级
