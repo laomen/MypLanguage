@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-02 — 阶段五：常量去重（内容相同初始器合并）
+
+- graph_optimizer `eliminateDeadNodes` 内 DCE + 死权重裁剪后新增常量去重：两两
+  比较权重（rows/cols/dtype/transposed/role 相同 + 文件字节逐字节相同，
+  `compilerWeightBytesEqual` bridge），内容相同则把后者所有 use 改接前者
+  （`replaceAllUses` 覆盖节点 input + graph output）并标 dead → runtime 只
+  注册一份，减少 IR/显存占用。
+- **去重判据安全设计**：要求 role/transposed 也相同（避免 Conv 权重与 Gemm
+  权重等 layout 语义不同的权重被错误合并）；计算常量（cF32_ 存储，无 file_
+  字节）不参与去重。
+- 回归：`infer_tests/dupconst_main.myp`（两路 Conv，w2==w1/b2==b1 字节相同）——
+  dedup count=2、w2/b2 dead、w1/b1 保留、输出 vs ORT max diff 9.5e-7（CPU+GPU）。
+
+---
+
 ## 2026-09-02 — 阶段五：死权重裁剪（DCE 后移除未引用初始器）
 
 - graph_optimizer `eliminateDeadNodes` 末尾新增 `pruneDeadWeights`：遍历全部权重，

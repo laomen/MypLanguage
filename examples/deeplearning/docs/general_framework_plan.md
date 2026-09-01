@@ -431,7 +431,9 @@ OpKind
 
 ### 先做且 ROI 明确
 
-1. **常量去重**：相同内容的 Constant/initializer 合并，减少 IR 和显存占用。
+1. **常量去重**：✅ 已完成（2026-09-02，DCE+死权重裁剪后 `compilerWeightBytesEqual`
+   两两比较；内容+role/transposed 相同才合并，后者改接+标 dead；
+   `infer_tests/dupconst_main.myp` 回归 CPU+GPU 通过）。
 2. **折叠后死权重裁剪**：✅ 已完成（2026-09-02，`pruneDeadWeights` 挂在
    `eliminateDeadNodes` 末尾，遍历权重标记未被活节点引用的初始器为 dead；
    `infer_tests/deadweight_main.myp` 回归 CPU+GPU 通过）。
