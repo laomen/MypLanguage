@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-01 — 阶段四 G5：Dropout 算子（推理恒等 / 训练随机 mask）
+
+- OpCode `DROPOUT(81)` + `opCode` 映射；`consumerKindOf` Dropout → CNN_ACT；
+  `classifyShapes` ratio（f32 初始器，opset12 输入[1]）+ training_mode
+  （int64/bool，若给出）标 dead；inferShapes copyShape（同 element-wise）。
+- 语义由 `rt.trainMode()` 分派（forward 内）：推理 = 恒等（copyFlat，CPU+GPU）；
+  训练 = 确定性 LCG 序列 `y[i] = (u<ratio) ? 0 : x[i]`（CPU）。GPU 训练路径
+  退化恒等（无模型驱动的 GPU 随机，记录）。
+- `ops_iface_all` 补 `DropoutOp/GpuDropoutOp` + `registerFwd(81)`。
+- 新增 `tools/make_dropout_onnx.py`（opset12：x[1,2,3,4] ratio=0.5，training_mode
+  省略 → 推理恒等）+ `dropout_main.myp`（DROPOUT INFER ALL OK，CPU+GPU max diff
+  0）；`dropout_train_rt_main.myp` 训练单测（zero rate 0.497 ≈ 0.5，
+  DROPOUT TRAIN OK）。
+- 回归：38/38 infer_tests + grad_check（GRAD CHECK OK）+ ResNet output sum
+  `336.658`。
+
 ## 2026-09-01 — 阶段四 G5：LogSoftmax + Embedding 算子
 
 - **LogSoftmax（opKind 79）**：沿 axis 稳定 log-softmax。`consumerKindOf`

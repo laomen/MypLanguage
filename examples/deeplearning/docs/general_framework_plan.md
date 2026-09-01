@@ -305,20 +305,24 @@ OpKind
   80）：row-major 查表 out[s*D+d]=w[ids[s]*D+d]（ONNX 无标准 op，用 Gather
   axis=0 表达；本 op 作框架层查表），ids int64 初始器标 dead + readI64Init 读
   临时 f32 张量，CPU+GPU max diff 0（直接 runtime 单测）。
+- **已完成：Dropout**（commit `fbcad0f`）。opKind 81：opset12（ratio f32 初始器
+  输入，training_mode 省略 → 推理）；`rt.trainMode()` 分派——推理恒等
+  （copyFlat，CPU+GPU max diff 0 vs ORT）；训练确定性 LCG 序列随机 mask
+  （zero rate 0.497 ≈ 0.5）。GPU 训练路径退化恒等（无模型驱动的 GPU 随机）。
 - **已完成：阶段七 Unsupported op 诊断**（commit `627a58c`）。loader 解析时检测
   未知 ONNX op → 打印 op 类型/节点索引/输入名 + `badOp_` 标记 → `load()` 返回 0
   （显式失败而非静默错误/段错误）。OpCode 补 `CONSTANT(57)` 防误报。
-- **已验证**：36/36 infer_tests + grad_check（L0=1.92528，GRAD CHECK OK）在
+- **已验证**：38/38 infer_tests + grad_check（L0=1.92528，GRAD CHECK OK）在
   `MYP_GPU=1 MYP_IR_VERIFY=1` 下全部通过；ResNet output sum `336.658`。关键
   提交：`8a38beb`（G2 基础）、`9508a10`（DATA role）、`88d0fd2`（G3 负轴）、
   `0440a18`（Reduce 族）、`627a58c`（op 诊断）、`bad6242`（Expand）、
   `6552144`（Where）、`0b4eeb2`（Tile）、`9f5dfee`（Squeeze+Gather）、
-  `d3bd44f`（LogSoftmax+Embedding）。
-- **下一步**：G3 剩余（broadcast/ShapeExpr/dtype 转换规则）与第二优先级训练/
-  生成式模型专项（Dropout 训练/推理语义、Checkpoint、梯度累积、混合精度）。
-  当前模型集为 4D/5D 静态 shape + 全 FLOAT + 同形状广播，broadcast 统一与
-  ShapeExpr 无模型驱动——按「不为没有目标的模式提前堆代码」，优先推进有合成
-  测试可验证的算子补全。
+  `d3bd44f`（LogSoftmax+Embedding）、`fbcad0f`（Dropout）。
+- **下一步**：G3 剩余（broadcast/ShapeExpr/dtype 转换规则）、第二优先级训练/
+  生成式模型专项剩余（Checkpoint、梯度累积、混合精度）与第一优先级
+  MatMul 广播（BatchMatMul）。当前模型集为 4D/5D 静态 shape + 全 FLOAT +
+  同形状广播，broadcast 统一与 ShapeExpr 无模型驱动——按「不为没有目标的模式
+  提前堆代码」，优先推进有合成测试可验证的算子补全。
 
 ## 5. 阶段三：Shape、DType 与 Broadcast 基础层
 
@@ -363,7 +367,7 @@ OpKind
 - GELU 完整版本（✅ 已有 opKind 65）
 - `LogSoftmax`（✅ 完成，commit `d3bd44f`）
 - `Embedding`（✅ 完成，commit `d3bd44f`，框架层 row-major 查表；ONNX 常规用 Gather axis=0）
-- Dropout 的训练/推理语义
+- `Dropout` 的训练/推理语义（✅ 完成，commit `fbcad0f`）
 - Checkpoint、梯度累积和混合精度
 
 ### 暂不作为主线的 pass
