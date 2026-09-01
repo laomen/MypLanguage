@@ -1,10 +1,11 @@
 // identity_fold_main.myp — IR-P2 pattern rewrite regression.
 // 生成器图（tools/make_identity_fold_onnx.py）：
 //   data -> Add(0) -> Mul(1) -> Softmax -> prob    链式恒等折叠 → 1 Softmax
-//   data2 -> Add(0) -> out2    图输出 rewrite → data2
+//   data2 -> Add(zero2) -> out2    图输出 rewrite → data2
 //   data3 -> Relu -> relu3a -> Relu -> out3    连续 Relu 合并 → 1 Relu，out3→relu3a
 //   data4 -> Sub(0) -> Div(1) -> out4    Sub(x,0)/Div(x,1) 恒等折叠 → data4
-// 优化后 runtime 共 2 ops（Softmax + Relu）；四个图输出 prob/data2/relu3a/data4。
+// 其中 one/zero2/zero4/one4 为全形状常量张量（P4：恒等折叠按“所有元素==恒等值”判定），
+// zero 为标量（旧路径）；优化后 runtime 共 2 ops（Softmax + Relu）；图输出 prob/data2/relu3a/data4。
 import env;
 import fmt;
 import "../infer/runtime.myp";

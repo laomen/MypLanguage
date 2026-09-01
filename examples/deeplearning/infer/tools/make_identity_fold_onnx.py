@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""生成 P2 identity-fold + 图输出 rewrite + 连续 Relu 合并夹具：
+"""生成 P2/P4 identity-fold + 图输出 rewrite + 连续 Relu 合并夹具：
   data  -> Add(0) -> Mul(1) -> Softmax -> prob      （P2a 链式恒等折叠，3 ops→1）
   data2 -> Add(zero2) -> out2                        （P2d 图输出 rewrite → data2）
   data3 -> Relu -> relu3a -> Relu -> out3            （P2e 连续 Relu 合并 → 1 Relu，out3→relu3a）
-  data4 -> Sub(zero4) -> sub4 -> Div(one4) -> out4   （P2e Sub(x,0)/Div(x,1) 折叠 → data4）
+  data4 -> Sub(zero4) -> Div(one4) -> out4           （P2e Sub(x,0)/Div(x,1) 折叠 → data4）
+其中 one/zero2/zero4/one4 为全形状常量张量（非标量）：P4 恒等折叠须按“所有元素==恒等值”
+判定（broadcast/任意形状），zero 保持标量以覆盖旧路径。
 优化后运行时只保留 Softmax + 1 个 Relu（共 2 ops）；图输出 prob/data2/relu3a/data4。
 """
 import os
@@ -14,10 +16,10 @@ from onnx import TensorProto, helper
 out = "deeplearning/data/onnx/identity_fold.onnx"
 os.makedirs(os.path.dirname(out), exist_ok=True)
 zero = helper.make_tensor("zero", TensorProto.FLOAT, [], [0.0])
-one = helper.make_tensor("one", TensorProto.FLOAT, [], [1.0])
-zero2 = helper.make_tensor("zero2", TensorProto.FLOAT, [], [0.0])
-zero4 = helper.make_tensor("zero4", TensorProto.FLOAT, [], [0.0])
-one4 = helper.make_tensor("one4", TensorProto.FLOAT, [], [1.0])
+one = helper.make_tensor("one", TensorProto.FLOAT, [1, 3], [1.0, 1.0, 1.0])
+zero2 = helper.make_tensor("zero2", TensorProto.FLOAT, [1, 2], [0.0, 0.0])
+zero4 = helper.make_tensor("zero4", TensorProto.FLOAT, [1, 2], [0.0, 0.0])
+one4 = helper.make_tensor("one4", TensorProto.FLOAT, [1, 2], [1.0, 1.0])
 nodes = [
     helper.make_node("Add", ["data", "zero"], ["add0"], name="add_zero"),
     helper.make_node("Mul", ["add0", "one"], ["mul1"], name="mul_one"),

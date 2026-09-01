@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P4.1：恒等折叠支持任意形状/广播常量张量
+
+### 变更（`infer/graph.myp`）
+- `isScalarInitValue` → `isConstValue`：初始化器所有元素等于恒等值（0/1）即折叠，不再要求
+  标量；标量、任意形状、broadcast 常量张量均满足，逐元素读文件数据校验（不落 f32Tmp_）。
+- `foldIdentityOps` 的 Add/Mul/Sub/Div 四个恒等模式全部受益；数值语义严格（x+0/x-0/x*1/x÷1
+  对任意 broadcast 逐位保持）。
+
+### 验证
+- identity_fold 夹具 one/zero2/zero4/one4 改为全形状常量张量（zero 保持标量）；runtime 仍
+  2 ops、图输出 rename/读数一致，`IDENTITY FOLD OK`。
+- 回归：BN maxDiff 0、ops2d 4.77e-7、CONST FOLD OK、ONNX MLP 99%、skip U-Net GPU 训练
+  acc 100%（`MYP_IR_VERIFY=1`）。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P3d：属性统一访问器层收口（P3 完成）
 
 ### 变更（`infer/graph.myp`）

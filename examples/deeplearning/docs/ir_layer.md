@@ -200,6 +200,8 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | **已完成**：OpCode 枚举 53 算子 + `opTraits` + `nodeOp`；P2 pass 与 `buildRuntime` 分派迁移到枚举；`replaceResult`/`eraseNode` 补齐 mutation API；属性访问器层收口（`attrFloat` 位型 + `attrIntArr` 数组 + `rawSt/rawPd/rawDl/rawKk`） | infer_tests + grad_check + opt_check |
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
 
+> P4 进展：**P4-1 已实施**（2026-09-02）——恒等折叠支持任意形状/广播常量张量（`isConstValue`）。
+
 ## 6. 收益（预期）
 
 - **新 pass**：从「手写 ~100 行全遍历循环 + 多处数组改」降到「~30 行 pattern 描述」。
@@ -450,5 +452,19 @@ ONNX MLP 99%、skip U-Net GPU 训练 acc 100% + grad check OK）逐位一致。
 验证：全量回归（identity_fold 2 ops、BN maxDiff 0、ops2d 4.77e-7、CONST FOLD OK、
 ONNX MLP 99%、slice/split 全 OK、resize maxDiff 1.19e-7、skip U-Net GPU 训练 acc 100%）。
 **P3 至此完成**（op 枚举 + traits + mutation API + 属性访问器层全落地）。
+
+## 21. 实施状态：P4-1（2026-09-02）
+
+P4 首个优化：恒等折叠支持任意形状/广播常量张量。
+
+- `isScalarInitValue` 升级为 `isConstValue`：初始化器**所有元素**等于恒等值（0 或 1）即折叠，
+  不再要求标量（wLen_==4）。标量、任意形状、broadcast 常量张量均满足；逐元素读文件数据校验
+  （不落 f32Tmp_，大常量不溢出）。
+- 数值语义严格：x+0 / x-0 / x*1 / x÷1 对任意 broadcast 形状逐位保持。
+- `foldIdentityOps` 四个恒等模式（Add/Mul/Sub/Div）全部受益。
+
+验证：identity_fold 夹具的 one/zero2/zero4/one4 改为全形状常量张量（zero 保持标量以覆盖旧
+路径）——优化后 runtime 仍 2 ops、图输出 rename 与读数一致；BN/ops2d/const/ONNX MLP/skip
+U-Net GPU 训练全回归绿。
 
 ---
