@@ -45,6 +45,29 @@ class GraphOptimizer {
                     i = i + 1;
                 }
             }
+            // 阶段五：死权重裁剪——DCE 后移除不被任何 live 节点引用的初始器
+            // （markDeadTensor → registerTensor/planner/writeWeight 全跳过）。
+            int wi = 0;
+            while (wi < graph.weightCount()) {
+                string nm = graph.weightName(wi);
+                int si = graph.compilerShapeIdx(nm);
+                if (si >= 0 && graph.compilerShapeDead(si) == 1) { wi = wi + 1; continue; }
+                if (graph.compilerIsGraphOutput(nm) == 1) { wi = wi + 1; continue; }
+                int used = 0;
+                int ni = 0;
+                while (ni < graph.nodeCount()) {
+                    if (graph.nodeTypeAt(ni) == "") { ni = ni + 1; continue; }
+                    int slot = 0;
+                    while (slot < 8) {
+                        if (graph.nodeInAt(ni, slot) == nm) { used = 1; slot = 8; }
+                        else slot = slot + 1;
+                    }
+                    if (used == 1) break;
+                    ni = ni + 1;
+                }
+                if (used == 0) graph.compilerMarkDeadTensor(nm);
+                wi = wi + 1;
+            }
             return 1;
         }
 
