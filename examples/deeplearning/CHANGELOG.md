@@ -6,6 +6,30 @@
 
 ---
 
+## 2026-09-XX — 阶段 P5d：3D 卷积 tiled im2col-GEMM（大通道 fine 模型）
+
+### 变更（`infer/gpu_ops.myp`）
+- 新增 `conv3dTiledGEMM`：把 3D 卷积写成 GEMM `Y[M,N]=W[M,K]·Xim2col[K,N]`
+  （M=yC、N=xN*yD*yH*yW、K=cpg*kd*kh*kw），块=32×32 输出 tile + K 分块 BK=32，
+  256 线程各算 2×2，W/im2col X tile 协作载入共享内存；im2col 即时展开（任意
+  stride/pad/dilation，越界填 0）。权重经 32 oc 复用（原 patch 版仅 OC_GRP=4）。
+- 原 patch 版改名 `conv3dTiledPatch`；`conv3dTiled` 改入口：group=1 且
+  M≥32/N≥32/M*N≥4096 走 GEMM，否则回退 patch。
+- 输出按 NCDHW 布局写回（GEMM N 维=空间位置 gj，分解回 (nn,oz,oy,ox) 加 oc 平面偏移）。
+
+### 验证
+- fine（Cin=256/yC=128 大权重 conv，docs 标注的 GEMM 目标）：conv3d **1277→1040ms
+  （18.6%）**、ops-loop 1542→1306ms、单帧 1931→1716ms；GEMM vs patch **bit-identical**。
+- fine 持久化（run_onnx MYP_GPU_PERSIST）：1729→1296ms（1.33×）；累计单帧
+  1931→1296ms（1.49×）。
+- coarse（小通道 ≤128，GEMM 门槛多数不满足）：无回退（597-614 vs 607-621 持平，
+  与 P5c 已记录的负结果一致）。
+- 全回归绿：resnet（sum 336.658）、r18、residual_add、MLP 99%、BN、ops2d、const、
+  identity_fold、conv3d、coarselike32 GPU OK、3D U-Net skip grad check OK、
+  conv2d_gen diff=0。
+
+---
+
 ## 2026-09-XX — 阶段 P5c：推理持久化接入通用运行器 + 3D 大模型（coarse）
 
 ### 变更

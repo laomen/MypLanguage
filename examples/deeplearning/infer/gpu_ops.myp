@@ -1415,7 +1415,7 @@ class GpuInferOps {
         // （超大核/大 stride）回退 thread-per-output conv3d。
         // 每线程算 RW=4 连续 W 输出 × 4 oc（每 (ic,kz,ky,kx) 载 4 输入 + 4 权重 → 16 FMA）。
         // 块序 og 最快 → 同空间 tile 各 oc-group 连续执行，L2 跨组缓存 patch。
-        void conv3dTiled(float[] a, int work,
+        void conv3dTiledPatch(float[] a, int work,
                   int xOff, int xN, int xC, int xD, int xH, int xW,
                   int wOff, int bOff,
                   int yOff, int yC, int yD, int yH, int yW,
@@ -1610,6 +1610,160 @@ class GpuInferOps {
                     }
                 }
             }
+        }
+
+        // ---- 3D 卷积 tiled im2col-GEMM（P5d，2026-09-01）----
+        // 把 3D 卷积写成 GEMM：Y[M,N] = W[M,K]·Xim2col[K,N]
+        //   M = yC（输出通道），N = xN*yD*yH*yW（全部空间位置），K = cpg*kd*kh*kw。
+        // 块 = 32×32 输出 tile（M×N）；K 分块 BK=32 载 W tile 与 im2col X tile 到共享；
+        // 256 线程各算 2×2 子 tile。im2col 即时展开（stride/pad/dilation 全支持，越界填 0）。
+        // 与 conv3dTiledPatch（patch 版）相比：权重经 32 oc 复用（patch 版仅 OC_GRP=4），
+        // 摊薄 patch 重载——docs「fine 需 im2col+GEMM（Cin=256/yC=128 大权重 conv）」落地。
+        // group=1 且 M≥32/N≥32/M*N≥4096 才进；否则回退 conv3dTiledPatch。
+        void conv3dTiledGEMM(float[] a, int work,
+                  int xOff, int xN, int xC, int xD, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yD, int yH, int yW,
+                  int kd, int kh, int kw,
+                  int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr,
+                  int dd, int dh, int dw, int group, long dev) {
+            int cpg = xC / group;
+            int N = xN * yD * yH * yW;
+            int K = cpg * kd * kh * kw;
+            if (group != 1 || yC < 32 || N < 32 || long(yC) * long(N) < 4096L) {
+                GpuInferOps.conv3dTiledPatch(a, work, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC,
+                       yD, yH, yW, kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr,
+                       dd, dh, dw, group, dev);
+                return;
+            }
+            int TM = 32; int TN = 32; int BK = 32;
+            int mT = (yC + TM - 1) / TM;
+            int nT = (N + TN - 1) / TN;
+            int nTiles = mT * nT;
+            int nKB = (K + BK - 1) / BK;
+            @gpu tile (float[6144] smem) grid(nTiles) resident(a = dev) {
+                long tb = kernel.bx;
+                long mi = tb / long(nT);
+                long ni = tb % long(nT);
+                long tid = kernel.tx;
+                long ti = tid / 16L;              // 16×16 线程网格 → 2×2 子 tile
+                long tj = tid % 16L;
+                long i0 = mi * 32L + ti * 2L;     // 输出通道起始（M 维）
+                long j0 = ni * 32L + tj * 2L;     // 空间位置起始（N 维）
+                float a00 = 0.0f; float a01 = 0.0f; float a10 = 0.0f; float a11 = 0.0f;
+                if (bOff >= 0 && i0 < long(yC)) {
+                    float bv = a[bOff + i0];
+                    a00 = bv; a01 = bv;
+                    if (i0 + 1L < long(yC)) { float bv2 = a[bOff + i0 + 1L]; a10 = bv2; a11 = bv2; }
+                }
+                int kb = 0;
+                while (kb < nKB) {
+                    // 载 W tile [32×32] → smem[0,1024)
+                    long rr = tid;
+                    while (rr < 1024L) {
+                        long wi = rr / 32L;         // M 维（0..31）
+                        long wk = rr % 32L;         // K 维（0..31）
+                        float wv = 0.0f;
+                        long gi = mi * 32L + wi;    // 全局输出通道
+                        long gk = long(kb) * 32L + wk;   // 全局归约索引（K=cpg*kd*kh*kw）
+                        // 权重布局 w[oc, cIn, kz, ky, kx]（group=1：oc=gi）
+                        // = wOff + gi*K + gk（K=cpg*kd*kh*kw，W 行连续）
+                        if (gi < long(yC) && gk < long(K))
+                            wv = a[wOff + gi * long(K) + gk];
+                        smem[rr] = wv;
+                        rr = rr + 256L;
+                    }
+                    // 载 im2col X tile [32×32] → smem[1024,2048)
+                    rr = tid;
+                    while (rr < 1024L) {
+                        long xk = rr / 32L;         // K 维（0..31）
+                        long xj = rr % 32L;         // N 维（0..31）
+                        float xv = 0.0f;
+                        long gk2 = long(kb) * 32L + xk;   // 全局归约索引
+                        long gj = ni * 32L + xj;          // 全局空间位置
+                        if (gk2 < long(K) && gj < long(N)) {
+                            long cIdx = gk2 / (long(kd) * long(kh) * long(kw));
+                            long remK = gk2 % (long(kd) * long(kh) * long(kw));
+                            long kz = remK / (long(kh) * long(kw));
+                            long ky = (remK / long(kw)) % long(kh);
+                            long kx = remK % long(kw);
+                            // 空间位置 gj → (n, oz, oy, ox)
+                            long DHW = long(yD) * long(yH) * long(yW);
+                            long nn = gj / DHW;
+                            long remP = gj % DHW;
+                            long oz = remP / (long(yH) * long(yW));
+                            long oy = (remP / long(yW)) % long(yH);
+                            long ox = remP % long(yW);
+                            long iz = oz * long(sd) - long(pdt) + kz * long(dd);
+                            long iy = oy * long(sh) - long(pt) + ky * long(dh);
+                            long ix = ox * long(sw) - long(pl) + kx * long(dw);
+                            if (iz >= 0L && iz < long(xD) && iy >= 0L && iy < long(xH)
+                                && ix >= 0L && ix < long(xW)) {
+                                xv = a[xOff + nn * long(xC) * long(xD) * long(xH) * long(xW)
+                                          + cIdx * long(xD) * long(xH) * long(xW)
+                                          + iz * long(xH) * long(xW) + iy * long(xW) + ix];
+                            }
+                        }
+                        smem[1024L + rr] = xv;
+                        rr = rr + 256L;
+                    }
+                    kernel.sync();
+                    long k = 0L;
+                    while (k < 32L) {
+                        float w0 = smem[(ti * 2L) * 32L + k];
+                        float w1 = smem[(ti * 2L + 1L) * 32L + k];
+                        float x0 = smem[1024L + k * 32L + tj * 2L];
+                        float x1 = smem[1024L + k * 32L + tj * 2L + 1L];
+                        a00 = a00 + w0 * x0;
+                        a01 = a01 + w0 * x1;
+                        a10 = a10 + w1 * x0;
+                        a11 = a11 + w1 * x1;
+                        k = k + 1L;
+                    }
+                    kernel.sync();
+                    kb = kb + 1;
+                }
+                // 写 2×2 输出（NCDHW 布局 [N,yC,yD,yH,yW]：p = nn*yC*yD*yH*yW + oc*yD*yH*yW
+                //   + oz*yH*yW + oy*yW + ox）。GEMM N 维=空间位置 gj = nn*DHW + oz*yH*yW
+                //   + oy*yW + ox（含 batch 偏移），输出内偏移需把 gj 分解回 (nn,oz,oy,ox)
+                //   再加 oc 平面偏移。
+                long DHW = long(yD) * long(yH) * long(yW);
+                if (i0 < long(yC)) {
+                    long ocA = i0;
+                    long nnA = j0 / DHW;
+                    long remA = j0 % DHW;
+                    long oA = nnA * long(yC) * DHW + ocA * DHW + remA;
+                    if (j0 < long(N)) a[yOff + oA] = a00;
+                    if (j0 + 1L < long(N)) {
+                        long oB = (j0 + 1L) / DHW * long(yC) * DHW + ocA * DHW + (j0 + 1L) % DHW;
+                        a[yOff + oB] = a01;
+                    }
+                }
+                if (i0 + 1L < long(yC)) {
+                    long ocB2 = i0 + 1L;
+                    long nnB = j0 / DHW;
+                    long remB = j0 % DHW;
+                    long oC = nnB * long(yC) * DHW + ocB2 * DHW + remB;
+                    if (j0 < long(N)) a[yOff + oC] = a10;
+                    if (j0 + 1L < long(N)) {
+                        long oD = (j0 + 1L) / DHW * long(yC) * DHW + ocB2 * DHW + (j0 + 1L) % DHW;
+                        a[yOff + oD] = a11;
+                    }
+                }
+            }
+        }
+
+        // ---- 3D 卷积入口（P5d：优先 im2col-GEMM，不满足回退 patch 版）----
+        void conv3dTiled(float[] a, int work,
+                  int xOff, int xN, int xC, int xD, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yD, int yH, int yW,
+                  int kd, int kh, int kw,
+                  int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr,
+                  int dd, int dh, int dw, int group, long dev) {
+            GpuInferOps.conv3dTiledGEMM(a, work, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC,
+                   yD, yH, yW, kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr,
+                   dd, dh, dw, group, dev);
         }
 
         // MaxPool3D：thread-per-output

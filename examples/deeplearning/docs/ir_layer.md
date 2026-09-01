@@ -213,6 +213,11 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 > （coarse）：coarse（输出 98MB、整块 arena 含全部中间激活）617→385ms（1.6×），
 > 输出逐位一致。已验证负结果：3D conv im2col-GEMM 移植位一致但无提速（3D patch 版
 > 本已是共享内存 tiled）→ 回退；docs 建议的更大 OC_GRP 收益边际不再投。
+> **P5d 已实施**（2026-09-02）——3D 卷积 tiled im2col-GEMM（`conv3dTiledGEMM`）落地
+> **大通道模型**（fine，Cin=256/yC=128）：conv3d 1277→1040ms（18.6%）、单帧
+> 1931→1716ms，位一致。注：此前 P5c 记录的「GEMM 无提速」结论只对**小通道**
+> （coarse，C≤128 多数不满足 M≥32 门槛）成立；fine 的大权重 conv 正是 docs
+> 「需 im2col+GEMM」的原始目标——按模型通道规模分派（GEMM/patch 双路径）两全。
 
 ## 6. 收益（预期）
 
