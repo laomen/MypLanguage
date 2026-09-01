@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P3a：op 枚举 + 保护 traits + 统一属性访问器
+
+### 变更（`infer/graph.myp`）
+- 新 `OpCode` 类：枚举 pass 逻辑与训练/状态算子，`opCode(string)` 为唯一 string→enum
+  映射；`opTraits(code)` 标记 stateful（Update/GradAcc）与 trainOnly（DiceLoss/SoftmaxCE/
+  Bwd*），DCE 对受保护节点一律跳过（防御：P4 在训练图重跑 DCE 时不会误删状态节点）。
+- 新 `nodeOp(i)`/`attrFloat(node,key)` 访问器；P2 恒等/Relu pass、Conv/IN/GAP→Relu/Flatten
+  融合 guard、buildReverseGraph 的 Softmax 定位与 BwdConcat 检查迁移到枚举；BN 折叠 eps
+  改用 attrFloat。buildRuntime lowering 保持字符串直读（P3b 迁移）。
+- MYP 踩坑修复：static 类方法内未限定调用同类静态方法会生成未定义全局 `@ADD`；须全限定。
+
+### 验证
+- identity_fold 2 ops、BN maxDiff 0、ops2d 4.77e-7、CONST FOLD OK、ONNX MLP 99%、
+  ResNet GPU top-1 lakeside(10.328) 逐位一致、skip U-Net GPU 训练 acc 100%、grad check OK
+  （均 `MYP_IR_VERIFY=1`）。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P2e：恒等简化族扩展 + 连续激活合并
 
 ### 变更（`infer/graph.myp`）

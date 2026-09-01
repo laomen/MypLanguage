@@ -118,6 +118,82 @@ class IRPassKind {
         int FOLD_RELU() { return 12; }      // P2e：连续激活合并 Relu(Relu(x))→Relu(x)，依赖 DefUse
 }
 
+// IR-P3a：算子类型枚举。取代 nType_ 字符串比较（字符串仅在 ONNX 边界/调试保留）。
+// 只枚举优化 pass 逻辑 + 训练/状态节点需要的算子；buildRuntime lowering 仍按字符串
+// 直读分派（P3b 迁移）。nodeOp()/opCode() 是唯一 string→enum 映射入口。
+class OpCode {
+    static:
+        int UNKNOWN() { return 0; }
+        int ADD() { return 1; }
+        int MUL() { return 2; }
+        int SUB() { return 3; }
+        int DIV() { return 4; }
+        int RELU() { return 5; }
+        int CONV() { return 6; }
+        int INSTANCE_NORM() { return 7; }
+        int GLOBAL_AVG_POOL() { return 8; }
+        int FLATTEN() { return 9; }
+        int BATCH_NORM() { return 10; }
+        int SOFTMAX() { return 11; }
+        // 训练/状态节点：DCE 等必须按 traits 保护，不能按 use 数删除。
+        int UPDATE() { return 12; }
+        int GRAD_ACC() { return 13; }
+        int DICE_LOSS() { return 14; }
+        int SOFTMAX_CE() { return 15; }
+        int BWD_DENSE() { return 16; }
+        int BWD_CONV() { return 17; }
+        int BWD_RELU() { return 18; }
+        int BWD_SIGMOID() { return 19; }
+        int BWD_ADD() { return 20; }
+        int BWD_MAXPOOL() { return 21; }
+        int BWD_CONV3D() { return 22; }
+        int BWD_MAXPOOL3D() { return 23; }
+        int BWD_AVGPOOL3D() { return 24; }
+        int BWD_CONVTRANSPOSE() { return 25; }
+        int BWD_RESIZE() { return 26; }
+        int BWD_CONCAT() { return 27; }
+        int BWD_SOFTMAX() { return 28; }
+        int opCode(string t) {
+            if (t == "Add") return OpCode.ADD();
+            if (t == "Mul") return OpCode.MUL();
+            if (t == "Sub") return OpCode.SUB();
+            if (t == "Div") return OpCode.DIV();
+            if (t == "Relu") return OpCode.RELU();
+            if (t == "Conv") return OpCode.CONV();
+            if (t == "InstanceNormalization") return OpCode.INSTANCE_NORM();
+            if (t == "GlobalAveragePool") return OpCode.GLOBAL_AVG_POOL();
+            if (t == "Flatten") return OpCode.FLATTEN();
+            if (t == "BatchNormalization") return OpCode.BATCH_NORM();
+            if (t == "Softmax") return OpCode.SOFTMAX();
+            if (t == "Update") return OpCode.UPDATE();
+            if (t == "GradAcc") return OpCode.GRAD_ACC();
+            if (t == "DiceLoss") return OpCode.DICE_LOSS();
+            if (t == "SoftmaxCE") return OpCode.SOFTMAX_CE();
+            if (t == "BwdDense") return OpCode.BWD_DENSE();
+            if (t == "BwdConv") return OpCode.BWD_CONV();
+            if (t == "BwdRelu") return OpCode.BWD_RELU();
+            if (t == "BwdSigmoid") return OpCode.BWD_SIGMOID();
+            if (t == "BwdAdd") return OpCode.BWD_ADD();
+            if (t == "BwdMaxPool") return OpCode.BWD_MAXPOOL();
+            if (t == "BwdConv3D") return OpCode.BWD_CONV3D();
+            if (t == "BwdMaxPool3D") return OpCode.BWD_MAXPOOL3D();
+            if (t == "BwdAvgPool3D") return OpCode.BWD_AVGPOOL3D();
+            if (t == "BwdConvTranspose") return OpCode.BWD_CONVTRANSPOSE();
+            if (t == "BwdResize") return OpCode.BWD_RESIZE();
+            if (t == "BwdConcat") return OpCode.BWD_CONCAT();
+            if (t == "BwdSoftmax") return OpCode.BWD_SOFTMAX();
+            return OpCode.UNKNOWN();
+        }
+        // 节点保护 trait：非 0 表示受 DCE 保护。1=stateful（就地改权重/累加），
+        // 2=trainOnly（只能出现在训练图，删除前必须确认）。0=纯前向可死删。
+        int opTraits(int code) {
+            if (code == OpCode.UPDATE() || code == OpCode.GRAD_ACC()) return 1;
+            if (code == OpCode.DICE_LOSS() || code == OpCode.SOFTMAX_CE()) return 2;
+            if (code >= OpCode.BWD_DENSE() && code <= OpCode.BWD_SOFTMAX()) return 2;
+            return 0;
+        }
+}
+
 class Graph {
     action:
         @constructor Graph() { pb_ = new PbReader(); }
@@ -233,6 +309,19 @@ class Graph {
             else if (slot == 2) out = nOut2_[node];
             else out = nOut3_[node];
             return shapeIdx(out);
+        }
+        // IR-P3a：string→enum 访问器。新 pass 只通过它比较算子类型，不再直接比 nType_ 字符串。
+        int nodeOp(int i) {
+            if (i < 0 || i >= nCount_) return OpCode.UNKNOWN();
+            return OpCode.opCode(nType_[i]);
+        }
+        // IR-P3a：统一属性访问器（方案 A 访问器层）。attrFloat 取代 F32.toDouble(nEpsInt_/
+        // nAlphaInt_) 位型直读；attrInt/attrIntArr 等其余属性在 buildRuntime 迁移（P3b）时补全。
+        double attrFloat(int node, int key) {
+            if (node < 0 || node >= nCount_) return 0.0;
+            if (key == NodeField.EPS_INT()) return F32.toDouble(nEpsInt_[node]);
+            if (key == NodeField.ALPHA_INT()) return F32.toDouble(nAlphaInt_[node]);
+            return 0.0;
         }
         // 唯一输入改写入口。P0 只失效索引；P1 再演进为增量维护与 analysis manager。
         void replaceNodeInput(int node, int slot, int value) {
@@ -596,13 +685,13 @@ class Graph {
             int changed = 0;
             int node = 0;
             while (node < nCount_) {
-                string op = nType_[node];
+                int code = nodeOp(node);
                 int commutable = 0;
-                if (op == "Add" || op == "Mul") commutable = 1;
-                else if (op != "Sub" && op != "Div") { node = node + 1; continue; }
+                if (code == OpCode.ADD() || code == OpCode.MUL()) commutable = 1;
+                else if (code != OpCode.SUB() && code != OpCode.DIV()) { node = node + 1; continue; }
                 string output = effectiveOut(node);
                 if (output == "") { node = node + 1; continue; }
-                double identity = (op == "Add" || op == "Sub") ? 0.0 : 1.0;
+                double identity = (code == OpCode.ADD() || code == OpCode.SUB()) ? 0.0 : 1.0;
                 int in0 = nodeInputValue(node, 0);
                 int in1 = nodeInputValue(node, 1);
                 int keep = -1;
@@ -627,14 +716,14 @@ class Graph {
             int changed = 0;
             int node = 0;
             while (node < nCount_) {
-                if (nType_[node] != "Relu") { node = node + 1; continue; }
+                if (nodeOp(node) != OpCode.RELU()) { node = node + 1; continue; }
                 string outName = effectiveOut(node);
                 if (outName == "") { node = node + 1; continue; }
                 int in = nodeInputValue(node, 0);
                 int prod = valueProducer(in);
                 int alreadyRelu = 0;
                 if (prod >= 0) {
-                    if (nType_[prod] == "Relu") alreadyRelu = 1;
+                    if (nodeOp(prod) == OpCode.RELU()) alreadyRelu = 1;
                     else if (nFused_[prod] == 1 && nRelu_[prod] == 1) alreadyRelu = 1;
                 }
                 if (alreadyRelu == 0) { node = node + 1; continue; }
@@ -772,7 +861,7 @@ class Graph {
             int smNode = -1;
             int i = 0;
             while (i < nCount_) {
-                if (nType_[i] == "Softmax" && isGraphOutput(nOut0_[i]) == 1) { smNode = i; i = nCount_; }
+                if (nodeOp(i) == OpCode.SOFTMAX() && isGraphOutput(nOut0_[i]) == 1) { smNode = i; i = nCount_; }
                 i = i + 1;
             }
             if (smNode < 0) {
@@ -1047,7 +1136,7 @@ class Graph {
             //     GradAcc(g_a, g_b) → g（纯前向 Add，消费者读 g）。
             int cc = 0;
             while (cc < nCount_) {
-                if (nType_[cc] == "BwdConcat") {
+                if (nodeOp(cc) == OpCode.BWD_CONCAT()) {
                     int slot = 0;
                     while (slot < 3) {
                         string g;
@@ -1830,7 +1919,7 @@ class Graph {
         int fuseConvBN() {
             int i = 0;
             while (i < nCount_) {
-                if (nType_[i] != "Conv") { i = i + 1; continue; }
+                if (nodeOp(i) != OpCode.CONV()) { i = i + 1; continue; }
                 if (nFused_[i] == 1) { i = i + 1; continue; }
                 if (isGraphOutput(nOut0_[i]) == 1) { i = i + 1; continue; }
                 // P2b：精确匹配 Conv 输出的唯一 Use = BatchNormalization operand0。
@@ -1892,7 +1981,7 @@ class Graph {
             double s = f32At(wOff_[wBNScale_[wi]] + oc * 4);
             double v = f32At(wOff_[wBNVar_[wi]] + oc * 4);
             double e = 1.0e-5;
-            if (nHasEps_[j] == 1) e = F32.toDouble(nEpsInt_[j]);
+            if (nHasEps_[j] == 1) e = attrFloat(j, NodeField.EPS_INT());   // P3a：统一属性访问
             return s / Math.sqrt(v + e);
         }
         double bnFoldBias(int wi, int oc, double b) {
@@ -1904,7 +1993,7 @@ class Graph {
         int fuseConvRelu() {
             int i = 0;
             while (i < nCount_) {
-                if (nType_[i] != "Conv") { i = i + 1; continue; }
+                if (nodeOp(i) != OpCode.CONV()) { i = i + 1; continue; }
                 string eff = effectiveOut(i);
                 if (isGraphOutput(eff) == 1) { i = i + 1; continue; }   // 中间张量不能是图输出
                 int j = matchSingleUseOp(valueId(eff), "Relu", 0);
@@ -1919,7 +2008,7 @@ class Graph {
             // 注：Add→Relu 融合实测因 arena 布局变化反回退（relu 中间张量不分配→conv 缓存命中变差），不启用。
             int i = 0;
             while (i < nCount_) {
-                if (nType_[i] != "InstanceNormalization") { i = i + 1; continue; }
+                if (nodeOp(i) != OpCode.INSTANCE_NORM()) { i = i + 1; continue; }
                 string eff = effectiveOut(i);
                 if (isGraphOutput(eff) == 1) { i = i + 1; continue; }
                 int j = matchSingleUseOp(valueId(eff), "Relu", 0);
@@ -1940,7 +2029,7 @@ class Graph {
         int fuseGapFlatten() {
             int i = 0;
             while (i < nCount_) {
-                if (nType_[i] != "GlobalAveragePool") { i = i + 1; continue; }
+                if (nodeOp(i) != OpCode.GLOBAL_AVG_POOL()) { i = i + 1; continue; }
                 if (isGraphOutput(nOut0_[i]) == 1) { i = i + 1; continue; }
                 int s = shapeIdx(nOut0_[i]);
                 if (s >= 0 && shD0_[s] != 1) { i = i + 1; continue; }   // batch!=1 跳过
@@ -1965,6 +2054,9 @@ class Graph {
                     string eff = effectiveOut(i);
                     if (eff == "") { i = i + 1; continue; }
                     if (isGraphOutput(eff) == 1) { i = i + 1; continue; }
+                    // P3a：stateful/trainOnly 节点（Update/GradAcc/Bwd* 等）受 traits 保护，
+                    // 不得按 use 数删除（Update 就地改权重、GradAcc 累加梯度）。
+                    if (OpCode.opTraits(nodeOp(i)) != 0) { i = i + 1; continue; }
                     if (valueUseCount(valueId(eff)) == 0) {
                         if (nFused_[i] == 1) markDeadTensor(nOut0_[i]);
                         nType_[i] = "";

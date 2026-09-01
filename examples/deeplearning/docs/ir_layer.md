@@ -197,7 +197,7 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | **P2c** | DCE 消费 DefUseAnalysis | **已实施**：每轮 DCE 前重建 use 表，按 `valueUseCount` 删除死节点 | identity 3→1、CONST FOLD OK、skip U-Net GPU 100% |
 | **P2d** | 图输出 rewrite（`replaceAllUses` 覆盖隐式消费者 + 指纹含 `goName_`） | **已实施**：`Add(x,0)`/`Mul(x,1)` 输出直接是图输出也能折叠，图输出名改指保留值 | identity_fold 双输出 1 op、skip U-Net GPU 100% |
 | **P2e** | 恒等族扩展 + 连续激活合并（`Sub(x,0)`/`Div(x,1)`、`Relu(Relu(x))`→`Relu(x)`） | **已实施**：foldIdentityOps 扩展 Sub/Div（恒等操作数仅限 slot1）；新增 `FOLD_RELU`（含融合 `ConvRelu→Relu`） | identity_fold 双 Relu+Sub/Div 链 2 ops、skip U-Net GPU 100% |
-| **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | 零变化（重构） | infer_tests + grad_check + opt_check |
+| **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | P3a 已实施：OpCode 枚举（pass+训练算子）+ `opTraits`（stateful/trainOnly）+ `nodeOp`/`attrFloat` 访问器；DCE 保护受保护节点；P2 融合/恒等 pass 迁移到枚举；buildRuntime 枚举/属性迁移（P3b） | infer_tests + grad_check + opt_check |
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
 
 ## 6. 收益（预期）
@@ -378,5 +378,26 @@ value-replacement rewrite 的图输出能力补全：
 + 1 Relu），图输出改名 `out3→relu3a`、`out4→data4`，读数与保留值缓冲一致。回归
 （BN/ops2d/const/ONNX MLP/ResNet GPU/skip U-Net GPU 训练）全部通过；ResNet 真实
 ConvRelu→Add 残差路径不受 FOLD_RELU 影响（无冗余外层 Relu，dce=0）。
+
+## 17. 实施状态：P3a（2026-09-02）
+
+P3 首切片：op 枚举 + 保护 traits + 统一属性访问器，零行为变化（重构）：
+
+- 新 `OpCode` 类：枚举优化 pass 逻辑 + 训练/状态算子（Add/Mul/Sub/Div/Relu/Conv/
+  InstanceNormalization/GlobalAveragePool/Flatten/BatchNormalization/Softmax + Update/
+  GradAcc/DiceLoss/SoftmaxCE/Bwd*），`opCode(string)` 是唯一 string→enum 映射；
+  buildRuntime lowering 仍按字符串直读分派（P3b 迁移）。
+- `opTraits(code)`：stateful（Update/GradAcc，就地改权重/累加）与 trainOnly（DiceLoss/
+  SoftmaxCE/Bwd*）。`eliminateDeadNodes` 对 `opTraits(nodeOp(i)) != 0` 的节点一律跳过——
+  防御性保护：DCE 现跑在 buildReverseGraph 之前不会见到训练节点，但一旦 P4 让 DCE 在
+  训练图上重跑，Update/GradAcc 不会因 use 数为 0 被误删。
+- `nodeOp(i)`/`attrFloat(node,key)` 访问器；P2 恒等/Relu pass、四条融合 guard、
+  buildReverseGraph 的 Softmax 定位与 BwdConcat 检查全部迁移到 nodeOp；BN 权重折叠的
+  eps 改用 attrFloat（取代 F32 位型直读）。
+- MYP 踩坑：static 类方法内**不得未限定调用同类静态方法**（`ADD()` 会生成未定义全局
+  `@ADD`）；必须 `OpCode.ADD()` 全限定。
+
+验证：identity_fold 2 ops、BN maxDiff 0、ops2d 4.77e-7、CONST FOLD OK、ONNX MLP 99%、
+ResNet GPU top-1 lakeside(10.328) 逐位一致、skip U-Net GPU 训练 acc 100% + grad check OK。
 
 ---
