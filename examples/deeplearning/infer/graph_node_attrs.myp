@@ -3,7 +3,7 @@ import "./graph_defs.myp";
 
 class GraphNodeAttrs {
     action:
-        @constructor GraphNodeAttrs() { values_ = new int[33280]; }
+        @constructor GraphNodeAttrs() { values_ = new int[33280]; intArrays_ = new int[39936]; longArrays_ = new long[16384]; fusedOut_ = new string[512]; }
 
         void resetNode(int node) {
             int key = 0;
@@ -18,6 +18,22 @@ class GraphNodeAttrs {
             values_[node * 65 + NodeField.DW()] = 1;
             values_[node * 65 + NodeField.GROUP()] = 1;
             values_[node * 65 + NodeField.CAST_TO()] = 0;
+            int arrayKey = 0;
+            while (arrayKey < 13) {
+                int index = 0;
+                while (index < 6) { intArrays_[(node * 13 + arrayKey) * 6 + index] = 0; index = index + 1; }
+                arrayKey = arrayKey + 1;
+            }
+            arrayKey = 0;
+            while (arrayKey < 4) {
+                int index = 0;
+                while (index < 8) { longArrays_[(node * 4 + arrayKey) * 8 + index] = 0L; index = index + 1; }
+                arrayKey = arrayKey + 1;
+            }
+            resizeD_[node] = 0; resizeH_[node] = 0; resizeW_[node] = 0;
+            sliceCount_[node] = 0;
+            outputCount_[node] = 0;
+            fused_[node] = 0; fusedBy_[node] = -1; fusedOut_[node] = ""; relu_[node] = 0; nhwc_[node] = 0;
         }
 
         int get(int node, int key) {
@@ -30,7 +46,46 @@ class GraphNodeAttrs {
             values_[node * 65 + key] = value;
         }
 
+        int resizeD(int node) { return nodeValid(node) == 1 ? resizeD_[node] : 0; }
+        void setResizeD(int node, int value) { if (nodeValid(node) == 1) resizeD_[node] = value; }
+        int resizeH(int node) { return nodeValid(node) == 1 ? resizeH_[node] : 0; }
+        void setResizeH(int node, int value) { if (nodeValid(node) == 1) resizeH_[node] = value; }
+        int resizeW(int node) { return nodeValid(node) == 1 ? resizeW_[node] : 0; }
+        void setResizeW(int node, int value) { if (nodeValid(node) == 1) resizeW_[node] = value; }
+        int sliceCount(int node) { return nodeValid(node) == 1 ? sliceCount_[node] : 0; }
+        void setSliceCount(int node, int value) { if (nodeValid(node) == 1) sliceCount_[node] = value; }
+        int outputCount(int node) { return nodeValid(node) == 1 ? outputCount_[node] : 0; }
+        void setOutputCount(int node, int value) { if (nodeValid(node) == 1) outputCount_[node] = value; }
+        int fused(int node) { return nodeValid(node) == 1 ? fused_[node] : 0; }
+        void setFused(int node, int value) { if (nodeValid(node) == 1) fused_[node] = value; }
+        int fusedBy(int node) { return nodeValid(node) == 1 ? fusedBy_[node] : -1; }
+        void setFusedBy(int node, int value) { if (nodeValid(node) == 1) fusedBy_[node] = value; }
+        string fusedOut(int node) { return nodeValid(node) == 1 ? fusedOut_[node] : ""; }
+        void setFusedOut(int node, string value) { if (nodeValid(node) == 1) fusedOut_[node] = value; }
+        int relu(int node) { return nodeValid(node) == 1 ? relu_[node] : 0; }
+        void setRelu(int node, int value) { if (nodeValid(node) == 1) relu_[node] = value; }
+        int nhwc(int node) { return nodeValid(node) == 1 ? nhwc_[node] : 0; }
+        void setNhwc(int node, int value) { if (nodeValid(node) == 1) nhwc_[node] = value; }
+
+        int intArray(int node, int key, int index) {
+            if (nodeValid(node) == 0 || key < 0 || key >= 13 || index < 0 || index >= 6) return 0;
+            return intArrays_[(node * 13 + key) * 6 + index];
+        }
+        void setIntArray(int node, int key, int index, int value) {
+            if (nodeValid(node) == 0 || key < 0 || key >= 13 || index < 0 || index >= 6) return;
+            intArrays_[(node * 13 + key) * 6 + index] = value;
+        }
+        long longArray(int node, int key, int index) {
+            if (nodeValid(node) == 0 || key < 0 || key >= 4 || index < 0 || index >= 8) return 0L;
+            return longArrays_[(node * 4 + key) * 8 + index];
+        }
+        void setLongArray(int node, int key, int index, long value) {
+            if (nodeValid(node) == 0 || key < 0 || key >= 4 || index < 0 || index >= 8) return;
+            longArrays_[(node * 4 + key) * 8 + index] = value;
+        }
+
     function:
+        int nodeValid(int node) { return node >= 0 && node < 512 ? 1 : 0; }
         int managed(int key) {
             if (key >= NodeField.TRANSB() && key <= NodeField.PDB()) return 1;
             if (key == NodeField.CAST_TO()) return 1;
@@ -39,4 +94,16 @@ class GraphNodeAttrs {
 
     property:
         int[] values_;
+        int[] intArrays_;
+        long[] longArrays_;
+        int[512] resizeD_;
+        int[512] resizeH_;
+        int[512] resizeW_;
+        int[512] sliceCount_;
+        int[512] outputCount_;
+        int[512] fused_;
+        int[512] fusedBy_;
+        string[] fusedOut_;
+        int[512] relu_;
+        int[512] nhwc_;
 }

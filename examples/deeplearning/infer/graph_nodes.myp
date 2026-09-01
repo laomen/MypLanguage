@@ -15,10 +15,12 @@ class GraphNodes {
         }
         void end() { count_ = count_ + 1; }
 
-        string typeAt(int node) { if (node < 0 || node >= count_) return ""; return type_[node]; }
+        // Parser fills attributes and outputs before end(); permit access to the
+        // in-progress slot while Graph itself still bounds live traversal by count().
+        string typeAt(int node) { if (node < 0 || node >= 512) return ""; return type_[node]; }
         void setType(int node, string value) { if (node >= 0 && node < 512) type_[node] = value; }
         string inputAt(int node, int slot) {
-            if (node < 0 || node >= count_) return "";
+            if (node < 0 || node >= 512) return "";
             if (slot == 0) return in0_[node];
             if (slot == 1) return in1_[node];
             if (slot == 2) return in2_[node];
@@ -35,7 +37,7 @@ class GraphNodes {
             else if (slot == 4) in4_[node] = value;
         }
         string outputAt(int node, int slot) {
-            if (node < 0 || node >= count_) return "";
+            if (node < 0 || node >= 512) return "";
             if (slot == 0) return out0_[node];
             if (slot == 1) return out1_[node];
             if (slot == 2) return out2_[node];

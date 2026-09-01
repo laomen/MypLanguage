@@ -98,10 +98,8 @@ class Graph {
         int beginNode() {
             int i = nodes_.begin();
             attrs_.resetNode(i);
-            nFused_[i] = 0; nFusedBy_[i] = -1; nFusedOut_[i] = ""; nRelu_[i] = 0; nNHWC_[i] = 0;
             nRedMode_[i] = 0;                                   // F8: ReduceMean
             nPadCval_[i] = 0;                                   // F8: Pad constant_value
-            nOutN_[i] = 0;   // F8: Split 多输出
             return i;
         }
         void endNode() { nodes_.end(); }
@@ -154,26 +152,11 @@ class Graph {
         //     6=SplitSt，7=SplitLn。
         int attrIntArr(int node, int key, int k) {
             if (node < 0 || node >= nodes_.count() || k < 0) return 0;
-            if (key == 0) return nSlAx_[node * 4 + k];
-            if (key == 1) return nSlSt_[node * 4 + k];
-            if (key == 2) return nSlSp_[node * 4 + k];
-            if (key == 3) return nPadB_[node * 4 + k];
-            if (key == 4) return nPadE_[node * 4 + k];
-            if (key == 5) return nPadB5_[node * 5 + k];
-            if (key == 6) return nSplitSt_[node * 4 + k];
-            if (key == 7) return nSplitLn_[node * 4 + k];
-            return 0;
+            return attrs_.intArray(node, key, k);
         }
         void setAttrIntArr(int node, int key, int k, int value) {
             if (node < 0 || node >= nodes_.count() || k < 0) return;
-            if (key == 0) nSlAx_[node * 4 + k] = value;
-            else if (key == 1) nSlSt_[node * 4 + k] = value;
-            else if (key == 2) nSlSp_[node * 4 + k] = value;
-            else if (key == 3) nPadB_[node * 4 + k] = value;
-            else if (key == 4) nPadE_[node * 4 + k] = value;
-            else if (key == 5) nPadB5_[node * 5 + k] = value;
-            else if (key == 6) nSplitSt_[node * 4 + k] = value;
-            else if (key == 7) nSplitLn_[node * 4 + k] = value;
+            attrs_.setIntArray(node, key, k, value);
         }
         // 唯一输入改写入口。P0 只失效索引；P1 再演进为增量维护与 analysis manager。
         void replaceNodeInput(int node, int slot, int value) {
@@ -228,7 +211,7 @@ class Graph {
         void eraseNode(int node) {
             if (node < 0 || node >= nodes_.count() || nodes_.typeAt(node) == "") return;
             string eff = effectiveOut(node);
-            if (nFused_[node] == 1) markDeadTensor(nodes_.outputAt(node, 0));
+            if (attrs_.fused(node) == 1) markDeadTensor(nodes_.outputAt(node, 0));
             nodes_.setType(node, "");
             if (eff != "") markDeadTensor(eff);
             duValid_ = 0;
@@ -363,34 +346,34 @@ class Graph {
             if (shapes_.r5(value) == 1) n = n * d4;
             return n;
         }
-        int rawSt(int i, int k) { return nSt3_[i * 3 + k]; }
-        int rawPd(int i, int k) { return nPd3_[i * 6 + k]; }
-        int rawDl(int i, int k) { return nDl3_[i * 3 + k]; }
-        int rawKk(int i, int k) { return nKk3_[i * 3 + k]; }
+        int rawSt(int i, int k) { return attrs_.intArray(i, 8, k); }
+        int rawPd(int i, int k) { return attrs_.intArray(i, 9, k); }
+        int rawDl(int i, int k) { return attrs_.intArray(i, 10, k); }
+        int rawKk(int i, int k) { return attrs_.intArray(i, 11, k); }
         void nodeOut(int i, string v) {
             if (nodes_.outputAt(i, 0) == "") nodes_.setOutput(i, 0, v);
             else if (nodes_.outputAt(i, 1) == "") nodes_.setOutput(i, 1, v);
             else if (nodes_.outputAt(i, 2) == "") nodes_.setOutput(i, 2, v);
             else nodes_.setOutput(i, 3, v);
-            nOutN_[i] = nOutN_[i] + 1;   // F8：Split 多输出计数
+            attrs_.setOutputCount(i, attrs_.outputCount(i) + 1);   // F8：Split 多输出计数
         }
         void nodeInt(int i, int code, int v) {
             if ((code >= NodeField.TRANSB() && code <= NodeField.PDB()) || code == NodeField.CAST_TO()) attrs_.set(i, code, v);
-            else if (code == NodeField.ST0()) nSt3_[i * 3 + 0] = v;
-            else if (code == NodeField.ST1()) nSt3_[i * 3 + 1] = v;
-            else if (code == NodeField.ST2()) nSt3_[i * 3 + 2] = v;
-            else if (code == NodeField.PD0()) nPd3_[i * 6 + 0] = v;
-            else if (code == NodeField.PD1()) nPd3_[i * 6 + 1] = v;
-            else if (code == NodeField.PD2()) nPd3_[i * 6 + 2] = v;
-            else if (code == NodeField.PD3()) nPd3_[i * 6 + 3] = v;
-            else if (code == NodeField.PD4()) nPd3_[i * 6 + 4] = v;
-            else if (code == NodeField.PD5()) nPd3_[i * 6 + 5] = v;
-            else if (code == NodeField.DL0()) nDl3_[i * 3 + 0] = v;
-            else if (code == NodeField.DL1()) nDl3_[i * 3 + 1] = v;
-            else if (code == NodeField.DL2()) nDl3_[i * 3 + 2] = v;
-            else if (code == NodeField.KK0()) nKk3_[i * 3 + 0] = v;
-            else if (code == NodeField.KK1()) nKk3_[i * 3 + 1] = v;
-            else if (code == NodeField.KK2()) nKk3_[i * 3 + 2] = v;
+            else if (code == NodeField.ST0()) attrs_.setIntArray(i, 8, 0, v);
+            else if (code == NodeField.ST1()) attrs_.setIntArray(i, 8, 1, v);
+            else if (code == NodeField.ST2()) attrs_.setIntArray(i, 8, 2, v);
+            else if (code == NodeField.PD0()) attrs_.setIntArray(i, 9, 0, v);
+            else if (code == NodeField.PD1()) attrs_.setIntArray(i, 9, 1, v);
+            else if (code == NodeField.PD2()) attrs_.setIntArray(i, 9, 2, v);
+            else if (code == NodeField.PD3()) attrs_.setIntArray(i, 9, 3, v);
+            else if (code == NodeField.PD4()) attrs_.setIntArray(i, 9, 4, v);
+            else if (code == NodeField.PD5()) attrs_.setIntArray(i, 9, 5, v);
+            else if (code == NodeField.DL0()) attrs_.setIntArray(i, 10, 0, v);
+            else if (code == NodeField.DL1()) attrs_.setIntArray(i, 10, 1, v);
+            else if (code == NodeField.DL2()) attrs_.setIntArray(i, 10, 2, v);
+            else if (code == NodeField.KK0()) attrs_.setIntArray(i, 11, 0, v);
+            else if (code == NodeField.KK1()) attrs_.setIntArray(i, 11, 1, v);
+            else if (code == NodeField.KK2()) attrs_.setIntArray(i, 11, 2, v);
         }
         void addWeight(string nm, int rows, int cols, int dt, int kind, int off, int len) {
             weights_.add(nm, rows, cols, dt, kind, off, len);
@@ -434,7 +417,7 @@ class Graph {
             while (i < nodes_.count()) {
                 if (nodes_.typeAt(i) == "Resize") {
                     __myp_io_write("Resize out=" + nodes_.outputAt(i, 0));
-                    __myp_io_write(" rsz=" + Fmt.i(nRszD_[i]) + "," + Fmt.i(nRszH_[i]) + "," + Fmt.i(nRszW_[i]));
+                    __myp_io_write(" rsz=" + Fmt.i(attrs_.resizeD(i)) + "," + Fmt.i(attrs_.resizeH(i)) + "," + Fmt.i(attrs_.resizeW(i)));
                     __myp_io_write(" in=" + nodes_.inputAt(i, 0) + "\n");
                 }
                 i = i + 1;
@@ -458,7 +441,7 @@ class Graph {
                 hash = hashIRText(hash, nodes_.inputAt(node, 2)); hash = hashIRText(hash, nodes_.inputAt(node, 3)); hash = hashIRText(hash, nodes_.inputAt(node, 4));
                 hash = hashIRText(hash, nodes_.outputAt(node, 0)); hash = hashIRText(hash, nodes_.outputAt(node, 1));
                 hash = hashIRText(hash, nodes_.outputAt(node, 2)); hash = hashIRText(hash, nodes_.outputAt(node, 3));
-                hash = (hash * 131L + long(nFused_[node] + nNHWC_[node])) % 2147483647L;
+                hash = (hash * 131L + long(attrs_.fused(node) + attrs_.nhwc(node))) % 2147483647L;
                 node = node + 1;
             }
             // 图输出名影响 planMemory 的 persist（Liveness 依赖），改写时必须计入指纹。
@@ -555,7 +538,7 @@ class Graph {
                 int alreadyRelu = 0;
                 if (prod >= 0) {
                     if (nodeOp(prod) == OpCode.RELU()) alreadyRelu = 1;
-                    else if (nFused_[prod] == 1 && nRelu_[prod] == 1) alreadyRelu = 1;
+                    else if (attrs_.fused(prod) == 1 && attrs_.relu(prod) == 1) alreadyRelu = 1;
                 }
                 if (alreadyRelu == 0) { node = node + 1; continue; }
                 int out = nodeOutputValue(node, 0);
@@ -581,10 +564,10 @@ class Graph {
         // 保留既有 nFused/nRelu lowering 协议，故后端仍选择 ConvRelu/Conv3d doRelu 内核。
         void fuseSingleUseOutput(int producer, int consumer, int withRelu) {
             string oldOut = effectiveOut(producer);
-            nFused_[producer] = 1;
-            nFusedOut_[producer] = nodes_.outputAt(consumer, 0);
-            nFusedBy_[consumer] = producer;
-            if (withRelu == 1) nRelu_[producer] = 1;
+            attrs_.setFused(producer, 1);
+            attrs_.setFusedOut(producer, nodes_.outputAt(consumer, 0));
+            attrs_.setFusedBy(consumer, producer);
+            if (withRelu == 1) attrs_.setRelu(producer, 1);
             nodes_.setType(consumer, "");
             markDeadTensor(nodes_.outputAt(producer, 0));
             if (oldOut != nodes_.outputAt(producer, 0)) markDeadTensor(oldOut);
@@ -1378,8 +1361,8 @@ class Graph {
                             pnB = int(i64TmpL_[0]); pcB = int(i64TmpL_[1]); pdB = int(i64TmpL_[2]); phB = int(i64TmpL_[3]); pwB = int(i64TmpL_[4]);
                             pnE = int(i64TmpL_[5]); pcE = int(i64TmpL_[6]); pdE = int(i64TmpL_[7]); phE = int(i64TmpL_[8]); pwE = int(i64TmpL_[9]);
                         }
-                        nPadB5_[i * 5 + 0] = pnB; nPadB5_[i * 5 + 1] = pcB; nPadB5_[i * 5 + 2] = pdB; nPadB5_[i * 5 + 3] = phB; nPadB5_[i * 5 + 4] = pwB;
-                        nPadE5_[i * 5 + 0] = pnE; nPadE5_[i * 5 + 1] = pcE; nPadE5_[i * 5 + 2] = pdE; nPadE5_[i * 5 + 3] = phE; nPadE5_[i * 5 + 4] = pwE;
+                        attrs_.setIntArray(i, 5, 0, pnB); attrs_.setIntArray(i, 5, 1, pcB); attrs_.setIntArray(i, 5, 2, pdB); attrs_.setIntArray(i, 5, 3, phB); attrs_.setIntArray(i, 5, 4, pwB);
+                        attrs_.setIntArray(i, 12, 0, pnE); attrs_.setIntArray(i, 12, 1, pcE); attrs_.setIntArray(i, 12, 2, pdE); attrs_.setIntArray(i, 12, 3, phE); attrs_.setIntArray(i, 12, 4, pwE);
                         double cv = 0.0;
                         if (nodes_.inputAt(i, 2) != "") { int cvc = readF32Init(nodes_.inputAt(i, 2), 1); if (cvc > 0) cv = f32Tmp_[0]; }
                         nPadCval_[i] = F32.toBits(cv);
@@ -1404,8 +1387,8 @@ class Graph {
                             pnB = int(i64TmpL_[0]); pcB = int(i64TmpL_[1]); phB = int(i64TmpL_[2]); pwB = int(i64TmpL_[3]);
                             pnE = int(i64TmpL_[4]); pcE = int(i64TmpL_[5]); phE = int(i64TmpL_[6]); pwE = int(i64TmpL_[7]);
                         }
-                        nPadB_[i * 4 + 0] = pnB; nPadB_[i * 4 + 1] = pcB; nPadB_[i * 4 + 2] = phB; nPadB_[i * 4 + 3] = pwB;
-                        nPadE_[i * 4 + 0] = pnE; nPadE_[i * 4 + 1] = pcE; nPadE_[i * 4 + 2] = phE; nPadE_[i * 4 + 3] = pwE;
+                        attrs_.setIntArray(i, 3, 0, pnB); attrs_.setIntArray(i, 3, 1, pcB); attrs_.setIntArray(i, 3, 2, phB); attrs_.setIntArray(i, 3, 3, pwB);
+                        attrs_.setIntArray(i, 4, 0, pnE); attrs_.setIntArray(i, 4, 1, pcE); attrs_.setIntArray(i, 4, 2, phE); attrs_.setIntArray(i, 4, 3, pwE);
                         double cv = 0.0;
                         if (nodes_.inputAt(i, 2) != "") { int cvc = readF32Init(nodes_.inputAt(i, 2), 1); if (cvc > 0) cv = f32Tmp_[0]; }
                         nPadCval_[i] = F32.toBits(cv);
@@ -1518,33 +1501,33 @@ class Graph {
                     int sc = readI64Init(nodes_.inputAt(i, 1), 8);   // starts
                     if (sc <= 0) return 0;
                     int k = 0;
-                    while (k < sc) { slSt_[k] = i64TmpL_[k]; k = k + 1; }
+                    while (k < sc) { attrs_.setLongArray(i, 0, k, i64TmpL_[k]); k = k + 1; }
                     int ec = readI64Init(nodes_.inputAt(i, 2), 8);   // ends
                     if (ec <= 0) return 0;
                     k = 0;
-                    while (k < ec) { slEn_[k] = i64TmpL_[k]; k = k + 1; }
+                    while (k < ec) { attrs_.setLongArray(i, 1, k, i64TmpL_[k]); k = k + 1; }
                     int ac = readI64Init(nodes_.inputAt(i, 3), 8);   // axes（可缺省 → 0..）
                     k = 0;
-                    while (k < ac) { slAx_[k] = i64TmpL_[k]; k = k + 1; }
+                    while (k < ac) { attrs_.setLongArray(i, 2, k, i64TmpL_[k]); k = k + 1; }
                     int pc = readI64Init(nodes_.inputAt(i, 4), 8);   // steps（可缺省 → 全 1）
                     k = 0;
-                    while (k < pc) { slSp_[k] = i64TmpL_[k]; k = k + 1; }
+                    while (k < pc) { attrs_.setLongArray(i, 3, k, i64TmpL_[k]); k = k + 1; }
                     int cnt = sc;
                     if (cnt > 4) cnt = 4;
-                    nSlN_[i] = cnt;
+                    attrs_.setSliceCount(i, cnt);
                     int id0 = shapes_.d0(a), id1 = shapes_.d1(a), id2 = shapes_.d2(a), id3 = shapes_.d3(a);
                     int[] odim = new int[4];
                     odim[0] = id0; odim[1] = id1; odim[2] = id2; odim[3] = id3;
                     k = 0;
                     while (k < cnt) {
                         int ax = 0;
-                        if (ac > 0) ax = int(slAx_[k]);
+                        if (ac > 0) ax = int(attrs_.longArray(i, 2, k));
                         else ax = k;
                         int step = 1;
-                        if (pc > 0) step = int(slSp_[k]);
+                        if (pc > 0) step = int(attrs_.longArray(i, 3, k));
                         if (step == 0) return 0;   // 步长不能为 0
                         int D = (ax == 0) ? id0 : ((ax == 1) ? id1 : ((ax == 2) ? id2 : id3));
-                        int co = sliceAxis(D, slSt_[k], slEn_[k], step, ax, i, k);
+                        int co = sliceAxis(D, attrs_.longArray(i, 0, k), attrs_.longArray(i, 1, k), step, ax, i, k);
                         if (ax >= 0 && ax < 4) odim[ax] = co;
                         k = k + 1;
                     }
@@ -1554,7 +1537,7 @@ class Graph {
                     int a = shapeIdx(nodes_.inputAt(i, 0)); if (a < 0) return 0;
                     int axis = attrs_.get(i, NodeField.AXIS()); if (axis < 0) axis = 0;
                     int D = (axis == 0) ? shapes_.d0(a) : ((axis == 1) ? shapes_.d1(a) : ((axis == 2) ? shapes_.d2(a) : shapes_.d3(a)));
-                    int no = nOutN_[i]; if (no < 1) no = 1;
+                    int no = attrs_.outputCount(i); if (no < 1) no = 1;
                     int ns = attrs_.get(i, NodeField.SPLIT_N());
                     int fromInput = 0;
                     if (ns <= 0 && nodes_.inputAt(i, 1) != "") { ns = readI64Init(nodes_.inputAt(i, 1), 4); fromInput = 1; }   // opset13+：split 为输入
@@ -1570,8 +1553,8 @@ class Graph {
                         }
                         if (j == no - 1) sz = D - acc;   // 最后一份吸收余数
                         if (sz < 0) sz = 0;
-                        nSplitSt_[i * 4 + j] = acc;
-                        nSplitLn_[i * 4 + j] = sz;
+                        attrs_.setIntArray(i, 6, j, acc);
+                        attrs_.setIntArray(i, 7, j, sz);
                         acc = acc + sz;
                         int d0 = shapes_.d0(a), d1 = shapes_.d1(a), d2 = shapes_.d2(a), d3 = shapes_.d3(a);
                         if (axis == 0) d0 = sz;
@@ -1647,8 +1630,8 @@ class Graph {
                             // 3D：sizes [N,C,outD,outH,outW]。foldShapeChains 可能在
                             // 输入秩确定前跑（shapeRank5 误判 0 → 只填 nRszH/nRszW），
                             // 故 is5=1 须 nRszD/H/W 三者齐备才用折叠值；否则回退 readI64Init。
-                            if (nRszD_[i] > 0 && nRszH_[i] > 0 && nRszW_[i] > 0) {
-                                outD = nRszD_[i]; outH = nRszH_[i]; outW = nRszW_[i];
+                            if (attrs_.resizeD(i) > 0 && attrs_.resizeH(i) > 0 && attrs_.resizeW(i) > 0) {
+                                outD = attrs_.resizeD(i); outH = attrs_.resizeH(i); outW = attrs_.resizeW(i);
                             } else {
                                 int szc = readI64Init(nodes_.inputAt(i, 3), 8);   // sizes [N,C,outD,outH,outW]
                                 if (szc >= 5) {
@@ -1668,8 +1651,8 @@ class Graph {
                                 }
                             }
                         } else {
-                            if (nRszH_[i] > 0 && nRszW_[i] > 0) {
-                                outH = nRszH_[i]; outW = nRszW_[i];
+                            if (attrs_.resizeH(i) > 0 && attrs_.resizeW(i) > 0) {
+                                outH = attrs_.resizeH(i); outW = attrs_.resizeW(i);
                             } else {
                                 int szc = readI64Init(nodes_.inputAt(i, 3), 8);   // sizes [N,C,outH,outW]
                                 if (szc >= 4) {
@@ -1702,8 +1685,8 @@ class Graph {
         // F8：计算单轴切片（stIn/enIn 为全 int64 long）；写 nSlAx_/nSlSt_/nSlSp_
         // （nodeIdx 第 k 轴），返回输出长度（count）。支持负 step 反向。
         int sliceAxis(int D, long stIn, long enIn, int step, int ax, int nodeIdx, int k) {
-            nSlAx_[nodeIdx * 4 + k] = ax;
-            nSlSp_[nodeIdx * 4 + k] = step;
+            attrs_.setIntArray(nodeIdx, 0, k, ax);
+            attrs_.setIntArray(nodeIdx, 2, k, step);
             int st;
             int cnt = 0;
             if (step > 0) {
@@ -1736,14 +1719,14 @@ class Graph {
                 int nsp = 0 - step;
                 if (st > en) cnt = (st - en + nsp - 1) / nsp;
             }
-            nSlSt_[nodeIdx * 4 + k] = st;
+            attrs_.setIntArray(nodeIdx, 1, k, st);
             return cnt;
         }
         int fuseConvBN() {
             int i = 0;
             while (i < nodes_.count()) {
                 if (nodeOp(i) != OpCode.CONV()) { i = i + 1; continue; }
-                if (nFused_[i] == 1) { i = i + 1; continue; }
+                if (attrs_.fused(i) == 1) { i = i + 1; continue; }
                 if (isGraphOutput(nodes_.outputAt(i, 0)) == 1) { i = i + 1; continue; }
                 // P2b：精确匹配 Conv 输出的唯一 Use = BatchNormalization operand0。
                 // 残差分支、重复 operand 或 BN 接在非主输入时均不融合。
@@ -1776,8 +1759,8 @@ class Graph {
                     setShapeKind(bname, Kind.CNN_B());
                     nodes_.setInput(i, 2, bname);
                 }
-                nFused_[i] = 1;
-                nFusedOut_[i] = nodes_.outputAt(j, 0);
+                attrs_.setFused(i, 1);
+                attrs_.setFusedOut(i, nodes_.outputAt(j, 0));
                 nodes_.setType(j, "");
                 markDeadTensor(nodes_.outputAt(i, 0));   // conv 中间输出
                 // BN 参数不再被消费 → 标死（不分配/不登记/不写权重）
@@ -1868,7 +1851,7 @@ class Graph {
             int i = 0;
             while (i < nodes_.count()) {
                 if (nodeOp(i) != OpCode.CONV()) { i = i + 1; continue; }
-                if (nRelu_[i] == 1) { i = i + 1; continue; }
+                if (attrs_.relu(i) == 1) { i = i + 1; continue; }
                 string eff = effectiveOut(i);
                 if (eff == "" || isGraphOutput(eff) == 1) { i = i + 1; continue; }
                 int j = matchSingleUseOp(valueId(eff), "Add", 0);
@@ -1876,16 +1859,16 @@ class Graph {
                 string resid = nodeInAt(j, 1);
                 if (resid == "" || isGraphOutput(resid) == 1 || shapeIdx(resid) < 0) { i = i + 1; continue; }
                 string addOut = nodes_.outputAt(j, 0);
-                nFused_[i] = 1;
-                nFusedOut_[i] = addOut;
+                attrs_.setFused(i, 1);
+                attrs_.setFusedOut(i, addOut);
                 nodes_.setInput(i, 3, resid);
                 nodes_.setType(j, "");
                 markDeadTensor(eff);
                 // P4-3：Add 输出唯一消费是 Relu → 折叠（doRelu 后置：conv+residual 再过 relu）
                 int r = matchSingleUseOp(valueId(addOut), "Relu", 0);
                 if (r >= 0) {
-                    nRelu_[i] = 1;
-                    nFusedOut_[i] = nodes_.outputAt(r, 0);
+                    attrs_.setRelu(i, 1);
+                    attrs_.setFusedOut(i, nodes_.outputAt(r, 0));
                     nodes_.setType(r, "");
                     markDeadTensor(addOut);
                 }
@@ -1921,7 +1904,7 @@ class Graph {
             return 1;
         }
         string effectiveOut(int i) {
-            if (nFused_[i] == 1) return nFusedOut_[i];
+            if (attrs_.fused(i) == 1) return attrs_.fusedOut(i);
             return nodes_.outputAt(i, 0);
         }
         int liveConsumers(string name) {
@@ -2191,15 +2174,15 @@ class Graph {
                     // 不依赖 shapeRank5（fold 阶段输入秩可能未定）。
                     int c5 = i64Count(nodes_.inputAt(i, 3));
                     if (c5 >= 5) {
-                        nRszD_[i] = int(i64Get(nodes_.inputAt(i, 3), 2));
-                        nRszH_[i] = int(i64Get(nodes_.inputAt(i, 3), 3));
-                        nRszW_[i] = int(i64Get(nodes_.inputAt(i, 3), 4));
+                        attrs_.setResizeD(i, int(i64Get(nodes_.inputAt(i, 3), 2)));
+                        attrs_.setResizeH(i, int(i64Get(nodes_.inputAt(i, 3), 3)));
+                        attrs_.setResizeW(i, int(i64Get(nodes_.inputAt(i, 3), 4)));
                         // sizes 链已折叠（其生产者被 erase、shape 未登记）→ 清空
                         // 悬空输入槽，避免 verifyIR 报 val<0（buildRuntime 不读 nIn3_）。
                         nodes_.setInput(i, 3, "");
                     } else if (c5 >= 4) {
-                        nRszH_[i] = int(i64Get(nodes_.inputAt(i, 3), 2));
-                        nRszW_[i] = int(i64Get(nodes_.inputAt(i, 3), 3));
+                        attrs_.setResizeH(i, int(i64Get(nodes_.inputAt(i, 3), 2)));
+                        attrs_.setResizeW(i, int(i64Get(nodes_.inputAt(i, 3), 3)));
                         nodes_.setInput(i, 3, "");
                     }
                 }
@@ -2211,22 +2194,22 @@ class Graph {
             // Phase A：按拓扑序标记节点布局（nNHWC_）
             int i = 0;
             while (i < nodes_.count()) {
-                nNHWC_[i] = 0;
+                attrs_.setNhwc(i, 0);
                 string t = nodes_.typeAt(i);
-                if (t == "Conv") nNHWC_[i] = 1;                       // 卷积主干始终 NHWC
+                if (t == "Conv") attrs_.setNhwc(i, 1);                       // 卷积主干始终 NHWC
                 else if (t == "MaxPool" || t == "AveragePool" || t == "Pad" || t == "Add" || t == "Relu" || t == "BatchNormalization") {
                     int p0 = producerNHWC(nodes_.inputAt(i, 0));
                     int p1 = producerNHWC(nodes_.inputAt(i, 1));
-                    if (p0 == 1 || p1 == 1) nNHWC_[i] = 1;
+                    if (p0 == 1 || p1 == 1) attrs_.setNhwc(i, 1);
                 } else if (t == "GlobalAveragePool") {
-                    nNHWC_[i] = producerNHWC(nodes_.inputAt(i, 0));               // 输入侧 NHWC，输出为 NCHW 边界
+                    attrs_.setNhwc(i, producerNHWC(nodes_.inputAt(i, 0)));               // 输入侧 NHWC，输出为 NCHW 边界
                 }
                 i = i + 1;
             }
             // Phase A.5：NHWC 节点的输出张量登记为 NHWC（GAP 输出是边界，除外）
             i = 0;
             while (i < nodes_.count()) {
-                if (nNHWC_[i] == 1 && nodes_.typeAt(i) != "GlobalAveragePool") {
+                if (attrs_.nhwc(i) == 1 && nodes_.typeAt(i) != "GlobalAveragePool") {
                     setShapeNHWC(effectiveOut(i));
                 }
                 i = i + 1;
@@ -2235,7 +2218,7 @@ class Graph {
             i = 0;
             while (i < nodes_.count()) {
                 string t = nodes_.typeAt(i);
-                if (nNHWC_[i] == 1 && (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "Pad" || t == "Add" || t == "Relu" || t == "GlobalAveragePool" || t == "BatchNormalization")) {
+                if (attrs_.nhwc(i) == 1 && (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "Pad" || t == "Add" || t == "Relu" || t == "GlobalAveragePool" || t == "BatchNormalization")) {
                     ensureNHWCInput(i, 0);
                     if (t == "Conv") markWeightNHWC(nodes_.inputAt(i, 1));
                     if (t == "Add") ensureNHWCInput(i, 1);
@@ -2249,8 +2232,8 @@ class Graph {
             while (i < nodes_.count()) {
                 if (nodes_.typeAt(i) == "") { i = i + 1; continue; }
                 string eff = nodes_.outputAt(i, 0);
-                if (nFused_[i] == 1) eff = nFusedOut_[i];
-                if (eff == name) return nNHWC_[i];
+                if (attrs_.fused(i) == 1) eff = attrs_.fusedOut(i);
+                if (eff == name) return attrs_.nhwc(i);
                 i = i + 1;
             }
             return 0;
@@ -2275,10 +2258,10 @@ class Graph {
                 nodes_.setInput(nodes_.count(), 0, nm);
                 nodes_.setOutput(nodes_.count(), 0, tname);
                 attrs_.set(nodes_.count(), NodeField.CONST_VAL(), 0);
-                nNHWC_[nodes_.count()] = 1;
-                nFused_[nodes_.count()] = 0;
-                nFusedBy_[nodes_.count()] = -1;
-                nFusedOut_[nodes_.count()] = "";
+                attrs_.setNhwc(nodes_.count(), 1);
+                attrs_.setFused(nodes_.count(), 0);
+                attrs_.setFusedBy(nodes_.count(), -1);
+                attrs_.setFusedOut(nodes_.count(), "");
                 nodes_.end();
             }
             if (slot == 0) nodes_.setInput(nodeIdx, 0, tname);
@@ -2523,7 +2506,7 @@ class Graph {
                     rt.addMatmul(a, w, out);
                 } else if (code == OpCode.ADD()) {
                     int b = tensorId(nodes_.inputAt(ni, 1));
-                    rt.addAdd(a, b, out, nRelu_[ni]);
+                    rt.addAdd(a, b, out, attrs_.relu(ni));
                 } else if (code == OpCode.RELU()) {
                     rt.addRelu(a, out);
                 } else if (code == OpCode.SIGMOID()) {
@@ -2679,7 +2662,7 @@ class Graph {
                     int inS = shapeIdx(nodes_.inputAt(ni, 0));
                     int d0 = 1, d1 = 1, d2 = 1, d3 = 1;
                     if (inS >= 0) { d0 = shapes_.d0(inS); d1 = shapes_.d1(inS); d2 = shapes_.d2(inS); d3 = shapes_.d3(inS); }
-                    int no = nOutN_[ni]; if (no < 1) no = 1;
+                    int no = attrs_.outputCount(ni); if (no < 1) no = 1;
                     int j = 0;
                     while (j < no && j < 4) {
                         string onm = (j == 0) ? nodes_.outputAt(ni, 0) : ((j == 1) ? nodes_.outputAt(ni, 1) : ((j == 2) ? nodes_.outputAt(ni, 2) : nodes_.outputAt(ni, 3)));
@@ -2698,12 +2681,12 @@ class Graph {
                         int resid = tensorId(nodes_.inputAt(ni, 3));
                         rt.addConvResidual(a, w, b, out, resid,
                                            attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()),
-                                           attrs_.get(ni, NodeField.DH()), attrs_.get(ni, NodeField.DW()), attrs_.get(ni, NodeField.GROUP()), nRelu_[ni]);
-                    } else if (nNHWC_[ni] == 1) {
+                                           attrs_.get(ni, NodeField.DH()), attrs_.get(ni, NodeField.DW()), attrs_.get(ni, NodeField.GROUP()), attrs_.relu(ni));
+                    } else if (attrs_.nhwc(ni) == 1) {
                         // G2：NHWC 卷积（权重已在装载时转置 [Cout,KH,KW,Cin]）
-                        if (nRelu_[ni] == 1) rt.addConvNHWCRelu(a, w, b, out, attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.DH()), attrs_.get(ni, NodeField.DW()), attrs_.get(ni, NodeField.GROUP()));
+                        if (attrs_.relu(ni) == 1) rt.addConvNHWCRelu(a, w, b, out, attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.DH()), attrs_.get(ni, NodeField.DW()), attrs_.get(ni, NodeField.GROUP()));
                         else rt.addConvNHWC(a, w, b, out, attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.DH()), attrs_.get(ni, NodeField.DW()), attrs_.get(ni, NodeField.GROUP()));
-                    } else if (nRelu_[ni] == 1) {
+                    } else if (attrs_.relu(ni) == 1) {
                         // G1：融合 Conv+ReLU → 写 relu 输出（中间张量不写回）
                         rt.addConvRelu(a, w, b, out, attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.DH()), attrs_.get(ni, NodeField.DW()), attrs_.get(ni, NodeField.GROUP()));
                     } else {
@@ -2742,11 +2725,11 @@ class Graph {
                     rt.addAvgPool3D(a, out, kd, kh, kw, sd, sh_, sw_,
                         attrs_.get(ni, NodeField.PDT()), attrs_.get(ni, NodeField.PDB()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.CIP()));
                 } else if (code == OpCode.MAXPOOL()) {
-                    if (nNHWC_[ni] == 1) rt.addMaxPoolNHWC(a, out, attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()));
+                    if (attrs_.nhwc(ni) == 1) rt.addMaxPoolNHWC(a, out, attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()));
                     else rt.addMaxPool(a, out, attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()));
                 } else if (code == OpCode.AVGPOOL()) {
                     // F8：AveragePool（cip = count_include_pad）
-                    if (nNHWC_[ni] == 1) rt.addAvgPoolNHWC(a, out, attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.CIP()));
+                    if (attrs_.nhwc(ni) == 1) rt.addAvgPoolNHWC(a, out, attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.CIP()));
                     else rt.addAvgPool(a, out, attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.CIP()));
                 } else if (code == OpCode.PAD()) {
                     // F8：Pad（NHWC 时 pads 从逻辑 [N,C,H,W] 重排为 [N,H,W,C]）
@@ -2756,20 +2739,20 @@ class Graph {
                     if (is5 == 1) {
                         // 3D：10 个 pad（N,C,D,H,W 各 begin/end）
                         rt.addPad3D(a, out,
-                            nPadB5_[ni * 5 + 0], nPadE5_[ni * 5 + 0], nPadB5_[ni * 5 + 1], nPadE5_[ni * 5 + 1], nPadB5_[ni * 5 + 2],
-                            nPadE5_[ni * 5 + 2], nPadB5_[ni * 5 + 3], nPadE5_[ni * 5 + 3], nPadB5_[ni * 5 + 4], nPadE5_[ni * 5 + 4],
+                            attrs_.intArray(ni, 5, 0), attrs_.intArray(ni, 12, 0), attrs_.intArray(ni, 5, 1), attrs_.intArray(ni, 12, 1), attrs_.intArray(ni, 5, 2),
+                            attrs_.intArray(ni, 12, 2), attrs_.intArray(ni, 5, 3), attrs_.intArray(ni, 12, 3), attrs_.intArray(ni, 5, 4), attrs_.intArray(ni, 12, 4),
                             attrs_.get(ni, NodeField.PADMODE()), nPadCval_[ni]);
-                    } else if (nNHWC_[ni] == 1) rt.addPadNHWC(a, out,
-                        nPadB_[ni * 4 + 0], nPadB_[ni * 4 + 2], nPadB_[ni * 4 + 3], nPadB_[ni * 4 + 1],
-                        nPadE_[ni * 4 + 0], nPadE_[ni * 4 + 2], nPadE_[ni * 4 + 3], nPadE_[ni * 4 + 1],
+                    } else if (attrs_.nhwc(ni) == 1) rt.addPadNHWC(a, out,
+                        attrs_.intArray(ni, 3, 0), attrs_.intArray(ni, 3, 2), attrs_.intArray(ni, 3, 3), attrs_.intArray(ni, 3, 1),
+                        attrs_.intArray(ni, 4, 0), attrs_.intArray(ni, 4, 2), attrs_.intArray(ni, 4, 3), attrs_.intArray(ni, 4, 1),
                         attrs_.get(ni, NodeField.PADMODE()), nPadCval_[ni]);
                     else rt.addPad(a, out,
-                        nPadB_[ni * 4 + 0], nPadB_[ni * 4 + 1], nPadB_[ni * 4 + 2], nPadB_[ni * 4 + 3],
-                        nPadE_[ni * 4 + 0], nPadE_[ni * 4 + 1], nPadE_[ni * 4 + 2], nPadE_[ni * 4 + 3],
+                        attrs_.intArray(ni, 3, 0), attrs_.intArray(ni, 3, 1), attrs_.intArray(ni, 3, 2), attrs_.intArray(ni, 3, 3),
+                        attrs_.intArray(ni, 4, 0), attrs_.intArray(ni, 4, 1), attrs_.intArray(ni, 4, 2), attrs_.intArray(ni, 4, 3),
                         attrs_.get(ni, NodeField.PADMODE()), nPadCval_[ni]);
                 } else if (code == OpCode.GLOBAL_AVG_POOL()) {
                     // G2：out 已是融合后的 flatten 输出（fuseGapFlatten 改写）；GAP 布局无关
-                    if (nNHWC_[ni] == 1) rt.addGAPoolNHWC(a, out);
+                    if (attrs_.nhwc(ni) == 1) rt.addGAPoolNHWC(a, out);
                     else rt.addGAPool(a, out);
                 } else if (code == OpCode.NCHW2NHWC()) {
                     rt.addTransposeNCHW2NHWC(a, out);   // G2：布局变换转置节点
@@ -2782,7 +2765,7 @@ class Graph {
                     int mT = tensorId(nodes_.inputAt(ni, 3));
                     int vT = tensorId(nodes_.inputAt(ni, 4));
                     if (sT < 0 || bT < 0 || mT < 0 || vT < 0) return 0;
-                    if (nNHWC_[ni] == 1) rt.addBatchNormNHWC(a, out, sT, bT, mT, vT, attrs_.get(ni, NodeField.EPS_INT()), attrs_.get(ni, NodeField.HAS_EPS()));
+                    if (attrs_.nhwc(ni) == 1) rt.addBatchNormNHWC(a, out, sT, bT, mT, vT, attrs_.get(ni, NodeField.EPS_INT()), attrs_.get(ni, NodeField.HAS_EPS()));
                     else rt.addBatchNorm(a, out, sT, bT, mT, vT, attrs_.get(ni, NodeField.EPS_INT()), attrs_.get(ni, NodeField.HAS_EPS()));
                 } else if (code == OpCode.RESHAPE()) {
                     // F8：连续拷贝（输出形状已由 inferShapes 按 shape 初始器登记）
@@ -2856,7 +2839,7 @@ class Graph {
                     rt.addTranspose(a, out, p0, p1, p2, p3, pc, id0, id1, id2, id3);
                 } else if (code == OpCode.SLICE()) {
                     // F8：切片（调整后 start/step/axis 存 nSl*_；维度 = 形状表）
-                    int cnt = nSlN_[ni];
+                    int cnt = attrs_.sliceCount(ni);
                     if (cnt < 1) return 0;
                     int is = shapeIdx(nodes_.inputAt(ni, 0));
                     int id0 = shapes_.d0(is), id1 = shapes_.d1(is), id2 = shapes_.d2(is), id3 = shapes_.d3(is);
@@ -2904,7 +2887,7 @@ class Graph {
                     int N = shapes_.d0(is), C = shapes_.d1(is);
                     int S = shapes_.d2(is) * shapes_.d3(is);
                     if (shapes_.r5(is) == 1) S = shapes_.d2(is) * shapes_.d3(is) * shapes_.d4(is);   // 3D：D*H*W
-                    rt.addInstanceNorm(a, sT, bT, out, N, C, S, attrs_.get(ni, NodeField.EPS_INT()), attrs_.get(ni, NodeField.HAS_EPS()), nRelu_[ni]);
+                    rt.addInstanceNorm(a, sT, bT, out, N, C, S, attrs_.get(ni, NodeField.EPS_INT()), attrs_.get(ni, NodeField.HAS_EPS()), attrs_.relu(ni));
                 } else if (code == OpCode.RESIZE() || code == OpCode.UPSAMPLE()) {
                     int is = shapeIdx(nodes_.inputAt(ni, 0));
                     int os = shapeIdx(effectiveOut(ni));
@@ -3176,37 +3159,10 @@ class Graph {
         int i64Cnt_;          // P3：int64 常量个数
         int i64stTop_;        // P3：池顶
         double[8192] cF32_;   // P3：计算 float 常量 [wIdx*32+k]
-        int[512] nRszD_;      // P3：Resize3D 折叠出 outD（sizes 常量链）
-        int[512] nRszH_;      // P3：outH
-        int[512] nRszW_;      // P3：outW
-        long[512] slSt_;      // F8：Slice starts（long，临时）
-        long[512] slEn_;      // F8：Slice ends
-        long[512] slAx_;      // F8：Slice axes（可缺省）
-        long[512] slSp_;      // F8：Slice steps（可缺省）
         GraphNodeAttrs attrs_;
 
-        int[512] nSlN_;       // F8：Slice 每节点切片轴数
-        int[2048] nSlAx_;     // F8：Slice 每节点每轴索引 [node*4+k]
-        int[2048] nSlSt_;     // F8：Slice 调整后 start
-        int[2048] nSlSp_;     // F8：Slice step
         int[512] nRedMode_;     // F8：ReduceMean mode（0=全规约,1=空间规约）
-        int[2048] nPadB_;       // F8：Pad 各轴 begin [node*4+k]（逻辑 [N,C,H,W]）
-        int[2048] nPadE_;       // F8：Pad 各轴 end
-        int[2560] nPadB5_;      // 3D：Pad 各轴 begin [node*5+k]（逻辑 [N,C,D,H,W]）
-        int[2560] nPadE5_;      // 3D：Pad 各轴 end
         int[512] nPadCval_;     // F8：Pad constant_value（float 位型）
-        int[512] nOutN_;        // F8：Split 输出个数
-        int[2048] nSplitSt_;    // F8：Split 各输出沿 axis 的 start [node*4+j]
-        int[2048] nSplitLn_;    // F8：Split 各输出沿 axis 的 len
-        int[1536] nSt3_;        // 原始 strides[node*3+k]（2D/3D 通用捕获）
-        int[3072] nPd3_;        // 原始 pads[node*6+k]
-        int[1536] nDl3_;        // 原始 dilations[node*3+k]
-        int[1536] nKk3_;        // 原始 kernel_shape[node*3+k]
-        int[512] nFused_;        // G1：1 = Conv 已与 Relu 融合
-        int[512] nFusedBy_;      // G1：被消掉的 Relu 记录取代它的 Conv 下标
-        string[512] nFusedOut_;  // G1：fused Conv 的目标输出名（Relu 的输出）
-        int[512] nRelu_;         // G4：1 = Conv 与 Relu 融合（G1 设置；与 BN 融合区分）
-        int[512] nNHWC_;         // G2：1 = 节点在 NHWC 布局执行
         int fuseCount_;          // G1：Conv+ReLU 融合数
         int gapCount_;           // G2：GAP+Flatten 融合数
         int dceCount_;           // G2：死算子消除数
