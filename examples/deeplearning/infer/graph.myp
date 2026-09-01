@@ -366,13 +366,30 @@ class Graph {
             if (i < 0 || i >= nCount_) return OpCode.UNKNOWN();
             return OpCode.opCode(nType_[i]);
         }
-        // IR-P3a：统一属性访问器（方案 A 访问器层）。attrFloat 取代 F32.toDouble(nEpsInt_/
-        // nAlphaInt_) 位型直读；attrInt/attrIntArr 等其余属性在 buildRuntime 迁移（P3b）时补全。
+        // IR-P3a/P3d：统一属性访问器（方案 A 访问器层）。attrFloat 取代 F32.toDouble 位型
+        // 直读（EPS/ALPHA/Resize scales）；attrIntArr 取代 [node*N+k] 手算偏移。
         double attrFloat(int node, int key) {
             if (node < 0 || node >= nCount_) return 0.0;
             if (key == NodeField.EPS_INT()) return F32.toDouble(nEpsInt_[node]);
             if (key == NodeField.ALPHA_INT()) return F32.toDouble(nAlphaInt_[node]);
+            if (key == NodeField.UPSH()) return F32.toDouble(nUpSH_[node]);
+            if (key == NodeField.UPSW()) return F32.toDouble(nUpSW_[node]);
             return 0.0;
+        }
+        // IR-P3d：统一数组属性访问（取代 buildRuntime 的 [node*N+k] 手算偏移）。
+        // key：0=SlAx [node*4+k]，1=SlSt，2=SlSp，3=PadB，4=PadE，5=PadB5 [node*5+k]，
+        //     6=SplitSt，7=SplitLn。
+        int attrIntArr(int node, int key, int k) {
+            if (node < 0 || node >= nCount_ || k < 0) return 0;
+            if (key == 0) return nSlAx_[node * 4 + k];
+            if (key == 1) return nSlSt_[node * 4 + k];
+            if (key == 2) return nSlSp_[node * 4 + k];
+            if (key == 3) return nPadB_[node * 4 + k];
+            if (key == 4) return nPadE_[node * 4 + k];
+            if (key == 5) return nPadB5_[node * 5 + k];
+            if (key == 6) return nSplitSt_[node * 4 + k];
+            if (key == 7) return nSplitLn_[node * 4 + k];
+            return 0;
         }
         // 唯一输入改写入口。P0 只失效索引；P1 再演进为增量维护与 analysis manager。
         void replaceNodeInput(int node, int slot, int value) {
@@ -1881,8 +1898,8 @@ class Graph {
                     if (is5 == 0) { D = 1; H = shD2_[a]; W = shD3_[a]; }   // 2D：D=1,H,W=shD2,shD3
                     int outD = D, outH = H, outW = W;
                     if (t == "Upsample") {
-                        double sh = F32.toDouble(nUpSH_[i]);
-                        double sw = F32.toDouble(nUpSW_[i]);
+                        double sh = attrFloat(i, NodeField.UPSH());   // P3d：统一属性访问
+                        double sw = attrFloat(i, NodeField.UPSW());
                         if (sh == 0.0) sh = 1.0;
                         if (sw == 0.0) sw = 1.0;
                         double hd = float(H);
@@ -2909,7 +2926,7 @@ class Graph {
                         string onm = (j == 0) ? nOut0_[ni] : ((j == 1) ? nOut1_[ni] : ((j == 2) ? nOut2_[ni] : nOut3_[ni]));
                         int o = tensorId(onm);
                         if (o >= 0) {
-                            rt.addSplit(a, o, nAxis_[ni], nSplitSt_[ni * 4 + j], nSplitLn_[ni * 4 + j],
+                            rt.addSplit(a, o, nAxis_[ni], attrIntArr(ni, 6, j), attrIntArr(ni, 7, j),   // P3d：统一数组访问
                                         d0, d1, d2, d3, 1);
                         }
                         j = j + 1;
@@ -3080,10 +3097,10 @@ class Graph {
                     int id0 = shD0_[is], id1 = shD1_[is], id2 = shD2_[is], id3 = shD3_[is];
                     int os = shapeIdx(effectiveOut(ni));
                     int od0 = shD0_[os], od1 = shD1_[os], od2 = shD2_[os], od3 = shD3_[os];
-                    int ax0 = nSlAx_[ni * 4 + 0], st0 = nSlSt_[ni * 4 + 0], sp0 = nSlSp_[ni * 4 + 0];
-                    int ax1 = nSlAx_[ni * 4 + 1], st1 = nSlSt_[ni * 4 + 1], sp1 = nSlSp_[ni * 4 + 1];
-                    int ax2 = nSlAx_[ni * 4 + 2], st2 = nSlSt_[ni * 4 + 2], sp2 = nSlSp_[ni * 4 + 2];
-                    int ax3 = nSlAx_[ni * 4 + 3], st3 = nSlSt_[ni * 4 + 3], sp3 = nSlSp_[ni * 4 + 3];
+                    int ax0 = attrIntArr(ni, 0, 0), st0 = attrIntArr(ni, 1, 0), sp0 = attrIntArr(ni, 2, 0);   // P3d：统一数组访问
+                    int ax1 = attrIntArr(ni, 0, 1), st1 = attrIntArr(ni, 1, 1), sp1 = attrIntArr(ni, 2, 1);
+                    int ax2 = attrIntArr(ni, 0, 2), st2 = attrIntArr(ni, 1, 2), sp2 = attrIntArr(ni, 2, 2);
+                    int ax3 = attrIntArr(ni, 0, 3), st3 = attrIntArr(ni, 1, 3), sp3 = attrIntArr(ni, 2, 3);
                     rt.addSlice(a, out, cnt, id0, id1, id2, id3, od0, od1, od2, od3,
                                 ax0, st0, sp0, ax1, st1, sp1, ax2, st2, sp2, ax3, st3, sp3);
                 } else if (code == OpCode.SUB()) {

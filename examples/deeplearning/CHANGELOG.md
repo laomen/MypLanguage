@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P3d：属性统一访问器层收口（P3 完成）
+
+### 变更（`infer/graph.myp`）
+- `attrFloat` 扩展 UPSH/UPSW（Resize scales F32 位型）；`inferShapes` 的
+  `F32.toDouble(nUpSH_/nUpSW_)` 改走 `attrFloat`（pass 代码内不再有节点属性位型直读）。
+- 新 `attrIntArr(node,key,k)` 统一数组访问（SlAx/SlSt/SlSp/PadB/PadE/PadB5/SplitSt/SplitLn，
+  取代 `[node*4+k]`/`[node*5+k]` 手算）；`buildRuntime` 的 Slice/Split 分支改走它。
+- 3D raw 数组已有 rawSt/rawPd/rawDl/rawKk；节点 int 属性保持直读（热点）。P3 至此完成。
+
+### 验证
+- 全量回归 `MYP_IR_VERIFY=1`：identity_fold 2 ops、BN maxDiff 0、ops2d 4.77e-7、
+  CONST FOLD OK、ONNX MLP 99%、slice/split 全 OK、resize maxDiff 1.19e-7、
+  skip U-Net GPU 训练 acc 100%。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P3c：补全 canonical mutation API（replaceResult/eraseNode）
 
 ### 变更（`infer/graph.myp`）

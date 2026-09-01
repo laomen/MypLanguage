@@ -197,7 +197,7 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | **P2c** | DCE 消费 DefUseAnalysis | **已实施**：每轮 DCE 前重建 use 表，按 `valueUseCount` 删除死节点 | identity 3→1、CONST FOLD OK、skip U-Net GPU 100% |
 | **P2d** | 图输出 rewrite（`replaceAllUses` 覆盖隐式消费者 + 指纹含 `goName_`） | **已实施**：`Add(x,0)`/`Mul(x,1)` 输出直接是图输出也能折叠，图输出名改指保留值 | identity_fold 双输出 1 op、skip U-Net GPU 100% |
 | **P2e** | 恒等族扩展 + 连续激活合并（`Sub(x,0)`/`Div(x,1)`、`Relu(Relu(x))`→`Relu(x)`） | **已实施**：foldIdentityOps 扩展 Sub/Div（恒等操作数仅限 slot1）；新增 `FOLD_RELU`（含融合 `ConvRelu→Relu`） | identity_fold 双 Relu+Sub/Div 链 2 ops、skip U-Net GPU 100% |
-| **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | P3a/P3b/P3c 已实施：OpCode 枚举 53 算子 + `opTraits` + `nodeOp`/`attrFloat`；DCE 保护受保护节点；P2 pass 与 `buildRuntime` 分派迁移到枚举；`replaceResult`/`eraseNode` 补齐 §3.4 mutation API 并用于 P2 rewrite/DCE/buildReverseGraph；剩余：attrInt/attrIntArr 属性统一 | infer_tests + grad_check + opt_check |
+| **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | **已完成**：OpCode 枚举 53 算子 + `opTraits` + `nodeOp`；P2 pass 与 `buildRuntime` 分派迁移到枚举；`replaceResult`/`eraseNode` 补齐 mutation API；属性访问器层收口（`attrFloat` 位型 + `attrIntArr` 数组 + `rawSt/rawPd/rawDl/rawKk`） | infer_tests + grad_check + opt_check |
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
 
 ## 6. 收益（预期）
@@ -432,5 +432,23 @@ lakeside(10.328)、skip U-Net GPU 训练 acc 100% + grad check OK）——每条
 
 验证：全量回归（identity_fold 2 ops、BN maxDiff 0、ops2d 4.77e-7、CONST FOLD OK、
 ONNX MLP 99%、skip U-Net GPU 训练 acc 100% + grad check OK）逐位一致。
+
+## 20. 实施状态：P3d（2026-09-02）
+
+属性统一访问器层收口（doc §3.2 pain point #6，P3 最后一项）：
+
+- `attrFloat` 扩展 UPSH/UPSW（Resize scales 的 F32 位型）；`inferShapes` 的
+  `F32.toDouble(nUpSH_/nUpSW_)` 改走 `attrFloat`——pass 代码内不再有节点属性的 F32 位型直读。
+- 新 `attrIntArr(node, key, k)` 统一数组属性访问（key：SlAx/SlSt/SlSp/PadB/PadE/PadB5/
+  SplitSt/SplitLn，取代 `[node*4+k]`/`[node*5+k]` 手算偏移）；`buildRuntime` 的 Slice 与
+  Split 分支改走 `attrIntArr`。
+- 3D raw 数组（St/Pd/Dl/Kk）已有 `rawSt/rawPd/rawDl/rawKk` 访问器；节点 int 属性
+  （SH/SW/PT/PB 等）为普通并行数组直读（非位型/偏移模式，doc 允许 buildRuntime 直读热点）。
+  访问器层至此齐备：`nodeOp`（枚举）+ `attrFloat`（位型）+ `attrIntArr`（数组偏移）+
+  `rawSt/rawPd/rawDl/rawKk`（3D raw）。
+
+验证：全量回归（identity_fold 2 ops、BN maxDiff 0、ops2d 4.77e-7、CONST FOLD OK、
+ONNX MLP 99%、slice/split 全 OK、resize maxDiff 1.19e-7、skip U-Net GPU 训练 acc 100%）。
+**P3 至此完成**（op 枚举 + traits + mutation API + 属性访问器层全落地）。
 
 ---
