@@ -40,6 +40,11 @@ class Liver3DTrain {
 
             InferenceRuntime rt = new InferenceRuntime();
             rt.init(8000000);
+            // 优化器：MYP_OPT_MODE 0=SGD(默认) 1=动量 2=AdamW
+            int om = 0;
+            if (Console.getEnv("MYP_OPT_MODE") == "1") om = 1;
+            if (Console.getEnv("MYP_OPT_MODE") == "2") om = 2;
+            rt.setOptMode(om);
             OnnxLoader loader = new OnnxLoader();
             loader.setLossMode(1);      // Dice loss
             if (wm == 1) loader.setDiceWMode(1);   // 逆频率加权（类不平衡）

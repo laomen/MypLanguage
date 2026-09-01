@@ -6,7 +6,40 @@
 
 ---
 
-## 2026-09-XX — 阶段4g：类不平衡 Dice loss（归一化逆频率加权）→ 肝脏形态合成分割训练
+## 2026-09-XX — 阶段4h：训练优化器基建（SGD / 动量 / AdamW + weight decay）
+
+### 目标
+把训练优化从「裸 SGD」升级为可配置优化器，向通用训练框架迈出关键一步（现代训练
+基本离不开 Adam/AdamW + weight decay）。
+
+### 变更
+- **`infer/ops.myp` + `infer/gpu_ops.myp`**：`update` 拆为 3 个内核（CPU+GPU 同公式）：
+  - `updateSGD`：`W -= lr·g + decay·W`（decay=lr·wd；wd=0 即纯 SGD，与旧版逐位一致）
+  - `updateMom`：经典动量（beta1=0.9 固定）`v=0.9v+g; W -= lr·v + decay·W`
+  - `updateAdamW`：`m=0.9m+0.1g; v=0.999v+0.001g²; mhat=m/bc1; vhat=v/bc2;
+    W -= decay·W + lr·mhat/(√vhat+eps)`，eps=1e-8；**bc1/bc2=1-β^t 由 host 预计算**
+    （Math.pow，避免 GPU libdevice pow 依赖）；m 在 mOff、v 在 mOff+n。
+- **`infer/runtime.myp`**：优化器状态管理
+  - 字段 `optMode_`（0=SGD 默认/1=动量/2=AdamW）、`optWd_`、`optStep_`、`optOff_[512]`、
+    `optBase_`；`setOptMode`/`setOptWd`/`optStep`/`optOffAt` 访问器
+  - `prepOptState(tid)`：为权重张量在 **arena 尾部**预留 2·n 状态区（动量 v / Adam 的
+    m+v），`growOptArena` 复制保真扩容；buildRuntime 的 Update 分支调用 → 先于任何
+    run（含 gpuPersistentStart 的 H2D）分配好，持久化 GPU 状态区有效
+  - `run()/runGpu()` 训练模式每步 `optStep_++`（Adam 偏差修正 t，1-based）
+- **`infer/ops_iface_all.myp`**：`UpdateOp`/`GpuUpdateOp` 按 `rt.optMode()` 分派三内核，
+  传状态偏移 + `decay=lr·wd` + 预计算 bc1/bc2；`import math`。
+- **`infer/graph.myp`**：Update 分支加 `rt.prepOptState(w)`。
+
+### 验证
+- **`train/opt_check.myp` + `infer/tools/make_opt_ref.py`（新）**：5 步已知梯度，CPU 三内核
+  最终权重 vs numpy float32 参考 **maxDiff=0**（`OPT CHECK OK`）——SGD/动量/AdamW 数学逐位正确。
+- `3d_liver_train` 加 `MYP_OPT_MODE`（0/1/2）：SGD/动量/AdamW 均 fg-DSC=1.0（GPU）——
+  GPU 优化器收敛验证。
+- 回归：`3d_seg` 100%、`3d_unet_skip` 100%（默认 SGD 逐位兼容，无回归）。
+- 说明：beta1/beta2 固定 0.9/0.999（Adam 标准默认，MYP 方法参数上限 10 所致），eps=1e-8；
+  梯度裁剪（全局 norm 归约）留待后续。
+
+---
 
 ### 目标
 真实肝脏 CT 中前景（肝脏）仅占 ~5% 体素（类不平衡）——等权 Dice 会塌缩到全背景。

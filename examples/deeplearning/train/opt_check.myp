@@ -1,0 +1,112 @@
+// opt_check.myp — 阶段5e：优化器内核（SGD/动量/AdamW）vs numpy 参考对拍
+// 5 步已知梯度，逐 step 调 CPU 内核（InferOps.update*），比较最终权重。
+// GPU 内核与 CPU 同公式（gpu_ops.myp），此测试验证 CPU 数学正确性；
+// GPU 训练收敛由 3d_liver MYP_OPT_MODE 验证。
+//
+// 运行（须在 examples/ 下）：
+//   deeplearning/infer/tools/onnxvenv/bin/python deeplearning/infer/tools/make_opt_ref.py
+//   ./build/mypc examples/deeplearning/train/opt_check.myp -o /tmp/optc --stdlib stdlib && /tmp/optc
+
+import env;
+import fmt;
+import math;
+import "../infer/pb.myp";
+import "../infer/ops.myp";
+
+class OptCheck {
+    action:
+        @constructor OptCheck() {
+            int N = 8; int T = 5;
+            int wOff = 0; int gradOff = 100; int mOff = 200;   // AdamW 的 v 在 mOff+N
+            int CAP = 400;
+            float[] arena = new float[CAP];
+            double[] w0 = new double[N];
+            double[] grads = new double[T * N];
+            double[] refv = new double[N];
+            readF32("./deeplearning/data/opt/w0.bin", w0, N);
+            readF32("./deeplearning/data/opt/grads.bin", grads, T * N);
+            int i = 0;
+            while (i < N) { arena[wOff + i] = float(w0[i]); i = i + 1; }
+            double lr = 0.01; double wd = 0.01; double decay = lr * wd;
+            int fails = 0;
+
+            // SGD
+            int t = 0;
+            while (t < T) {
+                int j = 0;
+                while (j < N) { arena[gradOff + j] = float(grads[t * N + j]); j = j + 1; }
+                InferOps.updateSGD(arena, wOff, gradOff, N, lr, decay);
+                t = t + 1;
+            }
+            readF32("./deeplearning/data/opt/ref_sgd.bin", refv, N);
+            fails = fails + cmp("SGD  ", arena, wOff, refv, N);
+
+            // Momentum（重置权重 + 状态）
+            i = 0;
+            while (i < N) { arena[wOff + i] = float(w0[i]); arena[mOff + i] = 0.0f; i = i + 1; }
+            t = 0;
+            while (t < T) {
+                int j = 0;
+                while (j < N) { arena[gradOff + j] = float(grads[t * N + j]); j = j + 1; }
+                InferOps.updateMom(arena, wOff, gradOff, mOff, N, lr, decay);
+                t = t + 1;
+            }
+            readF32("./deeplearning/data/opt/ref_mom.bin", refv, N);
+            fails = fails + cmp("Mom  ", arena, wOff, refv, N);
+
+            // AdamW（重置权重 + m/v 状态）
+            i = 0;
+            while (i < N) { arena[wOff + i] = float(w0[i]); arena[mOff + i] = 0.0f; arena[mOff + N + i] = 0.0f; i = i + 1; }
+            t = 1;
+            while (t <= T) {
+                int j = 0;
+                while (j < N) { arena[gradOff + j] = float(grads[(t - 1) * N + j]); j = j + 1; }
+                double bc1 = 1.0 - Math.pow(0.9, double(t));
+                double bc2 = 1.0 - Math.pow(0.999, double(t));
+                InferOps.updateAdamW(arena, wOff, gradOff, mOff, N, lr, decay, bc1, bc2);
+                t = t + 1;
+            }
+            readF32("./deeplearning/data/opt/ref_adamw.bin", refv, N);
+            fails = fails + cmp("AdamW", arena, wOff, refv, N);
+
+            if (fails == 0) Console.writeLine("OPT CHECK OK");
+            else Console.writeLine("OPT CHECK FAIL (" + Fmt.i(fails) + ")");
+        }
+
+        int cmp(string name, float[] arena, int off, double[] refv, int n) {
+            int bad = 0;
+            double md = 0.0;
+            int i = 0;
+            while (i < n) {
+                double d = double(arena[off + i]) - refv[i];
+                if (d < 0.0) d = 0.0 - d;
+                if (d > md) md = d;
+                if (Math.abs(d) > 1.0e-4) bad = bad + 1;
+                i = i + 1;
+            }
+            Console.writeString(name + " maxDiff=" + Fmt.f(md, 6) + " bad=" + Fmt.i(bad));
+            Console.writeLine("");
+            return bad;
+        }
+
+        void readF32(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                out[i] = F32.toDouble(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24));
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+}
+
+int main() {
+    OptCheck t = new OptCheck();
+    return 0;
+}

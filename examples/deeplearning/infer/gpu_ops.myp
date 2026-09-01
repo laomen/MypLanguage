@@ -521,11 +521,44 @@ class GpuInferOps {
         }
 
         // SGD 更新：W -= lr·grad（lr 位型存于调用方，经 long 传）
-        void update(float[] a, long dev, int wOff, int gradOff, int n, double lr) {
+        // ---- 优化器（阶段5e，GPU）：SGD / 动量 / AdamW（与 CPU 同公式）----
+        void updateSGD(float[] a, long dev, int wOff, int gradOff, int n, double lr, double decay) {
             @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
                 if (p < long(n)) {
                     long i = p;
-                    a[wOff + i] = a[wOff + i] - float(lr) * a[gradOff + i];
+                    a[wOff + i] = a[wOff + i] - float(decay) * a[wOff + i] - float(lr) * a[gradOff + i];
+                }
+            }
+        }
+        void updateMom(float[] a, long dev, int wOff, int gradOff, int vOff, int n, double lr, double decay) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float g = a[gradOff + i];
+                    float v = a[vOff + i];
+                    float vn = 0.9f * v + g;
+                    a[vOff + i] = vn;
+                    a[wOff + i] = a[wOff + i] - float(decay) * a[wOff + i] - float(lr) * vn;
+                }
+            }
+        }
+        void updateAdamW(float[] a, long dev, int wOff, int gradOff, int mOff, int n, double lr, double decay,
+                         double bc1, double bc2) {
+            double eps = 1.0e-8;
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float g = a[gradOff + i];
+                    float m = a[mOff + i];
+                    float v = a[mOff + long(n) + i];
+                    float mn = 0.9f * m + 0.1f * g;
+                    float vn = 0.999f * v + 0.001f * g * g;
+                    a[mOff + i] = mn;
+                    a[mOff + long(n) + i] = vn;
+                    double mhat = double(mn) / bc1;
+                    double vhat = double(vn) / bc2;
+                    double w = double(a[wOff + i]);
+                    a[wOff + i] = float(w - double(lr) * mhat / (Math.sqrt(vhat) + eps) - double(decay) * w);
                 }
             }
         }

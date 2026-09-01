@@ -466,11 +466,51 @@ class InferOps {
         }
 
         // SGD 更新：W -= lr·grad（lr 由调用方传 double，内部转 float）
-        void update(float[] arena, int wOff, int gradOff, int n, double lr) {
+        // ---- 优化器（阶段5e）：SGD / 动量 / AdamW（weight decay 可选）----
+        // SGD + L2：W -= lr*grad + decay*W（decay=lr*wd；wd=0 即纯 SGD，与旧版一致）
+        void updateSGD(float[] arena, int wOff, int gradOff, int n, double lr, double decay) {
             int i = 0;
             while (i < n) {
                 float g = arena[gradOff + i];
-                arena[wOff + i] = arena[wOff + i] - float(lr) * g;
+                float w = arena[wOff + i];
+                arena[wOff + i] = w - float(decay) * w - float(lr) * g;
+                i = i + 1;
+            }
+        }
+
+        // 动量（经典，beta1=0.9 固定）：v = beta1*v + grad；W -= lr*v + decay*W
+        void updateMom(float[] arena, int wOff, int gradOff, int vOff, int n, double lr, double decay) {
+            int i = 0;
+            while (i < n) {
+                float g = arena[gradOff + i];
+                float v = arena[vOff + i];
+                float vn = 0.9f * v + g;
+                arena[vOff + i] = vn;
+                float w = arena[wOff + i];
+                arena[wOff + i] = w - float(decay) * w - float(lr) * vn;
+                i = i + 1;
+            }
+        }
+
+        // AdamW（解耦权重衰减 + 偏差修正）：m=0.9m+0.1g；v=0.999v+0.001g²；
+        // mhat=m/bc1；vhat=v/bc2；W -= decay*W + lr*mhat/(sqrt(vhat)+eps)，eps=1e-8。
+        // bc1/bc2 = 1-β^t 由调用方 host 端预计算（Math.pow）。状态：m 在 mOff，v 在 mOff+n。
+        void updateAdamW(float[] arena, int wOff, int gradOff, int mOff, int n, double lr, double decay,
+                         double bc1, double bc2) {
+            double eps = 1.0e-8;
+            int i = 0;
+            while (i < n) {
+                float g = arena[gradOff + i];
+                float m = arena[mOff + i];
+                float v = arena[mOff + n + i];
+                float mn = 0.9f * m + 0.1f * g;
+                float vn = 0.999f * v + 0.001f * g * g;
+                arena[mOff + i] = mn;
+                arena[mOff + n + i] = vn;
+                double mhat = double(mn) / bc1;
+                double vhat = double(vn) / bc2;
+                double w = double(arena[wOff + i]);
+                arena[wOff + i] = float(w - double(lr) * mhat / (Math.sqrt(vhat) + eps) - double(decay) * w);
                 i = i + 1;
             }
         }

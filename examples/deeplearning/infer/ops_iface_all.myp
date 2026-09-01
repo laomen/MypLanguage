@@ -9,6 +9,7 @@
 // 阶段4e4：run()/runGpu() 已删除 if/else，只保留接口分派——runtime.myp 循环导入
 // 本文件并在首调自动 registerAllIfaceOps(this)（ifaceInit_ 标记），全入口零改动。
 import env;
+import math;
 import "./runtime.myp";
 import "./ops.myp";
 import "./gpu_ops.myp";
@@ -1375,7 +1376,21 @@ class UpdateOp {
         void backward(InferenceRuntime rt, int i) {
             if (rt.trainMode() == 1) {
                 int w = rt.opAAt(i); int g = rt.opBAt(i);
-                InferOps.update(rt.arenaRef(), rt.tensorOff(w), rt.tensorOff(g), rt.tensorRows(w) * rt.tensorCols(w), rt.lrRef());
+                int n = rt.tensorSize(w);
+                double lr = rt.lrRef();
+                double decay = lr * rt.optWd();
+                int mode = rt.optMode();
+                int mOff = rt.optOffAt(w);
+                if (mode == 0) {
+                    InferOps.updateSGD(rt.arenaRef(), rt.tensorOff(w), rt.tensorOff(g), n, lr, decay);
+                } else if (mode == 1) {
+                    InferOps.updateMom(rt.arenaRef(), rt.tensorOff(w), rt.tensorOff(g), mOff, n, lr, decay);
+                } else {
+                    double t = double(rt.optStep());
+                    double bc1 = 1.0 - Math.pow(0.9, t);
+                    double bc2 = 1.0 - Math.pow(0.999, t);
+                    InferOps.updateAdamW(rt.arenaRef(), rt.tensorOff(w), rt.tensorOff(g), mOff, n, lr, decay, bc1, bc2);
+                }
             }
         }
 }
@@ -1748,7 +1763,21 @@ class GpuUpdateOp {
         void backward(InferenceRuntime rt, int i) {
             if (rt.trainMode() == 1) {
                 int w = rt.opAAt(i); int g = rt.opBAt(i);
-                GpuInferOps.update(rt.arenaRef(), rt.devRef(), rt.tensorOff(w), rt.tensorOff(g), rt.tensorRows(w) * rt.tensorCols(w), rt.lrRef());
+                int n = rt.tensorSize(w);
+                double lr = rt.lrRef();
+                double decay = lr * rt.optWd();
+                int mode = rt.optMode();
+                int mOff = rt.optOffAt(w);
+                if (mode == 0) {
+                    GpuInferOps.updateSGD(rt.arenaRef(), rt.devRef(), rt.tensorOff(w), rt.tensorOff(g), n, lr, decay);
+                } else if (mode == 1) {
+                    GpuInferOps.updateMom(rt.arenaRef(), rt.devRef(), rt.tensorOff(w), rt.tensorOff(g), mOff, n, lr, decay);
+                } else {
+                    double t = double(rt.optStep());
+                    double bc1 = 1.0 - Math.pow(0.9, t);
+                    double bc2 = 1.0 - Math.pow(0.999, t);
+                    GpuInferOps.updateAdamW(rt.arenaRef(), rt.devRef(), rt.tensorOff(w), rt.tensorOff(g), mOff, n, lr, decay, bc1, bc2);
+                }
             }
         }
 }
