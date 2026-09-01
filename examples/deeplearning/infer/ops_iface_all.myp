@@ -290,6 +290,22 @@ class ConvOp {
         }
 }
 
+// ---- conv1x1（opKind 83 前向，Conv 1x1 专用 GEMM；无独立反向）----
+class Conv1x1Op {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            InferOps.conv1x1(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.opReluAt(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- maxpool（opKind 8 前向 / 57 反向）----
 class MaxpoolOp {
     interface class IOp;
@@ -416,6 +432,23 @@ class GpuConvOp {
                                     rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
             }
         }
+}
+
+// ---- conv1x1（GPU，opKind 83）----
+class GpuConv1x1Op {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.conv1x1(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.opReluAt(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
 }
 
 // ---- maxpool（GPU）----
@@ -2193,6 +2226,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(80, new EmbeddingOp(), 0);            rt.registerFwd(80, new GpuEmbeddingOp(), 1);
     rt.registerFwd(81, new DropoutOp(), 0);              rt.registerFwd(81, new GpuDropoutOp(), 1);
     rt.registerFwd(82, new BatchMatmulOp(), 0);          rt.registerFwd(82, new GpuBatchMatmulOp(), 1);
+    rt.registerFwd(83, new Conv1x1Op(), 0);              rt.registerFwd(83, new GpuConv1x1Op(), 1);
     rt.registerFwd(35, new InstanceNormOp(), 0);         rt.registerFwd(35, new GpuInstanceNormOp(), 1);
     rt.registerFwd(36, new AvgpoolOp(), 0);              rt.registerFwd(36, new GpuAvgpoolOp(), 1);
     rt.registerFwd(37, new AvgpoolNhwcOp(), 0);          rt.registerFwd(37, new GpuAvgpoolNhwcOp(), 1);

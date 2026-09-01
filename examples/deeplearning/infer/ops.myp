@@ -1237,6 +1237,40 @@ class InferOps {
             }
         }
 
+        // G5：Conv 1x1 专用（opKind 83）——kh==kw==1 && stride==1 && 无 padding && dil==1 && group==1。
+        // 降级为纯 GEMM：无窗口归约（kh*kw=1），每输出像素对输入通道做点积。ResNet bottleneck 高频路径。
+        void conv1x1(
+            float[] arena,
+            int xOff, int xN, int xC, int xH, int xW,
+            int wOff, int bOff,
+            int yOff, int yC, int yH, int yW,
+            int doRelu
+        ) {
+            int n = 0;
+            while (n < xN) {
+                @parallel for (int p = 0; p < yH * yW; p = p + 1) {
+                    int oy = p / yW;
+                    int ox = p % yW;
+                    int oc = 0;
+                    while (oc < yC) {
+                        float sum = 0.0f;
+                        if (bOff >= 0) sum = arena[bOff + oc];
+                        int ic = 0;
+                        while (ic < xC) {
+                            float xv = arena[xOff + n * xC * xH * xW + ic * xH * xW + oy * xW + ox];
+                            float wv = arena[wOff + oc * xC + ic];
+                            sum = sum + xv * wv;
+                            ic = ic + 1;
+                        }
+                        if (doRelu == 1 && sum < 0.0f) sum = 0.0f;
+                        arena[yOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox] = sum;
+                        oc = oc + 1;
+                    }
+                }
+                n = n + 1;
+            }
+        }
+
         // 融合 Conv+残差Add（P4-2/3，opKind=73）：与 conv 同，输出直接加残差张量（同形状同布局），可接 doRelu。
         void convResidual(
             float[] arena,

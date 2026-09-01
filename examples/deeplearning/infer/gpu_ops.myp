@@ -545,6 +545,40 @@ class GpuInferOps {
             GpuInferOps.conv2dTiled(a, work, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW, -1, kh, kw, sh, sw, pt, pb, pl, pr, dh, dw, group, 0, dev);
         }
 
+        // G5：Conv 1x1 专用（opKind 83）——纯 GEMM，thread-per-output-pixel × 通道归约。
+        void conv1x1(float[] a, int work,
+                  int xOff, int xN, int xC, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yH, int yW,
+                  int doRelu, long dev) {
+            @gpu for (long p = 0L; p < long(yH * yW); p = p + 1L) resident(a = dev) {
+                if (p < long(yH * yW)) {
+                    long pxy = p;
+                    long n = 0L;
+                    while (n < long(xN)) {
+                        long oy = pxy / long(yW);
+                        long ox = pxy % long(yW);
+                        long oc = 0L;
+                        while (oc < long(yC)) {
+                            float sum = 0.0f;
+                            if (bOff >= 0) sum = a[bOff + oc];
+                            long ic = 0L;
+                            while (ic < long(xC)) {
+                                float xv = a[xOff + n * long(xC * xH * xW) + ic * long(xH * xW) + oy * long(xW) + ox];
+                                float wv = a[wOff + oc * long(xC) + ic];
+                                sum = sum + xv * wv;
+                                ic = ic + 1L;
+                            }
+                            if (doRelu == 1 && sum < 0.0f) sum = 0.0f;
+                            a[yOff + n * long(yC * yH * yW) + oc * long(yH * yW) + oy * long(yW) + ox] = sum;
+                            oc = oc + 1L;
+                        }
+                        n = n + 1L;
+                    }
+                }
+            }
+        }
+
         void convRelu(float[] a, int work,
                   int xOff, int xN, int xC, int xH, int xW,
                   int wOff, int bOff,

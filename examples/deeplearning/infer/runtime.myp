@@ -563,6 +563,21 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
 
+        // ---- G5：Conv 1x1 专用（opKind 83）----
+        // kh==kw==1 && stride==1 && 无 padding && dil==1 && group==1 的普通卷积——
+        // 高频 ResNet bottleneck 路径，降级为纯 GEMM（无窗口归约）。doRelu 存 opRelu_。
+        // 输入/输出维度从 tensor 元数据读（kernel 侧），无需额外参数槽。
+        void addConv1x1(int inTid, int wTid, int bTid, int outTid, int doRelu) {
+            int id = opCount_;
+            opKind_[id] = 83;
+            opA_[id] = inTid;
+            opB_[id] = wTid;
+            opC_[id] = bTid;
+            opD_[id] = outTid;
+            opRelu_[id] = doRelu;
+            opCount_ = opCount_ + 1;
+        }
+
         // ---- 3D：Conv3D（opKind 41）----
         // 权重 [Cout,Cin,kd,kh,kw]；sd/sh/sw 与 6 个 pads；dd/dh/dw/group 存 opX_
         void addConv3D(int inTid, int wTid, int bTid, int outTid,

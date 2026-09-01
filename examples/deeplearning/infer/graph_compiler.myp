@@ -287,9 +287,27 @@ class GraphCompiler {
                         if (graph.compilerAttrRelu(ni) == 1) rt.addConvNHWCRelu(a, w, b, out, graph.compilerAttr(ni, NodeField.SH()), graph.compilerAttr(ni, NodeField.SW()), graph.compilerAttr(ni, NodeField.PT()), graph.compilerAttr(ni, NodeField.PB()), graph.compilerAttr(ni, NodeField.PL()), graph.compilerAttr(ni, NodeField.PR()), graph.compilerAttr(ni, NodeField.DH()), graph.compilerAttr(ni, NodeField.DW()), graph.compilerAttr(ni, NodeField.GROUP()));
                         else rt.addConvNHWC(a, w, b, out, graph.compilerAttr(ni, NodeField.SH()), graph.compilerAttr(ni, NodeField.SW()), graph.compilerAttr(ni, NodeField.PT()), graph.compilerAttr(ni, NodeField.PB()), graph.compilerAttr(ni, NodeField.PL()), graph.compilerAttr(ni, NodeField.PR()), graph.compilerAttr(ni, NodeField.DH()), graph.compilerAttr(ni, NodeField.DW()), graph.compilerAttr(ni, NodeField.GROUP()));
                     } else if (graph.compilerAttrRelu(ni) == 1) {
-                        rt.addConvRelu(a, w, b, out, graph.compilerAttr(ni, NodeField.SH()), graph.compilerAttr(ni, NodeField.SW()), graph.compilerAttr(ni, NodeField.PT()), graph.compilerAttr(ni, NodeField.PB()), graph.compilerAttr(ni, NodeField.PL()), graph.compilerAttr(ni, NodeField.PR()), graph.compilerAttr(ni, NodeField.DH()), graph.compilerAttr(ni, NodeField.DW()), graph.compilerAttr(ni, NodeField.GROUP()));
+                        // G5：Conv 1x1 专用——kh==kw==1 && stride==1 && 无 padding && dil==1 && group==1
+                        int kh = graph.compilerAttr(ni, NodeField.KH()); if (kh <= 0) kh = 1;
+                        int kw = graph.compilerAttr(ni, NodeField.KW()); if (kw <= 0) kw = 1;
+                        if (kh == 1 && kw == 1 && graph.compilerAttr(ni, NodeField.SH()) == 1 && graph.compilerAttr(ni, NodeField.SW()) == 1 &&
+                            graph.compilerAttr(ni, NodeField.PT()) == 0 && graph.compilerAttr(ni, NodeField.PB()) == 0 &&
+                            graph.compilerAttr(ni, NodeField.PL()) == 0 && graph.compilerAttr(ni, NodeField.PR()) == 0 &&
+                            graph.compilerAttr(ni, NodeField.DH()) == 1 && graph.compilerAttr(ni, NodeField.DW()) == 1 &&
+                            graph.compilerAttr(ni, NodeField.GROUP()) == 1) {
+                            rt.addConv1x1(a, w, b, out, 1);
+                        } else rt.addConvRelu(a, w, b, out, graph.compilerAttr(ni, NodeField.SH()), graph.compilerAttr(ni, NodeField.SW()), graph.compilerAttr(ni, NodeField.PT()), graph.compilerAttr(ni, NodeField.PB()), graph.compilerAttr(ni, NodeField.PL()), graph.compilerAttr(ni, NodeField.PR()), graph.compilerAttr(ni, NodeField.DH()), graph.compilerAttr(ni, NodeField.DW()), graph.compilerAttr(ni, NodeField.GROUP()));
                     } else {
-                        rt.addConv(a, w, b, out, graph.compilerAttr(ni, NodeField.SH()), graph.compilerAttr(ni, NodeField.SW()), graph.compilerAttr(ni, NodeField.PT()), graph.compilerAttr(ni, NodeField.PB()), graph.compilerAttr(ni, NodeField.PL()), graph.compilerAttr(ni, NodeField.PR()), graph.compilerAttr(ni, NodeField.DH()), graph.compilerAttr(ni, NodeField.DW()), graph.compilerAttr(ni, NodeField.GROUP()));
+                        // G5：Conv 1x1 专用（同上，无 ReLU）
+                        int kh = graph.compilerAttr(ni, NodeField.KH()); if (kh <= 0) kh = 1;
+                        int kw = graph.compilerAttr(ni, NodeField.KW()); if (kw <= 0) kw = 1;
+                        if (kh == 1 && kw == 1 && graph.compilerAttr(ni, NodeField.SH()) == 1 && graph.compilerAttr(ni, NodeField.SW()) == 1 &&
+                            graph.compilerAttr(ni, NodeField.PT()) == 0 && graph.compilerAttr(ni, NodeField.PB()) == 0 &&
+                            graph.compilerAttr(ni, NodeField.PL()) == 0 && graph.compilerAttr(ni, NodeField.PR()) == 0 &&
+                            graph.compilerAttr(ni, NodeField.DH()) == 1 && graph.compilerAttr(ni, NodeField.DW()) == 1 &&
+                            graph.compilerAttr(ni, NodeField.GROUP()) == 1) {
+                            rt.addConv1x1(a, w, b, out, 0);
+                        } else rt.addConv(a, w, b, out, graph.compilerAttr(ni, NodeField.SH()), graph.compilerAttr(ni, NodeField.SW()), graph.compilerAttr(ni, NodeField.PT()), graph.compilerAttr(ni, NodeField.PB()), graph.compilerAttr(ni, NodeField.PL()), graph.compilerAttr(ni, NodeField.PR()), graph.compilerAttr(ni, NodeField.DH()), graph.compilerAttr(ni, NodeField.DW()), graph.compilerAttr(ni, NodeField.GROUP()));
                     }
                 } else if (code == OpCode.CONV3D()) {
                     int w = tensorId(graph.nodeInAt(ni, 1));
