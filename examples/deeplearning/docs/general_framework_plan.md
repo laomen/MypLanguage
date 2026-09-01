@@ -373,10 +373,15 @@ OpKind
   2 字节 half → float（直接 wire 拷贝）；`onnx_loader` parseTensor 支持
   `float16_data`（字段 6）。`make_fp16_onnx.py`（opset13 Conv W/B FLOAT16）+
   `fp16_main.myp`：FP16 ALL OK，CPU+GPU max diff 0 vs ORT。
+- **已完成：BF16 权重 dtype 转换**（commit `235df45`）。`writeWeight` dtype==16
+  分支每 2 字节 → `bits = v << 16`（BF16 = F32 高 16 位）；loader 支持
+  `bfloat16_data`（字段 16）。ORT CPU 不支持 BF16 → `make_bf16_onnx.py` 用
+  numpy 手算参考；`bf16_main.myp`：BF16 ALL OK，CPU+GPU max diff 6e-8。
+  阶段三 dtype 转换（FP16/BF16）完成，剩 INT8（需量化 scale/zero_point 语义）。
 - **G3 ReduceMean 负轴归一化**已完成（见阶段二进度区）；Reduce axes/keepdims/
   空 axes 语义统一仍在 Reduce 族共用归一化内。
 - **待办**：ShapeExpr（常量/输入维度表达式）、动态 batch 输入 shape 注入 +
-  specialization（loader 已有 setInputShape 框架，需端到端验证）、BF16/INT8
+  specialization（loader 已有 setInputShape 框架，需端到端验证）、INT8
   dtype 转换规则。
 
 ## 6. 阶段四：算子覆盖优先级

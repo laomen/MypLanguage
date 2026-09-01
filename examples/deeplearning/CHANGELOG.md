@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-09-01 — 阶段三：BF16 权重 dtype 转换（BFLOAT16 → float32）
+
+- `graph.myp` writeWeight 加 dtype==16 分支：每 2 字节 = F32 高 16 位，
+  `bits = v << 16` → float32（BF16 位型语义）。
+- `onnx_loader` parseTensor 支持 `bfloat16_data`（字段 16，packed 2 字节/元素）；
+  raw_data 存 BF16 时由 writeWeight 按 dtype==16 读 2 字节（已覆盖）。
+- **ORT CPU 不支持 BF16 Conv** → `make_bf16_onnx.py` 用 numpy 手算参考（BF16
+  权重转 f32 后卷积）；`infer_tests/bf16_main.myp`（BF16 ALL OK，CPU+GPU
+  max diff 6e-8 = float 精度）。
+- 回归：41/41 infer_tests + grad_check（GRAD CHECK OK）+ ResNet output sum
+  `336.658`。阶段三 dtype 转换（FP16/BF16）完成，剩 INT8（需量化 scale/zp）。
+
 ## 2026-09-01 — 阶段三：FP16 权重 dtype 转换（FLOAT16 → float32）
 
 - `graph.myp` 加 `halfToF32Bits`（IEEE half → F32 位型，含亚正规归一化）；
