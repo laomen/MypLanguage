@@ -22,6 +22,13 @@
 - `resnet_main` 在 `MYP_GPU=1 MYP_IR_VERIFY=1` 下通过，output sum **336.658**。
 - `train/grad_check.myp` 编译通过；`git diff --check` 通过。
 
+### 后续迁移进度
+- `GraphShapes` 已独立迁移至 `infer/graph_shapes.myp`：Graph 不再持有旧 shape SoA，
+  所有 shape 访问通过 `shapes_` facade；16 个 infer_tests 在 `MYP_GPU=1
+  MYP_IR_VERIFY=1` 下通过。提交：`f6f969a`。
+- 下一块为 `GraphWeights`，包含 weight metadata、原始字节源、int64/f32 常量池和
+  BN fold metadata；完成标准是单一所有权，不接受 getter 外壳 + 双份状态。
+
 ---
 
 ## 2026-09-01 — 修复 MYP_IR_VERIFY 在 Resize/Pad 上的悬空输入（隐藏 IR 一致性 bug）

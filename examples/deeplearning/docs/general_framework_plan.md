@@ -129,6 +129,18 @@ void eraseNode(int node);
 每一步都允许短期保留兼容转发，但禁止新代码继续直接访问旧数组。全部迁移完成后，
 再决定是否把 SoA 换成对象式 Node/Value；这不是阶段一的前置条件。
 
+### 当前进度（2026-09-01）
+
+- **已完成：`GraphShapes`**。`infer/graph_shapes.myp` 独立拥有 shape 名称、维度、
+  rank、kind、layout、dead 标记和计数；`Graph` 通过 `shapes_` facade 转发，旧的
+  `shName_`/`shD*`/`shR5_`/`shKind_`/`shNHWC_`/`shDead_`/`sCount_` 已从 Graph
+  property 移除。
+- **已验证**：16 个 infer_tests 在 `MYP_GPU=1 MYP_IR_VERIFY=1` 下通过；ResNet
+  output sum `336.658`。GraphShapes 切片提交为 `f6f969a`。
+- **下一步：`GraphWeights`**。必须同时迁移 weight metadata、原始文件读取所需的
+  byte source、int64/f32 constant pool 和 BN fold metadata；只抽取 getter 外壳不算
+  完成，迁移期间不允许保留两份可写状态。
+
 ### 验收标准
 
 - 现有 `Graph` 公共 API 不变。
