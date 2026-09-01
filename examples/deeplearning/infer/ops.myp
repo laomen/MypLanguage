@@ -49,9 +49,17 @@ class InferOps {
 
         // BatchMatMul（阶段四）：4D batch matmul。A [ab0,ab1,M,K] × B [bb0,bb1,K,N] →
         // [ob0,ob1,M,N]。batch 维逐维 max 广播（维=1 → 0）。work = ob0*ob1*M*N。
+        // G5 算子选择：batch 维全 1（ob0==ob1==1，等价普通 2D matmul [M,K]×[K,N]）时
+        // 降级到 InferOps.matmul（@parallel 并行 GEMM），大矩阵收益显著；否则原串行
+        // thread-per-output。
         void matmulBcast(float[] arena, int aOff, int bOff, int oOff, int work,
                          int aM, int aK, int bN,
                          int ab0, int ab1, int bb0, int bb1, int ob0, int ob1) {
+            if (ob0 == 1 && ob1 == 1) {
+                // 2D 降级：A=[M,K] 当 W，B=[K,N] 当 x；布局（y=m*bN+n）与 matmul 一致
+                InferOps.matmul(arena, bOff, aK, bN, aOff, aM, oOff);
+                return;
+            }
             int p = 0;
             while (p < work) {
                 int n = p % bN;

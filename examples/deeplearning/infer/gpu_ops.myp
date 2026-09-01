@@ -82,9 +82,16 @@ class GpuInferOps {
         }
         // BatchMatMul（阶段四）：4D batch matmul。A [ab0,ab1,M,K] × B [bb0,bb1,K,N] →
         // [ob0,ob1,M,N]。batch 维逐维 max 广播（维=1 → 0）。thread-per-output-element。
+        // G5 算子选择：batch 维全 1（ob0==ob1==1）时降级到普通 matmul/denseTiled
+        // （denseTiled 按 outDim/batch 规模选分块 GEMM，大矩阵收益显著）。
         void matmulBcast(float[] a, int work, int aOff, int bOff, int oOff,
                          int aM, int aK, int bN,
                          int ab0, int ab1, int bb0, int bb1, int ob0, int ob1, long dev) {
+            if (ob0 == 1 && ob1 == 1) {
+                // 2D 降级：A=[M,K] 当 W（[outDim,inDim]），B=[K,N] 当 x（[inDim,batch]）
+                GpuInferOps.matmul(a, work, bOff, aK, aOff, aM, bN, oOff, dev);
+                return;
+            }
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     int n = int(p % long(bN));
