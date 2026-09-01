@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-09-01 — 阶段四 G5：Where 算子（逐元素选择）
+
+- OpCode `WHERE(75)` + `opCode` 映射；`consumerKindOf` Where → CNN_ACT（4D 数据）；
+  `inferShapes` Where 分支：输出 = cond/x/y 逐维 max 广播（无 shape 的输入按 1）。
+- runtime `addWhere(cond,x,y,out)` opKind 75（opA/B/C/D 4 槽）；各输入 4D 维度由
+  forward 从各自 tid 的 `tN_/tC_/tH_/tW_` 读取（无需额外参数槽）。
+- ops/gpu_ops `where1` kernel：逐元素 `out = cond ? x : y`，三输入各自 4D 广播
+  （维=1 → 0，其余维 % 输入维）。**注意**：`where` 是 MYP 保留字（mapping 过滤
+  关键字），用作函数名导致整个文件解析错乱（后续方法全部误报 duplicate
+  function name）——函数名用 `where1`。
+- `ops_iface_all` 补 `WhereOp`/`GpuWhereOp` + `registerFwd(75)`。
+- 新增 `tools/make_where_onnx.py`（opset13：cond[1,2,1,1] ? x[1,2,3,4] :
+  y[1,2,3,4] → out[1,2,3,4]，cond 广播）+ `infer_tests/where_main.myp`：
+  `WHERE ALL OK`，CPU+GPU max diff 0 vs ORT。
+- 回归：31/31 infer_tests + grad_check（GRAD CHECK OK）+ ResNet output sum
+  `336.658`。
+
 ## 2026-09-01 — 阶段四 G4：Expand 算子（broadcast 复制）
 
 - OpCode `EXPAND(58)` + `opCode` 映射；`inferShapes` Expand 分支：输出维度取
