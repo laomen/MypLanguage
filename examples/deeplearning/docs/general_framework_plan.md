@@ -141,6 +141,21 @@ void eraseNode(int node);
   byte source、int64/f32 constant pool 和 BN fold metadata；只抽取 getter 外壳不算
   完成，迁移期间不允许保留两份可写状态。
 
+`GraphWeights` 的迁移边界进一步固定为：
+
+```text
+GraphWeights
+├── WeightId -> name/shape/dtype/role/layout/storage
+├── ByteSource -> 原始 ONNX 文件的只读字节访问
+├── Int64Pool -> Shape/Slice/Concat/Gather 等形状常量
+├── F32Pool -> Cast/计算得到的运行时常量
+└── FoldMetadata -> BN/布局/转置等写权重前元数据
+```
+
+`GraphWeights` 不依赖 `InferenceRuntime`，也不负责决定节点是否使用某个权重；
+节点到权重的语义仍由 `GraphNodes`/`GraphOptimizer` 决定。`GraphCompiler` 只能通过
+`weightRead`、`weightInfo` 和 `writeWeight` 读取它，不能访问 weight 数组。
+
 ### 验收标准
 
 - 现有 `Graph` 公共 API 不变。
