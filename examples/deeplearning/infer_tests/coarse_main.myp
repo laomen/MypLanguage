@@ -40,14 +40,30 @@ class CoarseApp {
             if (useGpu == 1) { Console.writeString(Cuda.name()); Console.writeString(" (GPU)"); }
             else { Console.writeString("CPU"); }
             Console.writeLine("");
+            // P5b：推理持久化（MYP_GPU_PERSIST=1）——3D 大模型中间激活占用整块 arena，
+            // 持久化仅 D2H 输出张量，避免整块 arena 往返（H2D 118ms+D2H 116ms → 稳态仅算子）。
+            int persist = 0;
+            if (useGpu == 1 && Console.getEnv("MYP_GPU_PERSIST") == "1") {
+                if (rt.gpuInferStart(outT) == 1) persist = 1;
+            }
+            int reps = 1;
+            if (persist == 1) reps = 10;
+            if (persist == 1) rt.runGpu();   // warmup：权重已在 gpuInferStart 上传
             long t0 = __myp_now_ms();
-            if (useGpu == 1) rt.runGpu();
-            else rt.run();
+            int r = 0;
+            while (r < reps) {
+                if (useGpu == 1) rt.runGpu();
+                else rt.run();
+                r = r + 1;
+            }
             long t1 = __myp_now_ms();
+            if (persist == 1) rt.gpuInferEnd();
             int m = rt.tensorSize(outT);
             Console.writeString("out size="); Console.writeLong(m); Console.writeLine("");
-            Console.writeString("coarse infer: ");
-            Console.writeLong(t1 - t0);
+            Console.writeString("coarse infer");
+            if (persist == 1) Console.writeString(" (persist avg " + Fmt.i(reps) + ")");
+            Console.writeString(": ");
+            Console.writeLong((t1 - t0) / reps);
             Console.writeLine(" ms");
             // 写输出
             int fd = __myp_io_fopen("./deeplearning/data/onnx/coarse_myp.bin", "wb");

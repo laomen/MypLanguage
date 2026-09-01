@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-09-XX — 阶段 P5c：推理持久化接入通用运行器 + 3D 大模型（coarse）
+
+### 变更
+- `run_onnx.myp`（通用 ONNX 运行器）：`MYP_GPU_PERSIST=1` 时走 `gpuInferStart(outTid)`
+  + warmup + 10 帧稳态平均（默认无 env 保持单帧整块传输语义）。
+- `coarse_main.myp`（3D U-Net 基准）：同样接入持久化推理（warmup + 10 帧平均）。
+
+### 验证
+- coarse（3D U-Net，输出 160³×6=98MB，整块 arena 含全部中间激活）GPU
+  **617 → 385ms（1.6×）**（默认 H2D 118ms + D2H 116ms 整块往返 → 持久化仅 D2H 输出
+  张量）；输出 vs 修复前 **bit-identical**、vs ORT 0.006119（既有 float32 漂移）。
+- run_onnx resnet50：37 → 17ms（稳态），输出 bit-identical；run_onnx coarse：618→382ms。
+- 全回归绿：resnet（output sum 336.658）、r18、residual_add、MLP 99%、BN、ops2d、
+  const、identity_fold、conv3d、coarselike32 GPU OK、3D U-Net skip grad check OK。
+
+### 备注（已验证的负结果）
+- 试过把 `conv2dTiled`（implicit GEMM）移植到 3D（`conv3dTiledGEMM`）：coarse 上
+  **位一致但无提速（597-614 vs 607-621ms），已回退**。原因：2D 的 4.2× 来自把
+  「无共享内存 thread-per-output」换成「32-oc 权重复用 GEMM」；而 3D patch 版
+  `conv3dTiledPatch` 本已是共享内存 tiled，且 3D im2col 即时展开（K=27×、多维索引
+  分解）成本抵消权重复用收益。docs 建议的「更大 OC_GRP」同属寄存器压力权衡，收益
+  边际——3D 卷积当前 patch 版已近最优，不再投。
+- 结论：3D 大模型（coarse）余下大头是整块 arena 传输（H2D+D2H ~234ms），由推理
+  持久化（本阶段）解决；算子侧 conv3d 已是 tiled，无廉价再优化空间。
+
+---
+
 ## 2026-09-XX — 修复：coarse 3D 模型加载段错误（isConstValue/readF32Init 越界）
 
 ### 背景

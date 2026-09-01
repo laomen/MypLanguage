@@ -209,6 +209,10 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 > **P5b 已实施**（2026-09-02）——推理持久化（`gpuInferStart`/`gpuInferEnd`）：权重一次性
 > 驻留显存，每次 runGpu 只增量 H2D 脏输入 + 只 D2H 输出；ResNet50 GPU 单帧 38→15ms
 > （稳态 2.5×，累计 95→15ms = 6.3×），逐位一致。
+> **P5c 已实施**（2026-09-02）——推理持久化接入通用运行器（run_onnx）+ 3D 大模型
+> （coarse）：coarse（输出 98MB、整块 arena 含全部中间激活）617→385ms（1.6×），
+> 输出逐位一致。已验证负结果：3D conv im2col-GEMM 移植位一致但无提速（3D patch 版
+> 本已是共享内存 tiled）→ 回退；docs 建议的更大 OC_GRP 收益边际不再投。
 
 ## 6. 收益（预期）
 
