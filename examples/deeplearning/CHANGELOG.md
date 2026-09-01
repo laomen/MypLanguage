@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-09-XX — 修复：coarse 3D 模型加载段错误（isConstValue/readF32Init 越界）
+
+### 背景
+`coarse_main`（真实 3D U-Net，coarse_model.onnx）GPU 运行段错误 139、零输出——
+回溯定位 `Graph_isConstValue`（foldIdentityOps 内）读 `file_[wOff_[wi]+j*4]` 越界。
+git bisect 定位 **IR-P1c/P2a（90104b0）引入**（DefUse/恒等折叠），此前回归集不含
+coarse 未暴露。
+
+### 根因
+`isConstValue`（P4.1 扩展为全元素校验）与 `readF32Init` 对**计算常量**（`wKind_==5`，
+Cast int64→float 折叠结果，`wOff_==-1`、值存 `cF32_`）无守卫，直接按 `wOff_` 读
+`file_` 越界（`file_[-1]`）；也未检查 `wOff_ + n*4 > fileLen_`。
+
+### 修复（`infer/graph.myp`）
+- `isConstValue`：`wKind_==5` 改读 `cF32_[wi*32+j]`（最多 32 元素）；`wOff_<0`
+  或越界 → 不折叠返回 0；file 路径保留逐元素校验。
+- `readF32Init`：`wOff_<0`（计算常量无 file_ 字节）→ 返回 0。
+
+### 验证
+- coarse_main GPU 恢复运行（671ms），输出 **vs 修复前工作二进制 bit-identical**；
+  vs ORT maxDiff 0.006119（既有 float32 漂移水平）。
+- coarselike32 GPU vs ORT maxDiff 1.67e-6 OK、3D U-Net skip grad check OK。
+- 全回归绿：resnet（37ms / persist 16ms、output sum 336.658）、r18、residual_add、
+  MLP 99%、BN、ops2d、const、identity_fold、conv3d、conv2d_gen diff=0。
+
+---
+
 ## 2026-09-XX — 阶段 P5b：推理持久化（权重驻留 + 输出-only D2H）
 
 ### 变更（`infer/runtime.myp`）
