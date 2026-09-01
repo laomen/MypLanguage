@@ -1,0 +1,111 @@
+// dupconst_main.myp — 阶段五：常量去重（内容相同初始器合并）测试
+// dupconst_test.onnx：x[1,1,5,5] → 两个 Conv（w1/b1 与 w2/b2 字节相同）→ Add → y。
+// 验证：1) 输出 vs ORT 正确；2) w2/b2 被去重（标 dead，runtime 只注册一份）。
+import env;
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class DupConstTestApp {
+    action:
+        @constructor DupConstTestApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(2048);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load("./deeplearning/data/onnx/dupconst_test.onnx", rt);
+            if (ok == 0) { Console.writeLine("load failed"); return; }
+            Console.writeString("graph: ops=");
+            Console.writeLong(rt.opCount());
+            Console.writeLine("");
+
+            Graph g = loader.graph();
+            Console.writeString("dedup count=");
+            Console.writeLong(g.compilerDedupCount());
+            Console.writeLine("");
+
+            int inT = loader.tensorId("x");
+            int outT = loader.tensorId("y");
+            if (inT < 0 || outT < 0) { Console.writeLine("tensor not found"); return; }
+            int nIn = rt.tensorSize(inT);
+            double[] buf = new double[64];
+            readF32("./deeplearning/data/onnx/dupconst_in.f32", buf, nIn);
+            int i = 0;
+            while (i < nIn) { rt.setFlat(inT, i, buf[i]); i = i + 1; }
+            rt.run();
+            int m = rt.tensorSize(outT);
+            int okC = checkOut(rt, outT, "./deeplearning/data/onnx/dupconst_test_ort.bin", m);
+
+            // 验证 w2/b2 被去重标 dead（w1/b1 保留）
+            int w2dead = shapeDead(g, "w2");
+            int b2dead = shapeDead(g, "b2");
+            int w1dead = shapeDead(g, "w1");
+            int b1dead = shapeDead(g, "b1");
+            Console.writeString("w2 dead=");
+            Console.writeLong(w2dead);
+            Console.writeString("  b2 dead=");
+            Console.writeLong(b2dead);
+            Console.writeString("  w1 dead=");
+            Console.writeLong(w1dead);
+            Console.writeString("  b1 dead=");
+            Console.writeLong(b1dead);
+            Console.writeLine("");
+            if (okC == 1 && w2dead == 1 && b2dead == 1 && w1dead == 0 && b1dead == 0) {
+                Console.writeLine("DUPCONST ALL OK");
+            } else Console.writeLine("DUPCONST MISMATCH");
+        }
+
+        int shapeDead(Graph g, string nm) {
+            int si = g.compilerShapeIdx(nm);
+            if (si < 0) return 2;   // shape 条目不存在（更彻底）
+            return g.compilerShapeDead(si);
+        }
+
+        void readF32(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                out[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        int checkOut(InferenceRuntime rt, int tid, string path, int n) {
+            if (tid < 0) return 0;
+            int fd = __myp_io_fopen(path, "rb");
+            double maxD = 0.0;
+            int bad = 0;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                double rv = F32.toDouble(bits);
+                double dv = rt.getFlat(tid, i) - rv;
+                if (dv < 0.0) dv = 0.0 - dv;
+                if (dv > maxD) maxD = dv;
+                if (dv > 1.0e-4) bad = bad + 1;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString("max diff vs ORT: ");
+            Console.writeFloat(maxD);
+            Console.writeString("  bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            if (maxD <= 1.0e-4) return 1;
+            return 0;
+        }
+}
+
+int main() { DupConstTestApp app = new DupConstTestApp(); return 0; }

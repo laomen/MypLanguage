@@ -68,6 +68,31 @@ class GraphOptimizer {
                 if (used == 0) graph.compilerMarkDeadTensor(nm);
                 wi = wi + 1;
             }
+            // 阶段五：常量去重——内容相同的初始器合并（DCE 后）。
+            // 两两比较字节内容（rows/cols/dtype/transposed/role 相同 + 文件字节逐字节相同）；
+            // 相同则把后者所有 use 重定向到前者并标 dead（runtime 只注册一份）。
+            int wa = 0;
+            while (wa < graph.weightCount()) {
+                string na = graph.weightName(wa);
+                int sa = graph.compilerShapeIdx(na);
+                if (sa >= 0 && graph.compilerShapeDead(sa) == 1) { wa = wa + 1; continue; }
+                if (graph.compilerIsGraphOutput(na) == 1) { wa = wa + 1; continue; }
+                int wb = wa + 1;
+                while (wb < graph.weightCount()) {
+                    string nb = graph.weightName(wb);
+                    int sb = graph.compilerShapeIdx(nb);
+                    if (sb >= 0 && graph.compilerShapeDead(sb) == 1) { wb = wb + 1; continue; }
+                    if (graph.compilerIsGraphOutput(nb) == 1) { wb = wb + 1; continue; }
+                    if (graph.compilerWeightBytesEqual(wa, wb) == 1) {
+                        // 合并：把 nb 的所有 use 改接到 na（replaceAllUses 覆盖节点 input + graph output）
+                        if (sa >= 0 && sb >= 0) graph.replaceAllUses(sb, sa);
+                        graph.compilerMarkDeadTensor(nb);
+                        graph.compilerIncDedup();
+                    }
+                    wb = wb + 1;
+                }
+                wa = wa + 1;
+            }
             return 1;
         }
 

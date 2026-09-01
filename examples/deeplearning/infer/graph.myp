@@ -1032,6 +1032,8 @@ class Graph {
         int compilerValueUseCount(int value) { return valueUseCount(value); }
         int compilerDceCount() { return dceCount_; }
         void compilerIncDce() { dceCount_ = dceCount_ + 1; }
+        int compilerDedupCount() { return dedupCount_; }
+        void compilerIncDedup() { dedupCount_ = dedupCount_ + 1; }
         void ensureDefUseForOptimizer() { ensureDefUse(); }
         int compilerGapCount() { return gapCount_; }
         void compilerIncGap() { gapCount_ = gapCount_ + 1; }
@@ -1075,6 +1077,29 @@ class Graph {
         int compilerWeightRows(int wi) { return weights_.get(wi, WeightField.ROWS()); }
         int compilerWeightCount() { return weights_.count(); }
         string compilerWeightNameAt(int wi) { return weights_.nameAt(wi); }
+        // G5：两个权重字节级等价（rows/cols/dtype/transposed/role 相同 + 文件字节逐字节
+        // 相同）。仅对 file-backed 初始器（offset>=0）生效；计算常量（cF32_ 存储，无 file
+        // 字节）不参与——避免把折叠产生的常量与初始器错误合并。
+        int compilerWeightBytesEqual(int wa, int wb) {
+            if (wa < 0 || wb < 0 || wa >= weights_.count() || wb >= weights_.count()) return 0;
+            if (weights_.get(wa, WeightField.ROWS()) != weights_.get(wb, WeightField.ROWS())) return 0;
+            if (weights_.get(wa, WeightField.COLS()) != weights_.get(wb, WeightField.COLS())) return 0;
+            if (weights_.get(wa, WeightField.DTYPE()) != weights_.get(wb, WeightField.DTYPE())) return 0;
+            if (weights_.get(wa, WeightField.TRANSPOSED()) != weights_.get(wb, WeightField.TRANSPOSED())) return 0;
+            if (weights_.get(wa, WeightField.ROLE()) != weights_.get(wb, WeightField.ROLE())) return 0;
+            int oa = weights_.get(wa, WeightField.OFFSET());
+            int ob = weights_.get(wb, WeightField.OFFSET());
+            int la = weights_.get(wa, WeightField.LENGTH());
+            int lb = weights_.get(wb, WeightField.LENGTH());
+            if (oa < 0 || ob < 0 || la != lb) return 0;   // 计算常量（无 file_ 字节）不参与
+            if (oa + la > fileLen_ || ob + lb > fileLen_) return 0;
+            int j = 0;
+            while (j < la) {
+                if (file_[oa + j] != file_[ob + j]) return 0;
+                j = j + 1;
+            }
+            return 1;
+        }
         int compilerLossMode() { return lossMode_; }
         string compilerGradName(string nm) { return gradName(nm); }
         void compilerEnsureGrad(string nm) { ensureGrad(nm); }
@@ -1162,6 +1187,7 @@ class Graph {
         int gapCount_;           // G2：GAP+Flatten 融合数
         int dceCount_;           // G2：死算子消除数
         int foldCount_;          // G2：常量折叠数
+        int dedupCount_;         // G5：常量去重数（内容相同初始器合并）
         int bnCount_;            // G3：Conv+BN 融合数
         int fusedAddCount_;      // P4-2：Conv+残差Add 融合数
         int noReuse_;            // 调试：1 = 内存规划不复用区域（MYP_NO_REUSE=1）
