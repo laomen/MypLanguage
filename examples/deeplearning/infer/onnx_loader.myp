@@ -374,6 +374,11 @@ class OnnxLoader {
                     payloadLen = pb_.readLen();
                     payloadOff = pb_.payloadOff();
                     pb_.skipBytes(payloadLen);
+                } else if (f == 16) {   // bfloat16_data(16)：packed 2 字节/元素（阶段三 BF16 权重）
+                    payloadKind = 5;
+                    payloadLen = pb_.readLen();
+                    payloadOff = pb_.payloadOff();
+                    pb_.skipBytes(payloadLen);
                 } else if (f == 7) {   // int64_data(7)：packed varint（F8：Reshape shape / Slice 参数）
                     payloadKind = 3;
                     payloadLen = pb_.readLen();

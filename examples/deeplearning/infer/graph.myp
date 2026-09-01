@@ -747,6 +747,16 @@ class Graph {
                     rt.setFlat(tid, j, F32.toDouble(bits));
                     j = j + 1;
                 }
+            } else if (weights_.get(wi, WeightField.DTYPE()) == 16) {
+                // 阶段三：BF16 权重（dtype 16）——每 2 字节 = F32 高 16 位，左移 16 得位型
+                int cnt = weights_.get(wi, WeightField.LENGTH()) / 2;
+                j = 0;
+                while (j < cnt) {
+                    int v = file_[off + j * 2] | (file_[off + j * 2 + 1] << 8);
+                    int bits = v << 16;
+                    rt.setFlat(tid, j, F32.toDouble(bits));
+                    j = j + 1;
+                }
             } else if (weights_.get(wi, WeightField.ROLE()) == 3) {
                 // CNN 偏置：直接拷贝（G3：BN 折叠则应用偏置公式；G4：无原偏置卷积由 BN 合成）
                 j = 0;
