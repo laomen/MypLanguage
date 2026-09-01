@@ -261,3 +261,38 @@ class OpCode {
             return 0;
         }
 }
+
+// 张量元素数据类型（ONNX elem_type 子集 + 运行时内部类型）。G2：dtype 建模。
+// 0 = 未知/未登记；1..11 对齐 ONNX TensorProto.DataType 常量。
+class DType {
+    static:
+        int UNKNOWN() { return 0; }
+        int FLOAT() { return 1; }
+        int UINT8() { return 2; }
+        int INT8() { return 3; }
+        int UINT16() { return 4; }
+        int INT16() { return 5; }
+        int INT32() { return 6; }
+        int INT64() { return 7; }
+        int STRING() { return 8; }
+        int BOOL() { return 9; }
+        int FLOAT16() { return 10; }
+        int DOUBLE() { return 11; }
+        int UINT32() { return 12; }
+        int UINT64() { return 13; }
+        int BFLOAT16() { return 16; }
+        int FP8() { return 17; }
+}
+
+// 张量存储角色：区分 data tensor / shape tensor / initializer / graph input /
+// graph output / 参数输入。G2：用于折叠后悬空输入诊断与 dtype/role 统一建模。
+class TensorRole {
+    static:
+        int UNKNOWN() { return 0; }      // 未分类
+        int DATA() { return 1; }         // 计算数据张量（激活）
+        int SHAPE() { return 2; }        // 形状/尺寸张量（int64 shape tensor）
+        int WEIGHT() { return 3; }       // 初始器权重（weight）
+        int PARAM() { return 4; }        // 参数输入（pads/sizes/axes 等，读自 file_）
+        int GRAPH_IN() { return 5; }     // 图输入（非初始器的真实输入）
+        int GRAPH_OUT() { return 6; }    // 图输出
+}

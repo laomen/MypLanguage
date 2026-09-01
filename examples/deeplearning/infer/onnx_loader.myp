@@ -55,6 +55,8 @@ class OnnxLoader {
 
         // 名称 → 张量 id（找不到返回 -1）—— 委托 Graph
         int tensorId(string name) { return g_.tensorId(name); }
+        // G2：暴露 Graph 组合根（调试/探针）
+        Graph graph() { return g_; }
         void setLayoutNHWC(int v) { doNHWC_ = v; }
         int doNHWC() { return doNHWC_; }
         // 训练损失模式：0=SoftmaxCE（默认），1=Dice（分割）
@@ -133,11 +135,17 @@ class OnnxLoader {
                     parseTensor(po, l);
                 } else if (f == 11 || f == 12) {
                     int l = pb_.readLen(); int po = pb_.payloadOff();
+                    lastElemType_ = DType.UNKNOWN();
                     string nm = parseValueInfo(po, l);
-                    // 记录图输入名（含 initializer；真实输入由 isWeightName 排除）
-                    if (f == 11) g_.addGraphInput(nm);
-                    // 记录图输出名（G1 融合安全：被 fused 的中间张量不能是图输出）
-                    if (f == 12) g_.addGraphOutput(nm);
+                    // G2：登记图输入/输出的 dtype + role（初始器输入是 WEIGHT，非 GRAPH_IN）
+                    if (nm != "") {
+                        if (f == 11) {
+                            if (g_.isWeightName(nm) == 1) { g_.setValueRole(nm, TensorRole.WEIGHT()); if (lastElemType_ != DType.UNKNOWN()) g_.setValueDType(nm, lastElemType_); }
+                            else { g_.setValueRole(nm, TensorRole.GRAPH_IN()); if (lastElemType_ != DType.UNKNOWN()) g_.setValueDType(nm, lastElemType_); }
+                            g_.addGraphInput(nm);
+                        }
+                        if (f == 12) { g_.setValueRole(nm, TensorRole.GRAPH_OUT()); if (lastElemType_ != DType.UNKNOWN()) g_.setValueDType(nm, lastElemType_); g_.addGraphOutput(nm); }
+                    }
                 } else {
                     pb_.skipField();
                 }
@@ -373,6 +381,11 @@ class OnnxLoader {
             }
             g_.addWeight(nm, rows, cols, dt, payloadKind, payloadOff, payloadLen);
             g_.addShapeD(nm, dims, dimCount);
+            // G2：initializer 登记 dtype + WEIGHT role
+            if (nm != "") {
+                g_.setValueRole(nm, TensorRole.WEIGHT());
+                if (dt != 0) g_.setValueDType(nm, dt);
+            }
             return 1;
         }
 
@@ -425,7 +438,9 @@ class OnnxLoader {
             while (pb_.pos() < end) {
                 int f = pb_.nextTag();
                 if (f == -1) break;
-                if (f == 2) {   // shape
+                if (f == 1) {   // elem_type（G2：dtype 建模）
+                    lastElemType_ = pb_.readVarint();
+                } else if (f == 2) {   // shape
                     int l = pb_.readLen(); int po = pb_.payloadOff();
                     dimCount = parseShape(po, l, dims);
                 } else {
@@ -475,6 +490,7 @@ class OnnxLoader {
         int doNHWC_;
         int lossMode_;          // 训练损失模式：0=SoftmaxCE，1=Dice
         int diceWMode_;         // Dice 类权重：0=等权，1=逆频率加权
+        int lastElemType_;      // G2：最近解析 ValueInfo 的 elem_type（dtype 建模）
         string[8] inpName_;     // P3：输入形状注入表
         int[8] inpD0_;
         int[8] inpD1_;

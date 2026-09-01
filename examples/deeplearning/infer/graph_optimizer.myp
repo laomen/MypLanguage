@@ -167,7 +167,7 @@ class GraphOptimizer {
                 int j = graph.matchSingleUseOp(graph.valueId(eff), "Add", 0);
                 if (j < 0) { i = i + 1; continue; }
                 string resid = graph.nodeInAt(j, 1);
-                if (resid == "" || graph.compilerIsGraphOutput(resid) == 1 || graph.compilerShapeIdx(resid) < 0) { i = i + 1; continue; }
+                if (resid == "" || graph.compilerIsGraphOutput(resid) == 1 || graph.compilerValueExists(resid) == 0) { i = i + 1; continue; }
                 string addOut = graph.compilerNodeOutput(j, 0);
                 graph.compilerAttrSetFused(i, 1);
                 graph.compilerAttrSetFusedOut(i, addOut);
@@ -390,7 +390,7 @@ class GraphOptimizer {
             if (producerNHWC(graph, nm) == 1) return;    // 已是 NHWC
             if (graph.compilerInitIdx(nm) >= 0) return;         // 初始器（权重单独处理）
             string tname = nm + "#nhwc";
-            if (graph.compilerShapeIdx(tname) < 0) {
+            if (graph.compilerValueExists(tname) == 0) {
                 int s = graph.compilerShapeIdx(nm);
                 if (s < 0) return;
                 int N = graph.compilerShapeDim(s, 0); int H = graph.compilerShapeDim(s, 1); int W = graph.compilerShapeDim(s, 2); int C = graph.compilerShapeDim(s, 3);
@@ -436,17 +436,24 @@ class GraphOptimizer {
         }
         // F8：int64 参数初始器（Reshape shape / Slice starts 等）标死——
         // 不登记为 f32 运行时张量（readI64Init 直接从 file_ 读，不依赖 runtime 张量）。
+        // G2：同时登记 SHAPE role + INT64 dtype（shape tensor 显式建模）。
         void markInt64Param(Graph graph, string name) {
             int wi = graph.compilerInitIdx(name);
             if (wi < 0) return;
             if (graph.compilerWeightGetField(wi, WeightField.DTYPE()) != 7) return;   // 仅 int64 参数
             graph.compilerMarkDeadTensor(name);
+            graph.compilerSetValueRole(name, TensorRole.SHAPE());
+            graph.compilerSetValueDType(name, DType.INT64());
         }
         // F8：任意参数初始器标死（Resize scales/sizes 等，读自 file_）
+        // G2：同时登记 PARAM role（float 参数输入显式建模）。
         void markParamDead(Graph graph, string name) {
             int wi = graph.compilerInitIdx(name);
             if (wi < 0) return;
             graph.compilerMarkDeadTensor(name);
+            graph.compilerSetValueRole(name, TensorRole.PARAM());
+            int dt = graph.compilerWeightGetField(wi, WeightField.DTYPE());
+            if (dt != 0) graph.compilerSetValueDType(name, dt);
         }
         int isNodeOutputOf(Graph graph, string name) {
             int i = 0;
@@ -693,7 +700,7 @@ class GraphOptimizer {
                 string t = graph.nodeTypeAt(ni);
                 if (t != "") {
                     string y = graph.compilerNodeOutput(ni, 0);
-                    if (graph.compilerShapeIdx(graph.compilerGradName(y)) >= 0) {
+                    if (graph.compilerValueExists(graph.compilerGradName(y)) == 1) {
                         // 确保该节点各输入/输出的梯度张量形状都登记（否则 buildRuntime 注册不到）
                         graph.compilerEnsureGrad(graph.nodeInAt(ni, 0));
                         graph.compilerEnsureGrad(graph.nodeInAt(ni, 1));

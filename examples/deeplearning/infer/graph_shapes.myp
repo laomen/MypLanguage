@@ -29,10 +29,18 @@ class GraphShapes {
         int kindAt(int value) { if (value < 0 || value >= sCount_) return Kind.FC_ACT(); return shKind_[value]; }
         int nhwcAt(int value) { if (value < 0 || value >= sCount_) return 0; return shNHWC_[value]; }
         int deadAt(int value) { if (value < 0 || value >= sCount_) return 1; return shDead_[value]; }
+        int dTypeAt(int value) { if (value < 0 || value >= sCount_) return DType.UNKNOWN(); return shDType_[value]; }
+        int roleAt(int value) { if (value < 0 || value >= sCount_) return TensorRole.UNKNOWN(); return shRole_[value]; }
 
         void setKindAt(int value, int kind) { if (value >= 0 && value < sCount_) shKind_[value] = kind; }
         void setNhwcAt(int value, int enabled) { if (value >= 0 && value < sCount_) shNHWC_[value] = enabled; }
         void setDeadAt(int value, int dead) { if (value >= 0 && value < sCount_) shDead_[value] = dead; }
+        void setDTypeAt(int value, int dt) { if (value >= 0 && value < sCount_) shDType_[value] = dt; }
+        void setRoleAt(int value, int role) { if (value >= 0 && value < sCount_) shRole_[value] = role; }
+        int dTypeOf(string name) { int i = idx(name); if (i < 0) return DType.UNKNOWN(); return shDType_[i]; }
+        int roleOf(string name) { int i = idx(name); if (i < 0) return TensorRole.UNKNOWN(); return shRole_[i]; }
+        void setDTypeOf(string name, int dt) { int i = idx(name); if (i >= 0) shDType_[i] = dt; }
+        void setRoleOf(string name, int role) { int i = idx(name); if (i >= 0) shRole_[i] = role; }
 
         int shapeKind(string name) {
             int i = idx(name);
@@ -79,6 +87,8 @@ class GraphShapes {
             shDead_[sCount_] = 0;
             shNHWC_[sCount_] = 0;
             shR5_[sCount_] = 0;
+            shDType_[sCount_] = DType.UNKNOWN();
+            shRole_[sCount_] = TensorRole.UNKNOWN();
             sCount_ = sCount_ + 1;
         }
         void addShapeD5(string name, int d0, int d1, int d2, int d3, int d4) {
@@ -99,6 +109,8 @@ class GraphShapes {
             shDead_[sCount_] = 0;
             shNHWC_[sCount_] = 0;
             shR5_[sCount_] = 1;
+            shDType_[sCount_] = DType.UNKNOWN();
+            shRole_[sCount_] = TensorRole.UNKNOWN();
             sCount_ = sCount_ + 1;
         }
         void copyShape(string name, int src) {
@@ -162,5 +174,7 @@ class GraphShapes {
         int[512] shKind_;
         int[512] shNHWC_;
         int[512] shDead_;
+        int[512] shDType_;   // G2：张量元素 dtype（DType.*）
+        int[512] shRole_;    // G2：张量存储角色（TensorRole.*）
         int sCount_;
 }

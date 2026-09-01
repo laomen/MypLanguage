@@ -108,6 +108,17 @@ class Graph {
         // ---- P0 IR 访问器：ValueId = shape table index（名称只在 ONNX 边界保留）----
         // 既有 pass 仍可直接写 SoA；消费 def-use 前调用 rebuildDefUse() 重建索引。
         int valueId(string name) { return shapeIdx(name); }
+        // G2：ValueId 语义访问器——替代「shapeIdx(name) >= 0 / == -1」裸判断。
+        int valueExists(string name) { return shapeIdx(name) >= 0 ? 1 : 0; }
+        int valueDType(string name) { int v = shapeIdx(name); if (v < 0) return DType.UNKNOWN(); return shapes_.dTypeAt(v); }
+        int valueRole(string name) { int v = shapeIdx(name); if (v < 0) return TensorRole.UNKNOWN(); return shapes_.roleAt(v); }
+        void setValueDType(string name, int dt) { shapes_.setDTypeOf(name, dt); }
+        void setValueRole(string name, int role) { shapes_.setRoleOf(name, role); }
+        // ValueId 版：以 id 直接查（避免 name 重复解析）
+        int valueDTypeId(int value) { return shapes_.dTypeAt(value); }
+        int valueRoleId(int value) { return shapes_.roleAt(value); }
+        void setValueDTypeId(int value, int dt) { shapes_.setDTypeAt(value, dt); }
+        void setValueRoleId(int value, int role) { shapes_.setRoleAt(value, role); }
         string valueName(int value) { if (value < 0 || value >= shapes_.count()) return ""; return shapes_.nameAt(value); }
         int nodeAlive(int node) { if (node < 0 || node >= nodes_.count() || nodes_.typeAt(node) == "") return 0; return 1; }
         int nodeInputValue(int node, int slot) { if (node < 0 || node >= nodes_.count() || slot < 0 || slot >= 5) return -1; return shapeIdx(nodeInAt(node, slot)); }
@@ -926,6 +937,11 @@ class Graph {
     action:
         // ---- GraphCompiler 窄桥接（action 转发私有 function:，供跨类 lowering 调用）----
         int compilerShapeIdx(string name) { return shapeIdx(name); }
+        int compilerValueExists(string name) { return valueExists(name); }
+        int compilerValueDType(string name) { return valueDType(name); }
+        int compilerValueRole(string name) { return valueRole(name); }
+        void compilerSetValueDType(string name, int dt) { setValueDType(name, dt); }
+        void compilerSetValueRole(string name, int role) { setValueRole(name, role); }
         int compilerWeightIdx(string name) { return initIdx(name); }
         int compilerWeightTransposed(int weight) { return weights_.get(weight, WeightField.TRANSPOSED()); }
         string compilerEffectiveOut(int node) { return effectiveOut(node); }
