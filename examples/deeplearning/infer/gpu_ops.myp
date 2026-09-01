@@ -219,16 +219,41 @@ class GpuInferOps {
         }
 
         // 逐元素相加（doRelu=1：输出直接过 ReLU，图优化 Add+Relu 融合）
-        void add(float[] a, int work, int aOff, int bOff, int outOff, long dev, int doRelu) {
+        // 阶段三：统一 4D numpy 广播（标量/同尺寸/逐通道/通用）
+        void add(float[] a, int work, int aOff, int bOff, int outOff, int bSize, int doRelu,
+                 int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw,
+                 int on, int oc, int oh, int ow, long dev) {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
-                    if (doRelu == 1) {
-                        float v = a[aOff + p] + a[bOff + p];
-                        if (v < 0.0f) v = 0.0f;
-                        a[outOff + p] = v;
+                    float v;
+                    if (bSize <= 1) {
+                        v = a[aOff + p] + a[bOff + 0];
+                    } else if (bSize == work && an == on && ac == oc && ah == oh && aw == ow && bn == on && bc == oc && bh == oh && bw == ow) {
+                        v = a[aOff + p] + a[bOff + p];
+                    } else if (bn == 1 && bc == oc && bh == 1 && bw == 1) {
+                        v = a[aOff + p] + a[bOff + (int(p) / (oh * ow)) % oc];
                     } else {
-                        a[outOff + p] = a[aOff + p] + a[bOff + p];
+                        int i = int(p);
+                        int w3 = i % ow;
+                        int t = i / ow;
+                        int w2 = t % oh;
+                        t = t / oh;
+                        int w1 = t % oc;
+                        int w0 = t / oc;
+                        int a0 = (an == 1) ? 0 : (w0 % an);
+                        int a1 = (ac == 1) ? 0 : (w1 % ac);
+                        int a2 = (ah == 1) ? 0 : (w2 % ah);
+                        int a3 = (aw == 1) ? 0 : (w3 % aw);
+                        int aF = ((a0 * ac + a1) * ah + a2) * aw + a3;
+                        int b0 = (bn == 1) ? 0 : (w0 % bn);
+                        int b1 = (bc == 1) ? 0 : (w1 % bc);
+                        int b2 = (bh == 1) ? 0 : (w2 % bh);
+                        int b3 = (bw == 1) ? 0 : (w3 % bw);
+                        int bF = ((b0 * bc + b1) * bh + b2) * bw + b3;
+                        v = a[aOff + aF] + a[bOff + bF];
                     }
+                    if (doRelu == 1 && v < 0.0f) v = 0.0f;
+                    a[outOff + p] = v;
                 }
             }
         }

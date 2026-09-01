@@ -83,7 +83,7 @@ class SigmoidOp {
         }
 }
 
-// ---- add（opKind 5 前向 / 53 反向；opRelu 融合标志）----
+// ---- add（opKind 5 前向 / 53 反向；opRelu 融合标志；统一 4D 广播）----
 class AddOp {
     interface class IOp;
     action:
@@ -92,7 +92,10 @@ class AddOp {
             int bb = rt.opBAt(i);
             int oc = rt.opCAt(i);
             InferOps.add(rt.arenaRef(), rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc),
-                         rt.tensorRows(aa) * rt.tensorCols(aa), rt.opReluAt(i));
+                         rt.tensorRows(oc) * rt.tensorCols(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opReluAt(i),
+                         rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i),
+                         rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i),
+                         rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc));
         }
         void backward(InferenceRuntime rt, int i) {
             if (rt.trainMode() == 1) {
@@ -197,8 +200,11 @@ class GpuAddOp {
             int aa = rt.opAAt(i);
             int bb = rt.opBAt(i);
             int oc = rt.opCAt(i);
-            GpuInferOps.add(rt.arenaRef(), rt.tensorRows(aa) * rt.tensorCols(aa),
-                            rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.devRef(), rt.opReluAt(i));
+            GpuInferOps.add(rt.arenaRef(), rt.tensorRows(oc) * rt.tensorCols(oc),
+                            rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opReluAt(i),
+                            rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i),
+                            rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i),
+                            rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc), rt.devRef());
         }
         void backward(InferenceRuntime rt, int i) {
             if (rt.trainMode() == 1) {

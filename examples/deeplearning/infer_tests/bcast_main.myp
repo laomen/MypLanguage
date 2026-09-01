@@ -34,19 +34,19 @@ class BcastTestApp {
             }
             rt.run();
 
-            // ORT blob：out1(24)+out2(24)+out3(48)+out4(24)+out5(24)+out6(24)=168
+            // ORT blob：out1(24)+out2(24)+out3(48)+out4(24)+out5(24)+out6(24)+out7(24)+out8(48)=240
             double[] blob = new double[256];
-            readF32("./deeplearning/data/onnx/bcast_test_ort.bin", blob, 168);
+            readF32("./deeplearning/data/onnx/bcast_test_ort.bin", blob, 240);
             int badAll = 0;
             double maxAll = 0.0;
-            int[] outOff = new int[6];
-            outOff[0] = 0; outOff[1] = 24; outOff[2] = 48; outOff[3] = 96; outOff[4] = 120; outOff[5] = 144;
-            int[] outCnt = new int[6];
-            outCnt[0] = 24; outCnt[1] = 24; outCnt[2] = 48; outCnt[3] = 24; outCnt[4] = 24; outCnt[5] = 24;
-            string[] outNames = new string[6];
-            outNames[0] = "out1"; outNames[1] = "out2"; outNames[2] = "out3"; outNames[3] = "out4"; outNames[4] = "out5"; outNames[5] = "out6";
+            int[] outOff = new int[8];
+            outOff[0] = 0; outOff[1] = 24; outOff[2] = 48; outOff[3] = 96; outOff[4] = 120; outOff[5] = 144; outOff[6] = 168; outOff[7] = 192;
+            int[] outCnt = new int[8];
+            outCnt[0] = 24; outCnt[1] = 24; outCnt[2] = 48; outCnt[3] = 24; outCnt[4] = 24; outCnt[5] = 24; outCnt[6] = 24; outCnt[7] = 48;
+            string[] outNames = new string[8];
+            outNames[0] = "out1"; outNames[1] = "out2"; outNames[2] = "out3"; outNames[3] = "out4"; outNames[4] = "out5"; outNames[5] = "out6"; outNames[6] = "out7"; outNames[7] = "out8";
             k = 0;
-            while (k < 6) {
+            while (k < 8) {
                 int t = loader.tensorId(outNames[k]);
                 if (t < 0) { Console.writeLine("out not found: " + outNames[k]); return; }
                 int j = 0;

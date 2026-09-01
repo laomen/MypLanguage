@@ -456,7 +456,8 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
 
-        void addAdd(int aTid, int bTid, int outputTid, int doRelu) {
+        void addAdd(int aTid, int bTid, int outputTid, int doRelu,
+                    int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw) {
             int id = opCount_;
             opKind_[id] = 5;
             opA_[id] = aTid;
@@ -464,6 +465,8 @@ class InferenceRuntime {
             opC_[id] = outputTid;
             opD_[id] = 0;
             opRelu_[id] = doRelu;
+            opP0_[id] = an; opP1_[id] = ac; opP2_[id] = ah; opP3_[id] = aw;
+            opP4_[id] = bn; opP5_[id] = bc; opP6_[id] = bh; opP7_[id] = bw;
             opCount_ = opCount_ + 1;
         }
 

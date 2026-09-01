@@ -44,6 +44,8 @@ nodes = [
     helper.make_node("Sub", ["a4", "bw"], ["out4"], name="s2"),
     helper.make_node("Mul", ["a5", "bhw"], ["out5"], name="m2"),
     helper.make_node("Sub", ["a6", "b6"], ["out6"], name="s3"),
+    helper.make_node("Add", ["a", "b"], ["out7"], name="ad1"),        # Add 同形状
+    helper.make_node("Add", ["a3", "bchan"], ["out8"], name="ad2"),    # Add 逐通道 bias
 ]
 graph = helper.make_graph(
     nodes, "bcast_test",
@@ -68,6 +70,8 @@ graph = helper.make_graph(
         helper.make_tensor_value_info("out4", TensorProto.FLOAT, [1, 2, 3, 4]),
         helper.make_tensor_value_info("out5", TensorProto.FLOAT, [1, 2, 3, 4]),
         helper.make_tensor_value_info("out6", TensorProto.FLOAT, [1, 2, 3, 4]),
+        helper.make_tensor_value_info("out7", TensorProto.FLOAT, [1, 2, 3, 4]),
+        helper.make_tensor_value_info("out8", TensorProto.FLOAT, [1, 4, 3, 4]),
     ],
 )
 model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])

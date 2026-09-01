@@ -334,18 +334,53 @@ class InferOps {
             }
         }
 
-        void add(float[] arena, int aOff, int bOff, int outOff, int n, int doRelu) {
+        // Add：y = a + b（阶段三：统一 4D numpy 广播；doRelu 融合）。
+        // 标量 / 同尺寸（a/b/out 三维全同）/ 逐通道 [1,C,1,1] / 通用 4D 广播。
+        void add(float[] arena, int aOff, int bOff, int outOff, int n, int bSize, int doRelu,
+                 int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw,
+                 int on, int oc, int oh, int ow) {
             int i = 0;
-            if (doRelu == 1) {
+            if (bSize <= 1) {
+                double bv = arena[bOff + 0];
+                while (i < n) { double av = arena[aOff + i]; arena[outOff + i] = float(av + bv); i = i + 1; }
+            } else if (bSize == n && an == on && ac == oc && ah == oh && aw == ow && bn == on && bc == oc && bh == oh && bw == ow) {
+                // 同尺寸
                 while (i < n) {
                     float v = arena[aOff + i] + arena[bOff + i];
-                    if (v < 0.0f) v = 0.0f;
+                    if (doRelu == 1 && v < 0.0f) v = 0.0f;
+                    arena[outOff + i] = v;
+                    i = i + 1;
+                }
+            } else if (bn == 1 && bc == oc && bh == 1 && bw == 1) {
+                // 逐通道 [1,C,1,1]：b[(i/(oh*ow))%C]
+                while (i < n) {
+                    float v = arena[aOff + i] + arena[bOff + (i / (oh * ow)) % oc];
+                    if (doRelu == 1 && v < 0.0f) v = 0.0f;
                     arena[outOff + i] = v;
                     i = i + 1;
                 }
             } else {
+                // 4D 通用广播：输出 index % 各输入维（维=1 → 0）
                 while (i < n) {
-                    arena[outOff + i] = arena[aOff + i] + arena[bOff + i];
+                    int w3 = i % ow;
+                    int t = i / ow;
+                    int w2 = t % oh;
+                    t = t / oh;
+                    int w1 = t % oc;
+                    int w0 = t / oc;
+                    int a0 = (an == 1) ? 0 : (w0 % an);
+                    int a1 = (ac == 1) ? 0 : (w1 % ac);
+                    int a2 = (ah == 1) ? 0 : (w2 % ah);
+                    int a3 = (aw == 1) ? 0 : (w3 % aw);
+                    int aF = ((a0 * ac + a1) * ah + a2) * aw + a3;
+                    int b0 = (bn == 1) ? 0 : (w0 % bn);
+                    int b1 = (bc == 1) ? 0 : (w1 % bc);
+                    int b2 = (bh == 1) ? 0 : (w2 % bh);
+                    int b3 = (bw == 1) ? 0 : (w3 % bw);
+                    int bF = ((b0 * bc + b1) * bh + b2) * bw + b3;
+                    float v = arena[aOff + aF] + arena[bOff + bF];
+                    if (doRelu == 1 && v < 0.0f) v = 0.0f;
+                    arena[outOff + i] = v;
                     i = i + 1;
                 }
             }

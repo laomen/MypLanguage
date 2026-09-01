@@ -103,7 +103,12 @@ class GraphCompiler {
                     rt.addMatmul(a, w, out);
                 } else if (code == OpCode.ADD()) {
                     int b = tensorId(graph.nodeInAt(ni, 1));
-                    rt.addAdd(a, b, out, graph.compilerAttrRelu(ni));
+                    int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                    int bs = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
+                    int an = 1, ac = 1, ah = 1, aw = 1, bn = 1, bc = 1, bh = 1, bw = 1;
+                    if (is >= 0) { an = graph.compilerShapeDim(is, 0); ac = graph.compilerShapeDim(is, 1); ah = graph.compilerShapeDim(is, 2); aw = graph.compilerShapeDim(is, 3); }
+                    if (bs >= 0) { bn = graph.compilerShapeDim(bs, 0); bc = graph.compilerShapeDim(bs, 1); bh = graph.compilerShapeDim(bs, 2); bw = graph.compilerShapeDim(bs, 3); }
+                    rt.addAdd(a, b, out, graph.compilerAttrRelu(ni), an, ac, ah, aw, bn, bc, bh, bw);
                 } else if (code == OpCode.RELU()) {
                     rt.addRelu(a, out);
                 } else if (code == OpCode.SIGMOID()) {
@@ -391,7 +396,12 @@ class GraphCompiler {
                     if (nIn >= 3 && s2 >= 0) ax2 = (axis == 0) ? graph.compilerShapeDim(s2, 0) : ((axis == 1) ? graph.compilerShapeDim(s2, 1) : ((axis == 2) ? graph.compilerShapeDim(s2, 2) : graph.compilerShapeDim(s2, 3)));
                     rt.addBwdConcat(dy, dx0, dx1, dx2, axis, nIn, od0, od1, od2, od3, ax0, ax1, ax2);
                 } else if (code == OpCode.GRAD_ACC()) {
-                    rt.addAdd(tensorId(graph.nodeInAt(ni, 0)), tensorId(graph.nodeInAt(ni, 1)), tensorId(graph.compilerNodeOutput(ni, 0)), 0);
+                    int g0 = tensorId(graph.nodeInAt(ni, 0));
+                    int g1 = tensorId(graph.nodeInAt(ni, 1));
+                    int gs = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                    int an = 1, ac = 1, ah = 1, aw = 1;
+                    if (gs >= 0) { an = graph.compilerShapeDim(gs, 0); ac = graph.compilerShapeDim(gs, 1); ah = graph.compilerShapeDim(gs, 2); aw = graph.compilerShapeDim(gs, 3); }
+                    rt.addAdd(g0, g1, tensorId(graph.compilerNodeOutput(ni, 0)), 0, an, ac, ah, aw, an, ac, ah, aw);
                 } else if (code == OpCode.TRANSPOSE()) {
                     int p0 = graph.compilerAttr(ni, NodeField.PERM0()), p1 = graph.compilerAttr(ni, NodeField.PERM1()), p2 = graph.compilerAttr(ni, NodeField.PERM2()), p3 = graph.compilerAttr(ni, NodeField.PERM3());
                     int pc = graph.compilerAttr(ni, NodeField.PERM_N());
