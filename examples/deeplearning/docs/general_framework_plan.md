@@ -248,6 +248,27 @@ OpKind
 
 这一步可以从根源上避免 Resize/Pad 已发现的“折叠生产者后留下悬空输入”问题。
 
+### 当前进度（2026-09-01）
+
+- **已完成：G2 ValueId/dtype/role 建模**。`graph_defs.myp` 加 `DType`/`TensorRole`
+  常量类；`GraphShapes` 加 `shDType_`/`shRole_` + 访问器；`Graph` 加 `valueExists`/
+  `valueDType`/`valueRole` 语义访问器（替代 `shapeIdx(x)>=0`/`-1` 裸判断）；`GraphOptimizer`
+  3 处 `-1` 哨兵替换为 `compilerValueExists`。`onnx_loader` 在加载时登记 dtype+role
+  （initializer→WEIGHT、input→GRAPH_IN、output→GRAPH_OUT、int64 参数→SHAPE/INT64、
+  float 参数→PARAM）；`classifyShapes` 激活传播设 DATA role + 传播 dtype。ResNet50
+  全 231 张量分类完成（DATA=121/WEIGHT=108/GRAPH_IN=1/GRAPH_OUT=1，FLOAT=231，
+  UNKNOWN=0）。新增 `infer_tests/g2_probe_main.myp` 加载级回归。
+- **已完成：G3 ReduceMean 负轴归一化**。inferShapes 负轴 +rank 后分类 mode，
+  为阶段四 ReduceSum/Max/Min 铺路。
+- **已验证**：28/28 infer_tests + grad_check（L0=1.92528）在 `MYP_GPU=1
+  MYP_IR_VERIFY=1` 下全部通过；ResNet output sum `336.658`。关键提交：`8a38beb`
+  （G2 基础）、`9508a10`（DATA role）、`88d0fd2`（G3 负轴）。
+- **下一步**：G3 剩余（broadcast/ShapeExpr/dtype 转换规则）与阶段四算子
+  （Gather 完整/ReduceSum/ReduceMax/ReduceMin/Expand/Where/Tile/Squeeze）。
+  当前模型集为 4D/5D 静态 shape + 全 FLOAT + 同形状广播，broadcast 统一与
+  ShapeExpr 无模型驱动——按「不为没有目标的模式提前堆代码」，优先推进有合成
+  测试可验证的算子补全（ReduceSum/Max/Min 与已有 ReduceMean 同构）。
+
 ## 5. 阶段三：Shape、DType 与 Broadcast 基础层
 
 ### 目标

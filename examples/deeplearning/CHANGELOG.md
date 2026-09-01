@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-09-01 — 阶段二 G2/G3：ValueId、dtype/role 建模 + Reduce 负轴
+
+- **G2 dtype/role 建模**（commit `8a38beb`/`9508a10`）：
+  - `graph_defs.myp` 新增 `DType`（ONNX elem_type）与 `TensorRole`
+    （UNKNOWN/DATA/SHAPE/WEIGHT/PARAM/GRAPH_IN/GRAPH_OUT）常量类。
+  - `GraphShapes` 新增 `shDType_`/`shRole_` 数组与访问器，`addShapeD4/D5` 初始化。
+  - `Graph` 新增 ValueId 语义访问器 `valueExists`/`valueDType`/`valueRole`（+ id
+    变体），`GraphOptimizer` 3 处 `shapeIdx(x)<0/>=0` 哨兵替换为 `compilerValueExists`。
+  - `onnx_loader` 加载时登记 dtype+role：initializer→WEIGHT、value_info
+    input→GRAPH_IN / output→GRAPH_OUT（解析 TypeProto.elem_type）、int64 参数→
+    SHAPE/INT64、float 参数→PARAM；`classifyShapes` 激活传播设 DATA role +
+    传播 dtype（含 Split 多输出）。新增 `Graph graph()` 访问器。
+  - 效果：ResNet50 全 231 张量分类（DATA=121/WEIGHT=108/GRAPH_IN=1/GRAPH_OUT=1、
+    FLOAT=231、UNKNOWN=0）；slice 模型 int64 参数 13 个 SHAPE/INT64。
+- **G3 ReduceMean 负轴归一化**（commit `88d0fd2`）：inferShapes 负轴 +rank 后
+  分类 mode，为 ReduceSum/Max/Min 铺路。
+- **新回归** `infer_tests/g2_probe_main.myp`：加载真实 ResNet50 断言 WEIGHT≥50/
+  GRAPH_IN=1/GRAPH_OUT=1/FLOAT≥50 → "G2 DTYPE ROLE OK"。
+- **回归**：28/28 infer_tests + grad_check（L0=1.92528）在 `MYP_GPU=1
+  MYP_IR_VERIFY=1` 下全过；ResNet output sum `336.658`。
+
 ## 2026-09-01 — 阶段一完成：全部 pass 迁入 GraphOptimizer（Graph 降为组合根）
 
 - **具体 pass 算法全部迁出 `graph.myp`**：`eliminateDeadNodes`/`fuseGapFlatten`/
