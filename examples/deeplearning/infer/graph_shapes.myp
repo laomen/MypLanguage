@@ -102,12 +102,17 @@ class GraphShapes {
             sCount_ = sCount_ + 1;
         }
         void copyShape(string name, int src) {
+            if (src < 0 || src >= sCount_) return;
             if (shR5_[src] == 1) addShapeD5(name, shD0_[src], shD1_[src], shD2_[src], shD3_[src], shD4_[src]);
             else addShapeD4(name, shD0_[src], shD1_[src], shD2_[src], shD3_[src]);
         }
         void setShape(string name, int d0, int d1, int d2, int d3, int d4, int is5) {
             int s = idx(name);
-            if (s < 0) { addShapeD5(name, d0, d1, d2, d3, d4); return; }
+            if (s < 0) {
+                if (is5 == 1) addShapeD5(name, d0, d1, d2, d3, d4);
+                else addShapeD4(name, d0, d1, d2, d3);
+                return;
+            }
             shD0_[s] = d0; shD1_[s] = d1; shD2_[s] = d2; shD3_[s] = d3; shD4_[s] = d4; shR5_[s] = is5;
         }
 
