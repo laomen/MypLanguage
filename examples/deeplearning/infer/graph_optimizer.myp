@@ -419,6 +419,160 @@ class GraphOptimizer {
             }
         }
 
+        int shapeKindOf(Graph graph, string name) { return graph.compilerShapeKind(graph.compilerShapeIdx(name)); }
+
+        // F8：把 4D 通用常量（非 Conv 权重/偏置）标记为 CNN 激活（buildRuntime 4D 登记）
+        // 并设 wRole_=4（写权重时直接拷贝，不做 FC 转置）
+        void markGeneric4DConst(Graph graph, string name) {
+            int wi = graph.compilerInitIdx(name);
+            if (wi < 0) return;
+            if (graph.compilerWeightGetField(wi, WeightField.ROLE()) == 2 || graph.compilerWeightGetField(wi, WeightField.ROLE()) == 3) return;   // Conv 权重/偏置不覆盖
+            int s = graph.compilerShapeIdx(name);
+            if (s < 0) return;
+            if (graph.compilerShapeDim(s, 2) <= 1 && graph.compilerShapeDim(s, 3) <= 1) return;       // 非 4D 不处理
+            graph.compilerWeightSetField(wi, WeightField.ROLE(), 4);
+            graph.compilerWeightSetField(wi, WeightField.TRANSPOSED(), 0);
+            graph.compilerSetShapeKind(name, Kind.CNN_ACT());
+        }
+        // F8：int64 参数初始器（Reshape shape / Slice starts 等）标死——
+        // 不登记为 f32 运行时张量（readI64Init 直接从 file_ 读，不依赖 runtime 张量）。
+        void markInt64Param(Graph graph, string name) {
+            int wi = graph.compilerInitIdx(name);
+            if (wi < 0) return;
+            if (graph.compilerWeightGetField(wi, WeightField.DTYPE()) != 7) return;   // 仅 int64 参数
+            graph.compilerMarkDeadTensor(name);
+        }
+        // F8：任意参数初始器标死（Resize scales/sizes 等，读自 file_）
+        void markParamDead(Graph graph, string name) {
+            int wi = graph.compilerInitIdx(name);
+            if (wi < 0) return;
+            graph.compilerMarkDeadTensor(name);
+        }
+        int isNodeOutputOf(Graph graph, string name) {
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                if (graph.compilerNodeOutput(i, 0) == name || graph.compilerNodeOutput(i, 1) == name || graph.compilerNodeOutput(i, 2) == name || graph.compilerNodeOutput(i, 3) == name) return 1;
+                i = i + 1;
+            }
+            return 0;
+        }
+        int consumerKindOf(Graph graph, string name) {
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                if (graph.nodeInAt(i, 0) == name || graph.nodeInAt(i, 1) == name || graph.nodeInAt(i, 2) == name) {
+                    string t = graph.nodeTypeAt(i);
+                    if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization") return Kind.CNN_ACT();
+                    if (t == "Conv3D" || t == "MaxPool3D" || t == "AveragePool3D") return Kind.CNN_ACT();   // 3D
+                    // F8：Concat/Transpose/Reshape 等 —— 若张量本身 4D 则按 CNN 激活
+                    int s = graph.compilerShapeIdx(name);
+                    if (s >= 0 && (graph.compilerShapeDim(s, 2) > 1 || graph.compilerShapeDim(s, 3) > 1)) return Kind.CNN_ACT();
+                    return Kind.FC_ACT();
+                }
+                i = i + 1;
+            }
+            return Kind.FC_ACT();
+        }
+        void markFCWeight(Graph graph, string name, int v) {
+            int i = graph.compilerInitIdx(name);
+            if (i >= 0) { graph.compilerWeightSetField(i, WeightField.TRANSPOSED(), v); graph.compilerWeightSetField(i, WeightField.ROLE(), 0); graph.compilerSetShapeKind(name, Kind.FC_W()); }
+        }
+        void markFCBias(Graph graph, string name) {
+            int i = graph.compilerInitIdx(name);
+            if (i >= 0) { graph.compilerWeightSetField(i, WeightField.BIAS(), 1); graph.compilerWeightSetField(i, WeightField.ROLE(), 1); graph.compilerSetShapeKind(name, Kind.FC_B()); }
+        }
+        void markCNNWeight(Graph graph, string name) {
+            int i = graph.compilerInitIdx(name);
+            if (i >= 0) { graph.compilerWeightSetField(i, WeightField.ROLE(), 2); graph.compilerSetShapeKind(name, Kind.CNN_W()); }
+        }
+        void markCNNBias(Graph graph, string name) {
+            int i = graph.compilerInitIdx(name);
+            if (i >= 0) { graph.compilerWeightSetField(i, WeightField.ROLE(), 3); graph.compilerSetShapeKind(name, Kind.CNN_B()); }
+        }
+
+        int classifyShapes(Graph graph) {
+            // 1) 权重/偏置：由消费节点决定（初始器）
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                string t = graph.nodeTypeAt(i);
+                if (t == "Gemm") {
+                    markFCWeight(graph, graph.nodeInAt(i, 1), graph.compilerAttr(i, NodeField.TRANSB()));   // transB=1：wire=[N,K]；transB=0：wire=[K,N]
+                    markFCBias(graph, graph.nodeInAt(i, 2));
+                } else if (t == "MatMul") {
+                    markFCWeight(graph, graph.nodeInAt(i, 1), 0);             // MatMul 无 transB，wire=[K,N]
+                } else if (t == "Conv") {
+                    markCNNWeight(graph, graph.nodeInAt(i, 1));
+                    markCNNBias(graph, graph.nodeInAt(i, 2));
+                } else if (t == "Conv3D") {
+                    // 3D：权重 [Cout,Cin,kd,kh,kw] / 偏置 [Cout]
+                    markCNNWeight(graph, graph.nodeInAt(i, 1));
+                    markCNNBias(graph, graph.nodeInAt(i, 2));
+                } else if (t == "ConvTranspose") {
+                    // F8：权重 [Cin,Cout,kh,kw] 直接拷贝（wRole_=2 无需转置）
+                    markCNNWeight(graph, graph.nodeInAt(i, 1));
+                    markCNNBias(graph, graph.nodeInAt(i, 2));
+                } else if (t == "Concat" || t == "Transpose" || t == "Reshape") {
+                    // F8：4D 通用常量输入 → CNN 激活登记 + 直接拷贝（Concat 的非常量输入/常量）
+                    markGeneric4DConst(graph, graph.nodeInAt(i, 0));
+                    if (t == "Concat") { markGeneric4DConst(graph, graph.nodeInAt(i, 1)); markGeneric4DConst(graph, graph.nodeInAt(i, 2)); }
+                    if (t == "Reshape") markInt64Param(graph, graph.nodeInAt(i, 1));   // shape 参数（int64）不登记为 f32 张量
+                } else if (t == "Slice") {
+                    // F8：starts/ends/axes/steps 参数初始器（int64）不登记为 f32 张量
+                    markInt64Param(graph, graph.nodeInAt(i, 1));
+                    markInt64Param(graph, graph.nodeInAt(i, 2));
+                    markInt64Param(graph, graph.nodeInAt(i, 3));
+                    markInt64Param(graph, graph.nodeInAt(i, 4));
+                } else if (t == "InstanceNormalization") {
+                    // F8：scale/bias [C] 常量 → FC_B 登记（addTensorPlanned2(d0,1)）
+                    markFCBias(graph, graph.nodeInAt(i, 1));
+                    markFCBias(graph, graph.nodeInAt(i, 2));
+                } else if (t == "Pad") {
+                    // F8：pads（int64）与 constant_value（f32）参数不登记为 f32 激活张量
+                    markInt64Param(graph, graph.nodeInAt(i, 1));
+                    markParamDead(graph, graph.nodeInAt(i, 2));
+                } else if (t == "Split") {
+                    // F8：split 尺寸输入（opset13+，int64）不登记为 f32 张量
+                    markInt64Param(graph, graph.nodeInAt(i, 1));
+                } else if (t == "Resize" || t == "Upsample") {
+                    // F8：scales/sizes 参数初始器不登记为激活（读自 file_）
+                    markParamDead(graph, graph.nodeInAt(i, 1));
+                    markParamDead(graph, graph.nodeInAt(i, 2));
+                    markParamDead(graph, graph.nodeInAt(i, 3));
+                }
+                i = i + 1;
+            }
+            // 2) 图输入（非初始器、非任何节点输出）：由首个消费者决定 4D/FC
+            int si = 0;
+            while (si < graph.compilerShapeCount()) {
+                string nm = graph.compilerShapeName(si);
+                if (graph.compilerInitIdx(nm) >= 0) { si = si + 1; continue; }
+                if (isNodeOutputOf(graph, nm) == 1) { si = si + 1; continue; }
+                graph.compilerSetShapeKind(nm, consumerKindOf(graph, nm));
+                si = si + 1;
+            }
+            // 3) 激活：按生产者传播（节点按拓扑序；死节点跳过）
+            i = 0;
+            while (i < graph.nodeCount()) {
+                string t = graph.nodeTypeAt(i);
+                if (t == "") { i = i + 1; continue; }
+                int k = Kind.FC_ACT();
+                if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool") k = Kind.CNN_ACT();
+                else if (t == "Conv3D" || t == "MaxPool3D" || t == "AveragePool3D") k = Kind.CNN_ACT();   // 3D
+                else if (t == "Gemm" || t == "MatMul" || t == "Flatten") k = Kind.FC_ACT();
+                else {
+                    // Relu / Sigmoid / Softmax / Add：沿用主输入 kind
+                    k = shapeKindOf(graph, graph.nodeInAt(i, 0));
+                }
+                graph.compilerSetShapeKind(graph.compilerNodeOutput(i, 0), k);
+                if (t == "Split") {   // F8：Split 所有输出沿用主输入 kind
+                    graph.compilerSetShapeKind(graph.compilerNodeOutput(i, 1), k);
+                    graph.compilerSetShapeKind(graph.compilerNodeOutput(i, 2), k);
+                    graph.compilerSetShapeKind(graph.compilerNodeOutput(i, 3), k);
+                }
+                i = i + 1;
+            }
+            return 1;
+        }
+
         int runPipeline(IGraphOptimizeHost host) {
             if (Console.getEnv("MYP_NO_REUSE") == "1") host.enableNoReuseForOptimizer();
             host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链
