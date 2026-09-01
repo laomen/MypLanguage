@@ -21,6 +21,11 @@
 - ResNet GPU 推理正常（真实 Conv→Relu 与残差多消费者路径）。
 - 后续同一 matcher 已迁移 InstanceNorm→Relu 与 GAP→Flatten：`ops2d` GPU vs ORT
   max diff **4.76837e-07**（`OPS2D ALL OK`）；ResNet GPU 推理仍正常。
+- `Conv→BatchNormalization` 也已迁移到 `matchSingleUseOp`（仅替换安全匹配，保留既有
+  权重/偏置折叠逻辑）：BN 专项 `fold/standalone/norelu` 均 max diff **0**。
+- `DCE` 声明 DefUse 依赖，改为每轮重建后按 `valueUseCount` 删除死节点，取代每候选节点
+  全图 `liveConsumers` 扫描；identity 夹具仍 **3 ops→1**，`const_main` 为 `CONST FOLD OK`，
+  skip U-Net GPU 训练仍 acc 100%。
 
 ---
 

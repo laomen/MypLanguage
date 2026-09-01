@@ -193,7 +193,8 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | **P1b** | `PassResult{ok,changed,preservedAnalyses}` + required analysis 声明；把保守失效收紧为按 pass 精确保留 | **已实施基础契约**：Graph `lastPassOk/Changed/Preserved`；结构指纹判断 changed；未改图保留 ALL，改图失效 ALL | ONNX MLP 99%、skip U-Net GPU 100%，均以 `MYP_IR_VERIFY=1` 运行 |
 | **P1c** | 按需 DefUse/Topo 获取 + 有上限的不动点执行器 | **已实施**：`ensureDefUse/ensureTopo/ensurePassAnalyses`；`runIRPassToFixpoint`；Liveness 保持 lowering 前显式构建 | identity-fold + ONNX MLP + skip U-Net |
 | **P2a** | pattern-match/rewrite 基建 + 迁移一个低风险融合（Conv→Relu）；新增 Add(x,0)、Mul(x,1) 等恒等简化 | **已实施首条 rewrite**：严格标量初始器的 Add(x,0)/Mul(x,1)，DefUse 重连后 tombstone | identity_fold.onnx：3 ops→1 Softmax，结果匹配 numpy |
-| **P2b** | 迁移 Conv→Relu 等既有融合为 pattern 描述 | **已实施首条融合迁移**：`matchSingleUseOp(value,"Relu",0)` + `fuseReluIntoProducer`；沿用既有 lowering 协议 | skip U-Net GPU 100%、ResNet GPU 推理正常，均 `MYP_IR_VERIFY=1` |
+| **P2b** | 迁移既有单-use 融合为 pattern 描述 | **已实施**：Conv/InstanceNorm→Relu、GAP→Flatten、Conv→BN 全部以 `matchSingleUseOp` 取代 consumer 扫描；后端协议不变 | BN 专项逐位 OK、ops2d vs ORT 4.77e-7、skip U-Net GPU 100% |
+| **P2c** | DCE 消费 DefUseAnalysis | **已实施**：每轮 DCE 前重建 use 表，按 `valueUseCount` 删除死节点 | identity 3→1、CONST FOLD OK、skip U-Net GPU 100% |
 | **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | 零变化（重构） | infer_tests + grad_check + opt_check |
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
 
@@ -321,9 +322,22 @@ P1b 将 existing pass 的返回 `ok` 扩展为不改变 MYP 方法签名的 Grap
 - `InstanceNormalization→Relu` 已复用同一 matcher 与 `fuseReluIntoProducer`；
   `GAP→Flatten` 使用同一个输出重定向 primitive（不设置 ReLU lowering 标志）。三条融合
   不再包含私有的“找 consumer + 全图计数”循环。
+- `Conv→BatchNormalization` 已改为 `matchSingleUseOp(value,"BatchNormalization",0)`；
+  后续 BN 参数检查、权重折叠和无 bias 合成逻辑原样保留，避免把数值 rewrite 与匹配迁移混合。
 
-**后续 P2b 范围**：InstanceNorm→Relu 与 GAP→Flatten 可以复用该 matcher/rewrite primitive；
-Conv→BN 需要权重重写，必须在 Attribute/schema 基建完成后单独迁移。图输出 rewrite、
+**后续 P2b 范围**：所有既有单-use融合均已改走 matcher；Conv→BN 的数值属性/权重 rewrite
+仍待 P3 schema 化。图输出 rewrite、
 `replaceResult/eraseNode` 仍未实现，恒等 pass 因此明确跳过图输出。
+
+## 14. 实施状态：P2c（2026-09-02）
+
+`eliminateDeadNodes()` 现声明 `DEF_USE` 依赖，并在每一轮 fixed-point 删除前调用
+`rebuildDefUse()`：对每个候选节点的 effective output 以 `valueUseCount(valueId(eff)) == 0`
+决定是否 tombstone。节点删除会使 use 表失效，所以下一轮无条件重建；这仍是原有 DCE 的
+fixed-point 语义，但去除了每个候选节点都扫描全图的 `liveConsumers` 调用。
+
+验证：identity 链 `Add(0)→Mul(1)` 经 rewrite+DCE 后 runtime 仅 1 个 Softmax；`const_main`
+输出保持正确（`CONST FOLD OK`）；带跳跃连接 U-Net 的训练图在 `MYP_IR_VERIFY=1` 下 GPU
+acc 100%。
 
 ---

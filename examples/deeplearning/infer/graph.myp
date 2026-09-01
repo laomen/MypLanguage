@@ -158,9 +158,11 @@ class Graph {
         // P1c：P2 rewrite pass 首次声明 DefUse；legacy pass 直接扫描 SoA，依赖为 0。
         int passRequiredAnalyses(int pass) {
             if (pass == IRPassKind.IDENTITY_FOLD()) return IRAnalysis.DEF_USE();
+            if (pass == IRPassKind.FUSE_BN()) return IRAnalysis.DEF_USE();
             if (pass == IRPassKind.FUSE_CONV_RELU()) return IRAnalysis.DEF_USE();
             if (pass == IRPassKind.FUSE_RELU()) return IRAnalysis.DEF_USE();
             if (pass == IRPassKind.FUSE_GAP_FLATTEN()) return IRAnalysis.DEF_USE();
+            if (pass == IRPassKind.DCE()) return IRAnalysis.DEF_USE();
             return 0;
         }
         // 分析按需获取。ensureTopo 会先保证 DefUse；两者无 graph mutation，不改变 generation。
@@ -1778,22 +1780,10 @@ class Graph {
                 if (nType_[i] != "Conv") { i = i + 1; continue; }
                 if (nFused_[i] == 1) { i = i + 1; continue; }
                 if (isGraphOutput(nOut0_[i]) == 1) { i = i + 1; continue; }
-                // 找以 conv 输出为输入[0]的 BN 节点
-                int j = 0;
-                while (j < nCount_) {
-                    if (nType_[j] == "BatchNormalization" && nIn0_[j] == nOut0_[i]) break;
-                    j = j + 1;
-                }
-                if (j >= nCount_) { i = i + 1; continue; }   // 无配对 BN，不融合
-                // 安全：conv 输出仅被该 bn 消费（残差分支多消费者时跳过）
-                int consumers = 0;
-                int k = 0;
-                while (k < nCount_) {
-                    if (nType_[k] == "") { k = k + 1; continue; }
-                    if (nIn0_[k] == nOut0_[i] || nIn1_[k] == nOut0_[i] || nIn2_[k] == nOut0_[i] || nIn3_[k] == nOut0_[i] || nIn4_[k] == nOut0_[i]) consumers = consumers + 1;
-                    k = k + 1;
-                }
-                if (consumers != 1) { i = i + 1; continue; }
+                // P2b：精确匹配 Conv 输出的唯一 Use = BatchNormalization operand0。
+                // 残差分支、重复 operand 或 BN 接在非主输入时均不融合。
+                int j = matchSingleUseOp(valueId(nOut0_[i]), "BatchNormalization", 0);
+                if (j < 0) { i = i + 1; continue; }
                 // BN 4 参数必须是初始器
                 if (initIdx(nIn1_[j]) < 0 || initIdx(nIn2_[j]) < 0 || initIdx(nIn3_[j]) < 0 || initIdx(nIn4_[j]) < 0) { i = i + 1; continue; }
                 // 标记 conv 权重/偏置折叠（记录 BN 参数初始器下标 + BN 节点下标）
@@ -1913,13 +1903,16 @@ class Graph {
             int changed = 1;
             while (changed == 1) {
                 changed = 0;
+                // P2c：本轮删节点前重建精确 use 表；删除会使表失效，下一轮再重建。
+                // 这保留原有固定点 DCE 语义，并避免对每个节点扫描全图 consumers。
+                rebuildDefUse();
                 int i = 0;
                 while (i < nCount_) {
                     if (nType_[i] == "") { i = i + 1; continue; }
                     string eff = effectiveOut(i);
                     if (eff == "") { i = i + 1; continue; }
                     if (isGraphOutput(eff) == 1) { i = i + 1; continue; }
-                    if (liveConsumers(eff) == 0) {
+                    if (valueUseCount(valueId(eff)) == 0) {
                         if (nFused_[i] == 1) markDeadTensor(nOut0_[i]);
                         nType_[i] = "";
                         markDeadTensor(eff);
