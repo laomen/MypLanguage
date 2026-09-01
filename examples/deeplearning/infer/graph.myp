@@ -150,6 +150,11 @@ class Graph {
         int defUseGeneration() { return duGeneration_; }
         int topoGeneration() { return topoGeneration_; }
         int livenessGeneration() { return livenessGeneration_; }
+        // IR-P1b PassResult（MYP 无轻量 record 返回值，故由 Graph 保存最后一次执行结果）。
+        int lastPassOk() { return lastPassOk_; }
+        int lastPassChanged() { return lastPassChanged_; }
+        int lastPassPreservedAnalyses() { return lastPassPreserved_; }
+        int passRequiredAnalyses(int pass) { return 0; }  // P1b 现有 pass 不依赖缓存；P2 rewrite 再声明 DefUse。
         void invalidateAnalyses(int mask) {
             analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - mask);
             analysisGeneration_ = analysisGeneration_ + 1;
@@ -456,7 +461,7 @@ class Graph {
             if (shR5_[src] == 1) addShapeD5(name, shD0_[src], shD1_[src], shD2_[src], shD3_[src], shD4_[src]);
             else addShapeD4(name, shD0_[src], shD1_[src], shD2_[src], shD3_[src]);
         }
-        void resetCounts() { wCount_=0; nCount_=0; sCount_=0; tCount_=0; goCount_=0; giCount_=0; fuseCount_=0; gapCount_=0; dceCount_=0; foldCount_=0; bnCount_=0; noReuse_=0; doNHWC_=0; analysisValid_=0; analysisGeneration_=0; duValid_=0; planOrderCount_=0; topoGeneration_=-1; livenessGeneration_=-1; }
+        void resetCounts() { wCount_=0; nCount_=0; sCount_=0; tCount_=0; goCount_=0; giCount_=0; fuseCount_=0; gapCount_=0; dceCount_=0; foldCount_=0; bnCount_=0; noReuse_=0; doNHWC_=0; analysisValid_=0; analysisGeneration_=0; duValid_=0; planOrderCount_=0; topoGeneration_=-1; livenessGeneration_=-1; lastPassOk_=1; lastPassChanged_=0; lastPassPreserved_=IRAnalysis.ALL(); }
         // P3：覆盖张量形状（输入形状注入：动态维度模型）
         void setShape(string name, int d0, int d1, int d2, int d3, int d4, int is5) {
             int s = shapeIdx(name);
@@ -479,8 +484,42 @@ class Graph {
             }
             __myp_io_fclose();
         }
-        // IR-P1 pass dispatcher：既有 pass 保持原实现与顺序；成功后保守失效分析。
+        // IR-P1b：结构/shape/liveness 的稳定指纹。仅覆盖三种 analysis 的依赖；算子数值属性
+        // （例如 alpha/epsilon）不影响 DefUse/Topo/Liveness，故不应无谓地失效缓存。
+        long hashIRText(long hash, string text) {
+            int i = 0;
+            int n = Str.len(text);
+            while (i < n) { hash = (hash * 131L + long(__myp_charcode(text, i))) % 2147483647L; i = i + 1; }
+            return (hash * 131L + long(n)) % 2147483647L;
+        }
+        long analysisFingerprint() {
+            long hash = 17L;
+            int node = 0;
+            while (node < nCount_) {
+                hash = hashIRText(hash, nType_[node]);
+                hash = hashIRText(hash, nIn0_[node]); hash = hashIRText(hash, nIn1_[node]);
+                hash = hashIRText(hash, nIn2_[node]); hash = hashIRText(hash, nIn3_[node]); hash = hashIRText(hash, nIn4_[node]);
+                hash = hashIRText(hash, nOut0_[node]); hash = hashIRText(hash, nOut1_[node]);
+                hash = hashIRText(hash, nOut2_[node]); hash = hashIRText(hash, nOut3_[node]);
+                hash = (hash * 131L + long(nFused_[node] + nNHWC_[node])) % 2147483647L;
+                node = node + 1;
+            }
+            int value = 0;
+            while (value < sCount_) {
+                hash = hashIRText(hash, shName_[value]);
+                hash = (hash * 131L + long(shD0_[value])) % 2147483647L;
+                hash = (hash * 131L + long(shD1_[value])) % 2147483647L;
+                hash = (hash * 131L + long(shD2_[value])) % 2147483647L;
+                hash = (hash * 131L + long(shD3_[value])) % 2147483647L;
+                hash = (hash * 131L + long(shD4_[value])) % 2147483647L;
+                hash = (hash * 131L + long(shR5_[value] + shDead_[value] + shNHWC_[value])) % 2147483647L;
+                value = value + 1;
+            }
+            return hash;
+        }
+        // IR-P1b pass dispatcher：PassResult 写入 lastPass*；仅 changed 时失效相关分析。
         int runIRPass(int pass) {
+            long before = analysisFingerprint();
             int ok = 1;
             if (pass == IRPassKind.FOLD_SHAPES()) ok = foldShapeChains();
             else if (pass == IRPassKind.FOLD_CONSTS()) ok = foldConstants();
@@ -492,7 +531,18 @@ class Graph {
             else if (pass == IRPassKind.FUSE_GAP_FLATTEN()) ok = fuseGapFlatten();
             else if (pass == IRPassKind.DCE()) ok = eliminateDeadNodes();
             else if (pass == IRPassKind.LAYOUT_NHWC()) ok = layoutNHWC();
-            if (ok == 1) markIRMutation();
+            lastPassOk_ = ok;
+            lastPassChanged_ = 0;
+            lastPassPreserved_ = 0;
+            if (ok == 1) {
+                long after = analysisFingerprint();
+                if (before != after) {
+                    lastPassChanged_ = 1;
+                    markIRMutation();
+                } else {
+                    lastPassPreserved_ = IRAnalysis.ALL();
+                }
+            }
             return ok;
         }
         // 公共 pass 管线（fold→inferShapes→classify→fusion→DCE→layout→topoSort）。
@@ -3252,6 +3302,9 @@ class Graph {
         int duGeneration_;
         int topoGeneration_;
         int livenessGeneration_;
+        int lastPassOk_;
+        int lastPassChanged_;
+        int lastPassPreserved_;
 
         string[512] tName_;
         int[512] tId_;

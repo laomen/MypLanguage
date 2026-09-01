@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P1b：PassResult changed 契约 + 指纹驱动分析保留
+
+### 变更（`infer/graph.myp`）
+- `runIRPass` 新增 Graph 内 PassResult 等价状态：`lastPassOk/Changed/PreservedAnalyses`；
+  保持既有 MYP 方法签名和固定 pipeline 顺序。
+- 新 `analysisFingerprint` 覆盖 node op/inputs/outputs/fused/layout 与 value shape/dead/layout，
+  不覆盖仅影响数值的属性（epsilon/alpha），因此只反映 DefUse/Topo/Liveness 所依赖的结构。
+- pass 前后指纹相同：`changed=0` 且保留全部分析、不递增 generation；不同：`changed=1`
+  且保守失效全部分析。新增 `passRequiredAnalyses` 稳定入口，现有 legacy pass=0；P2 rewrite
+  将首个声明 DefUse 依赖。
+
+### 验证
+- `MYP_IR_VERIFY=1`：ONNX MLP 推理 **99%**；带跳跃连接 3D U-Net GPU 训练 **acc 100%**。
+- 尚未实现逐分析 preserved/按需 analysis 重建或不动点迭代；这些留为 P1c，在 P2 pattern
+  rewrite 需要时再落地。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P1a：AnalysisManager 有效性管理 + 固定 Pass Dispatcher
 
 ### 变更（`infer/graph.myp`）

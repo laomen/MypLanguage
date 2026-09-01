@@ -190,7 +190,7 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 |---|---|---|---|
 | **P0** | 稳定 NodeId/ValueId、Use(user,slot)、访问器、mutation API、`rebuildDefUse`、`verifyIR`；先只在导入后/每个既有 graph mutation pass 后重建，新增只读示例 pass | **已实施**：Shape table index=ValueId；压缩 use 链表（最大 5×512 边）；topoSort 改用索引 | ONNX MLP 99%、skip U-Net GPU 100%，均以 `MYP_IR_VERIFY=1` 运行 |
 | **P1a** | AnalysisManager 的保守有效性管理 + 固定 pass dispatcher | **已实施**：`IRAnalysis` valid 位/generation；每个旧 pass 后 ALL 失效；DefUse/Topo/Liveness 在重建点标记有效；`runIRPass` 驱动原固定顺序 | ONNX MLP 99%、skip U-Net GPU 100%，均以 `MYP_IR_VERIFY=1` 运行 |
-| **P1b** | `PassResult{ok,changed,preservedAnalyses}` + required analysis 声明；把保守失效收紧为按 pass 精确保留 | 零变化 | infer_tests 全量 + 图结构快照 |
+| **P1b** | `PassResult{ok,changed,preservedAnalyses}` + required analysis 声明；把保守失效收紧为按 pass 精确保留 | **已实施基础契约**：Graph `lastPassOk/Changed/Preserved`；结构指纹判断 changed；未改图保留 ALL，改图失效 ALL | ONNX MLP 99%、skip U-Net GPU 100%，均以 `MYP_IR_VERIFY=1` 运行 |
 | **P2** | pattern-match/rewrite 基建 + 迁移一个低风险融合（Conv→Relu）；新增 Add(x,0)、Mul(x,1) 等恒等简化 | 输出不变（优化只删冗余） | 与 `MYP_OLD_IR=1` 逐位对比 |
 | **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | 零变化（重构） | infer_tests + grad_check + opt_check |
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
@@ -264,5 +264,25 @@ P1a 先实现可验证的最小 AnalysisManager，而不改变任一既有 pass 
 
 **P1a 边界**：旧 pass 不报告 `changed`，因此每个成功 pass 都保守失效；尚未实现 PassResult、
 required/preserved analysis 声明或不动点迭代。它们是 P1b 的目标，也是开始 P2 rewrite 前的门槛。
+
+## 11. 实施状态：P1b（2026-09-02）
+
+P1b 将 existing pass 的返回 `ok` 扩展为不改变 MYP 方法签名的 Graph 内 `PassResult` 等价物：
+
+- `runIRPass()` 记录 `lastPassOk_`、`lastPassChanged_`、`lastPassPreserved_`，并公开 getter。
+  MYP 目前无适合作为热路径返回值的小型 record，因此先以 Graph 状态槽承载；P2 的 pattern
+  rewrite 可直接消费该契约。
+- `analysisFingerprint()` 覆盖 node op/operands/results/fused/layout，以及 value name/shape/
+  dead/layout。它**刻意不覆盖数值属性**（alpha/epsilon 等），因为它们不影响 DefUse、Topo 或
+  Liveness。`hashIRText` 保留字符串长度，避免简单串连接碰撞。
+- pass 前后 fingerprint 相等：`changed=0`、`preserved=ALL`，不递增 generation；不相等：
+  `changed=1`、保守失效 ALL。现阶段不声称单分析精确保留，避免 schema 与 mutation API 尚未
+  完备时出现过期缓存。
+- `passRequiredAnalyses()` 已提供稳定查询入口，现有 legacy pass 返回 0（它们直接扫描 SoA）；
+  P2 的第一条 rewrite pass 必须声明 `DEF_USE`，并在进入前检查 `analysisValid`。
+
+**P1b 后续边界**：仍未实现 pass 的逐分析 preserved 掩码、PassManager 按需调用
+`rebuildDefUse/topoSort/planMemory`，也尚未实现不动点迭代。这些是 P1c，且只在 P2 需要
+迭代 pattern rewrite 时落地；当前 P1b 已提供正确的 changed 基础。
 
 ---
