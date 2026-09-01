@@ -333,6 +333,92 @@ class GraphOptimizer {
             return highWater;
         }
 
+        // Phase A：按拓扑序标记节点布局（nNHWC_）
+        int layoutNHWC(Graph graph) {
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                graph.compilerAttrSetNhwc(i, 0);
+                string t = graph.nodeTypeAt(i);
+                if (t == "Conv") graph.compilerAttrSetNhwc(i, 1);                       // 卷积主干始终 NHWC
+                else if (t == "MaxPool" || t == "AveragePool" || t == "Pad" || t == "Add" || t == "Relu" || t == "BatchNormalization") {
+                    int p0 = producerNHWC(graph, graph.nodeInAt(i, 0));
+                    int p1 = producerNHWC(graph, graph.nodeInAt(i, 1));
+                    if (p0 == 1 || p1 == 1) graph.compilerAttrSetNhwc(i, 1);
+                } else if (t == "GlobalAveragePool") {
+                    graph.compilerAttrSetNhwc(i, producerNHWC(graph, graph.nodeInAt(i, 0)));               // 输入侧 NHWC，输出为 NCHW 边界
+                }
+                i = i + 1;
+            }
+            // Phase A.5：NHWC 节点的输出张量登记为 NHWC（GAP 输出是边界，除外）
+            i = 0;
+            while (i < graph.nodeCount()) {
+                if (graph.compilerAttrNhwc(i) == 1 && graph.nodeTypeAt(i) != "GlobalAveragePool") {
+                    graph.compilerShapeSetNhwc(graph.compilerEffectiveOut(i));
+                }
+                i = i + 1;
+            }
+            // Phase B：确保 NHWC 节点的激活输入都在 NHWC（必要时插入转置节点）
+            i = 0;
+            while (i < graph.nodeCount()) {
+                string t = graph.nodeTypeAt(i);
+                if (graph.compilerAttrNhwc(i) == 1 && (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "Pad" || t == "Add" || t == "Relu" || t == "GlobalAveragePool" || t == "BatchNormalization")) {
+                    ensureNHWCInput(graph, i, 0);
+                    if (t == "Conv") markWeightNHWC(graph, graph.nodeInAt(i, 1));
+                    if (t == "Add") ensureNHWCInput(graph, i, 1);
+                }
+                i = i + 1;
+            }
+            return 1;
+        }
+
+        int producerNHWC(Graph graph, string name) {
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                if (graph.nodeTypeAt(i) == "") { i = i + 1; continue; }
+                string eff = graph.compilerNodeOutput(i, 0);
+                if (graph.compilerAttrFused(i) == 1) eff = graph.compilerAttrFusedOut(i);
+                if (eff == name) return graph.compilerAttrNhwc(i);
+                i = i + 1;
+            }
+            return 0;
+        }
+        void ensureNHWCInput(Graph graph, int nodeIdx, int slot) {
+            string nm;
+            if (slot == 0) nm = graph.nodeInAt(nodeIdx, 0);
+            else nm = graph.nodeInAt(nodeIdx, 1);
+            if (nm == "") return;
+            if (producerNHWC(graph, nm) == 1) return;    // 已是 NHWC
+            if (graph.compilerInitIdx(nm) >= 0) return;         // 初始器（权重单独处理）
+            string tname = nm + "#nhwc";
+            if (graph.compilerShapeIdx(tname) < 0) {
+                int s = graph.compilerShapeIdx(nm);
+                if (s < 0) return;
+                int N = graph.compilerShapeDim(s, 0); int H = graph.compilerShapeDim(s, 1); int W = graph.compilerShapeDim(s, 2); int C = graph.compilerShapeDim(s, 3);
+                graph.compilerAddShapeD4(tname, N, H, W, C);              // [N,H,W,C] 形状
+                graph.compilerSetShapeKind(tname, Kind.CNN_ACT());
+                graph.compilerShapeSetNhwc(tname);
+                // 追加 NCHW2NHWC 转置节点
+                graph.compilerSetNodeType(graph.nodeCount(), "NCHW2NHWC");
+                graph.compilerSetNodeInput(graph.nodeCount(), 0, nm);
+                graph.compilerNodeSetOutput(graph.nodeCount(), 0, tname);
+                graph.compilerAttrSet(graph.nodeCount(), NodeField.CONST_VAL(), 0);
+                graph.compilerAttrSetNhwc(graph.nodeCount(), 1);
+                graph.compilerAttrSetFused(graph.nodeCount(), 0);
+                graph.compilerAttrSetFusedBy(graph.nodeCount(), -1);
+                graph.compilerAttrSetFusedOut(graph.nodeCount(), "");
+                graph.compilerNodeEnd();
+            }
+            if (slot == 0) graph.compilerSetNodeInput(nodeIdx, 0, tname);
+            else graph.compilerSetNodeInput(nodeIdx, 1, tname);
+        }
+        void markWeightNHWC(Graph graph, string name) {
+            int wi = graph.compilerInitIdx(name);
+            if (wi >= 0) {
+                graph.compilerWeightSetField(wi, WeightField.NHWC(), 1);
+                graph.compilerShapeSetNhwc(name);
+            }
+        }
+
         int runPipeline(IGraphOptimizeHost host) {
             if (Console.getEnv("MYP_NO_REUSE") == "1") host.enableNoReuseForOptimizer();
             host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链

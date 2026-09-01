@@ -530,7 +530,7 @@ class Graph {
             else if (pass == IRPassKind.FUSE_RELU()) ok = optimizer_.fuseReluOp(this);
             else if (pass == IRPassKind.FUSE_GAP_FLATTEN()) ok = optimizer_.fuseGapFlatten(this);
             else if (pass == IRPassKind.DCE()) ok = optimizer_.eliminateDeadNodes(this);
-            else if (pass == IRPassKind.LAYOUT_NHWC()) ok = layoutNHWC();
+            else if (pass == IRPassKind.LAYOUT_NHWC()) ok = optimizer_.layoutNHWC(this);
             else if (pass == IRPassKind.IDENTITY_FOLD()) { optimizer_.foldIdentityOps(this); ok = 1; }
             else if (pass == IRPassKind.FOLD_RELU()) { optimizer_.foldDoubleRelu(this); ok = 1; }
             else if (pass == IRPassKind.FUSE_CONV_ADD()) ok = optimizer_.fuseConvAdd(this);
@@ -1995,90 +1995,6 @@ class Graph {
             }
             return 1;
         }
-        int layoutNHWC() {
-            // Phase A：按拓扑序标记节点布局（nNHWC_）
-            int i = 0;
-            while (i < nodes_.count()) {
-                attrs_.setNhwc(i, 0);
-                string t = nodes_.typeAt(i);
-                if (t == "Conv") attrs_.setNhwc(i, 1);                       // 卷积主干始终 NHWC
-                else if (t == "MaxPool" || t == "AveragePool" || t == "Pad" || t == "Add" || t == "Relu" || t == "BatchNormalization") {
-                    int p0 = producerNHWC(nodes_.inputAt(i, 0));
-                    int p1 = producerNHWC(nodes_.inputAt(i, 1));
-                    if (p0 == 1 || p1 == 1) attrs_.setNhwc(i, 1);
-                } else if (t == "GlobalAveragePool") {
-                    attrs_.setNhwc(i, producerNHWC(nodes_.inputAt(i, 0)));               // 输入侧 NHWC，输出为 NCHW 边界
-                }
-                i = i + 1;
-            }
-            // Phase A.5：NHWC 节点的输出张量登记为 NHWC（GAP 输出是边界，除外）
-            i = 0;
-            while (i < nodes_.count()) {
-                if (attrs_.nhwc(i) == 1 && nodes_.typeAt(i) != "GlobalAveragePool") {
-                    setShapeNHWC(effectiveOut(i));
-                }
-                i = i + 1;
-            }
-            // Phase B：确保 NHWC 节点的激活输入都在 NHWC（必要时插入转置节点）
-            i = 0;
-            while (i < nodes_.count()) {
-                string t = nodes_.typeAt(i);
-                if (attrs_.nhwc(i) == 1 && (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "Pad" || t == "Add" || t == "Relu" || t == "GlobalAveragePool" || t == "BatchNormalization")) {
-                    ensureNHWCInput(i, 0);
-                    if (t == "Conv") markWeightNHWC(nodes_.inputAt(i, 1));
-                    if (t == "Add") ensureNHWCInput(i, 1);
-                }
-                i = i + 1;
-            }
-            return 1;
-        }
-        int producerNHWC(string name) {
-            int i = 0;
-            while (i < nodes_.count()) {
-                if (nodes_.typeAt(i) == "") { i = i + 1; continue; }
-                string eff = nodes_.outputAt(i, 0);
-                if (attrs_.fused(i) == 1) eff = attrs_.fusedOut(i);
-                if (eff == name) return attrs_.nhwc(i);
-                i = i + 1;
-            }
-            return 0;
-        }
-        void ensureNHWCInput(int nodeIdx, int slot) {
-            string nm;
-            if (slot == 0) nm = nodes_.inputAt(nodeIdx, 0);
-            else nm = nodes_.inputAt(nodeIdx, 1);
-            if (nm == "") return;
-            if (producerNHWC(nm) == 1) return;    // 已是 NHWC
-            if (initIdx(nm) >= 0) return;         // 初始器（权重单独处理）
-            string tname = nm + "#nhwc";
-            if (shapeIdx(tname) < 0) {
-                int s = shapeIdx(nm);
-                if (s < 0) return;
-                int N = shapes_.d0(s); int H = shapes_.d1(s); int W = shapes_.d2(s); int C = shapes_.d3(s);
-                addShapeD4(tname, N, H, W, C);              // [N,H,W,C] 形状
-                setShapeKind(tname, Kind.CNN_ACT());
-                setShapeNHWC(tname);
-                // 追加 NCHW2NHWC 转置节点
-                nodes_.setType(nodes_.count(), "NCHW2NHWC");
-                nodes_.setInput(nodes_.count(), 0, nm);
-                nodes_.setOutput(nodes_.count(), 0, tname);
-                attrs_.set(nodes_.count(), NodeField.CONST_VAL(), 0);
-                attrs_.setNhwc(nodes_.count(), 1);
-                attrs_.setFused(nodes_.count(), 0);
-                attrs_.setFusedBy(nodes_.count(), -1);
-                attrs_.setFusedOut(nodes_.count(), "");
-                nodes_.end();
-            }
-            if (slot == 0) nodes_.setInput(nodeIdx, 0, tname);
-            else nodes_.setInput(nodeIdx, 1, tname);
-        }
-        void markWeightNHWC(string name) {
-            int wi = initIdx(name);
-            if (wi >= 0) {
-                weights_.set(wi, WeightField.NHWC(), 1);
-                setShapeNHWC(name);
-            }
-        }
         void markDeadTensor(string name) {
             shapes_.markDeadTensor(name);
         }
@@ -2337,6 +2253,7 @@ class Graph {
         int compilerAttr(int node, int key) { return attrs_.get(node, key); }
         int compilerAttrRelu(int node) { return attrs_.relu(node); }
         int compilerAttrFused(int node) { return attrs_.fused(node); }
+        string compilerAttrFusedOut(int node) { return attrs_.fusedOut(node); }
         void compilerAttrSetFused(int node, int v) { attrs_.setFused(node, v); }
         void compilerAttrSetFusedOut(int node, string v) { attrs_.setFusedOut(node, v); }
         void compilerAttrSetRelu(int node, int v) { attrs_.setRelu(node, v); }
@@ -2387,6 +2304,16 @@ class Graph {
         int compilerNoReuse() { return noReuse_; }
         void compilerSetLivenessOr(int mask) { analysis_.setAnalysisValid(analysis_.analysisValid() | mask); }
         void compilerSetLivenessGeneration(int g) { analysis_.setLivenessGeneration(g); }
+        void compilerAttrSetNhwc(int node, int v) { attrs_.setNhwc(node, v); }
+        void compilerShapeSetNhwc(string name) { shapes_.setShapeNHWC(name); }
+        int compilerInitIdx(string name) { return initIdx(name); }
+        void compilerAddShapeD4(string name, int a, int b, int c, int d) { addShapeD4(name, a, b, c, d); }
+        void compilerSetShapeKind(string name, int kind) { setShapeKind(name, kind); }
+        void compilerWeightSetField(int wi, int field, int v) { weights_.set(wi, field, v); }
+        void compilerAttrSet(int node, int key, int v) { attrs_.set(node, key, v); }
+        void compilerAttrSetFusedBy(int node, int v) { attrs_.setFusedBy(node, v); }
+        void compilerNodeSetOutput(int node, int slot, string v) { nodes_.setOutput(node, slot, v); }
+        void compilerNodeEnd() { nodes_.end(); }
 
     property:
         int[] file_;
