@@ -533,7 +533,7 @@ class Graph {
             else if (pass == IRPassKind.LAYOUT_NHWC()) ok = layoutNHWC();
             else if (pass == IRPassKind.IDENTITY_FOLD()) { optimizer_.foldIdentityOps(this); ok = 1; }
             else if (pass == IRPassKind.FOLD_RELU()) { optimizer_.foldDoubleRelu(this); ok = 1; }
-            else if (pass == IRPassKind.FUSE_CONV_ADD()) ok = fuseConvAdd();
+            else if (pass == IRPassKind.FUSE_CONV_ADD()) ok = optimizer_.fuseConvAdd(this);
             analysis_.setLastPassOk(ok);
             analysis_.setLastPassChanged(0);
             analysis_.setLastPassPreserved(0);
@@ -1708,36 +1708,6 @@ class Graph {
             }
             return 0;
         }
-        int fuseConvAdd() {
-            int i = 0;
-            while (i < nodes_.count()) {
-                if (nodeOp(i) != OpCode.CONV()) { i = i + 1; continue; }
-                if (attrs_.relu(i) == 1) { i = i + 1; continue; }
-                string eff = effectiveOut(i);
-                if (eff == "" || isGraphOutput(eff) == 1) { i = i + 1; continue; }
-                int j = matchSingleUseOp(valueId(eff), "Add", 0);
-                if (j < 0) { i = i + 1; continue; }
-                string resid = nodeInAt(j, 1);
-                if (resid == "" || isGraphOutput(resid) == 1 || shapeIdx(resid) < 0) { i = i + 1; continue; }
-                string addOut = nodes_.outputAt(j, 0);
-                attrs_.setFused(i, 1);
-                attrs_.setFusedOut(i, addOut);
-                nodes_.setInput(i, 3, resid);
-                nodes_.setType(j, "");
-                markDeadTensor(eff);
-                // P4-3：Add 输出唯一消费是 Relu → 折叠（doRelu 后置：conv+residual 再过 relu）
-                int r = matchSingleUseOp(valueId(addOut), "Relu", 0);
-                if (r >= 0) {
-                    attrs_.setRelu(i, 1);
-                    attrs_.setFusedOut(i, nodes_.outputAt(r, 0));
-                    nodes_.setType(r, "");
-                    markDeadTensor(addOut);
-                }
-                fusedAddCount_ = fusedAddCount_ + 1;
-                i = i + 1;
-            }
-            return 1;
-        }
         string effectiveOut(int i) {
             if (attrs_.fused(i) == 1) return attrs_.fusedOut(i);
             return nodes_.outputAt(i, 0);
@@ -2519,6 +2489,12 @@ class Graph {
         int compilerAttr(int node, int key) { return attrs_.get(node, key); }
         int compilerAttrRelu(int node) { return attrs_.relu(node); }
         int compilerAttrFused(int node) { return attrs_.fused(node); }
+        void compilerAttrSetFused(int node, int v) { attrs_.setFused(node, v); }
+        void compilerAttrSetFusedOut(int node, string v) { attrs_.setFusedOut(node, v); }
+        void compilerAttrSetRelu(int node, int v) { attrs_.setRelu(node, v); }
+        void compilerSetNodeInput(int node, int slot, string v) { nodes_.setInput(node, slot, v); }
+        void compilerSetNodeType(int node, string v) { nodes_.setType(node, v); }
+        void compilerIncFusedAdd() { fusedAddCount_ = fusedAddCount_ + 1; }
         int compilerAttrNhwc(int node) { return attrs_.nhwc(node); }
         int compilerAttrOutputCount(int node) { return attrs_.outputCount(node); }
         int compilerAttrSliceCount(int node) { return attrs_.sliceCount(node); }
