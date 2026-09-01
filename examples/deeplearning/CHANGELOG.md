@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-09-01 — 阶段七：Unsupported ONNX op 诊断
+
+- `onnx_loader` 解析时检测未知 op：打印 op 类型、节点索引、输入名，设
+  `badOp_` 标记，`load()` 返回 0（显式失败而非静默错误/段错误）。
+- `OpCode` 补 `CONSTANT(57)` 映射（防 Constant 误报）。
+- 验证：Where 模型 → `Unsupported ONNX op: 'Where' node=0` + `in[0..2]` +
+  `load aborted`。回归 29/29 infer_tests + grad_check（L0=1.92528）在
+  `MYP_GPU=1 MYP_IR_VERIFY=1` 下全过；ResNet output sum `336.658`。
+
 ## 2026-09-01 — 阶段四 G4：ReduceSum/ReduceMax/ReduceMin 算子
 
 - OpCode `REDUCE_SUM/MAX/MIN`(54-56) + `opCode` 映射；Graph 加 `nRedType_`
