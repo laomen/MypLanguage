@@ -570,10 +570,28 @@ class GraphOptimizer {
                     k = shapeKindOf(graph, graph.nodeInAt(i, 0));
                 }
                 graph.compilerSetShapeKind(graph.compilerNodeOutput(i, 0), k);
+                // G2：激活输出登记 DATA role（计算数据张量）。shape 链节点（Shape/
+                // Constant/Cast 折叠产物）已在 foldShapeChains 标 SHAPE，不覆盖。
+                if (graph.compilerValueRole(graph.compilerNodeOutput(i, 0)) == TensorRole.UNKNOWN()) {
+                    graph.compilerSetValueRole(graph.compilerNodeOutput(i, 0), TensorRole.DATA());
+                    graph.compilerSetValueDType(graph.compilerNodeOutput(i, 0), graph.compilerValueDType(graph.nodeInAt(i, 0)));
+                }
                 if (t == "Split") {   // F8：Split 所有输出沿用主输入 kind
                     graph.compilerSetShapeKind(graph.compilerNodeOutput(i, 1), k);
                     graph.compilerSetShapeKind(graph.compilerNodeOutput(i, 2), k);
                     graph.compilerSetShapeKind(graph.compilerNodeOutput(i, 3), k);
+                    if (graph.compilerValueRole(graph.compilerNodeOutput(i, 1)) == TensorRole.UNKNOWN()) {
+                        graph.compilerSetValueRole(graph.compilerNodeOutput(i, 1), TensorRole.DATA());
+                        graph.compilerSetValueDType(graph.compilerNodeOutput(i, 1), graph.compilerValueDType(graph.nodeInAt(i, 0)));
+                    }
+                    if (graph.compilerValueRole(graph.compilerNodeOutput(i, 2)) == TensorRole.UNKNOWN()) {
+                        graph.compilerSetValueRole(graph.compilerNodeOutput(i, 2), TensorRole.DATA());
+                        graph.compilerSetValueDType(graph.compilerNodeOutput(i, 2), graph.compilerValueDType(graph.nodeInAt(i, 0)));
+                    }
+                    if (graph.compilerValueRole(graph.compilerNodeOutput(i, 3)) == TensorRole.UNKNOWN()) {
+                        graph.compilerSetValueRole(graph.compilerNodeOutput(i, 3), TensorRole.DATA());
+                        graph.compilerSetValueDType(graph.compilerNodeOutput(i, 3), graph.compilerValueDType(graph.nodeInAt(i, 0)));
+                    }
                 }
                 i = i + 1;
             }
