@@ -587,7 +587,7 @@ class Graph {
             else if (pass == IRPassKind.FUSE_CONV_RELU()) ok = fuseConvRelu();
             else if (pass == IRPassKind.FUSE_RELU()) ok = fuseReluOp();
             else if (pass == IRPassKind.FUSE_GAP_FLATTEN()) ok = fuseGapFlatten();
-            else if (pass == IRPassKind.DCE()) ok = eliminateDeadNodes();
+            else if (pass == IRPassKind.DCE()) ok = optimizer_.eliminateDeadNodes(this);
             else if (pass == IRPassKind.LAYOUT_NHWC()) ok = layoutNHWC();
             else if (pass == IRPassKind.IDENTITY_FOLD()) { foldIdentityOps(); ok = 1; }
             else if (pass == IRPassKind.FOLD_RELU()) { foldDoubleRelu(); ok = 1; }
@@ -1844,32 +1844,6 @@ class Graph {
             }
             return 1;
         }
-        int eliminateDeadNodes() {
-            int changed = 1;
-            while (changed == 1) {
-                changed = 0;
-                // P2c：本轮删节点前重建精确 use 表；删除会使表失效，下一轮再重建。
-                // 这保留原有固定点 DCE 语义，并避免对每个节点扫描全图 consumers。
-                rebuildDefUse();
-                int i = 0;
-                while (i < nodes_.count()) {
-                    if (nodes_.typeAt(i) == "") { i = i + 1; continue; }
-                    string eff = effectiveOut(i);
-                    if (eff == "") { i = i + 1; continue; }
-                    if (isGraphOutput(eff) == 1) { i = i + 1; continue; }
-                    // P3a：stateful/trainOnly 节点（Update/GradAcc/Bwd* 等）受 traits 保护，
-                    // 不得按 use 数删除（Update 就地改权重、GradAcc 累加梯度）。
-                    if (OpCode.opTraits(nodeOp(i)) != 0) { i = i + 1; continue; }
-                    if (valueUseCount(valueId(eff)) == 0) {
-                        eraseNode(i);   // P3c：canonical 删除原语（tombstone + 标死有效输出 + 失效 DefUse）
-                        dceCount_ = dceCount_ + 1;
-                        changed = 1;
-                    }
-                    i = i + 1;
-                }
-            }
-            return 1;
-        }
         string effectiveOut(int i) {
             if (attrs_.fused(i) == 1) return attrs_.fusedOut(i);
             return nodes_.outputAt(i, 0);
@@ -2658,6 +2632,14 @@ class Graph {
         int compilerPadCval(int node) { if (node < 0 || node >= nodes_.count()) return 0; return nPadCval_[node]; }
         int compilerReduceMode(int node) { if (node < 0 || node >= nodes_.count()) return 0; return nRedMode_[node]; }
         int compilerDiceWMode() { return diceWMode_; }
+        // pass 迁移访问器（GraphOptimizer 具体 pass 用）
+        int compilerIsGraphOutput(string name) { return isGraphOutput(name); }
+        void compilerEraseNode(int node) { eraseNode(node); }
+        void compilerMarkDeadTensor(string name) { markDeadTensor(name); }
+        int compilerValueUseCount(int value) { return valueUseCount(value); }
+        int compilerDceCount() { return dceCount_; }
+        void compilerIncDce() { dceCount_ = dceCount_ + 1; }
+        void ensureDefUseForOptimizer() { ensureDefUse(); }
 
     property:
         int[] file_;
