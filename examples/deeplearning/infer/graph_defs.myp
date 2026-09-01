@@ -1,0 +1,241 @@
+// graph_defs.myp — 图 IR 常量定义（从 graph.myp 拆出，2026-08-20）
+// 纯静态常量类：Kind / NodeField / IRAnalysis / IRPassKind / OpCode。
+// 无任何实例状态，与 Graph 类解耦；graph.myp 与 onnx_loader.myp 均需显式
+// import（MYP import 不传递导出符号）。
+
+// 权重/激活张量的存储布局与角色。
+class Kind {
+    static:
+        int FC_ACT() { return 0; }    // FC 激活（转置登记）
+        int CNN_ACT() { return 1; }   // CNN 激活（NCHW 行优先）
+        int FC_W() { return 2; }      // Gemm 权重
+        int FC_B() { return 3; }      // Gemm 偏置
+        int CNN_W() { return 4; }     // Conv 权重
+        int CNN_B() { return 5; }     // Conv 偏置
+        int FC_C() { return 6; }      // G2：折叠常量（直接拷贝，不转置）
+        int FC_G() { return 7; }      // 阶段2：权重梯度（布局镜像基底权重，含 transB）
+}
+
+// 节点整数属性槽（nodeInt/setNodeInt 的字段索引）。
+class NodeField {
+    static:
+        int TRANSB() { return 0; }
+        int AXIS() { return 1; }
+        int GROUP() { return 2; }
+        int SH() { return 3; }
+        int SW() { return 4; }
+        int PT() { return 5; }
+        int PL() { return 6; }
+        int PB() { return 7; }
+        int PR() { return 8; }
+        int DH() { return 9; }
+        int DW() { return 10; }
+        int KH() { return 11; }
+        int KW() { return 12; }
+        int EPS_INT() { return 13; }
+        int HAS_EPS() { return 14; }
+        int ALPHA_INT() { return 15; }
+        int HAS_ALPHA() { return 16; }
+        int CONST_VAL() { return 17; }
+        int CONST_OFF() { return 18; }
+        int CONST_LEN() { return 19; }
+        int PERM0() { return 20; }
+        int PERM1() { return 21; }
+        int PERM2() { return 22; }
+        int PERM3() { return 23; }
+        int PERM_N() { return 24; }
+        int MODE() { return 25; }        // F8：Resize mode（0=nearest,1=linear）
+        int TRANSFORM() { return 26; }   // F8：Resize coord（0=align_corners,1=half_pixel）
+        int UPSH() { return 27; }        // F8：Upsample scales 高（floats）
+        int UPSW() { return 28; }        // F8：Upsample scales 宽
+        int KEEP() { return 29; }        // F8：ReduceMean keepdims
+        int AXES0() { return 30; }       // F8：ReduceMean axes[0]（属性，opset<=17）
+        int AXES1() { return 31; }
+        int AXES2() { return 32; }
+        int AXES3() { return 33; }
+        int AXES_N() { return 34; }      // F8：axes 元素数
+        int CIP() { return 35; }         // F8：AveragePool count_include_pad（0/1）
+        int PADMODE() { return 36; }     // F8：Pad mode（0=const,1=reflect,2=edge）
+        int OPH() { return 37; }         // F8：ConvTranspose output_padding 高
+        int OPW() { return 38; }         // F8：ConvTranspose output_padding 宽
+        int SPLIT0() { return 39; }      // F8：Split 输出 0 的尺寸（split attr）
+        int SPLIT1() { return 40; }
+        int SPLIT2() { return 41; }
+        int SPLIT3() { return 42; }
+        int SPLIT_N() { return 43; }     // F8：Split 尺寸个数
+        int SD3() { return 44; }         // 3D：strides 第 1 个（sd）
+        int DD3() { return 45; }         // 3D：dilations 第 1 个（dd）
+        int KD3() { return 46; }         // 3D：kernel_shape 第 1 个（kd）
+        int PDT() { return 47; }         // 3D：pads D-begin
+        int PDB() { return 48; }         // 3D：pads D-end
+        int ST0() { return 49; }         // 原始 strides[0..2]（2D/3D 通用捕获）
+        int ST1() { return 50; }
+        int ST2() { return 51; }
+        int PD0() { return 52; }         // 原始 pads[0..5]（2D/3D 通用捕获）
+        int PD1() { return 53; }
+        int PD2() { return 54; }
+        int PD3() { return 55; }
+        int PD4() { return 56; }
+        int PD5() { return 57; }
+        int DL0() { return 58; }         // 原始 dilations[0..2]
+        int DL1() { return 59; }
+        int DL2() { return 60; }
+        int KK0() { return 61; }         // 原始 kernel_shape[0..2]
+        int KK1() { return 62; }
+        int KK2() { return 63; }
+        int CAST_TO() { return 64; }     // P3：Cast 目标 dtype（1=float,7=int64）
+}
+
+// IR-P1：分析缓存位。图结构或 shape 改写默认使全部分析失效；仅显式重建后才标记有效。
+class IRAnalysis {
+    static:
+        int DEF_USE() { return 1; }
+        int TOPO() { return 2; }
+        int LIVENESS() { return 4; }
+        int ALL() { return 7; }
+}
+
+// IR-P1：既有 pass 的稳定编号。保留固定顺序；P2 才引入 changed 驱动的不动点 rewrite。
+class IRPassKind {
+    static:
+        int FOLD_SHAPES() { return 1; }
+        int FOLD_CONSTS() { return 2; }
+        int INFER_SHAPES() { return 3; }
+        int CLASSIFY() { return 4; }
+        int FUSE_BN() { return 5; }
+        int FUSE_CONV_RELU() { return 6; }
+        int FUSE_RELU() { return 7; }
+        int FUSE_GAP_FLATTEN() { return 8; }
+        int DCE() { return 9; }
+        int LAYOUT_NHWC() { return 10; }
+        int IDENTITY_FOLD() { return 11; }  // P2：Add(x,0)/Mul(x,1)，依赖 DefUse
+        int FOLD_RELU() { return 12; }      // P2e：连续激活合并 Relu(Relu(x))→Relu(x)，依赖 DefUse
+        int FUSE_CONV_ADD() { return 13; }  // P4-2：Conv+残差Add 融合，依赖 DefUse
+}
+
+// IR-P3a：算子类型枚举。取代 nType_ 字符串比较（字符串仅在 ONNX 边界/调试保留）。
+// 只枚举优化 pass 逻辑 + 训练/状态节点需要的算子；buildRuntime lowering 仍按字符串
+// 直读分派（P3b 迁移）。nodeOp()/opCode() 是唯一 string→enum 映射入口。
+class OpCode {
+    static:
+        int UNKNOWN() { return 0; }
+        int ADD() { return 1; }
+        int MUL() { return 2; }
+        int SUB() { return 3; }
+        int DIV() { return 4; }
+        int RELU() { return 5; }
+        int CONV() { return 6; }
+        int INSTANCE_NORM() { return 7; }
+        int GLOBAL_AVG_POOL() { return 8; }
+        int FLATTEN() { return 9; }
+        int BATCH_NORM() { return 10; }
+        int SOFTMAX() { return 11; }
+        // 训练/状态节点：DCE 等必须按 traits 保护，不能按 use 数删除。
+        int UPDATE() { return 12; }
+        int GRAD_ACC() { return 13; }
+        int DICE_LOSS() { return 14; }
+        int SOFTMAX_CE() { return 15; }
+        int BWD_DENSE() { return 16; }
+        int BWD_CONV() { return 17; }
+        int BWD_RELU() { return 18; }
+        int BWD_SIGMOID() { return 19; }
+        int BWD_ADD() { return 20; }
+        int BWD_MAXPOOL() { return 21; }
+        int BWD_CONV3D() { return 22; }
+        int BWD_MAXPOOL3D() { return 23; }
+        int BWD_AVGPOOL3D() { return 24; }
+        int BWD_CONVTRANSPOSE() { return 25; }
+        int BWD_RESIZE() { return 26; }
+        int BWD_CONCAT() { return 27; }
+        int BWD_SOFTMAX() { return 28; }
+        // 前向 lowering 算子（P3b：buildRuntime 分派全量枚举）
+        int GEMM() { return 29; }
+        int MATMUL() { return 30; }
+        int SIGMOID() { return 31; }
+        int CONV3D() { return 32; }
+        int CONVTRANSPOSE() { return 33; }
+        int MAXPOOL() { return 34; }
+        int AVGPOOL() { return 35; }
+        int MAXPOOL3D() { return 36; }
+        int AVGPOOL3D() { return 37; }
+        int PAD() { return 38; }
+        int RE_LU6() { return 39; }
+        int LEAKY_RELU() { return 40; }
+        int SILU() { return 41; }
+        int HARD_SWISH() { return 42; }
+        int CLIP() { return 43; }
+        int SPLIT() { return 44; }
+        int NCHW2NHWC() { return 45; }
+        int RESHAPE() { return 46; }
+        int TRANSPOSE() { return 47; }
+        int SLICE() { return 48; }
+        int CONCAT() { return 49; }
+        int SQRT() { return 50; }
+        int REDUCE_MEAN() { return 51; }
+        int RESIZE() { return 52; }
+        int UPSAMPLE() { return 53; }
+        int opCode(string t) {
+            if (t == "Add") return OpCode.ADD();
+            if (t == "Mul") return OpCode.MUL();
+            if (t == "Sub") return OpCode.SUB();
+            if (t == "Div") return OpCode.DIV();
+            if (t == "Relu") return OpCode.RELU();
+            if (t == "Conv") return OpCode.CONV();
+            if (t == "InstanceNormalization") return OpCode.INSTANCE_NORM();
+            if (t == "GlobalAveragePool") return OpCode.GLOBAL_AVG_POOL();
+            if (t == "Flatten") return OpCode.FLATTEN();
+            if (t == "BatchNormalization") return OpCode.BATCH_NORM();
+            if (t == "Softmax") return OpCode.SOFTMAX();
+            if (t == "Update") return OpCode.UPDATE();
+            if (t == "GradAcc") return OpCode.GRAD_ACC();
+            if (t == "DiceLoss") return OpCode.DICE_LOSS();
+            if (t == "SoftmaxCE") return OpCode.SOFTMAX_CE();
+            if (t == "BwdDense") return OpCode.BWD_DENSE();
+            if (t == "BwdConv") return OpCode.BWD_CONV();
+            if (t == "BwdRelu") return OpCode.BWD_RELU();
+            if (t == "BwdSigmoid") return OpCode.BWD_SIGMOID();
+            if (t == "BwdAdd") return OpCode.BWD_ADD();
+            if (t == "BwdMaxPool") return OpCode.BWD_MAXPOOL();
+            if (t == "BwdConv3D") return OpCode.BWD_CONV3D();
+            if (t == "BwdMaxPool3D") return OpCode.BWD_MAXPOOL3D();
+            if (t == "BwdAvgPool3D") return OpCode.BWD_AVGPOOL3D();
+            if (t == "BwdConvTranspose") return OpCode.BWD_CONVTRANSPOSE();
+            if (t == "BwdResize") return OpCode.BWD_RESIZE();
+            if (t == "BwdConcat") return OpCode.BWD_CONCAT();
+            if (t == "BwdSoftmax") return OpCode.BWD_SOFTMAX();
+            if (t == "Gemm") return OpCode.GEMM();
+            if (t == "MatMul") return OpCode.MATMUL();
+            if (t == "Sigmoid") return OpCode.SIGMOID();
+            if (t == "Conv3D") return OpCode.CONV3D();
+            if (t == "ConvTranspose") return OpCode.CONVTRANSPOSE();
+            if (t == "MaxPool") return OpCode.MAXPOOL();
+            if (t == "AveragePool") return OpCode.AVGPOOL();
+            if (t == "MaxPool3D") return OpCode.MAXPOOL3D();
+            if (t == "AveragePool3D") return OpCode.AVGPOOL3D();
+            if (t == "Pad") return OpCode.PAD();
+            if (t == "ReLU6") return OpCode.RE_LU6();
+            if (t == "LeakyRelu") return OpCode.LEAKY_RELU();
+            if (t == "SiLU") return OpCode.SILU();
+            if (t == "HardSwish") return OpCode.HARD_SWISH();
+            if (t == "Clip") return OpCode.CLIP();
+            if (t == "Split") return OpCode.SPLIT();
+            if (t == "NCHW2NHWC") return OpCode.NCHW2NHWC();
+            if (t == "Reshape") return OpCode.RESHAPE();
+            if (t == "Transpose") return OpCode.TRANSPOSE();
+            if (t == "Slice") return OpCode.SLICE();
+            if (t == "Concat") return OpCode.CONCAT();
+            if (t == "Sqrt") return OpCode.SQRT();
+            if (t == "ReduceMean") return OpCode.REDUCE_MEAN();
+            if (t == "Resize") return OpCode.RESIZE();
+            if (t == "Upsample") return OpCode.UPSAMPLE();
+            return OpCode.UNKNOWN();
+        }
+        // 节点保护 trait：非 0 表示受 DCE 保护。1=stateful（就地改权重/累加），
+        // 2=trainOnly（只能出现在训练图，删除前必须确认）。0=纯前向可死删。
+        int opTraits(int code) {
+            if (code == OpCode.UPDATE() || code == OpCode.GRAD_ACC()) return 1;
+            if (code == OpCode.DICE_LOSS() || code == OpCode.SOFTMAX_CE()) return 2;
+            if (code >= OpCode.BWD_DENSE() && code <= OpCode.BWD_SOFTMAX()) return 2;
+            return 0;
+        }
+}

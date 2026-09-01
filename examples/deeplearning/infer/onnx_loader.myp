@@ -10,6 +10,7 @@ import math;
 import "./pb.myp";
 import "./runtime.myp";
 import "./graph.myp";
+import "./graph_defs.myp";
 
 class OnnxLoader {
     action:

@@ -6,6 +6,34 @@
 
 ---
 
+## 2026-09-XX — graph.myp 拆分：常量类移入 graph_defs.myp（纯重构，零行为变化）
+
+### 背景
+`infer/graph.myp` 达 3670 行/236 方法，主要是单个 `Graph` 类（约 3435 行，
+state-of-the-art SoA 数组 + pass 管线）。MYP 无 partial class / 扩展方法 / 继承，
+且类属性私有（BUG-001），`Graph` 类本体无法跨文件拆分；但其文件头部 5 个**纯静态
+常量类**（无实例状态、自包含）可安全独立成文件。
+
+### 变更
+- 新增 `infer/graph_defs.myp`：`Kind` / `NodeField` / `IRAnalysis` / `IRPassKind` /
+  `OpCode` 5 个常量类（含 `OpCode.opCode()`/`opTraits()` 静态方法），逐字节从
+  graph.myp 迁移（241 行）。
+- `infer/graph.myp`：移除上述常量类，仅保留 `Graph` 类 + 头部注释；新增
+  `import "./graph_defs.myp";`（3670 → 3437 行）。
+- `infer/onnx_loader.myp`：使用 `NodeField.` 67 处，MYP import **不传递导出符号**，
+  故显式补 `import "./graph_defs.myp";`。
+
+### 验证（全绿）
+- 编译：resnet/r18/coarse/fine/coarselike32/residual_add/conv3d/bn/ops2d/const/
+  act/identity_fold/seg_liver 全部 Link OK；训练路径 grad_check/cnn_train 亦编译通过。
+- 数值/输出位一致：resnet sum **336.658**、r18 sum **1331.47**（与基线一致）；
+  coarse 98MB 输出、fine 输出与拆分前 **byte-identical**；coarselike32/residual_add/
+  conv3d/bn/ops2d/const/act/identity_fold 全部 OK。
+- 注：`MYP_IR_VERIFY=1` 下 coarse/coarselike32 的 `DBG fail verifyIR/topoSort`
+  为**拆分前既有**的调试路径打印（基线与拆分一致），非本次引入。
+
+---
+
 ## 2026-09-XX — 阶段 P5d：3D 卷积 tiled im2col-GEMM（大通道 fine 模型）
 
 ### 变更（`infer/gpu_ops.myp`）
