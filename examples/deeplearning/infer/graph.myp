@@ -406,6 +406,28 @@ class Graph {
             duValid_ = 0;
             analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
         }
+        // P3c：改写节点的单个结果槽（name-based；buildReverseGraph 在 DefUse 建立前构图用）。
+        // 与 replaceAllUses 一致：改写后失效 DefUse，消费前由 ensureDefUse 重建。
+        void replaceResult(int node, int slot, string newName) {
+            if (node < 0 || node >= nCount_ || slot < 0 || slot >= 4) return;
+            if (slot == 0) nOut0_[node] = newName;
+            else if (slot == 1) nOut1_[node] = newName;
+            else if (slot == 2) nOut2_[node] = newName;
+            else nOut3_[node] = newName;
+            duValid_ = 0;
+            analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
+        }
+        // P3c：canonical 删除原语——tombstone 节点并标死其（融合的）有效输出。
+        // 等价于旧的手写 `nType_[i]=""; markDeadTensor(effectiveOut(i))`，并统一失效 DefUse。
+        void eraseNode(int node) {
+            if (node < 0 || node >= nCount_ || nType_[node] == "") return;
+            string eff = effectiveOut(node);
+            if (nFused_[node] == 1) markDeadTensor(nOut0_[node]);
+            nType_[node] = "";
+            if (eff != "") markDeadTensor(eff);
+            duValid_ = 0;
+            analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
+        }
         int valueProducer(int value) { if (duValid_ == 0 || value < 0 || value >= sCount_) return -1; return duProducer_[value]; }
         int valueUseCount(int value) { if (duValid_ == 0 || value < 0 || value >= sCount_) return 0; return duUseCount_[value]; }
         int valueUseNode(int value, int use) {
@@ -752,8 +774,7 @@ class Graph {
                 int out = nodeOutputValue(node, 0);
                 if (keep >= 0 && out >= 0) {
                     replaceAllUses(out, keep);
-                    nType_[node] = "";
-                    markDeadTensor(output);
+                    eraseNode(node);   // P3c：canonical 删除原语
                     changed = 1;
                 }
                 node = node + 1;
@@ -782,8 +803,7 @@ class Graph {
                 int innerOut = nodeOutputValue(prod, 0);
                 if (out >= 0 && innerOut >= 0) {
                     replaceAllUses(out, innerOut);
-                    nType_[node] = "";
-                    markDeadTensor(outName);
+                    eraseNode(node);   // P3c：canonical 删除原语
                     changed = 1;
                 }
                 node = node + 1;
@@ -1206,13 +1226,12 @@ class Graph {
                             if (other >= 0) {
                                 string ga = g + "_a";
                                 string gb = g + "_b";
-                                if (slot == 0) nOut0_[cc] = gb;
-                                else if (slot == 1) nOut1_[cc] = gb;
-                                else nOut2_[cc] = gb;
-                                if (nOut0_[other] == g) nOut0_[other] = ga;
-                                else if (nOut1_[other] == g) nOut1_[other] = ga;
-                                else if (nOut2_[other] == g) nOut2_[other] = ga;
-                                else if (nOut3_[other] == g) nOut3_[other] = ga;
+                                // P3c：结果槽改写走 canonical mutation API（不再直写 SoA）
+                                replaceResult(cc, slot, gb);
+                                if (nOut0_[other] == g) replaceResult(other, 0, ga);
+                                else if (nOut1_[other] == g) replaceResult(other, 1, ga);
+                                else if (nOut2_[other] == g) replaceResult(other, 2, ga);
+                                else if (nOut3_[other] == g) replaceResult(other, 3, ga);
                                 // 登记 g_a/g_b 形状（同 g）
                                 int gs = shapeIdx(g);
                                 if (gs >= 0) {
@@ -2109,9 +2128,7 @@ class Graph {
                     // 不得按 use 数删除（Update 就地改权重、GradAcc 累加梯度）。
                     if (OpCode.opTraits(nodeOp(i)) != 0) { i = i + 1; continue; }
                     if (valueUseCount(valueId(eff)) == 0) {
-                        if (nFused_[i] == 1) markDeadTensor(nOut0_[i]);
-                        nType_[i] = "";
-                        markDeadTensor(eff);
+                        eraseNode(i);   // P3c：canonical 删除原语（tombstone + 标死有效输出 + 失效 DefUse）
                         dceCount_ = dceCount_ + 1;
                         changed = 1;
                     }

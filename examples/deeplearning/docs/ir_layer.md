@@ -197,7 +197,7 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | **P2c** | DCE 消费 DefUseAnalysis | **已实施**：每轮 DCE 前重建 use 表，按 `valueUseCount` 删除死节点 | identity 3→1、CONST FOLD OK、skip U-Net GPU 100% |
 | **P2d** | 图输出 rewrite（`replaceAllUses` 覆盖隐式消费者 + 指纹含 `goName_`） | **已实施**：`Add(x,0)`/`Mul(x,1)` 输出直接是图输出也能折叠，图输出名改指保留值 | identity_fold 双输出 1 op、skip U-Net GPU 100% |
 | **P2e** | 恒等族扩展 + 连续激活合并（`Sub(x,0)`/`Div(x,1)`、`Relu(Relu(x))`→`Relu(x)`） | **已实施**：foldIdentityOps 扩展 Sub/Div（恒等操作数仅限 slot1）；新增 `FOLD_RELU`（含融合 `ConvRelu→Relu`） | identity_fold 双 Relu+Sub/Div 链 2 ops、skip U-Net GPU 100% |
-| **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | P3a/P3b 已实施：OpCode 枚举 53 算子 + `opTraits`（stateful/trainOnly）+ `nodeOp`/`attrFloat`；DCE 保护受保护节点；P2 pass 与 `buildRuntime` 全部 ~50 分支分派迁移到枚举；剩余：attrInt/attrIntArr 属性统一 + buildReverseGraph 走 mutation API | infer_tests + grad_check + opt_check |
+| **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | P3a/P3b/P3c 已实施：OpCode 枚举 53 算子 + `opTraits` + `nodeOp`/`attrFloat`；DCE 保护受保护节点；P2 pass 与 `buildRuntime` 分派迁移到枚举；`replaceResult`/`eraseNode` 补齐 §3.4 mutation API 并用于 P2 rewrite/DCE/buildReverseGraph；剩余：attrInt/attrIntArr 属性统一 | infer_tests + grad_check + opt_check |
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
 
 ## 6. 收益（预期）
@@ -417,5 +417,20 @@ buildRuntime lowering 分派迁移到 op 枚举（完成 op 枚举化的最后�
 ONNX MLP 99%、conv3d/pad/slice/split/tensorops/avgpool 全 OK、ResNet GPU top-1
 lakeside(10.328)、skip U-Net GPU 训练 acc 100% + grad check OK）——每条 lowering 分支
 均被真实/合成模型执行覆盖。
+
+## 19. 实施状态：P3c（2026-09-02）
+
+完成 §3.4 canonical mutation API 并在既有 pass 强制使用：
+
+- 新增 `replaceResult(node, slot, newName)`（改写单个结果槽）与 `eraseNode(node)`
+  （tombstone + 标死有效输出 + 失效 DefUse）——至此 §3.4 的四个改写原语
+  `replaceNodeInput`/`replaceAllUses`/`replaceResult`/`eraseNode` 全部落地。
+- `foldIdentityOps`/`foldDoubleRelu` 的手写 `nType_=""; markDeadTensor(...)` 删除改为
+  `eraseNode`；`eliminateDeadNodes` 的删除路径同样改用 `eraseNode`（行为逐位一致）。
+- `buildReverseGraph` 的多消费者梯度 GradAcc 重命名（`nOut0_[cc]=gb` 等直写 SoA）改为
+  `replaceResult`，反向图构建不再绕过 mutation API。
+
+验证：全量回归（identity_fold 2 ops、BN maxDiff 0、ops2d 4.77e-7、CONST FOLD OK、
+ONNX MLP 99%、skip U-Net GPU 训练 acc 100% + grad check OK）逐位一致。
 
 ---

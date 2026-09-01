@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P3c：补全 canonical mutation API（replaceResult/eraseNode）
+
+### 变更（`infer/graph.myp`）
+- 新增 `replaceResult(node, slot, newName)`（结果槽改写）与 `eraseNode(node)`
+  （tombstone + 标死有效输出 + 失效 DefUse）；§3.4 的四个改写原语
+  `replaceNodeInput`/`replaceAllUses`/`replaceResult`/`eraseNode` 全部落地。
+- `foldIdentityOps`/`foldDoubleRelu`/`eliminateDeadNodes` 的删除路径改用 `eraseNode`；
+  `buildReverseGraph` 的 GradAcc 多消费者梯度重命名改用 `replaceResult`（不再直写 SoA）。
+- 行为零变化。
+
+### 验证
+- 全量回归 `MYP_IR_VERIFY=1`：identity_fold 2 ops、BN maxDiff 0、ops2d 4.77e-7、
+  CONST FOLD OK、ONNX MLP 99%、skip U-Net GPU 训练 acc 100% + grad check OK。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P3b：buildRuntime 分派迁移到 op 枚举
 
 ### 变更（`infer/graph.myp`）
