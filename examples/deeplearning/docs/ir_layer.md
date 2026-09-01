@@ -193,7 +193,7 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | **P1b** | `PassResult{ok,changed,preservedAnalyses}` + required analysis 声明；把保守失效收紧为按 pass 精确保留 | **已实施基础契约**：Graph `lastPassOk/Changed/Preserved`；结构指纹判断 changed；未改图保留 ALL，改图失效 ALL | ONNX MLP 99%、skip U-Net GPU 100%，均以 `MYP_IR_VERIFY=1` 运行 |
 | **P1c** | 按需 DefUse/Topo 获取 + 有上限的不动点执行器 | **已实施**：`ensureDefUse/ensureTopo/ensurePassAnalyses`；`runIRPassToFixpoint`；Liveness 保持 lowering 前显式构建 | identity-fold + ONNX MLP + skip U-Net |
 | **P2a** | pattern-match/rewrite 基建 + 迁移一个低风险融合（Conv→Relu）；新增 Add(x,0)、Mul(x,1) 等恒等简化 | **已实施首条 rewrite**：严格标量初始器的 Add(x,0)/Mul(x,1)，DefUse 重连后 tombstone | identity_fold.onnx：3 ops→1 Softmax，结果匹配 numpy |
-| **P2b** | 迁移 Conv→Relu 等既有融合为 pattern 描述 | 输出不变（重构） | 与旧 pass 逐位对比 |
+| **P2b** | 迁移 Conv→Relu 等既有融合为 pattern 描述 | **已实施首条融合迁移**：`matchSingleUseOp(value,"Relu",0)` + `fuseReluIntoProducer`；沿用既有 lowering 协议 | skip U-Net GPU 100%、ResNet GPU 推理正常，均 `MYP_IR_VERIFY=1` |
 | **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | 零变化（重构） | infer_tests + grad_check + opt_check |
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
 
@@ -306,5 +306,21 @@ P1b 将 existing pass 的返回 `ok` 扩展为不改变 MYP 方法签名的 Grap
 
 **下一步**：P2b 将先把现有 `Conv→Relu` 融合迁移到同一 match/rewrite API；此时需扩展
 `replaceResult/eraseNode` 与图输出 rewrite，不能把现有 fusion 循环直接复制为“pattern”。
+
+## 13. 实施状态：P2b（2026-09-02）
+
+第一条既有融合已完成 DefUse pattern/rewrite 迁移：
+
+- `FUSE_CONV_RELU` 声明 `DEF_USE` 依赖，因此 dispatcher 先调用 `ensureDefUse()`。
+- `matchSingleUseOp(value, "Relu", 0)` 要求恰好一条 `Use`，且其 user 是 Relu、operand 为
+  slot0。它取代旧版“找 Relu 后再扫全图计 consumers”的两段字符串扫描；重复 operand 和残差
+  多消费者不可能被误判为可融合。
+- `fuseReluIntoProducer(producer,relu)` 统一执行 rewrite：producer 的 effective output 改为
+  Relu output，记录 `nFused/nFusedOut/nFusedBy/nRelu`，tombstone Relu，并标记旧中间 Value dead。
+  它故意沿用已有 lowering 协议，因此 CPU/GPU backend 仍选择原有 ConvRelu/Conv3D doRelu 内核。
+
+**后续 P2b 范围**：InstanceNorm→Relu 与 GAP→Flatten 可以复用该 matcher/rewrite primitive；
+Conv→BN 需要权重重写，必须在 Attribute/schema 基建完成后单独迁移。图输出 rewrite、
+`replaceResult/eraseNode` 仍未实现，恒等 pass 因此明确跳过图输出。
 
 ---

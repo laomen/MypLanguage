@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P2b：Conv→Relu 融合迁移到 DefUse Pattern/Rewrite
+
+### 变更（`infer/graph.myp`）
+- `FUSE_CONV_RELU` 声明 DefUse 依赖，并由 `matchSingleUseOp(value,"Relu",0)` 匹配：
+  输入 Value 必须仅有一条精确 use，且 user 为 Relu 的 slot0。替换旧版“找 Relu + 全图扫
+  consumers”的字符串循环；重复 operand/残差多消费者不会误融合。
+- `fuseReluIntoProducer` 作为统一 rewrite primitive，执行 effective-output 重定向、
+  nFused/nRelu lowering 标记、Relu tombstone 和中间 Value dead 标记；完全沿用现有
+  CPU/GPU ConvRelu/Conv3D doRelu backend 协议。
+
+### 验证
+- `MYP_IR_VERIFY=1`：带跳跃连接 3D U-Net GPU 训练 **acc 100%**。
+- ResNet GPU 推理正常（真实 Conv→Relu 与残差多消费者路径）。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P1c/P2a：按需分析 + 首条 DefUse 驱动恒等 Rewrite
 
 ### 变更（`infer/graph.myp`）

@@ -158,6 +158,7 @@ class Graph {
         // P1c：P2 rewrite pass 首次声明 DefUse；legacy pass 直接扫描 SoA，依赖为 0。
         int passRequiredAnalyses(int pass) {
             if (pass == IRPassKind.IDENTITY_FOLD()) return IRAnalysis.DEF_USE();
+            if (pass == IRPassKind.FUSE_CONV_RELU()) return IRAnalysis.DEF_USE();
             return 0;
         }
         // 分析按需获取。ensureTopo 会先保证 DefUse；两者无 graph mutation，不改变 generation。
@@ -593,6 +594,27 @@ class Graph {
                 node = node + 1;
             }
             return changed;
+        }
+        // P2b pattern primitive：value 必须恰有一个 use，且用户 op 与 operand slot 精确匹配。
+        // Use edge 是 (user,slot)，因此 Mul(x,x) 等重复 use 不会被误判成单消费者。
+        int matchSingleUseOp(int value, string op, int slot) {
+            if (value < 0 || valueUseCount(value) != 1) return -1;
+            int user = valueUseNode(value, 0);
+            if (user < 0 || nType_[user] != op || valueUseSlot(value, 0) != slot) return -1;
+            return user;
+        }
+        // P2b rewrite primitive：producer 的有效输出直接改为 Relu 输出，并 tombstone Relu。
+        // 保留既有 nFused/nRelu lowering 协议，故后端仍选择 ConvRelu/Conv3d doRelu 内核。
+        void fuseReluIntoProducer(int producer, int relu) {
+            string oldOut = effectiveOut(producer);
+            nFused_[producer] = 1;
+            nFusedOut_[producer] = nOut0_[relu];
+            nFusedBy_[relu] = producer;
+            nRelu_[producer] = 1;
+            nType_[relu] = "";
+            markDeadTensor(nOut0_[producer]);
+            if (oldOut != nOut0_[producer]) markDeadTensor(oldOut);
+            fuseCount_ = fuseCount_ + 1;
         }
         // IR-P1b pass dispatcher：PassResult 写入 lastPass*；仅 changed 时失效相关分析。
         int runIRPass(int pass) {
@@ -1837,30 +1859,9 @@ class Graph {
                 if (nType_[i] != "Conv") { i = i + 1; continue; }
                 string eff = effectiveOut(i);
                 if (isGraphOutput(eff) == 1) { i = i + 1; continue; }   // 中间张量不能是图输出
-                // 找以 conv 有效输出为输入的 Relu 节点
-                int j = 0;
-                while (j < nCount_) {
-                    if (nType_[j] == "Relu" && nIn0_[j] == eff) break;
-                    j = j + 1;
-                }
-                if (j >= nCount_) { i = i + 1; continue; }   // 无配对 relu，不融合
-                // 安全条件：conv 有效输出只能被该 relu 消费（ResNet 残差分支有多消费者时跳过）
-                int consumers = 0;
-                int k = 0;
-                while (k < nCount_) {
-                    if (nType_[k] == "") { k = k + 1; continue; }
-                    if (nIn0_[k] == eff || nIn1_[k] == eff || nIn2_[k] == eff || nIn3_[k] == eff || nIn4_[k] == eff) consumers = consumers + 1;
-                    k = k + 1;
-                }
-                if (consumers != 1) { i = i + 1; continue; }
-                nFused_[i] = 1;
-                nFusedOut_[i] = nOut0_[j];
-                nFusedBy_[j] = i;
-                nRelu_[i] = 1;   // G4：标记 Conv+Relu 融合（与 BN 融合区分：buildRuntime 按此决定 convRelu）
-                nType_[j] = "";
-                markDeadTensor(nOut0_[i]);                    // 被消掉的中间张量：不再分配/登记
-                if (eff != nOut0_[i]) markDeadTensor(eff);    // G3：BN 折叠场景，旧有效输出（BN 输出）也死
-                fuseCount_ = fuseCount_ + 1;
+                int j = matchSingleUseOp(valueId(eff), "Relu", 0);
+                if (j < 0) { i = i + 1; continue; }
+                fuseReluIntoProducer(i, j);
                 i = i + 1;
             }
             return 1;
