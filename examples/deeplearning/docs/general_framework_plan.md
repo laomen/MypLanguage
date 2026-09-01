@@ -266,6 +266,7 @@ OpKind
   支持 mean/sum/max/min 聚合；gpu_ops 支持 mean/sum（max/min GPU 未实现，打印
   警告）。新增 `tools/make_reduce_onnx.py`（opset12 合成模型，空间+全规约）+
   `infer_tests/reduce_main.myp`（REDUCE ALL OK，CPU+GPU max diff 0 vs ORT）。
+  GPU max/min 并行归约已补全（commit `62b8b21`，初值 ±1e30，按 redType 分派）。
 - **已完成：阶段七 Unsupported op 诊断**（commit `627a58c`）。loader 解析时检测
   未知 ONNX op → 打印 op 类型/节点索引/输入名 + `badOp_` 标记 → `load()` 返回 0
   （显式失败而非静默错误/段错误）。OpCode 补 `CONSTANT(57)` 防误报。

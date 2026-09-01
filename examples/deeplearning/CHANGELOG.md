@@ -26,6 +26,8 @@
 - 新增 `tools/make_reduce_onnx.py`（opset12 合成模型：x[1,2,3,4] → 空间规约
   Reduce{Mean,Sum,Max,Min}→y1[4,2,1,1] + 全规约→y0[4,1,1,1]，ORT 参考）
   + `infer_tests/reduce_main.myp`：`REDUCE ALL OK`，CPU+GPU max diff 0 vs ORT。
+  GPU max/min 并行归约补全（`62b8b21`：初值 ±1e30，按 redType 分派，移除
+  CPU-fallback 警告）。
 - 回归：29/29 infer_tests + grad_check（L0=1.92528）在 `MYP_GPU=1
   MYP_IR_VERIFY=1` 下全过；ResNet output sum `336.658`。
 
