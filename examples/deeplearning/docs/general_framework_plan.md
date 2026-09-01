@@ -267,15 +267,24 @@ OpKind
   警告）。新增 `tools/make_reduce_onnx.py`（opset12 合成模型，空间+全规约）+
   `infer_tests/reduce_main.myp`（REDUCE ALL OK，CPU+GPU max diff 0 vs ORT）。
   GPU max/min 并行归约已补全（commit `62b8b21`，初值 ±1e30，按 redType 分派）。
+- **已完成：阶段四 G4 Expand 算子**（commit `bad6242`）。OpCode `EXPAND(58)` +
+  `opCode` 映射；`inferShapes` Expand 输出维度取 int64 shape 输入[1]（4D）；
+  `classifyShapes` 把 shape 张量标 SHAPE/INT64（dead）；`graph_compiler`
+  EXPAND wiring → `rt.addExpand(id0-3, od0-3)` opKind=74（**教训**：初版误用 73
+  与 ConvResidual 冲突且 ExpandOp 未注册 → dispatch 到 ConvResidual 内核触发
+  SIGFPE；改 74 + 补 `registerFwd(74)` 修复）。CPU/GPU broadcast 复制 kernel +
+  `ExpandOp`/`GpuExpandOp`。新增 `tools/make_expand_onnx.py`（opset13：
+  x[1,2,1,1]→Expand(shape=[1,2,3,4])→y[1,2,3,4]）+ `infer_tests/expand_main.myp`
+  （EXPAND ALL OK，CPU+GPU max diff 0 vs ORT）。
 - **已完成：阶段七 Unsupported op 诊断**（commit `627a58c`）。loader 解析时检测
   未知 ONNX op → 打印 op 类型/节点索引/输入名 + `badOp_` 标记 → `load()` 返回 0
   （显式失败而非静默错误/段错误）。OpCode 补 `CONSTANT(57)` 防误报。
-- **已验证**：29/29 infer_tests + grad_check（L0=1.92528）在 `MYP_GPU=1
-  MYP_IR_VERIFY=1` 下全部通过；ResNet output sum `336.658`。关键提交：`8a38beb`
-  （G2 基础）、`9508a10`（DATA role）、`88d0fd2`（G3 负轴）、`0440a18`
-  （Reduce 族）、`627a58c`（op 诊断）。
+- **已验证**：30/30 infer_tests + grad_check（L0=1.92528，GRAD CHECK OK）在
+  `MYP_GPU=1 MYP_IR_VERIFY=1` 下全部通过；ResNet output sum `336.658`。关键
+  提交：`8a38beb`（G2 基础）、`9508a10`（DATA role）、`88d0fd2`（G3 负轴）、
+  `0440a18`（Reduce 族）、`627a58c`（op 诊断）、`bad6242`（Expand）。
 - **下一步**：G3 剩余（broadcast/ShapeExpr/dtype 转换规则）与阶段四其余算子
-  （Gather 完整/Expand/Where/Tile/Squeeze）。当前模型集为 4D/5D 静态 shape +
+  （Gather 完整/Where/Tile/Squeeze）。当前模型集为 4D/5D 静态 shape +
   全 FLOAT + 同形状广播，broadcast 统一与 ShapeExpr 无模型驱动——按「不为没有
   目标的模式提前堆代码」，优先推进有合成测试可验证的算子补全。
 
@@ -304,11 +313,11 @@ OpKind
 ### 第一优先级：提高模型覆盖率
 
 - `Gather`
-- `Expand`
+- `Expand`（✅ 完成，commit `bad6242`）
 - `Where`
 - `Tile`
 - `Squeeze`
-- `ReduceSum/ReduceMax/ReduceMin`
+- `ReduceSum/ReduceMax/ReduceMin`（✅ 完成，commit `0440a18` + `62b8b21`）
 - 完整 broadcast 的 `MatMul/BatchMatMul`
 - `LogSoftmax`
 - `LayerNorm/RMSNorm`

@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-01 — 阶段四 G4：Expand 算子（broadcast 复制）
+
+- OpCode `EXPAND(58)` + `opCode` 映射；`inferShapes` Expand 分支：输出维度取
+  int64 shape 输入[1]（4D），记录到 shapes；`classifyShapes` 把 Expand 的
+  shape 张量标为 SHAPE/INT64（dead，不注册数据张量）。
+- `graph_compiler` EXPAND wiring（shape 输入 dead 时仍读维度传给
+  `rt.addExpand(id0-3, od0-3)`）；runtime `addExpand` opKind=74（**注意**：
+  初始误用 73，与 ConvResidual 前向冲突 + ExpandOp 未注册 → dispatch 到
+  ConvResidual 内核触发 SIGFPE；改 74 并补 `registerFwd(74)` 修复）。
+- ops `expand` CPU kernel + gpu_ops GPU kernel：4D 解码，输入维=1 沿该维
+  broadcast 复制，逐元素 `dst=src[c]`。
+- `ops_iface_all` 补 `ExpandOp`/`GpuExpandOp` + 注册。
+- 新增 `tools/make_expand_onnx.py`（opset13：x[1,2,1,1] →
+  Expand(shape=[1,2,3,4])→y[1,2,3,4]，ORT 参考）+ `infer_tests/expand_main.myp`：
+  `EXPAND ALL OK`，CPU+GPU max diff 0 vs ORT。
+- 回归：30/30 infer_tests + grad_check（GRAD CHECK OK）+ ResNet output sum
+  `336.658`。
+
 ## 2026-09-01 — 阶段七：Unsupported ONNX op 诊断
 
 - `onnx_loader` 解析时检测未知 op：打印 op 类型、节点索引、输入名，设
