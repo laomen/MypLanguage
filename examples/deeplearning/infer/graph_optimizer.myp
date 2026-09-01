@@ -680,7 +680,7 @@ class GraphOptimizer {
             }
             string logits = graph.nodeInAt(smNode, 0);
             int ls = graph.compilerShapeIdx(logits);
-            if (ls < 0) return 0;
+            if (graph.compilerValueExists(logits) == 0) return 0;
 
             // 2) label / loss / dlogits 张量（label 由训练循环灌 one-hot）
             // 注意：label 必须与 logits 同秩且同 shape kind——5D 分割 logits
@@ -1090,8 +1090,8 @@ int inferShapes(Graph graph) {
                 t = graph.nodeTypeAt(i);
                 if (t == "ConvTranspose") {
                     // F8：转置卷积（group=1；权重 [Cin,Cout,kh,kw]，d1=Cout，d2=kh，d3=kw）
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
-                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (w < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (graph.compilerValueExists(graph.nodeInAt(i, 1)) == 0) return 0;
                     int N = graph.compilerShapeDim(a, 0); int Cin = graph.compilerShapeDim(a, 1); int H = graph.compilerShapeDim(a, 2); int W = graph.compilerShapeDim(a, 3);
                     int Cout = graph.compilerShapeDim(w, 1);
                     int kh = graph.compilerAttr(i, NodeField.KH()); if (kh <= 0) kh = graph.compilerShapeDim(w, 2);
@@ -1102,8 +1102,8 @@ int inferShapes(Graph graph) {
                     int yW = (W - 1) * sw_ - graph.compilerAttr(i, NodeField.PL()) - graph.compilerAttr(i, NodeField.PR()) + kw + graph.compilerAttr(i, NodeField.OPW());
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), N, Cout, yH, yW);
                 } else if (t == "Conv") {
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
-                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (w < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (graph.compilerValueExists(graph.nodeInAt(i, 1)) == 0) return 0;
                     int N = graph.compilerShapeDim(a, 0); int H = graph.compilerShapeDim(a, 2); int W = graph.compilerShapeDim(a, 3);
                     int yC = graph.compilerShapeDim(w, 0);
                     int kh = graph.compilerShapeDim(w, 2); int kw = graph.compilerShapeDim(w, 3);
@@ -1114,8 +1114,8 @@ int inferShapes(Graph graph) {
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), N, yC, yH, yW);
                 } else if (t == "Conv3D") {
                     // 3D：权重 [Cout,Cin,kd,kh,kw]（5D）；kd/kh/kw = shD2/shD3/shD4
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
-                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (w < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (graph.compilerValueExists(graph.nodeInAt(i, 1)) == 0) return 0;
                     int N = graph.compilerShapeDim(a, 0); int D = graph.compilerShapeDim(a, 2); int H = graph.compilerShapeDim(a, 3); int W = graph.compilerShapeDim(a, 4);
                     int yC = graph.compilerShapeDim(w, 0);
                     int kd = graph.compilerShapeDim(w, 2); int kh = graph.compilerShapeDim(w, 3); int kw = graph.compilerShapeDim(w, 4);
@@ -1133,7 +1133,7 @@ int inferShapes(Graph graph) {
                     int yW = (W + graph.compilerAttr(i, NodeField.PL()) + graph.compilerAttr(i, NodeField.PR()) - dw * (kw - 1) - 1) / sw_ + 1;
                     graph.addShapeD5(graph.compilerNodeOutput(i, 0), N, yC, yD, yH, yW);
                 } else if (t == "MaxPool3D") {
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int N = graph.compilerShapeDim(a, 0); int C = graph.compilerShapeDim(a, 1); int D = graph.compilerShapeDim(a, 2); int H = graph.compilerShapeDim(a, 3); int W = graph.compilerShapeDim(a, 4);
                     int kd = graph.compilerAttr(i, NodeField.KD3()); if (kd <= 0) kd = 1;
                     int kh = graph.compilerAttr(i, NodeField.KH()); if (kh <= 0) kh = 1;
@@ -1147,7 +1147,7 @@ int inferShapes(Graph graph) {
                     graph.addShapeD5(graph.compilerNodeOutput(i, 0), N, C, yD, yH, yW);
                 } else if (t == "AveragePool3D") {
                     // 3D：各向异性核 kd/kh/kw + 6 pads + cip
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int N = graph.compilerShapeDim(a, 0); int C = graph.compilerShapeDim(a, 1); int D = graph.compilerShapeDim(a, 2); int H = graph.compilerShapeDim(a, 3); int W = graph.compilerShapeDim(a, 4);
                     int kd = graph.compilerAttr(i, NodeField.KD3()); if (kd <= 0) kd = 1;
                     int kh = graph.compilerAttr(i, NodeField.KH()); if (kh <= 0) kh = 1;
@@ -1160,14 +1160,14 @@ int inferShapes(Graph graph) {
                     int yW = (W + graph.compilerAttr(i, NodeField.PL()) + graph.compilerAttr(i, NodeField.PR()) - kw) / sw_ + 1;
                     graph.addShapeD5(graph.compilerNodeOutput(i, 0), N, C, yD, yH, yW);
                 } else if (t == "MaxPool") {
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int N = graph.compilerShapeDim(a, 0); int C = graph.compilerShapeDim(a, 1); int H = graph.compilerShapeDim(a, 2); int W = graph.compilerShapeDim(a, 3);
                     int kh = graph.compilerAttr(i, NodeField.KH()); int kw = graph.compilerAttr(i, NodeField.KW());
                     int yH = (H + graph.compilerAttr(i, NodeField.PT()) + graph.compilerAttr(i, NodeField.PB()) - kh) / graph.compilerAttr(i, NodeField.SH()) + 1;
                     int yW = (W + graph.compilerAttr(i, NodeField.PL()) + graph.compilerAttr(i, NodeField.PR()) - kw) / graph.compilerAttr(i, NodeField.SW()) + 1;
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), N, C, yH, yW);
                 } else if (t == "AveragePool") {
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int N = graph.compilerShapeDim(a, 0); int C = graph.compilerShapeDim(a, 1); int H = graph.compilerShapeDim(a, 2); int W = graph.compilerShapeDim(a, 3);
                     int kh = graph.compilerAttr(i, NodeField.KH()); int kw = graph.compilerAttr(i, NodeField.KW());
                     int yH = (H + graph.compilerAttr(i, NodeField.PT()) + graph.compilerAttr(i, NodeField.PB()) - kh) / graph.compilerAttr(i, NodeField.SH()) + 1;
@@ -1175,7 +1175,7 @@ int inferShapes(Graph graph) {
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), N, C, yH, yW);
                 } else if (t == "Pad") {
                     // F8：pads = [N,C,(D,)H,W] 各轴 begin/end（int64 初始器输入，opset11+）
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int is5 = graph.compilerShapeR5(a);
                     if (is5 == 1) {
                         int pc = graph.compilerI64Count(graph.nodeInAt(i, 1));
@@ -1228,38 +1228,38 @@ int inferShapes(Graph graph) {
                         graph.compilerSetNodeInput(i, 1, ""); graph.compilerSetNodeInput(i, 2, "");
                     }
                 } else if (t == "GlobalAveragePool") {
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), graph.compilerShapeDim(a, 0), graph.compilerShapeDim(a, 1), 1, 1);
                 } else if (t == "Flatten") {
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     // F8 3D：5D 输入（NCDHW）须连深度维一起拍平（shD1*shD2*shD3*shD4）
                     int f = graph.compilerShapeDim(a, 1) * graph.compilerShapeDim(a, 2) * graph.compilerShapeDim(a, 3);
                     if (graph.compilerShapeR5(a) == 1) f = f * graph.compilerShapeDim(a, 4);
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), graph.compilerShapeDim(a, 0), f, 1, 1);
                 } else if (t == "Gemm") {
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
-                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (w < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (graph.compilerValueExists(graph.nodeInAt(i, 1)) == 0) return 0;
                     int m = graph.compilerShapeDim(a, 0);                     // [M,K]
                     int n = graph.compilerShapeDim(w, 0);                     // transB=1: [N,K] → N=d0
                     if (graph.compilerAttr(i, NodeField.TRANSB()) == 0) n = graph.compilerShapeDim(w, 1);   // transB=0: [K,N] → N=d1
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), m, n, 1, 1);
                 } else if (t == "MatMul") {
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
-                    int b = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (b < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    int b = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (graph.compilerValueExists(graph.nodeInAt(i, 1)) == 0) return 0;
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), graph.compilerShapeDim(a, 0), graph.compilerShapeDim(b, 1), 1, 1);
                 } else if (t == "Add" || t == "Relu" || t == "Sigmoid" || t == "Softmax" || t == "LogSoftmax" || t == "BatchNormalization"
                            || t == "ReLU6" || t == "LeakyRelu" || t == "SiLU" || t == "HardSwish" || t == "Clip" || t == "Dropout") {
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     graph.copyShape(graph.compilerNodeOutput(i, 0), a);
                 } else if (t == "Embedding") {
                     // G5：查表。data[vocab,D] + ids[int64 初始器，S] → out[S,D,1,1]
-                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (w < 0) return 0;
+                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int lenS = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 64);
                     if (lenS <= 0) return 0;
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), lenS, graph.compilerShapeDim(w, 1), 1, 1);
                 } else if (t == "Reshape") {
                     // F8：shape 来自输入[1]（int64 初始器）；-1 = 由总元素数推断，0 = 复制对应输入维
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int sc = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8);
                     if (sc <= 0) return 0;
                     int total = graph.compilerShapeDim(a, 0) * graph.compilerShapeDim(a, 1) * graph.compilerShapeDim(a, 2) * graph.compilerShapeDim(a, 3);
@@ -1288,7 +1288,7 @@ int inferShapes(Graph graph) {
                 } else if (t == "Expand") {
                     // G4：broadcast 复制。目标形状来自 int64 输入[1]；输入维=1 时沿该维复制。
                     // 输出 = 目标形状（左对齐广播，rank 不足时前置补 1）。
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int sc = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8);
                     if (sc <= 0) return 0;
                     int[] outd = new int[8];
@@ -1333,7 +1333,7 @@ int inferShapes(Graph graph) {
                 } else if (t == "Tile") {
                     // G5：沿各维按倍数复制。输出 = 输入维 × repeats 维（逐元素乘）。
                     // repeats 来自 int64 输入[1]（左对齐，rank 不足前置补 1）。
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int sc = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8);
                     if (sc <= 0) return 0;
                     int inRank = graph.compilerShapeR5(a) == 1 ? 5 : 4;
@@ -1352,7 +1352,7 @@ int inferShapes(Graph graph) {
                 } else if (t == "Squeeze") {
                     // G5：去掉 size-1 维（axes 属性；无 axes → 全 size-1 维）。
                     // 数据不变（连续拷贝）；输出 = 去维后保持轴顺序 + 左对齐补 1 到 4D。
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int[] d = new int[4];
                     d[0] = graph.compilerShapeDim(a, 0); d[1] = graph.compilerShapeDim(a, 1); d[2] = graph.compilerShapeDim(a, 2); d[3] = graph.compilerShapeDim(a, 3);
                     int[] keep = new int[4];
@@ -1380,7 +1380,7 @@ int inferShapes(Graph graph) {
                     // G5：沿 axis 按 indices 收集（数据 Gather；indices int64 初始器）。
                     // 输出 = data dims 替换 axis 维为 len(indices)。形状链 Gather 已折叠跳过。
                     if (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0) { i = i + 1; continue; }
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int axis = graph.compilerAttr(i, NodeField.AXIS());
                     if (axis < 0) axis = 0;
                     int lenIdx = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 64);
@@ -1393,7 +1393,7 @@ int inferShapes(Graph graph) {
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), od0, od1, od2, od3);
                 } else if (t == "Concat") {
                     // F8：沿 axis 拼接（2-3 输入），输出 = 各输入沿 axis 之和，其余维同输入0
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int axis = graph.compilerAttr(i, NodeField.AXIS());
                     if (axis < 0) axis = 0;
                     int is5 = graph.compilerShapeR5(a);
@@ -1408,7 +1408,7 @@ int inferShapes(Graph graph) {
                         else if (slot == 1) nm = graph.nodeInAt(i, 1);
                         else nm = graph.nodeInAt(i, 2);
                         if (nm == "") { slot = 3; break; }
-                        int s = graph.compilerShapeIdx(nm); if (s < 0) return 0;
+                        int s = graph.compilerShapeIdx(nm); if (graph.compilerValueExists(nm) == 0) return 0;
                         int av = (axis == 0) ? graph.compilerShapeDim(s, 0) : ((axis == 1) ? graph.compilerShapeDim(s, 1) : ((axis == 2) ? graph.compilerShapeDim(s, 2) : ((axis == 3) ? graph.compilerShapeDim(s, 3) : graph.compilerShapeDim(s, 4))));
                         axisSum = axisSum + av;
                         slot = slot + 1;
@@ -1422,7 +1422,7 @@ int inferShapes(Graph graph) {
                     else graph.addShapeD4(graph.compilerNodeOutput(i, 0), dims[0], dims[1], dims[2], dims[3]);
                 } else if (t == "Transpose") {
                     // F8：perm 属性（缺省 = 反转维度）
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int nd = 4;
                     int p0, p1, p2, p3;
                     if (graph.compilerAttr(i, NodeField.PERM_N()) >= 4) { p0 = graph.compilerAttr(i, NodeField.PERM0()); p1 = graph.compilerAttr(i, NodeField.PERM1()); p2 = graph.compilerAttr(i, NodeField.PERM2()); p3 = graph.compilerAttr(i, NodeField.PERM3()); }
@@ -1439,7 +1439,7 @@ int inferShapes(Graph graph) {
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), od[0], od[1], od[2], od[3]);
                 } else if (t == "Slice") {
                     // F8：starts/ends/axes/steps 为 int64 初始器输入（opset 10+）
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int sc = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8);   // starts
                     if (sc <= 0) return 0;
                     int k = 0;
@@ -1476,7 +1476,7 @@ int inferShapes(Graph graph) {
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), odim[0], odim[1], odim[2], odim[3]);
                 } else if (t == "Split") {
                     // F8：沿 axis 分割为 nOutN_ 个输出（split attr 或均分；starts/lens 存 nSplitSt_/nSplitLn_）
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int axis = graph.compilerAttr(i, NodeField.AXIS()); if (axis < 0) axis = 0;
                     int D = (axis == 0) ? graph.compilerShapeDim(a, 0) : ((axis == 1) ? graph.compilerShapeDim(a, 1) : ((axis == 2) ? graph.compilerShapeDim(a, 2) : graph.compilerShapeDim(a, 3)));
                     int no = graph.compilerAttrOutputCount(i); if (no < 1) no = 1;
@@ -1509,7 +1509,7 @@ int inferShapes(Graph graph) {
                     }
                 } else if (t == "Sub" || t == "Div" || t == "Mul" || t == "Sqrt") {
                     // F8：秩无关逐元素（输出形状 = 输入 0；标量/同形状广播）
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     graph.copyShape(graph.compilerNodeOutput(i, 0), a);
                 } else if (t == "ReduceMean" || t == "ReduceSum" || t == "ReduceMax" || t == "ReduceMin") {
                     // F8：mode 0 = 全规约（标量）；mode 1 = 空间维规约（per-(n,c)，秩无关）
@@ -1519,7 +1519,7 @@ int inferShapes(Graph graph) {
                     else if (t == "ReduceMax") redType = 2;
                     else if (t == "ReduceMin") redType = 3;
                     graph.compilerSetNRedType(i, redType);
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int rank = graph.compilerShapeR5(a) == 1 ? 5 : 4;
                     int nAx = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8);   // axes 输入（opset18+；可缺省）
                     if (nAx <= 0 && graph.compilerAttr(i, NodeField.AXES_N()) > 0) {
@@ -1553,13 +1553,13 @@ int inferShapes(Graph graph) {
                     else graph.addShapeD4(graph.compilerNodeOutput(i, 0), N, C, 1, 1);   // keepdims 0/1 均按 [N,C,1,1]
                 } else if (t == "InstanceNormalization") {
                     // F8：per-(n,c) 空间归一化（秩无关；scale/bias 为 [C] 常量）
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
-                    int s = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (s < 0) return 0;
-                    int b = graph.compilerShapeIdx(graph.nodeInAt(i, 2)); if (b < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    int s = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (graph.compilerValueExists(graph.nodeInAt(i, 1)) == 0) return 0;
+                    int b = graph.compilerShapeIdx(graph.nodeInAt(i, 2)); if (graph.compilerValueExists(graph.nodeInAt(i, 2)) == 0) return 0;
                     graph.copyShape(graph.compilerNodeOutput(i, 0), a);
                 } else if (t == "Resize" || t == "Upsample") {
                     // F8：2D/3D 上采样（nearest/linear/trilinear）。输出尺寸：sizes 初始器 > scales 初始器 > Upsample scales 属性
-                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int N = graph.compilerShapeDim(a, 0), C = graph.compilerShapeDim(a, 1);
                     int D = graph.compilerShapeDim(a, 2), H = graph.compilerShapeDim(a, 3), W = graph.compilerShapeDim(a, 4);
                     int is5 = graph.compilerShapeR5(a);
@@ -1712,7 +1712,7 @@ int foldShapeChains(Graph graph) {
                     }
                 } else if (t == "Shape") {
                     int s = graph.compilerShapeIdx(graph.nodeInAt(i, 0));
-                    if (s < 0) { i = i + 1; continue; }
+                    if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) { i = i + 1; continue; }
                     long[] v = new long[8];
                     int n = 4;
                     v[0] = long(graph.compilerShapeDim(s, 0)); v[1] = long(graph.compilerShapeDim(s, 1)); v[2] = long(graph.compilerShapeDim(s, 2)); v[3] = long(graph.compilerShapeDim(s, 3));

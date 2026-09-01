@@ -258,6 +258,14 @@ OpKind
   float 参数→PARAM）；`classifyShapes` 激活传播设 DATA role + 传播 dtype。ResNet50
   全 231 张量分类完成（DATA=121/WEIGHT=108/GRAPH_IN=1/GRAPH_OUT=1，FLOAT=231，
   UNKNOWN=0）。新增 `infer_tests/g2_probe_main.myp` 加载级回归。
+- **已完成：阶段二收尾（2026-09-01）**。`graph_optimizer.myp` 全部 37 处
+  `compilerShapeIdx(x) < 0` 裸 `-1` 哨兵存在性判断替换为
+  `compilerValueExists(x) == 0` 语义调用——覆盖 inferShapes 全部 35 个分支 +
+  `buildReverseGraph`（logits 存在）+ `foldShapeChains`（Shape 节点输入存在）。
+  剩余 `< 0` 判断均为节点/计划/权重 index（`matchSingleUseOp`/`lastUse`/
+  `picked`/`initIdx` 等），非 shape 存在性语义，保留。阶段二第 1/2 条（ValueId
+  外层 + 全面禁裸哨兵）闭环：新 pass 一律用 `compilerValueExists` 语义判断，
+  后续 ValueId 重构只改 `valueExists` 一处。
 - **已完成：G3 ReduceMean 负轴归一化**。inferShapes 负轴 +rank 后分类 mode，
   为阶段四 ReduceSum/Max/Min 铺路。
 - **已完成：阶段四第一优先级 ReduceSum/Max/Min**（commit `0440a18`）。OpCode
