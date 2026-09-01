@@ -260,14 +260,20 @@ OpKind
   UNKNOWN=0）。新增 `infer_tests/g2_probe_main.myp` 加载级回归。
 - **已完成：G3 ReduceMean 负轴归一化**。inferShapes 负轴 +rank 后分类 mode，
   为阶段四 ReduceSum/Max/Min 铺路。
-- **已验证**：28/28 infer_tests + grad_check（L0=1.92528）在 `MYP_GPU=1
+- **已完成：阶段四第一优先级 ReduceSum/Max/Min**（commit `0440a18`）。OpCode
+  54-56 + `nRedType_`（0=mean,1=sum,2=max,3=min）；inferShapes Reduce 族共用
+  axes 归一化 + mode 判定；runtime `addReduceMean` 加 redType（opP6）；ops kernel
+  支持 mean/sum/max/min 聚合；gpu_ops 支持 mean/sum（max/min GPU 未实现，打印
+  警告）。新增 `tools/make_reduce_onnx.py`（opset12 合成模型，空间+全规约）+
+  `infer_tests/reduce_main.myp`（REDUCE ALL OK，CPU+GPU max diff 0 vs ORT）。
+- **已验证**：29/29 infer_tests + grad_check（L0=1.92528）在 `MYP_GPU=1
   MYP_IR_VERIFY=1` 下全部通过；ResNet output sum `336.658`。关键提交：`8a38beb`
-  （G2 基础）、`9508a10`（DATA role）、`88d0fd2`（G3 负轴）。
-- **下一步**：G3 剩余（broadcast/ShapeExpr/dtype 转换规则）与阶段四算子
-  （Gather 完整/ReduceSum/ReduceMax/ReduceMin/Expand/Where/Tile/Squeeze）。
-  当前模型集为 4D/5D 静态 shape + 全 FLOAT + 同形状广播，broadcast 统一与
-  ShapeExpr 无模型驱动——按「不为没有目标的模式提前堆代码」，优先推进有合成
-  测试可验证的算子补全（ReduceSum/Max/Min 与已有 ReduceMean 同构）。
+  （G2 基础）、`9508a10`（DATA role）、`88d0fd2`（G3 负轴）、`0440a18`
+  （Reduce 族）。
+- **下一步**：G3 剩余（broadcast/ShapeExpr/dtype 转换规则）与阶段四其余算子
+  （Gather 完整/Expand/Where/Tile/Squeeze）。当前模型集为 4D/5D 静态 shape +
+  全 FLOAT + 同形状广播，broadcast 统一与 ShapeExpr 无模型驱动——按「不为没有
+  目标的模式提前堆代码」，优先推进有合成测试可验证的算子补全。
 
 ## 5. 阶段三：Shape、DType 与 Broadcast 基础层
 

@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-09-01 — 阶段四 G4：ReduceSum/ReduceMax/ReduceMin 算子
+
+- OpCode `REDUCE_SUM/MAX/MIN`(54-56) + `opCode` 映射；Graph 加 `nRedType_`
+  （0=mean,1=sum,2=max,3=min）+ `compilerNRedType` 桥。
+- `inferShapes` Reduce 族共用 axes 归一化（负轴）+ mode 判定，记录 redType；
+  `graph_compiler` REDUCE_* wiring 传 redType；runtime `addReduceMean` 加
+  redType（opP6）；ops `reduceMean` kernel 支持 mean/sum/max/min 聚合；
+  gpu_ops `reduceMean` 支持 mean/sum（max/min GPU 未实现，打印警告）。
+- 新增 `tools/make_reduce_onnx.py`（opset12 合成模型：x[1,2,3,4] → 空间规约
+  Reduce{Mean,Sum,Max,Min}→y1[4,2,1,1] + 全规约→y0[4,1,1,1]，ORT 参考）
+  + `infer_tests/reduce_main.myp`：`REDUCE ALL OK`，CPU+GPU max diff 0 vs ORT。
+- 回归：29/29 infer_tests + grad_check（L0=1.92528）在 `MYP_GPU=1
+  MYP_IR_VERIFY=1` 下全过；ResNet output sum `336.658`。
+
 ## 2026-09-01 — 阶段二 G2/G3：ValueId、dtype/role 建模 + Reduce 负轴
 
 - **G2 dtype/role 建模**（commit `8a38beb`/`9508a10`）：
