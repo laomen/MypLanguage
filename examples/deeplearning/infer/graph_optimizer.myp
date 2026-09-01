@@ -959,6 +959,772 @@ class GraphOptimizer {
             return 1;
         }
 
+        void normalize3DNode(Graph graph, int i) {
+            string t = graph.nodeTypeAt(i);
+            if (t != "Conv" && t != "MaxPool" && t != "AveragePool" && t != "ConvTranspose") return;
+            if (graph.compilerShapeRank5(graph.nodeInAt(i, 0)) != 1) return;
+            graph.compilerSetNodeType(i, t + "3D");
+            // strides [sd,sh,sw]
+            int sd = graph.rawSt(i, 0); if (sd == 0) sd = 1;
+            int sh = graph.rawSt(i, 1); if (sh == 0) sh = 1;
+            int sw = graph.rawSt(i, 2); if (sw == 0) sw = 1;
+            graph.compilerAttrSet(i, NodeField.SD3(), sd); graph.compilerAttrSet(i, NodeField.SH(), sh); graph.compilerAttrSet(i, NodeField.SW(), sw);
+            // pads：ONNX 3D 格式 [d_begin, h_begin, w_begin, d_end, h_end, w_end]
+            // （此前按 [pdt,pdb,pt,pb,pl,pr] 顺序读取——PyTorch 风格。对称 padding
+            // 时各维 top==bottom 看不出；非对称 pads（如 [1,0,0,1,0,0]）会错位，
+            // 导致 Conv/AvgPool 输出形状与切片位置错误）
+            graph.compilerAttrSet(i, NodeField.PDT(), graph.rawPd(i, 0)); graph.compilerAttrSet(i, NodeField.PDB(), graph.rawPd(i, 3));
+            graph.compilerAttrSet(i, NodeField.PT(), graph.rawPd(i, 1)); graph.compilerAttrSet(i, NodeField.PB(), graph.rawPd(i, 4));
+            graph.compilerAttrSet(i, NodeField.PL(), graph.rawPd(i, 2)); graph.compilerAttrSet(i, NodeField.PR(), graph.rawPd(i, 5));
+            // dilations [dd,dh,dw]
+            int dd = graph.rawDl(i, 0); if (dd == 0) dd = 1;
+            int dh = graph.rawDl(i, 1); if (dh == 0) dh = 1;
+            int dw = graph.rawDl(i, 2); if (dw == 0) dw = 1;
+            graph.compilerAttrSet(i, NodeField.DD3(), dd); graph.compilerAttrSet(i, NodeField.DH(), dh); graph.compilerAttrSet(i, NodeField.DW(), dw);
+            // kernel_shape [kd,kh,kw]
+            graph.compilerAttrSet(i, NodeField.KD3(), graph.rawKk(i, 0)); graph.compilerAttrSet(i, NodeField.KH(), graph.rawKk(i, 1)); graph.compilerAttrSet(i, NodeField.KW(), graph.rawKk(i, 2));
+        }
+
+int sliceAxis(Graph graph, int D, long stIn, long enIn, int step, int ax, int nodeIdx, int k) {
+            graph.compilerAttrSetIntArray(nodeIdx, 0, k, ax);
+            graph.compilerAttrSetIntArray(nodeIdx, 2, k, step);
+            int st;
+            int cnt = 0;
+            if (step > 0) {
+                long stL = stIn;
+                long enL = enIn;
+                if (stL == 9223372036854775807L) stL = long(D);
+                if (stL < 0L) stL = stL + long(D);
+                if (enL == 9223372036854775807L) enL = long(D);
+                if (enL < 0L) enL = enL + long(D);
+                if (stL < 0L) stL = 0L;
+                if (stL > long(D)) stL = long(D);
+                if (enL < 0L) enL = 0L;
+                if (enL > long(D)) enL = long(D);
+                st = int(stL);
+                int en = int(enL);
+                if (en > st) cnt = (en - st + step - 1) / step;
+            } else {
+                long stL = stIn;
+                long enL = enIn;
+                if (stL == 9223372036854775807L) stL = long(D - 1);
+                if (stL < 0L) stL = stL + long(D);
+                if (enL == 9223372036854775807L) enL = -1L;
+                if (enL < 0L) enL = enL + long(D);
+                if (stL < -1L) stL = -1L;
+                if (stL > long(D - 1)) stL = long(D - 1);
+                if (enL < -1L) enL = -1L;
+                if (enL > long(D - 1)) enL = long(D - 1);
+                st = int(stL);
+                int en = int(enL);
+                int nsp = 0 - step;
+                if (st > en) cnt = (st - en + nsp - 1) / nsp;
+            }
+            graph.compilerAttrSetIntArray(nodeIdx, 1, k, st);
+            return cnt;
+        }
+
+int inferShapes(Graph graph) {
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                string t = graph.nodeTypeAt(i);
+                if (t == "") { i = i + 1; continue; }   // 死节点（折叠/融合消掉）跳过
+                // P3：形状链节点（Shape/Constant/Cast/ReduceProd/Unsqueeze/Gather）由
+                // foldShapeChains 折叠；仍活着则先尝试折叠（形状随 inferShapes 推进逐步已知）
+                // Slice/Concat 仅当「数据输入」是 int64 形状链时才按形状链处理（float 数据
+                // Slice/Concat 是运行时算子）：Slice 判 nIn0_（数据），不能看 nIn1_（starts
+                // 恒为 int64 初始器，会把数据 Slice 误当形状链跳过 → 输出形状不登记 → 下游
+                // Concat shapeIdx 失败 "DBG fail inferShapes"）。
+                if (t == "Shape" || t == "Constant" || t == "Cast" || t == "ReduceProd" || t == "Unsqueeze" || t == "Gather" ||
+                    (t == "Slice" && (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 || graph.compilerI64ChainAlive(graph.nodeInAt(i, 0)) == 1)) ||
+                    (t == "Concat" && (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 || graph.compilerI64Count(graph.nodeInAt(i, 1)) > 0))) {
+                    foldShapeChains(graph);
+                    if (graph.nodeTypeAt(i) != "") { i = i + 1; continue; }   // 仍未折叠：跳过
+                    t = "";
+                }
+                if (t == "") { i = i + 1; continue; }
+                normalize3DNode(graph, i);
+                t = graph.nodeTypeAt(i);
+                if (t == "ConvTranspose") {
+                    // F8：转置卷积（group=1；权重 [Cin,Cout,kh,kw]，d1=Cout，d2=kh，d3=kw）
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (w < 0) return 0;
+                    int N = graph.compilerShapeDim(a, 0); int Cin = graph.compilerShapeDim(a, 1); int H = graph.compilerShapeDim(a, 2); int W = graph.compilerShapeDim(a, 3);
+                    int Cout = graph.compilerShapeDim(w, 1);
+                    int kh = graph.compilerAttr(i, NodeField.KH()); if (kh <= 0) kh = graph.compilerShapeDim(w, 2);
+                    int kw = graph.compilerAttr(i, NodeField.KW()); if (kw <= 0) kw = graph.compilerShapeDim(w, 3);
+                    int sh_ = graph.compilerAttr(i, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = graph.compilerAttr(i, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    int yH = (H - 1) * sh_ - graph.compilerAttr(i, NodeField.PT()) - graph.compilerAttr(i, NodeField.PB()) + kh + graph.compilerAttr(i, NodeField.OPH());
+                    int yW = (W - 1) * sw_ - graph.compilerAttr(i, NodeField.PL()) - graph.compilerAttr(i, NodeField.PR()) + kw + graph.compilerAttr(i, NodeField.OPW());
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), N, Cout, yH, yW);
+                } else if (t == "Conv") {
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (w < 0) return 0;
+                    int N = graph.compilerShapeDim(a, 0); int H = graph.compilerShapeDim(a, 2); int W = graph.compilerShapeDim(a, 3);
+                    int yC = graph.compilerShapeDim(w, 0);
+                    int kh = graph.compilerShapeDim(w, 2); int kw = graph.compilerShapeDim(w, 3);
+                    if (graph.compilerAttr(i, NodeField.KH()) > 0) kh = graph.compilerAttr(i, NodeField.KH());
+                    if (graph.compilerAttr(i, NodeField.KW()) > 0) kw = graph.compilerAttr(i, NodeField.KW());
+                    int yH = (H + graph.compilerAttr(i, NodeField.PT()) + graph.compilerAttr(i, NodeField.PB()) - graph.compilerAttr(i, NodeField.DH()) * (kh - 1) - 1) / graph.compilerAttr(i, NodeField.SH()) + 1;
+                    int yW = (W + graph.compilerAttr(i, NodeField.PL()) + graph.compilerAttr(i, NodeField.PR()) - graph.compilerAttr(i, NodeField.DW()) * (kw - 1) - 1) / graph.compilerAttr(i, NodeField.SW()) + 1;
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), N, yC, yH, yW);
+                } else if (t == "Conv3D") {
+                    // 3D：权重 [Cout,Cin,kd,kh,kw]（5D）；kd/kh/kw = shD2/shD3/shD4
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (w < 0) return 0;
+                    int N = graph.compilerShapeDim(a, 0); int D = graph.compilerShapeDim(a, 2); int H = graph.compilerShapeDim(a, 3); int W = graph.compilerShapeDim(a, 4);
+                    int yC = graph.compilerShapeDim(w, 0);
+                    int kd = graph.compilerShapeDim(w, 2); int kh = graph.compilerShapeDim(w, 3); int kw = graph.compilerShapeDim(w, 4);
+                    if (graph.compilerAttr(i, NodeField.KD3()) > 0) kd = graph.compilerAttr(i, NodeField.KD3());
+                    if (graph.compilerAttr(i, NodeField.KH()) > 0) kh = graph.compilerAttr(i, NodeField.KH());
+                    if (graph.compilerAttr(i, NodeField.KW()) > 0) kw = graph.compilerAttr(i, NodeField.KW());
+                    int sd = graph.compilerAttr(i, NodeField.SD3()); if (sd <= 0) sd = 1;
+                    int sh_ = graph.compilerAttr(i, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = graph.compilerAttr(i, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    int dd = graph.compilerAttr(i, NodeField.DD3()); if (dd <= 0) dd = 1;
+                    int dh = graph.compilerAttr(i, NodeField.DH()); if (dh <= 0) dh = 1;
+                    int dw = graph.compilerAttr(i, NodeField.DW()); if (dw <= 0) dw = 1;
+                    int yD = (D + graph.compilerAttr(i, NodeField.PDT()) + graph.compilerAttr(i, NodeField.PDB()) - dd * (kd - 1) - 1) / sd + 1;
+                    int yH = (H + graph.compilerAttr(i, NodeField.PT()) + graph.compilerAttr(i, NodeField.PB()) - dh * (kh - 1) - 1) / sh_ + 1;
+                    int yW = (W + graph.compilerAttr(i, NodeField.PL()) + graph.compilerAttr(i, NodeField.PR()) - dw * (kw - 1) - 1) / sw_ + 1;
+                    graph.addShapeD5(graph.compilerNodeOutput(i, 0), N, yC, yD, yH, yW);
+                } else if (t == "MaxPool3D") {
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int N = graph.compilerShapeDim(a, 0); int C = graph.compilerShapeDim(a, 1); int D = graph.compilerShapeDim(a, 2); int H = graph.compilerShapeDim(a, 3); int W = graph.compilerShapeDim(a, 4);
+                    int kd = graph.compilerAttr(i, NodeField.KD3()); if (kd <= 0) kd = 1;
+                    int kh = graph.compilerAttr(i, NodeField.KH()); if (kh <= 0) kh = 1;
+                    int kw = graph.compilerAttr(i, NodeField.KW()); if (kw <= 0) kw = 1;
+                    int sd = graph.compilerAttr(i, NodeField.SD3()); if (sd <= 0) sd = 1;
+                    int sh_ = graph.compilerAttr(i, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = graph.compilerAttr(i, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    int yD = (D + graph.compilerAttr(i, NodeField.PDT()) + graph.compilerAttr(i, NodeField.PDB()) - kd) / sd + 1;
+                    int yH = (H + graph.compilerAttr(i, NodeField.PT()) + graph.compilerAttr(i, NodeField.PB()) - kh) / sh_ + 1;
+                    int yW = (W + graph.compilerAttr(i, NodeField.PL()) + graph.compilerAttr(i, NodeField.PR()) - kw) / sw_ + 1;
+                    graph.addShapeD5(graph.compilerNodeOutput(i, 0), N, C, yD, yH, yW);
+                } else if (t == "AveragePool3D") {
+                    // 3D：各向异性核 kd/kh/kw + 6 pads + cip
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int N = graph.compilerShapeDim(a, 0); int C = graph.compilerShapeDim(a, 1); int D = graph.compilerShapeDim(a, 2); int H = graph.compilerShapeDim(a, 3); int W = graph.compilerShapeDim(a, 4);
+                    int kd = graph.compilerAttr(i, NodeField.KD3()); if (kd <= 0) kd = 1;
+                    int kh = graph.compilerAttr(i, NodeField.KH()); if (kh <= 0) kh = 1;
+                    int kw = graph.compilerAttr(i, NodeField.KW()); if (kw <= 0) kw = 1;
+                    int sd = graph.compilerAttr(i, NodeField.SD3()); if (sd <= 0) sd = 1;
+                    int sh_ = graph.compilerAttr(i, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = graph.compilerAttr(i, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    int yD = (D + graph.compilerAttr(i, NodeField.PDT()) + graph.compilerAttr(i, NodeField.PDB()) - kd) / sd + 1;
+                    int yH = (H + graph.compilerAttr(i, NodeField.PT()) + graph.compilerAttr(i, NodeField.PB()) - kh) / sh_ + 1;
+                    int yW = (W + graph.compilerAttr(i, NodeField.PL()) + graph.compilerAttr(i, NodeField.PR()) - kw) / sw_ + 1;
+                    graph.addShapeD5(graph.compilerNodeOutput(i, 0), N, C, yD, yH, yW);
+                } else if (t == "MaxPool") {
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int N = graph.compilerShapeDim(a, 0); int C = graph.compilerShapeDim(a, 1); int H = graph.compilerShapeDim(a, 2); int W = graph.compilerShapeDim(a, 3);
+                    int kh = graph.compilerAttr(i, NodeField.KH()); int kw = graph.compilerAttr(i, NodeField.KW());
+                    int yH = (H + graph.compilerAttr(i, NodeField.PT()) + graph.compilerAttr(i, NodeField.PB()) - kh) / graph.compilerAttr(i, NodeField.SH()) + 1;
+                    int yW = (W + graph.compilerAttr(i, NodeField.PL()) + graph.compilerAttr(i, NodeField.PR()) - kw) / graph.compilerAttr(i, NodeField.SW()) + 1;
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), N, C, yH, yW);
+                } else if (t == "AveragePool") {
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int N = graph.compilerShapeDim(a, 0); int C = graph.compilerShapeDim(a, 1); int H = graph.compilerShapeDim(a, 2); int W = graph.compilerShapeDim(a, 3);
+                    int kh = graph.compilerAttr(i, NodeField.KH()); int kw = graph.compilerAttr(i, NodeField.KW());
+                    int yH = (H + graph.compilerAttr(i, NodeField.PT()) + graph.compilerAttr(i, NodeField.PB()) - kh) / graph.compilerAttr(i, NodeField.SH()) + 1;
+                    int yW = (W + graph.compilerAttr(i, NodeField.PL()) + graph.compilerAttr(i, NodeField.PR()) - kw) / graph.compilerAttr(i, NodeField.SW()) + 1;
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), N, C, yH, yW);
+                } else if (t == "Pad") {
+                    // F8：pads = [N,C,(D,)H,W] 各轴 begin/end（int64 初始器输入，opset11+）
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int is5 = graph.compilerShapeR5(a);
+                    if (is5 == 1) {
+                        int pc = graph.compilerI64Count(graph.nodeInAt(i, 1));
+                        int fromPool = 0;
+                        if (pc >= 10) fromPool = 1;
+                        else { pc = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 10); }
+                        if (pc < 10) return 0;
+                        int pnB, pcB, pdB, phB, pwB, pnE, pcE, pdE, phE, pwE;
+                        if (fromPool == 1) {
+                            pnB = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 0)); pcB = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 1)); pdB = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 2)); phB = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 3)); pwB = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 4));
+                            pnE = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 5)); pcE = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 6)); pdE = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 7)); phE = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 8)); pwE = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 9));
+                        } else {
+                            pnB = int(graph.compilerI64Tmp(0)); pcB = int(graph.compilerI64Tmp(1)); pdB = int(graph.compilerI64Tmp(2)); phB = int(graph.compilerI64Tmp(3)); pwB = int(graph.compilerI64Tmp(4));
+                            pnE = int(graph.compilerI64Tmp(5)); pcE = int(graph.compilerI64Tmp(6)); pdE = int(graph.compilerI64Tmp(7)); phE = int(graph.compilerI64Tmp(8)); pwE = int(graph.compilerI64Tmp(9));
+                        }
+                        graph.compilerAttrSetIntArray(i, 5, 0, pnB); graph.compilerAttrSetIntArray(i, 5, 1, pcB); graph.compilerAttrSetIntArray(i, 5, 2, pdB); graph.compilerAttrSetIntArray(i, 5, 3, phB); graph.compilerAttrSetIntArray(i, 5, 4, pwB);
+                        graph.compilerAttrSetIntArray(i, 12, 0, pnE); graph.compilerAttrSetIntArray(i, 12, 1, pcE); graph.compilerAttrSetIntArray(i, 12, 2, pdE); graph.compilerAttrSetIntArray(i, 12, 3, phE); graph.compilerAttrSetIntArray(i, 12, 4, pwE);
+                        double cv = 0.0;
+                        if (graph.nodeInAt(i, 2) != "") { int cvc = graph.compilerReadF32Init(graph.nodeInAt(i, 2), 1); if (cvc > 0) cv = graph.compilerF32Tmp(0); }
+                        graph.compilerSetNPadCval(i, F32.toBits(cv));
+                        graph.addShapeD5(graph.compilerNodeOutput(i, 0), graph.compilerShapeDim(a, 0) + pnB + pnE, graph.compilerShapeDim(a, 1) + pcB + pcE,
+                                   graph.compilerShapeDim(a, 2) + pdB + pdE, graph.compilerShapeDim(a, 3) + phB + phE, graph.compilerShapeDim(a, 4) + pwB + pwE);
+                        // pads/constant_value 已折叠进 nPadB5_/nPadE5_/nPadCval_
+                        // （buildRuntime 只读这些折叠数组）→ 清空悬空参数槽，避免
+                        // verifyIR 报 val<0（foldShapeChains 折叠 pads 链时生产者
+                        // 已 erase、其 shape 未登记）。
+                        graph.compilerSetNodeInput(i, 1, ""); graph.compilerSetNodeInput(i, 2, "");
+                    } else {
+                        int pc = graph.compilerI64Count(graph.nodeInAt(i, 1));
+                        int fromPool = 0;
+                        if (pc >= 8) fromPool = 1;
+                        else { pc = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8); }
+                        if (pc < 8) return 0;
+                        int pnB, pcB, phB, pwB, pnE, pcE, phE, pwE;
+                        if (fromPool == 1) {
+                            pnB = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 0)); pcB = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 1)); phB = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 2)); pwB = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 3));
+                            pnE = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 4)); pcE = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 5)); phE = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 6)); pwE = int(graph.compilerI64Get(graph.nodeInAt(i, 1), 7));
+                        } else {
+                            pnB = int(graph.compilerI64Tmp(0)); pcB = int(graph.compilerI64Tmp(1)); phB = int(graph.compilerI64Tmp(2)); pwB = int(graph.compilerI64Tmp(3));
+                            pnE = int(graph.compilerI64Tmp(4)); pcE = int(graph.compilerI64Tmp(5)); phE = int(graph.compilerI64Tmp(6)); pwE = int(graph.compilerI64Tmp(7));
+                        }
+                        graph.compilerAttrSetIntArray(i, 3, 0, pnB); graph.compilerAttrSetIntArray(i, 3, 1, pcB); graph.compilerAttrSetIntArray(i, 3, 2, phB); graph.compilerAttrSetIntArray(i, 3, 3, pwB);
+                        graph.compilerAttrSetIntArray(i, 4, 0, pnE); graph.compilerAttrSetIntArray(i, 4, 1, pcE); graph.compilerAttrSetIntArray(i, 4, 2, phE); graph.compilerAttrSetIntArray(i, 4, 3, pwE);
+                        double cv = 0.0;
+                        if (graph.nodeInAt(i, 2) != "") { int cvc = graph.compilerReadF32Init(graph.nodeInAt(i, 2), 1); if (cvc > 0) cv = graph.compilerF32Tmp(0); }
+                        graph.compilerSetNPadCval(i, F32.toBits(cv));
+                        graph.addShapeD4(graph.compilerNodeOutput(i, 0), graph.compilerShapeDim(a, 0) + pnB + pnE, graph.compilerShapeDim(a, 1) + pcB + pcE,
+                                   graph.compilerShapeDim(a, 2) + phB + phE, graph.compilerShapeDim(a, 3) + pwB + pwE);
+                        // pads/constant_value 已折叠进 nPadB_/nPadE_/nPadCval_ → 清空参数槽
+                        graph.compilerSetNodeInput(i, 1, ""); graph.compilerSetNodeInput(i, 2, "");
+                    }
+                } else if (t == "GlobalAveragePool") {
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), graph.compilerShapeDim(a, 0), graph.compilerShapeDim(a, 1), 1, 1);
+                } else if (t == "Flatten") {
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    // F8 3D：5D 输入（NCDHW）须连深度维一起拍平（shD1*shD2*shD3*shD4）
+                    int f = graph.compilerShapeDim(a, 1) * graph.compilerShapeDim(a, 2) * graph.compilerShapeDim(a, 3);
+                    if (graph.compilerShapeR5(a) == 1) f = f * graph.compilerShapeDim(a, 4);
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), graph.compilerShapeDim(a, 0), f, 1, 1);
+                } else if (t == "Gemm") {
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (w < 0) return 0;
+                    int m = graph.compilerShapeDim(a, 0);                     // [M,K]
+                    int n = graph.compilerShapeDim(w, 0);                     // transB=1: [N,K] → N=d0
+                    if (graph.compilerAttr(i, NodeField.TRANSB()) == 0) n = graph.compilerShapeDim(w, 1);   // transB=0: [K,N] → N=d1
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), m, n, 1, 1);
+                } else if (t == "MatMul") {
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int b = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (b < 0) return 0;
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), graph.compilerShapeDim(a, 0), graph.compilerShapeDim(b, 1), 1, 1);
+                } else if (t == "Add" || t == "Relu" || t == "Sigmoid" || t == "Softmax" || t == "BatchNormalization"
+                           || t == "ReLU6" || t == "LeakyRelu" || t == "SiLU" || t == "HardSwish" || t == "Clip") {
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    graph.copyShape(graph.compilerNodeOutput(i, 0), a);
+                } else if (t == "Reshape") {
+                    // F8：shape 来自输入[1]（int64 初始器）；-1 = 由总元素数推断，0 = 复制对应输入维
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int sc = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8);
+                    if (sc <= 0) return 0;
+                    int total = graph.compilerShapeDim(a, 0) * graph.compilerShapeDim(a, 1) * graph.compilerShapeDim(a, 2) * graph.compilerShapeDim(a, 3);
+                    int[] outd = new int[8];
+                    int inferIdx = -1;
+                    int prod = 1;
+                    int d = 0;
+                    while (d < sc) {
+                        int v = int(graph.compilerI64Tmp(d));
+                        if (v == -1) { inferIdx = d; outd[d] = 1; }
+                        else if (v == 0) {
+                            if (d < 4) { outd[d] = (d == 0) ? graph.compilerShapeDim(a, 0) : ((d == 1) ? graph.compilerShapeDim(a, 1) : ((d == 2) ? graph.compilerShapeDim(a, 2) : graph.compilerShapeDim(a, 3))); }
+                            else outd[d] = 1;
+                        }
+                        else outd[d] = v;
+                        prod = prod * outd[d];
+                        d = d + 1;
+                    }
+                    if (inferIdx >= 0 && prod > 0) outd[inferIdx] = total / prod;
+                    int od0 = 1, od1 = 1, od2 = 1, od3 = 1;
+                    if (sc >= 1) od0 = outd[0];
+                    if (sc >= 2) od1 = outd[1];
+                    if (sc >= 3) od2 = outd[2];
+                    if (sc >= 4) od3 = outd[3];
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), od0, od1, od2, od3);
+                } else if (t == "Concat") {
+                    // F8：沿 axis 拼接（2-3 输入），输出 = 各输入沿 axis 之和，其余维同输入0
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int axis = graph.compilerAttr(i, NodeField.AXIS());
+                    if (axis < 0) axis = 0;
+                    int is5 = graph.compilerShapeR5(a);
+                    int[] dims = new int[5];
+                    dims[0] = graph.compilerShapeDim(a, 0); dims[1] = graph.compilerShapeDim(a, 1); dims[2] = graph.compilerShapeDim(a, 2); dims[3] = graph.compilerShapeDim(a, 3); dims[4] = graph.compilerShapeDim(a, 4);
+                    // 沿 axis 累计（最多 3 输入，与 runtime opA/opB/opC 一致）
+                    int axisSum = 0;
+                    int slot = 0;
+                    while (slot < 3) {
+                        string nm;
+                        if (slot == 0) nm = graph.nodeInAt(i, 0);
+                        else if (slot == 1) nm = graph.nodeInAt(i, 1);
+                        else nm = graph.nodeInAt(i, 2);
+                        if (nm == "") { slot = 3; break; }
+                        int s = graph.compilerShapeIdx(nm); if (s < 0) return 0;
+                        int av = (axis == 0) ? graph.compilerShapeDim(s, 0) : ((axis == 1) ? graph.compilerShapeDim(s, 1) : ((axis == 2) ? graph.compilerShapeDim(s, 2) : ((axis == 3) ? graph.compilerShapeDim(s, 3) : graph.compilerShapeDim(s, 4))));
+                        axisSum = axisSum + av;
+                        slot = slot + 1;
+                    }
+                    if (axis == 0) dims[0] = axisSum;
+                    else if (axis == 1) dims[1] = axisSum;
+                    else if (axis == 2) dims[2] = axisSum;
+                    else if (axis == 3) dims[3] = axisSum;
+                    else dims[4] = axisSum;
+                    if (is5 == 1) graph.addShapeD5(graph.compilerNodeOutput(i, 0), dims[0], dims[1], dims[2], dims[3], dims[4]);
+                    else graph.addShapeD4(graph.compilerNodeOutput(i, 0), dims[0], dims[1], dims[2], dims[3]);
+                } else if (t == "Transpose") {
+                    // F8：perm 属性（缺省 = 反转维度）
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int nd = 4;
+                    int p0, p1, p2, p3;
+                    if (graph.compilerAttr(i, NodeField.PERM_N()) >= 4) { p0 = graph.compilerAttr(i, NodeField.PERM0()); p1 = graph.compilerAttr(i, NodeField.PERM1()); p2 = graph.compilerAttr(i, NodeField.PERM2()); p3 = graph.compilerAttr(i, NodeField.PERM3()); }
+                    else if (graph.compilerAttr(i, NodeField.PERM_N()) == 3) { p0 = graph.compilerAttr(i, NodeField.PERM0()); p1 = graph.compilerAttr(i, NodeField.PERM1()); p2 = graph.compilerAttr(i, NodeField.PERM2()); p3 = 3; }
+                    else if (graph.compilerAttr(i, NodeField.PERM_N()) == 2) { p0 = graph.compilerAttr(i, NodeField.PERM0()); p1 = graph.compilerAttr(i, NodeField.PERM1()); p2 = 2; p3 = 3; }
+                    else if (graph.compilerAttr(i, NodeField.PERM_N()) == 1) { p0 = graph.compilerAttr(i, NodeField.PERM0()); p1 = 1; p2 = 2; p3 = 3; }
+                    else { p0 = 3; p1 = 2; p2 = 1; p3 = 0; }   // 缺省反转
+                    int id0 = graph.compilerShapeDim(a, 0), id1 = graph.compilerShapeDim(a, 1), id2 = graph.compilerShapeDim(a, 2), id3 = graph.compilerShapeDim(a, 3);
+                    int[] od = new int[4];
+                    od[0] = (p0 == 0) ? id0 : ((p0 == 1) ? id1 : ((p0 == 2) ? id2 : id3));
+                    od[1] = (p1 == 0) ? id0 : ((p1 == 1) ? id1 : ((p1 == 2) ? id2 : id3));
+                    od[2] = (p2 == 0) ? id0 : ((p2 == 1) ? id1 : ((p2 == 2) ? id2 : id3));
+                    od[3] = (p3 == 0) ? id0 : ((p3 == 1) ? id1 : ((p3 == 2) ? id2 : id3));
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), od[0], od[1], od[2], od[3]);
+                } else if (t == "Slice") {
+                    // F8：starts/ends/axes/steps 为 int64 初始器输入（opset 10+）
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int sc = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8);   // starts
+                    if (sc <= 0) return 0;
+                    int k = 0;
+                    while (k < sc) { graph.compilerAttrSetLongArray(i, 0, k, graph.compilerI64Tmp(k)); k = k + 1; }
+                    int ec = graph.compilerReadI64Init(graph.nodeInAt(i, 2), 8);   // ends
+                    if (ec <= 0) return 0;
+                    k = 0;
+                    while (k < ec) { graph.compilerAttrSetLongArray(i, 1, k, graph.compilerI64Tmp(k)); k = k + 1; }
+                    int ac = graph.compilerReadI64Init(graph.nodeInAt(i, 3), 8);   // axes（可缺省 → 0..）
+                    k = 0;
+                    while (k < ac) { graph.compilerAttrSetLongArray(i, 2, k, graph.compilerI64Tmp(k)); k = k + 1; }
+                    int pc = graph.compilerReadI64Init(graph.nodeInAt(i, 4), 8);   // steps（可缺省 → 全 1）
+                    k = 0;
+                    while (k < pc) { graph.compilerAttrSetLongArray(i, 3, k, graph.compilerI64Tmp(k)); k = k + 1; }
+                    int cnt = sc;
+                    if (cnt > 4) cnt = 4;
+                    graph.compilerAttrSetSliceCount(i, cnt);
+                    int id0 = graph.compilerShapeDim(a, 0), id1 = graph.compilerShapeDim(a, 1), id2 = graph.compilerShapeDim(a, 2), id3 = graph.compilerShapeDim(a, 3);
+                    int[] odim = new int[4];
+                    odim[0] = id0; odim[1] = id1; odim[2] = id2; odim[3] = id3;
+                    k = 0;
+                    while (k < cnt) {
+                        int ax = 0;
+                        if (ac > 0) ax = int(graph.compilerAttrLongArray(i, 2, k));
+                        else ax = k;
+                        int step = 1;
+                        if (pc > 0) step = int(graph.compilerAttrLongArray(i, 3, k));
+                        if (step == 0) return 0;   // 步长不能为 0
+                        int D = (ax == 0) ? id0 : ((ax == 1) ? id1 : ((ax == 2) ? id2 : id3));
+                        int co = sliceAxis(graph, D, graph.compilerAttrLongArray(i, 0, k), graph.compilerAttrLongArray(i, 1, k), step, ax, i, k);
+                        if (ax >= 0 && ax < 4) odim[ax] = co;
+                        k = k + 1;
+                    }
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), odim[0], odim[1], odim[2], odim[3]);
+                } else if (t == "Split") {
+                    // F8：沿 axis 分割为 nOutN_ 个输出（split attr 或均分；starts/lens 存 nSplitSt_/nSplitLn_）
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int axis = graph.compilerAttr(i, NodeField.AXIS()); if (axis < 0) axis = 0;
+                    int D = (axis == 0) ? graph.compilerShapeDim(a, 0) : ((axis == 1) ? graph.compilerShapeDim(a, 1) : ((axis == 2) ? graph.compilerShapeDim(a, 2) : graph.compilerShapeDim(a, 3)));
+                    int no = graph.compilerAttrOutputCount(i); if (no < 1) no = 1;
+                    int ns = graph.compilerAttr(i, NodeField.SPLIT_N());
+                    int fromInput = 0;
+                    if (ns <= 0 && graph.nodeInAt(i, 1) != "") { ns = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 4); fromInput = 1; }   // opset13+：split 为输入
+                    int acc = 0;
+                    int j = 0;
+                    while (j < no && j < 4) {
+                        int sz;
+                        if (ns > j) {
+                            if (fromInput == 1) sz = int(graph.compilerI64Tmp(j));
+                            else sz = (j == 0) ? graph.compilerAttr(i, NodeField.SPLIT0()) : ((j == 1) ? graph.compilerAttr(i, NodeField.SPLIT1()) : ((j == 2) ? graph.compilerAttr(i, NodeField.SPLIT2()) : graph.compilerAttr(i, NodeField.SPLIT3())));
+                        } else {
+                            sz = D / no;
+                        }
+                        if (j == no - 1) sz = D - acc;   // 最后一份吸收余数
+                        if (sz < 0) sz = 0;
+                        graph.compilerAttrSetIntArray(i, 6, j, acc);
+                        graph.compilerAttrSetIntArray(i, 7, j, sz);
+                        acc = acc + sz;
+                        int d0 = graph.compilerShapeDim(a, 0), d1 = graph.compilerShapeDim(a, 1), d2 = graph.compilerShapeDim(a, 2), d3 = graph.compilerShapeDim(a, 3);
+                        if (axis == 0) d0 = sz;
+                        else if (axis == 1) d1 = sz;
+                        else if (axis == 2) d2 = sz;
+                        else d3 = sz;
+                        string onm = (j == 0) ? graph.compilerNodeOutput(i, 0) : ((j == 1) ? graph.compilerNodeOutput(i, 1) : ((j == 2) ? graph.compilerNodeOutput(i, 2) : graph.compilerNodeOutput(i, 3)));
+                        graph.addShapeD4(onm, d0, d1, d2, d3);
+                        j = j + 1;
+                    }
+                } else if (t == "Sub" || t == "Div" || t == "Mul" || t == "Sqrt") {
+                    // F8：秩无关逐元素（输出形状 = 输入 0；标量/同形状广播）
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    graph.copyShape(graph.compilerNodeOutput(i, 0), a);
+                } else if (t == "ReduceMean") {
+                    // F8：mode 0 = 全规约（标量）；mode 1 = 空间维规约（per-(n,c)，秩无关）
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int nAx = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8);   // axes 输入（opset18+；可缺省）
+                    if (nAx <= 0 && graph.compilerAttr(i, NodeField.AXES_N()) > 0) {
+                        // 属性形式（opset<=17）
+                        nAx = graph.compilerAttr(i, NodeField.AXES_N());
+                        graph.compilerSetI64Tmp(0, graph.compilerAttr(i, NodeField.AXES0()));
+                        graph.compilerSetI64Tmp(1, graph.compilerAttr(i, NodeField.AXES1()));
+                        graph.compilerSetI64Tmp(2, graph.compilerAttr(i, NodeField.AXES2()));
+                        graph.compilerSetI64Tmp(3, graph.compilerAttr(i, NodeField.AXES3()));
+                    }
+                    int mode = 0;
+                    if (nAx > 0) {
+                        int c0 = 0, c1 = 0, c2 = 0, c3 = 0;
+                        int k = 0;
+                        while (k < nAx) {
+                            int ax = int(graph.compilerI64Tmp(k));
+                            if (ax == 0) c0 = 1;
+                            else if (ax == 1) c1 = 1;
+                            else if (ax == 2) c2 = 1;
+                            else if (ax == 3) c3 = 1;
+                            k = k + 1;
+                        }
+                        if (c0 == 1 || c1 == 1) mode = 0;          // 含 N/C → 全规约
+                        else if (c2 == 1 && c3 == 1) mode = 1;     // 空间维
+                        else return 0;                              // 单空间维等 → 暂不支持
+                    }
+                    graph.compilerSetNRedMode(i, mode);
+                    int N = graph.compilerShapeDim(a, 0); int C = graph.compilerShapeDim(a, 1);
+                    int S = graph.compilerShapeDim(a, 2) * graph.compilerShapeDim(a, 3);
+                    if (mode == 0) graph.addShapeD4(graph.compilerNodeOutput(i, 0), 1, 1, 1, 1);
+                    else graph.addShapeD4(graph.compilerNodeOutput(i, 0), N, C, 1, 1);   // keepdims 0/1 均按 [N,C,1,1]
+                } else if (t == "InstanceNormalization") {
+                    // F8：per-(n,c) 空间归一化（秩无关；scale/bias 为 [C] 常量）
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int s = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (s < 0) return 0;
+                    int b = graph.compilerShapeIdx(graph.nodeInAt(i, 2)); if (b < 0) return 0;
+                    graph.copyShape(graph.compilerNodeOutput(i, 0), a);
+                } else if (t == "Resize" || t == "Upsample") {
+                    // F8：2D/3D 上采样（nearest/linear/trilinear）。输出尺寸：sizes 初始器 > scales 初始器 > Upsample scales 属性
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
+                    int N = graph.compilerShapeDim(a, 0), C = graph.compilerShapeDim(a, 1);
+                    int D = graph.compilerShapeDim(a, 2), H = graph.compilerShapeDim(a, 3), W = graph.compilerShapeDim(a, 4);
+                    int is5 = graph.compilerShapeR5(a);
+                    if (is5 == 0) { D = 1; H = graph.compilerShapeDim(a, 2); W = graph.compilerShapeDim(a, 3); }   // 2D：D=1,H,W=shD2,shD3
+                    int outD = D, outH = H, outW = W;
+                    if (t == "Upsample") {
+                        double sh = graph.attrFloat(i, NodeField.UPSH());   // P3d：统一属性访问
+                        double sw = graph.attrFloat(i, NodeField.UPSW());
+                        if (sh == 0.0) sh = 1.0;
+                        if (sw == 0.0) sw = 1.0;
+                        double hd = float(H);
+                        double wd = float(W);
+                        outH = int(hd * sh);
+                        outW = int(wd * sw);
+                    } else {
+                        if (is5 == 1) {
+                            // 3D：sizes [N,C,outD,outH,outW]。foldShapeChains 可能在
+                            // 输入秩确定前跑（shapeRank5 误判 0 → 只填 nRszH/nRszW），
+                            // 故 is5=1 须 nRszD/H/W 三者齐备才用折叠值；否则回退 readI64Init。
+                            if (graph.compilerAttrResizeD(i) > 0 && graph.compilerAttrResizeH(i) > 0 && graph.compilerAttrResizeW(i) > 0) {
+                                outD = graph.compilerAttrResizeD(i); outH = graph.compilerAttrResizeH(i); outW = graph.compilerAttrResizeW(i);
+                            } else {
+                                int szc = graph.compilerReadI64Init(graph.nodeInAt(i, 3), 8);   // sizes [N,C,outD,outH,outW]
+                                if (szc >= 5) {
+                                    outD = int(graph.compilerI64Tmp(2));
+                                    outH = int(graph.compilerI64Tmp(3));
+                                    outW = int(graph.compilerI64Tmp(4));
+                                } else {
+                                    int sc2 = graph.compilerReadF32Init(graph.nodeInAt(i, 2), 8);   // scales [1,1,sd,sh,sw]
+                                    if (sc2 >= 3) {
+                                        double dd = float(D);
+                                        double hd = float(H);
+                                        double wd = float(W);
+                                        outD = int(dd * graph.compilerF32Tmp(2));
+                                        outH = int(hd * graph.compilerF32Tmp(3));
+                                        outW = int(wd * graph.compilerF32Tmp(4));
+                                    }
+                                }
+                            }
+                        } else {
+                            if (graph.compilerAttrResizeH(i) > 0 && graph.compilerAttrResizeW(i) > 0) {
+                                outH = graph.compilerAttrResizeH(i); outW = graph.compilerAttrResizeW(i);
+                            } else {
+                                int szc = graph.compilerReadI64Init(graph.nodeInAt(i, 3), 8);   // sizes [N,C,outH,outW]
+                                if (szc >= 4) {
+                                    outH = int(graph.compilerI64Tmp(2));
+                                    outW = int(graph.compilerI64Tmp(3));
+                                } else {
+                                    int sc2 = graph.compilerReadF32Init(graph.nodeInAt(i, 2), 8);   // scales [1,1,sh,sw]
+                                    if (sc2 >= 3) {
+                                        double hd = float(H);
+                                        double wd = float(W);
+                                        outH = int(hd * graph.compilerF32Tmp(2));
+                                        outW = int(wd * graph.compilerF32Tmp(3));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (outD < 1) outD = 1;
+                    if (outH < 1) outH = 1;
+                    if (outW < 1) outW = 1;
+                    if (is5 == 1) graph.addShapeD5(graph.compilerNodeOutput(i, 0), N, C, outD, outH, outW);
+                    else graph.addShapeD4(graph.compilerNodeOutput(i, 0), N, C, outH, outW);
+                } else {
+                    return 0;   // 不支持的算子
+                }
+                i = i + 1;
+            }
+            return 1;
+        }
+
+int foldConstants(Graph graph) {
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                if (graph.nodeTypeAt(i) == "Constant" && graph.compilerAttr(i, NodeField.CONST_VAL()) == 1) {
+                    int off = graph.compilerAttr(i, NodeField.CONST_OFF());
+                    int len = graph.compilerAttr(i, NodeField.CONST_LEN());
+                    int end = off + len;
+                    graph.compilerPbSeek(off);
+                    int[] dims = new int[8];
+                    int dimCount = 0;
+                    int dt = 0;
+                    int payloadKind = 0;
+                    int payloadOff = 0;
+                    int payloadLen = 0;
+                    while (graph.compilerPbPos() < end) {
+                        int f = graph.compilerPbNextTag();
+                        if (f == -1) break;
+                        if (f == 1) {
+                            if (dimCount < 8) { dims[dimCount] = graph.compilerPbReadVarint(); dimCount = dimCount + 1; }
+                            else { long v = graph.compilerPbReadVarint64(); }
+                        } else if (f == 2) {
+                            dt = graph.compilerPbReadVarint();
+                        } else if (f == 4 || f == 9) {
+                            payloadKind = 1;
+                            payloadLen = graph.compilerPbReadLen();
+                            payloadOff = graph.compilerPbPayloadOff();
+                            graph.compilerPbSkipBytes(payloadLen);
+                        } else if (f == 10) {
+                            payloadKind = 2;
+                            payloadLen = graph.compilerPbReadLen();
+                            payloadOff = graph.compilerPbPayloadOff();
+                            graph.compilerPbSkipBytes(payloadLen);
+                        } else {
+                            graph.compilerPbSkipField();
+                        }
+                    }
+                    if (dt == 1 && payloadKind == 1) {   // FLOAT
+                        int rows = 1; int cols = 1;
+                        if (dimCount == 0) { rows = 1; cols = 1; }
+                        else if (dimCount == 1) { rows = dims[0]; cols = 1; }
+                        else if (dimCount == 2) { rows = dims[0]; cols = dims[1]; }
+                        else {
+                            rows = dims[0];
+                            cols = 1;
+                            int k = 1;
+                            while (k < dimCount) { cols = cols * dims[k]; k = k + 1; }
+                        }
+                        int weight = graph.compilerWeightAdd(graph.compilerNodeOutput(i, 0), rows, cols, dt, payloadKind, payloadOff, payloadLen);
+                        graph.compilerWeightSetField(weight, WeightField.ROLE(), 4);      // 通用常量：直接拷贝
+                        graph.addShapeD(graph.compilerNodeOutput(i, 0), dims, dimCount);
+                        graph.compilerSetShapeKind(graph.compilerNodeOutput(i, 0), Kind.FC_C());
+                        graph.compilerSetNodeType(i, "");
+                        graph.compilerIncFold();
+                    }
+                }
+                i = i + 1;
+            }
+            return 1;
+        }
+
+int foldShapeChains(Graph graph) {
+            // P3：int64 形状链折叠（Shape/Slice/Concat/Cast/Unsqueeze/Gather/ReduceProd）。
+            // 可两次调用（inferShapes 前折叠 Resize sizes 链；后折叠剩余链）。幂等。
+            // 先播种所有 int64 初始器常量
+            int wi = 0;
+            while (wi < graph.compilerWeightCount()) {
+                if (graph.compilerWeightGetField(wi, WeightField.DTYPE()) == 7) graph.compilerI64RegInit(graph.compilerWeightNameAt(wi), graph.compilerWeightNameAt(wi), 64);
+                wi = wi + 1;
+            }
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                string t = graph.nodeTypeAt(i);
+                if (t == "") { i = i + 1; continue; }
+                if (t == "Constant") {
+                    if (graph.compilerAttr(i, NodeField.CONST_VAL()) == 1) {
+                        graph.compilerI64RegConstant(graph.compilerNodeOutput(i, 0), graph.compilerAttr(i, NodeField.CONST_OFF()), graph.compilerAttr(i, NodeField.CONST_LEN()));
+                        if (graph.compilerI64Count(graph.compilerNodeOutput(i, 0)) > 0) { graph.compilerSetNodeType(i, ""); graph.compilerIncFold(); }
+                    }
+                } else if (t == "Shape") {
+                    int s = graph.compilerShapeIdx(graph.nodeInAt(i, 0));
+                    if (s < 0) { i = i + 1; continue; }
+                    long[] v = new long[8];
+                    int n = 4;
+                    v[0] = long(graph.compilerShapeDim(s, 0)); v[1] = long(graph.compilerShapeDim(s, 1)); v[2] = long(graph.compilerShapeDim(s, 2)); v[3] = long(graph.compilerShapeDim(s, 3));
+                    if (graph.compilerShapeR5(s) == 1) { v[4] = long(graph.compilerShapeDim(s, 4)); n = 5; }
+                    graph.compilerI64Reg(graph.compilerNodeOutput(i, 0), v, n);
+                    graph.compilerSetNodeType(i, "");
+                } else if (t == "ReduceProd") {
+                    if (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0) {
+                        int c = graph.compilerI64Count(graph.nodeInAt(i, 0));
+                        long prod = 1L;
+                        int k = 0;
+                        while (k < c) { prod = prod * graph.compilerI64Get(graph.nodeInAt(i, 0), k); k = k + 1; }
+                        long[] v = new long[1];
+                        v[0] = prod;
+                        graph.compilerI64Reg(graph.compilerNodeOutput(i, 0), v, 1);
+                        graph.compilerSetNodeType(i, "");
+                    }
+                } else if (t == "Unsqueeze") {
+                    if (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0) {
+                        int c = graph.compilerI64Count(graph.nodeInAt(i, 0));
+                        long[] v = new long[32];
+                        int k = 0;
+                        while (k < c) { v[k] = graph.compilerI64Get(graph.nodeInAt(i, 0), k); k = k + 1; }
+                        graph.compilerI64Reg(graph.compilerNodeOutput(i, 0), v, c);   // reshape：值不变
+                        graph.compilerSetNodeType(i, "");
+                    }
+                } else if (t == "Gather") {
+                    if (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 && graph.compilerI64Count(graph.nodeInAt(i, 1)) > 0) {
+                        int dataN = graph.compilerI64Count(graph.nodeInAt(i, 0));
+                        int idxN = graph.compilerI64Count(graph.nodeInAt(i, 1));
+                        long[] v = new long[32];
+                        int k = 0;
+                        while (k < idxN && k < 32) {
+                            long ix = graph.compilerI64Get(graph.nodeInAt(i, 1), k);
+                            int ii = int(ix);
+                            if (ii < 0) ii = ii + dataN;
+                            if (ii >= 0 && ii < dataN) v[k] = graph.compilerI64Get(graph.nodeInAt(i, 0), ii);
+                            else v[k] = 0L;
+                            k = k + 1;
+                        }
+                        graph.compilerI64Reg(graph.compilerNodeOutput(i, 0), v, idxN);
+                        graph.compilerSetNodeType(i, "");
+                    }
+                } else if (t == "Slice") {
+                    // 仅折叠 int64 数据链（float 数据 Slice 是运行时算子，不动）
+                    if (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0) {
+                        int dataN = graph.compilerI64Count(graph.nodeInAt(i, 0));
+                        long[] st = new long[8]; int stc = graph.compilerI64Count(graph.nodeInAt(i, 1));
+                        int k = 0; while (k < stc && k < 8) { st[k] = graph.compilerI64Get(graph.nodeInAt(i, 1), k); k = k + 1; }
+                        if (stc <= 0) { stc = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8); k = 0; while (k < stc && k < 8) { st[k] = graph.compilerI64Tmp(k); k = k + 1; } }
+                        long[] en = new long[8]; int enc = graph.compilerI64Count(graph.nodeInAt(i, 2));
+                        k = 0; while (k < enc && k < 8) { en[k] = graph.compilerI64Get(graph.nodeInAt(i, 2), k); k = k + 1; }
+                        if (enc <= 0) { enc = graph.compilerReadI64Init(graph.nodeInAt(i, 2), 8); k = 0; while (k < enc && k < 8) { en[k] = graph.compilerI64Tmp(k); k = k + 1; } }
+                        long[] ax = new long[8]; int axc = graph.compilerI64Count(graph.nodeInAt(i, 3));
+                        k = 0; while (k < axc && k < 8) { ax[k] = graph.compilerI64Get(graph.nodeInAt(i, 3), k); k = k + 1; }
+                        if (axc <= 0) { axc = graph.compilerReadI64Init(graph.nodeInAt(i, 3), 8); k = 0; while (k < axc && k < 8) { ax[k] = graph.compilerI64Tmp(k); k = k + 1; } }
+                        long[] sp = new long[8]; int spc = graph.compilerI64Count(graph.nodeInAt(i, 4));
+                        k = 0; while (k < spc && k < 8) { sp[k] = graph.compilerI64Get(graph.nodeInAt(i, 4), k); k = k + 1; }
+                        if (spc <= 0) { spc = graph.compilerReadI64Init(graph.nodeInAt(i, 4), 8); k = 0; while (k < spc && k < 8) { sp[k] = graph.compilerI64Tmp(k); k = k + 1; } }
+                        int cnt = stc; if (cnt > 4) cnt = 4;
+                        long[] v = new long[32];
+                        int outc = 0;
+                        int j = 0;
+                        while (j < cnt) {
+                            int a = 0;
+                            if (axc > 0) a = int(ax[j]); else a = j;
+                            int step = 1;
+                            if (spc > 0) step = int(sp[j]);
+                            if (step == 0) step = 1;
+                            int D = dataN;
+                            long stL = st[j]; long enL = en[j];
+                            if (stL == 9223372036854775807L) stL = long(D);
+                            if (stL < 0L) stL = stL + long(D);
+                            if (enL == 9223372036854775807L) enL = long(D);
+                            if (enL < 0L) enL = enL + long(D);
+                            if (stL < 0L) stL = 0L;
+                            if (stL > long(D)) stL = long(D);
+                            if (enL < 0L) enL = 0L;
+                            if (enL > long(D)) enL = long(D);
+                            int sti = int(stL);
+                            int eni = int(enL);
+                            if (step > 0) {
+                                int q = sti;
+                                while (q < eni && outc < 32) { v[outc] = graph.compilerI64Get(graph.nodeInAt(i, 0), q); outc = outc + 1; q = q + step; }
+                            } else {
+                                int q = sti;
+                                while (q > eni && outc < 32) { v[outc] = graph.compilerI64Get(graph.nodeInAt(i, 0), q); outc = outc + 1; q = q + step; }
+                            }
+                            j = j + 1;
+                        }
+                        graph.compilerI64Reg(graph.compilerNodeOutput(i, 0), v, outc);
+                        graph.compilerSetNodeType(i, "");
+                    }
+                } else if (t == "Concat") {
+                    // 仅折叠 int64 链（float Concat 是运行时算子）
+                    if (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 || graph.compilerI64Count(graph.nodeInAt(i, 1)) > 0) {
+                        // 部分折叠保护：若任一输入是「尚未折叠的 shape 链节点」
+                        // （其 int64 值后续才可知），本次不折叠，留给 inferShapes
+                        // 推进后的内部 foldShapeChains（避免丢掉前缀/后缀）。
+                        int wait = 0;
+                        int wslot = 0;
+                        while (wslot < 3) {
+                            string wnm;
+                            if (wslot == 0) wnm = graph.nodeInAt(i, 0);
+                            else if (wslot == 1) wnm = graph.nodeInAt(i, 1);
+                            else wnm = graph.nodeInAt(i, 2);
+                            if (wnm == "") { wslot = 3; break; }
+                            if (graph.compilerI64ChainAlive(wnm) == 1) { wait = 1; wslot = 3; break; }
+                            wslot = wslot + 1;
+                        }
+                        if (wait == 0) {
+                            long[] v = new long[64];
+                            int outc = 0;
+                            int slot = 0;
+                            while (slot < 3) {
+                                string nm;
+                                if (slot == 0) nm = graph.nodeInAt(i, 0);
+                                else if (slot == 1) nm = graph.nodeInAt(i, 1);
+                                else nm = graph.nodeInAt(i, 2);
+                                if (nm == "") { slot = 3; break; }
+                                if (graph.compilerI64Count(nm) > 0) {
+                                    int c = graph.compilerI64Count(nm);
+                                    int k = 0;
+                                    while (k < c && outc < 64) { v[outc] = graph.compilerI64Get(nm, k); outc = outc + 1; k = k + 1; }
+                                }
+                                slot = slot + 1;
+                            }
+                            if (outc > 0) { graph.compilerI64Reg(graph.compilerNodeOutput(i, 0), v, outc); graph.compilerSetNodeType(i, ""); }
+                        }
+                    }
+                } else if (t == "Cast") {
+                    int to = graph.compilerAttr(i, NodeField.CAST_TO());
+                    if (to == 7 && graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0) {
+                        // int64 恒等（float 常量 Cast 折叠由第二次调用处理）
+                        int c = graph.compilerI64Count(graph.nodeInAt(i, 0));
+                        long[] v = new long[32];
+                        int k = 0;
+                        while (k < c) { v[k] = graph.compilerI64Get(graph.nodeInAt(i, 0), k); k = k + 1; }
+                        graph.compilerI64Reg(graph.compilerNodeOutput(i, 0), v, c);
+                        graph.compilerSetNodeType(i, "");
+                    } else if (to == 1 && graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0) {
+                        // int64→float：注册为运行时 float 常量
+                        int c = graph.compilerI64Count(graph.nodeInAt(i, 0));
+                        int src = graph.compilerI64Find(graph.nodeInAt(i, 0));
+                        long[] v = new long[32];
+                        int k = 0;
+                        while (k < c && k < 32) { v[k] = graph.compilerI64Get(graph.nodeInAt(i, 0), k); k = k + 1; }
+                        graph.compilerRegComputedF32(graph.compilerNodeOutput(i, 0), v, c);
+                        graph.compilerSetNodeType(i, "");
+                        graph.compilerIncFold();
+                    }
+                } else if (t == "Resize" || t == "Upsample") {
+                    // 记录折叠出的 sizes（优先于初始器）。用 sizes 元素个数判断 3D/2D
+                    // （3D=[N,C,outD,outH,outW] 5 个；2D=[N,C,outH,outW] 4 个）——
+                    // 不依赖 shapeRank5（fold 阶段输入秩可能未定）。
+                    int c5 = graph.compilerI64Count(graph.nodeInAt(i, 3));
+                    if (c5 >= 5) {
+                        graph.compilerAttrSetResizeD(i, int(graph.compilerI64Get(graph.nodeInAt(i, 3), 2)));
+                        graph.compilerAttrSetResizeH(i, int(graph.compilerI64Get(graph.nodeInAt(i, 3), 3)));
+                        graph.compilerAttrSetResizeW(i, int(graph.compilerI64Get(graph.nodeInAt(i, 3), 4)));
+                        // sizes 链已折叠（其生产者被 erase、shape 未登记）→ 清空
+                        // 悬空输入槽，避免 verifyIR 报 val<0（buildRuntime 不读 nIn3_）。
+                        graph.compilerSetNodeInput(i, 3, "");
+                    } else if (c5 >= 4) {
+                        graph.compilerAttrSetResizeH(i, int(graph.compilerI64Get(graph.nodeInAt(i, 3), 2)));
+                        graph.compilerAttrSetResizeW(i, int(graph.compilerI64Get(graph.nodeInAt(i, 3), 3)));
+                        graph.compilerSetNodeInput(i, 3, "");
+                    }
+                }
+                i = i + 1;
+            }
+            return 1;
+        }
+
                 int runPipeline(IGraphOptimizeHost host) {
             if (Console.getEnv("MYP_NO_REUSE") == "1") host.enableNoReuseForOptimizer();
             host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链
