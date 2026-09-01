@@ -57,15 +57,20 @@ Qwen2/SD1.5 全套 vs onnxruntime/transformers/diffusers；训练 CPU/GPU 100%�
 Value:
   id            : int   // opaque handle（不再是字符串名；名字仅作调试/ONNX 名保留）
   shape         : d0..d4, rank5   // 复用 shD0_..shD4_/shR5_
-  kind          : enum ACT / WEIGHT / CONST / GRAD   // 复用 shKind_ 语义
+  dtype         : enum F32 / I64 / BOOL / F16 / BF16
+  storageClass  : enum ACT / WEIGHT / CONST / GRAD / SHAPE   // 复用 shKind_ 语义
   layout        : enum NCHW / NHWC
   producer      : int node id（图输入 = -1）
-  consumers     : int[] node id 列表（def-use 索引，增量维护）
+  uses          : Use[]（def-use 索引，增量维护）
   dead          : bool   // 复用 shDead_
   runtimeTid    : int    // buildRuntime 后填；复用 tId_
 ```
 - 图输入/输出 = 一组 value id（复用 `giName_/goName_`）。
 - 常量折叠产出的 int64/float 常量也是 value（复用 `i64v_/cF32_` 语义）。
+- `Use = { userNode: NodeId, operandSlot: int }`，而不是只有 `consumerNode`：同一 value
+  可在同一节点出现多个 operand（如 `Mul(x,x)`），改写、计数和 topoSort 都须精确到槽位。
+- 当前后端的物理上限仍是 5D；IR 的 shape API 用 `rank + dims[]` 表达，lowering 到现有
+  runtime 时才限制为 2D/4D/5D。这样新前端或优化不被当前执行后端的 rank 限制绑死。
 
 ### 3.2 Node（算子，替代字符串类型 + 并行属性数组）
 ```
@@ -74,12 +79,16 @@ Node:
   operands      : value id 列表（≤5，替代 nIn0_..nIn4_）
   results       : value id 列表（≤4，替代 nOut0_..nOut3_）
   attrs         : 类型化属性表（key→int/float/string/int[]/float[]）
+  traits        : pure / stateful / trainOnly / mayAliasOperand
   layout/fused/dead : 复用 nNHWC_/nFused_/nType_=="" 语义
 ```
 - **op 枚举**：把现有 `opKindName` 的 ~72 个算子统一编号（`enum Op { Conv, Conv3D, Relu, ... }`），
   forward/backward 用同一枚举（`BwdConv` 等）+ 一个 `isBwd` 标记，或反向独立编号段。
 - **属性表**：`attrInt(node, AttrAxis)`、`attrFloat(node, AttrEps)`、`attrIntArr(node, AttrPads, k)`
   统一访问——取代 F32 位型与 `[node*4+k]` 手算。内部仍可用并行数组，但**访问器统一**。
+- 每个 op 同时有 **schema**：合法 operand/result 数、dtype/layout 约束、必需属性、默认值、
+  shape-inference 回调和 traits。通用属性表只解决存储；schema 才能阻止漏属性、类型错配和
+  对 Update 等 stateful 节点做非法 DCE/重排。
 
 ### 3.3 Graph（图）
 ```
@@ -92,7 +101,30 @@ GraphIR:
   analyses      : 缓存（shape/liveness/topo order，pass 声明依赖）
 ```
 
-### 3.4 与 MYP 的映射（两种方案，评估取舍）
+### 3.4 IR 不变量与 mutation API（所有改写唯一入口）
+
+稳定的 `NodeId`/`ValueId` 仅在 Graph 生命周期内有效；删除采用 tombstone（`dead=1`），
+compaction 只能在所有 pass 完成、lowering 前执行。每次改写只能调用下列 API，禁止直接写
+SoA 内部数组：
+
+```
+addValue(spec) -> ValueId                 addNode(op, operands, results, attrs) -> NodeId
+replaceOperand(user, slot, newValue)      replaceAllUses(oldValue, newValue)
+replaceResult(node, slot, newValue)       eraseNode(node) / eraseValue(value)
+setAttrInt(node, key, value)              setAttrIntArr(node, key, index, value)
+rebuildDefUse()                           invalidate(analysisMask)
+verifyIR(stageName) -> VerifyResult
+```
+
+- `replaceOperand` 必须先从旧 value 删除精确 `Use{user,slot}`，再登记新 value 的 use；
+  `replaceAllUses` 必须遍历 use 的**快照**，防止遍历期间被自身改写。
+- 每个 result 只允许一个 producer；图输入、常量和权重 producer 为 `-1`。同名 ONNX tensor
+  在导入时映射到同一个 ValueId；不得由名称匹配来决定 producer。
+- `verifyIR()` 在 debug/测试模式下验证：Node/Value id 范围、operand/result 数符合 schema、
+  每个 use 与 user operand 双向一致、单 producer、无活节点读取 dead value、图输出仍活、
+  stateful 节点未被 DCE。每个会改变图的 pass 后运行。
+
+### 3.5 与 MYP 的映射（两种方案，评估取舍）
 - **方案 A：SoA 并行数组演进（推荐起步）**。保留现有数组，但**新增访问器层**：
   `nodeOp(i)`（枚举）、`nodeIn(i,k)`/`nodeOut(i,k)`（value id）、`attrInt(i,key)`、
   `valueShape(v)`、`valueConsumers(v)`、`buildDefUse()` 等。**新 pass 只走访问器**；
@@ -106,20 +138,30 @@ GraphIR:
 
 ### 4.1 Pass 管理器
 ```
-interface IRPass { void run(GraphIR g); }     // 与 IOp 同风格
+PassResult:
+  ok: bool, changed: bool, preservedAnalyses: bitset
+
+interface IRPass { PassResult run(GraphIR g, AnalysisManager am); }
 PassManager:
-  add(name, pass, deps[], maxIter)            // maxIter>1 = 迭代到不动点
-  run()                                        // 按依赖拓扑执行
+  add(name, pass, requiredAnalyses, maxIter)
+  run()                                         // 请求分析、执行、失效/保留分析
 ```
-- 把现有 `runPassPipeline` 的硬编码调用序列改为「pass 注册表 + 顺序执行」：
-  fold / inferShapes / classify / fuse* / DCE / layout / topoSort 各包一个 Pass 对象，
-  **行为不变**（回归为准）。
+- `changed` 是迭代到不动点的唯一依据；`maxIter` 是防御上限，达到仍 changed 即报错并输出
+  触发 rewrite 的节点。
+- `requiredAnalyses` 由 PassManager 在执行前计算；图结构或属性变更默认失效 DefUse、Shape、
+  Topo、Liveness。pass 只有在明确证明未影响某分析时，才能在 `preservedAnalyses` 保留它。
+- 把现有 `runPassPipeline` 的硬编码调用序列改为「pass 注册表 + 顺序执行」：fold /
+  inferShapes / classify / fuse* / DCE / layout / topoSort 各包一个 Pass 对象，**行为不变**
+  （回归为准）。初期可保留固定顺序，暂不实现 pass 依赖图拓扑，避免工程化超过收益。
 
 ### 4.2 Pattern-match / Rewrite
 ```
 patternMatch(g, rootOp, {subgraph 约束}, out vars)   // 找匹配子图
 rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-use
 ```
+- Pattern 约束必须可表达：operand slot、单 use（而非 consumer 数）、常量值、dtype/layout、
+  op traits、结果是否图输出。匹配返回 NodeId/ValueId，不返回名称或数组位置。
+- Rewrite 必须使用 3.4 的 mutation API，并在一次 rewrite 结束后才失效分析；失败则保持图不变。
 - 迁移现有融合为 pattern 描述：
   - `Conv -> Relu`（现 `fuseConvRelu`）、`Conv -> BN -> …`（`fuseConvBN`）、
     `GAP -> Flatten`（`fuseGapFlatten`）、`op -> Relu`（`fuseReluOp`）。
@@ -132,27 +174,32 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 - **ShapeAnalysis**：`inferShapes` 迁移；缓存输出 value 形状。
 - **LivenessAnalysis**：`planMemory` 的 `planLastUse_` 迁移；为内存复用/图输出持久化服务。
 - **TopoAnalysis**：`topoSort` 迁移；缓存 `planOrder_`，pass 声明「需要有序视图」。
+- **AnalysisManager**：每个分析带 valid 位与 generation。图 mutation 增加 generation；
+  `get(DefUse)` 等在无效时重建。不得由调用方猜测索引是否仍可用。
 
 ### 4.4 与 buildRuntime 的接缝
 - buildRuntime 目前直接读并行数组（`tensorId(nIn0_[ni])` 等）。**保留直读**（热点），
   但接入点收敛：buildRuntime 只按 `nodeOp(i)` 分派 + `attrInt/attrIntArr` 取参，
-  使「新增算子 = op 枚举 + inferShapes + buildRuntime 三分支」。
+  使「新增算子 = op schema + inferShapes + lowering 三分支」。
+- 训练图不是特殊字符串命名约定：Bwd*/Update/GradAcc 也是 Node，GradAcc 的多路梯度由
+  普通 Value + Use 表达。反向 pass 通过 `addNode/replaceAllUses` 构图，禁止绕过 def-use。
 
 ## 5. 迁移路径（P0-P4，每步回归全绿）
 
 | 阶段 | 内容 | 行为 | 验证 |
 |---|---|---|---|
-| **P0** | 访问器层 + `buildDefUse()`：`nodeOp/nodeIn/nodeOut/attrInt/attrFloat/valueShape/valueConsumers`；在 optimize/optimizeTrain 入口建 def-use 索引；新增一个"走访问器"的示例 pass（如简单的 dead-const 预检） | 零变化 | infer_tests 全量 + 训练 CPU/GPU |
-| **P1** | Pass 管理器：现有 pass 逐个包装为 `IRPass`（fold/inferShapes/classify/fuse*/DCE/layout/topoSort），`runPassPipeline` 由管理器驱动 | 零变化 | infer_tests 全量 |
-| **P2** | pattern-match/rewrite 基建 + 迁移融合 passes 为 pattern 描述；新增 1-2 个代数简化（Add(x,0)、Mul(x,1)）| 输出不变（优化只删冗余） | 与旧版逐位对比（开关 `MYP_OLD_IR=1`） |
-| **P3** | op 枚举化（string→enum）+ 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走访问器） | 零变化（重构） | infer_tests + grad_check + opt_check |
-| **P4** | 分析缓存 + 新优化 pass（激活合并、残差融合、布局选择）；容量放开（动态数组或扩容量） | 增量优化 | 性能/图大小对比 |
+| **P0** | 稳定 NodeId/ValueId、Use(user,slot)、访问器、mutation API、`rebuildDefUse`、`verifyIR`；先只在导入后/每个既有 graph mutation pass 后重建，新增只读示例 pass | **已实施**：Shape table index=ValueId；压缩 use 链表（最大 5×512 边）；topoSort 改用索引 | ONNX MLP 99%、skip U-Net GPU 100%，均以 `MYP_IR_VERIFY=1` 运行 |
+| **P1** | AnalysisManager（DefUse/Shape/Topo/Liveness）+ PassResult/changed/preserved 契约；既有 pass 逐个包装，`runPassPipeline` 由管理器驱动 | 零变化 | infer_tests 全量 + 图结构快照 |
+| **P2** | pattern-match/rewrite 基建 + 迁移一个低风险融合（Conv→Relu）；新增 Add(x,0)、Mul(x,1) 等恒等简化 | 输出不变（优化只删冗余） | 与 `MYP_OLD_IR=1` 逐位对比 |
+| **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | 零变化（重构） | infer_tests + grad_check + opt_check |
+| **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
 
 ## 6. 收益（预期）
 
 - **新 pass**：从「手写 ~100 行全遍历循环 + 多处数组改」降到「~30 行 pattern 描述」。
 - **新算子**：接入点收敛到三处（op 枚举 + inferShapes + buildRuntime）。
-- **def-use**：`producerIdx`/`isNodeOutput`/`liveConsumers` 的 O(n) 扫 → O(1) 索引，
+- **def-use**：`producerIdx`/`isNodeOutput`/`liveConsumers` 的 O(n) 扫 → O(1) producer 与
+  精确 Use-edge 索引，
   topoSort/planMemory/buildReverseGraph 直接受益。
 - **训练/推理统一**：反向图用同一 IR 语义，GradAcc 等多消费者处理不再特判。
 - **容量**：512/256 固定上限可动态化（P4）。
@@ -162,6 +209,9 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | 风险 | 对策 |
 |---|---|
 | 重写破坏已验证管线 | P0-P4 严格增量；每阶段跑 infer_tests 全量 + 3d 训练 + grad_check/opt_check |
+| 改写后 def-use / 分析过期 | mutation API 是唯一写入口；默认失效所有分析；每个变换 pass 后 verifyIR |
+| 同值多次作 operand 被错误合并 | consumers 采用 `Use{userNode,operandSlot}`，不只存 NodeId |
+| Update 等状态节点被优化掉或跨步重排 | schema traits 标注 `stateful/trainOnly/mayAliasOperand`；DCE/重排必须查询 traits |
 | 访问器 vs 直读数组性能 | 访问器是薄封装（MYP 可内联）；buildRuntime 等热点保留直读 |
 | MYP 对象/GC/引用语义 | 起步用方案 A（SoA+访问器），避开对象图风险 |
 | 字符串→枚举改动面大 | P3 单独成阶段，字符串仅在调试/ONNX 名保留 |
@@ -169,9 +219,30 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 
 ## 8. 建议的落地顺序
 
-1. **P0**：访问器层 + def-use 索引（低风险，立即收益：新代码能走干净接口）。
-2. **P2 先于 P1** 也可：pattern-match 基建对「新增优化」收益最大；P1（pass 管理器）
-   是工程整洁，可后置。
-3. P3 枚举化在有多个新 pass 稳定后再做（避免重构+新功能叠加）。
+1. **P0**：先落地稳定 id、Use edge、mutation API、验证器与可重建 def-use；这是所有 rewrite
+  的正确性地基。
+2. **P1**：再落地 analysis invalidation 与 PassResult 契约；没有 changed/preserved 不能安全做
+  不动点 rewrite。
+3. **P2**：在上述基建稳定后才做 pattern-match/rewrite，先迁移一个既有融合，再增加恒等简化。
+4. P3 枚举/schema 与 P4 性能优化后置，避免重构、语义改动、性能调优在同一个阶段叠加。
+
+## 9. 实施状态：P0（2026-09-02）
+
+`graph.myp` 已落地不改变 IR 写入方式的最小实现：
+
+- `ValueId` 是稳定的 shape-table index；新只读 API：`valueId/valueName`、`nodeAlive`、
+  `nodeInputValue/nodeOutputValue`、`valueProducer/valueUseCount/valueUseNode/valueUseSlot`。
+- `rebuildDefUse()` 从现有 SoA 重建 producer 与精确 `(userNode, operandSlot)` use edge。
+  使用紧凑链表 `duFirstUse/duNextUse`，全图边数上限为 `5 * nCount_ = 2560`，避免为每个
+  Value 预留 512 条 use 的无谓内存。重复 operand（`Mul(x,x)`）存为两条独立 edge。
+- `replaceNodeInput()` 是第一条 mutation API；P0 将 `duValid_` 失效，下一次消费前重建。
+  既有 pass 仍直接写 SoA，因此 `topoSort()` 在所有已有 mutation pass 完成后无条件重建。
+- `verifyIR()` 验证每个活节点的非空输入都有 Shape Value，且每个 operand 都存在精确反向
+  use edge。`MYP_IR_VERIFY=1` 打开验证；失败使 topoSort 返回失败。
+- `topoSort()` 的入度初始化改用 `valueProducer()`，并按每个输出的 use-edge 递减，取代原先
+  对所有节点扫描字符串输入的 O(N²) 逻辑。多输出和重复 operand 仍保持原有拓扑语义。
+
+**P0 边界**：尚未把所有旧 pass 改为 mutation API，也没有增量 use-edge 维护、PassManager、
+analysis invalidation 或 op enum；这些严格留给 P1-P3，避免在已验证图优化路径中混入重构。
 
 ---

@@ -147,6 +147,106 @@ class Graph {
         string nodeTypeAt(int i) { return nType_[i]; }
         void nodeIn(int i, int slot, string v) { if (slot==0) nIn0_[i]=v; else if (slot==1) nIn1_[i]=v; else if (slot==2) nIn2_[i]=v; else if (slot==3) nIn3_[i]=v; else nIn4_[i]=v; }
         string nodeInAt(int i, int slot) { if (slot==0) return nIn0_[i]; if (slot==1) return nIn1_[i]; if (slot==2) return nIn2_[i]; if (slot==3) return nIn3_[i]; return nIn4_[i]; }
+        // ---- P0 IR 访问器：ValueId = shape table index（名称只在 ONNX 边界保留）----
+        // 既有 pass 仍可直接写 SoA；消费 def-use 前调用 rebuildDefUse() 重建索引。
+        int valueId(string name) { return shapeIdx(name); }
+        string valueName(int value) { if (value < 0 || value >= sCount_) return ""; return shName_[value]; }
+        int nodeAlive(int node) { if (node < 0 || node >= nCount_ || nType_[node] == "") return 0; return 1; }
+        int nodeInputValue(int node, int slot) { if (node < 0 || node >= nCount_ || slot < 0 || slot >= 5) return -1; return shapeIdx(nodeInAt(node, slot)); }
+        int nodeOutputValue(int node, int slot) {
+            if (node < 0 || node >= nCount_ || slot < 0 || slot >= 4) return -1;
+            string out = "";
+            if (slot == 0) out = effectiveOut(node);
+            else if (slot == 1) out = nOut1_[node];
+            else if (slot == 2) out = nOut2_[node];
+            else out = nOut3_[node];
+            return shapeIdx(out);
+        }
+        // 唯一输入改写入口。P0 只失效索引；P1 再演进为增量维护与 analysis manager。
+        void replaceNodeInput(int node, int slot, int value) {
+            if (node < 0 || node >= nCount_ || slot < 0 || slot >= 5 || value < 0 || value >= sCount_) return;
+            nodeIn(node, slot, shName_[value]);
+            duValid_ = 0;
+        }
+        int valueProducer(int value) { if (duValid_ == 0 || value < 0 || value >= sCount_) return -1; return duProducer_[value]; }
+        int valueUseCount(int value) { if (duValid_ == 0 || value < 0 || value >= sCount_) return 0; return duUseCount_[value]; }
+        int valueUseNode(int value, int use) {
+            if (duValid_ == 0 || value < 0 || value >= sCount_ || use < 0 || use >= duUseCount_[value]) return -1;
+            int edge = duFirstUse_[value];
+            int ordinal = 0;
+            while (edge >= 0 && ordinal < use) { edge = duNextUse_[edge]; ordinal = ordinal + 1; }
+            if (edge < 0) return -1;
+            return duUseNode_[edge];
+        }
+        int valueUseSlot(int value, int use) {
+            if (duValid_ == 0 || value < 0 || value >= sCount_ || use < 0 || use >= duUseCount_[value]) return -1;
+            int edge = duFirstUse_[value];
+            int ordinal = 0;
+            while (edge >= 0 && ordinal < use) { edge = duNextUse_[edge]; ordinal = ordinal + 1; }
+            if (edge < 0) return -1;
+            return duUseSlot_[edge];
+        }
+        // 重建精确 def-use：每条 edge 记录 (consumer node, operand slot)，保留 Mul(x,x) 等重复 use。
+        // 全图最多 5*nCount_ 条边，以压缩链表保存，避免每个 Value 预留 nCount_ 个槽。
+        void rebuildDefUse() {
+            int v = 0;
+            while (v < sCount_) { duProducer_[v] = -1; duUseCount_[v] = 0; duFirstUse_[v] = -1; v = v + 1; }
+            duEdgeCount_ = 0;
+            int node = 0;
+            while (node < nCount_) {
+                if (nodeAlive(node) == 1) {
+                    int outSlot = 0;
+                    while (outSlot < 4) {
+                        int out = nodeOutputValue(node, outSlot);
+                        if (out >= 0 && duProducer_[out] < 0) duProducer_[out] = node;
+                        outSlot = outSlot + 1;
+                    }
+                    int inSlot = 0;
+                    while (inSlot < 5) {
+                        int input = nodeInputValue(node, inSlot);
+                        if (input >= 0 && duEdgeCount_ < 2560) {
+                            int edge = duEdgeCount_;
+                            duUseNode_[edge] = node;
+                            duUseSlot_[edge] = inSlot;
+                            duNextUse_[edge] = duFirstUse_[input];
+                            duFirstUse_[input] = edge;
+                            duUseCount_[input] = duUseCount_[input] + 1;
+                            duEdgeCount_ = duEdgeCount_ + 1;
+                        }
+                        inSlot = inSlot + 1;
+                    }
+                }
+                node = node + 1;
+            }
+            duValid_ = 1;
+        }
+        // P0 验证器：检查精确 use edge、活节点输入形状、单 producer（图输入/常量 producer=-1 合法）。
+        int verifyIR() {
+            if (duValid_ == 0) rebuildDefUse();
+            int node = 0;
+            while (node < nCount_) {
+                if (nodeAlive(node) == 1) {
+                    int slot = 0;
+                    while (slot < 5) {
+                        string name = nodeInAt(node, slot);
+                        int value = nodeInputValue(node, slot);
+                        if (name != "" && value < 0) return 0;
+                        if (value >= 0) {
+                            int found = 0;
+                            int use = 0;
+                            while (use < valueUseCount(value)) {
+                                if (valueUseNode(value, use) == node && valueUseSlot(value, use) == slot) found = 1;
+                                use = use + 1;
+                            }
+                            if (found == 0) return 0;
+                        }
+                        slot = slot + 1;
+                    }
+                }
+                node = node + 1;
+            }
+            return 1;
+        }
         int shapeRank5(string name) { int s = shapeIdx(name); if (s < 0) return 0; return shR5_[s]; }
         // 张量元素总数（按形状表 dims；图输入/输出张量无 runtime 2D 投影，须用此取 size）
         int shapeElementCount(string name) {
@@ -2052,14 +2152,20 @@ class Graph {
         }
         int topoSort() {
             int[] indeg = new int[512];
+            // P0：所有既有 mutation pass 已完成，此处统一重建 def-use，再消费 O(1) producer 索引。
+            rebuildDefUse();
+            if (Console.getEnv("MYP_IR_VERIFY") == "1" && verifyIR() == 0) {
+                Console.writeLine("DBG fail verifyIR");
+                return 0;
+            }
             int i = 0;
             while (i < nCount_) {
                 indeg[i] = 0;
                 if (nType_[i] == "") { i = i + 1; continue; }
-                if (producerIdx(nIn0_[i]) >= 0) indeg[i] = indeg[i] + 1;
-                if (producerIdx(nIn1_[i]) >= 0) indeg[i] = indeg[i] + 1;
-                if (producerIdx(nIn2_[i]) >= 0) indeg[i] = indeg[i] + 1;
-                if (producerIdx(nIn3_[i]) >= 0) indeg[i] = indeg[i] + 1;
+                if (valueProducer(nodeInputValue(i, 0)) >= 0) indeg[i] = indeg[i] + 1;
+                if (valueProducer(nodeInputValue(i, 1)) >= 0) indeg[i] = indeg[i] + 1;
+                if (valueProducer(nodeInputValue(i, 2)) >= 0) indeg[i] = indeg[i] + 1;
+                if (valueProducer(nodeInputValue(i, 3)) >= 0) indeg[i] = indeg[i] + 1;
                 i = i + 1;
             }
             planOrderCount_ = 0;
@@ -2096,26 +2202,21 @@ class Graph {
                 string o1 = nOut1_[picked];
                 string o2 = nOut2_[picked];
                 string o3 = nOut3_[picked];
-                int j = 0;
-                while (j < nCount_) {
-                    if (nType_[j] == "" || indeg[j] < 0) { j = j + 1; continue; }
-                    // 同一输入多次出现（如 Mul(x,x)）按匹配槽位数递减（修复环误判）
-                    int dec = 0;
-                    if (nIn0_[j] == out) dec = dec + 1;
-                    if (nIn1_[j] == out) dec = dec + 1;
-                    if (nIn2_[j] == out) dec = dec + 1;
-                    if (nIn3_[j] == out) dec = dec + 1;
-                    if (o1 != "" && nIn0_[j] == o1) dec = dec + 1;
-                    if (o1 != "" && nIn1_[j] == o1) dec = dec + 1;
-                    if (o1 != "" && nIn2_[j] == o1) dec = dec + 1;
-                    if (o2 != "" && nIn0_[j] == o2) dec = dec + 1;
-                    if (o2 != "" && nIn1_[j] == o2) dec = dec + 1;
-                    if (o2 != "" && nIn2_[j] == o2) dec = dec + 1;
-                    if (o3 != "" && nIn0_[j] == o3) dec = dec + 1;
-                    if (o3 != "" && nIn1_[j] == o3) dec = dec + 1;
-                    if (o3 != "" && nIn2_[j] == o3) dec = dec + 1;
-                    indeg[j] = indeg[j] - dec;
-                    j = j + 1;
+                // P0：按精确 (user,slot) use edge 递减，重复 operand（Mul(x,x)）自然处理。
+                int[] produced = new int[4];
+                produced[0] = valueId(out); produced[1] = valueId(o1); produced[2] = valueId(o2); produced[3] = valueId(o3);
+                int ps = 0;
+                while (ps < 4) {
+                    int pv = produced[ps];
+                    if (pv >= 0) {
+                        int use = 0;
+                        while (use < valueUseCount(pv)) {
+                            int user = valueUseNode(pv, use);
+                            if (user >= 0 && indeg[user] >= 0) indeg[user] = indeg[user] - 1;
+                            use = use + 1;
+                        }
+                    }
+                    ps = ps + 1;
                 }
             }
             return 1;
@@ -3073,6 +3174,16 @@ class Graph {
         int[512] planRSize_;
         int[512] planRLu_;
         int[512] planRPersist_;
+
+        // P0 DefUseAnalysis：ValueId=shape table index；use 用紧凑链表（总边上限=5*512）。
+        int[512] duProducer_;
+        int[512] duUseCount_;
+        int[512] duFirstUse_;
+        int[2560] duUseNode_;
+        int[2560] duUseSlot_;
+        int[2560] duNextUse_;
+        int duEdgeCount_;
+        int duValid_;
 
         string[512] tName_;
         int[512] tId_;

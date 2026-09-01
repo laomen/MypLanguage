@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P0：优化 IR 访问器 + 精确 DefUseAnalysis（零行为变化）
+
+### 变更（`infer/graph.myp`）
+- 新建最小 **IR 访问器层**：Shape table index 作为稳定 `ValueId`，提供
+  `valueId/valueName`、`nodeAlive`、`nodeInputValue/nodeOutputValue`、
+  `valueProducer/valueUseCount/valueUseNode/valueUseSlot`；名称仍仅在 ONNX 边界保留。
+- 新 `rebuildDefUse()`：由现有 SoA 节点/形状表重建 O(1) producer 与精确
+  `Use{userNode, operandSlot}` 边。采用紧凑链表（最多 5×512=2560 条边），不为每个 Value
+  预留 512 条 use；同一值在同节点多次使用（如 `Mul(x,x)`）保留为独立边。
+- 新最小 mutation API `replaceNodeInput()`（失效 `duValid_`）和 `verifyIR()`；
+  `MYP_IR_VERIFY=1` 时 topoSort 前验证活节点输入存在对应 Value 与精确反向 use edge。
+- `topoSort()` 改从 DefUseAnalysis 取 producer 初始化入度，并按输出 use-edge 递减，删除
+  逐轮扫描全部节点/字符串输入的 O(N²) 依赖更新；多输出与重复 operand 语义不变。
+
+### 验证
+- `MYP_IR_VERIFY=1`：ONNX MLP 推理 **99%**；带跳跃连接 3D U-Net GPU 训练
+  **acc 100%**；验证器未报错。
+- 设计文档 `docs/ir_layer.md` 更新 P0 实施状态、真实存储布局与 P1-P3 边界。
+
+---
+
 ## 2026-09-XX — 阶段4h：训练优化器基建（SGD / 动量 / AdamW + weight decay）
 
 ### 目标
