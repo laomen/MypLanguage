@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-02 — 阶段五：Conv 1x1 专用 lowering（opKind 83，GEMM 化）
+
+- graph_compiler CONV wiring：`kh==kw==1 && stride==1 && 无 padding && dil==1 &&
+  group==1` → `rt.addConv1x1`（opKind 83）替代通用 conv/convRelu。**ResNet
+  bottleneck 高频路径**（1x1 降维/升维）。
+- runtime `addConv1x1`：opA/B/C/D=in/w/b/out，doRelu 存 opRelu_；维度从 tensor
+  元数据读（无需额外参数槽）。
+- ops.myp `conv1x1` CPU kernel + gpu_ops.myp GPU kernel：纯 GEMM——
+  thread-per-output-pixel × 通道归约，**无 kh*kw 窗口循环**，比通用 conv 更简单。
+- `Conv1x1Op` + `GpuConv1x1Op` 注册 opKind 83（CPU+GPU）。
+- 回归：`infer_tests/conv1x1_main.myp`（两个 1x1 Conv + ReLU 融合 + 3x3 对照，
+  Concat 输出）——CONV1X1 ALL OK，CPU+GPU max diff 2.9e-6，has opKind 83=1
+  （lowering 生效，测试断言 op 表含 83）。
+
+---
+
 ## 2026-09-02 — 阶段五：形状值传播（int64 四则/ReduceSum/Expand 形状链折叠）
 
 - `foldShapeChains` 新增 int64 形状链算子：**Add/Sub/Mul/Div 四则**（Resize sizes

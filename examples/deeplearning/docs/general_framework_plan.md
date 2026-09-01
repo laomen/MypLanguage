@@ -440,7 +440,9 @@ OpKind
 3. **形状值传播**：✅ 已完成（2026-09-02，foldShapeChains 新增 int64 四则
    Add/Sub/Mul/Div + ReduceSum + Expand；`infer_tests/shapeprop_main.myp`
    Shape→Slice→Mul→Concat 驱动 Resize sizes 回归 CPU+GPU 通过）。
-4. **Conv 1x1 专用 lowering**：ResNet bottleneck 的实际高频路径，优先于 Conv+Sigmoid 等融合。
+4. **Conv 1x1 专用 lowering**：✅ 已完成（2026-09-02，opKind 83 `conv1x1`
+   GEMM 化——thread-per-output-pixel × 通道归约，无窗口循环；1x1+ReLU 也走它；
+   `infer_tests/conv1x1_main.myp` 回归 CPU+GPU 通过，断言 op 表含 83）。
 5. **算子选择**：根据 shape、dtype、layout 和 backend capability 选择 plain/tiled/library kernel。
 
 ### 后续实现
