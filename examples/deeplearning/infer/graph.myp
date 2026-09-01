@@ -18,19 +18,13 @@ import "./graph_nodes.myp";
 import "./graph_node_attrs.myp";
 import "./graph_analysis.myp";
 import "./graph_planner.myp";
+import "./graph_compiler.myp";
 
 class Graph {
     action:
-        @constructor Graph() { pb_ = new PbReader(); shapes_ = new GraphShapes(); weights_ = new GraphWeights(); nodes_ = new GraphNodes(); attrs_ = new GraphNodeAttrs(); analysis_ = new GraphAnalysis(); planner_ = new GraphPlanner(); }
+        @constructor Graph() { pb_ = new PbReader(); shapes_ = new GraphShapes(); weights_ = new GraphWeights(); nodes_ = new GraphNodes(); attrs_ = new GraphNodeAttrs(); analysis_ = new GraphAnalysis(); planner_ = new GraphPlanner(); compiler_ = new GraphCompiler(); }
 
-        int tensorId(string name) {
-            int i = 0;
-            while (i < tCount_) {
-                if (tName_[i] == name) return tId_[i];
-                i = i + 1;
-            }
-            return -1;
-        }
+        int tensorId(string name) { return compiler_.tensorId(name); }
 
         // ---- 图统计（供验证入口打印；G5 由 Graph 自持）----
         void setLayoutNHWC(int v) { doNHWC_ = v; }
@@ -407,7 +401,7 @@ class Graph {
         void addShapeD5(string name, int d0, int d1, int d2, int d3, int d4) { shapes_.addShapeD5(name, d0, d1, d2, d3, d4); }
         // 3D：按源张量秩复制输出形状（5D → addShapeD5，否则 addShapeD4）
         void copyShape(string name, int src) { shapes_.copyShape(name, src); }
-        void resetCounts() { weights_.reset(); nodes_.reset(); shapes_.reset(); tCount_=0; goCount_=0; giCount_=0; fuseCount_=0; gapCount_=0; dceCount_=0; foldCount_=0; bnCount_=0; fusedAddCount_=0; noReuse_=0; doNHWC_=0; trainingMode_=0; analysis_.reset(); planner_.reset(); analysis_.setLastPassPreserved(IRAnalysis.ALL()); }
+        void resetCounts() { weights_.reset(); nodes_.reset(); shapes_.reset(); compiler_.reset(); goCount_=0; giCount_=0; fuseCount_=0; gapCount_=0; dceCount_=0; foldCount_=0; bnCount_=0; fusedAddCount_=0; noReuse_=0; doNHWC_=0; trainingMode_=0; analysis_.reset(); planner_.reset(); analysis_.setLastPassPreserved(IRAnalysis.ALL()); }
         // P3：覆盖张量形状（输入形状注入：动态维度模型）
         void setShape(string name, int d0, int d1, int d2, int d3, int d4, int is5) { shapes_.setShape(name, d0, d1, d2, d3, d4, is5); }
 
@@ -2470,9 +2464,7 @@ class Graph {
                     tid = rt.addTensorPlanned4(d0, d1, d2, d3, off);    // CNN 权重/激活 NCHW
                 }
                 if (tid < 0) return 0;
-                tName_[tCount_] = nm;
-                tId_[tCount_] = tid;
-                tCount_ = tCount_ + 1;
+                compiler_.addMapping(nm, tid);
                 if (Console.getEnv("MYP_DUMP_TENSORS") == "1") {
                     int fd = __myp_io_fopen("/tmp/fine_tensors.txt", "ab");
                     if (fd >= 0) {
@@ -3164,6 +3156,7 @@ class Graph {
         GraphNodeAttrs attrs_;
         GraphAnalysis analysis_;
         GraphPlanner planner_;
+        GraphCompiler compiler_;
 
         int[512] nRedMode_;     // F8：ReduceMean mode（0=全规约,1=空间规约）
         int[512] nPadCval_;     // F8：Pad constant_value（float 位型）
@@ -3185,8 +3178,4 @@ class Graph {
         int giCount_;
 
         GraphShapes shapes_;
-
-        string[512] tName_;
-        int[512] tId_;
-        int tCount_;
 }

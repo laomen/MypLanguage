@@ -1,0 +1,31 @@
+// graph_compiler.myp — Runtime tensor mapping storage for Graph lowering.
+// Graph owns the lowering algorithm; this class only owns its mutable mapping.
+class GraphCompiler {
+    action:
+        @constructor GraphCompiler() { reset(); }
+
+        void reset() { tCount_ = 0; }
+
+        int tensorId(string name) {
+            int i = 0;
+            while (i < tCount_) {
+                if (tName_[i] == name) return tId_[i];
+                i = i + 1;
+            }
+            return -1;
+        }
+
+        string nameAt(int index) { return index < 0 || index >= tCount_ ? "" : tName_[index]; }
+        int idAt(int index) { return index < 0 || index >= tCount_ ? -1 : tId_[index]; }
+        void addMapping(string name, int id) {
+            if (tCount_ >= 512) return;
+            tName_[tCount_] = name;
+            tId_[tCount_] = id;
+            tCount_ = tCount_ + 1;
+        }
+
+    property:
+        string[512] tName_;
+        int[512] tId_;
+        int tCount_;
+}
