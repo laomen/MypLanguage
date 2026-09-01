@@ -945,14 +945,14 @@ class SplitOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
-// ---- reduceMean（opKind 30 前向）----
+// ---- reduceMean（opKind 30 前向；G3：redType=opP6 支持 mean/sum/max/min）----
 class ReduceMeanOp {
     interface class IOp;
     action:
         void forward(InferenceRuntime rt, int i) {
             int xa = rt.opAAt(i); int yd = rt.opBAt(i);
             InferOps.reduceMean(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd),
-                                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i));
+                                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i));
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -1116,7 +1116,7 @@ class GpuReduceMeanOp {
             int xa = rt.opAAt(i); int yd = rt.opBAt(i);
             int work = (rt.opP0At(i) == 0) ? 1 : (rt.opP1At(i) * rt.opP2At(i));
             GpuInferOps.reduceMean(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd),
-                                   rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.devRef(), rt.statsOffRef());
+                                   rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.devRef(), rt.statsOffRef(), rt.opP6At(i));
         }
         void backward(InferenceRuntime rt, int i) { }
 }

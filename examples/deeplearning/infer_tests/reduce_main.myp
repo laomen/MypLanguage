@@ -1,0 +1,112 @@
+// reduce_main.myp — G3：Reduce 族（Mean/Sum/Max/Min）端到端测试
+// reduce_test.onnx（opset12）：x[1,2,3,4] → 空间规约 Reduce{Mean,Sum,Max,Min}
+//   (axes=[2,3],keepdims=1)→y1[4,2,1,1] + 全规约→y0[4,1,1,1]
+// 输入 x 与 ORT 参考（y1 后接 y0 拼文件）由 tools/make_reduce_onnx.py 生成。
+import env;
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class ReduceTestApp {
+    action:
+        @constructor ReduceTestApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(2048);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load("./deeplearning/data/onnx/reduce_test.onnx", rt);
+            if (ok == 0) { Console.writeLine("load failed"); return; }
+            Console.writeString("graph: ops=");
+            Console.writeLong(rt.opCount());
+            Console.writeLine("");
+
+            int inT = loader.tensorId("x");
+            int y1T = loader.tensorId("y1");
+            int y0T = loader.tensorId("y0");
+            if (inT < 0 || y1T < 0 || y0T < 0) { Console.writeLine("tensor not found"); return; }
+            int nIn = rt.tensorSize(inT);
+            double[] buf = new double[64];
+            readF32("./deeplearning/data/onnx/reduce_test.f32", buf, nIn);
+            int i = 0;
+            while (i < nIn) { rt.setFlat(inT, i, buf[i]); i = i + 1; }
+            rt.run();
+            int m1 = rt.tensorSize(y1T);
+            int m0 = rt.tensorSize(y0T);
+            Console.writeString("out y1=");
+            Console.writeLong(m1);
+            Console.writeString(" y0=");
+            Console.writeLong(m0);
+            Console.writeLine("");
+            // ORT bin 布局：y1.ravel() 后接 y0.ravel()
+            int okC = checkOut(rt, y1T, y0T, m1, m0, "./deeplearning/data/onnx/reduce_test_ort.bin");
+            if (okC == 1) Console.writeLine("REDUCE ALL OK");
+            else Console.writeLine("REDUCE MISMATCH");
+        }
+
+        void readF32(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                out[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        int checkOut(InferenceRuntime rt, int t1, int t0, int m1, int m0, string path) {
+            if (t1 < 0 || t0 < 0) return 0;
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return 0;
+            int n = m1 + m0;
+            double[] refv = new double[64];
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                refv[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            int bad = 0;
+            double maxD = 0.0;
+            i = 0;
+            while (i < m1) {
+                double got = rt.getFlat(t1, i);
+                double d = got - refv[i];
+                if (d < 0.0) d = 0.0 - d;
+                if (d > maxD) maxD = d;
+                if (d > 1.0e-4) bad = bad + 1;
+                i = i + 1;
+            }
+            i = 0;
+            while (i < m0) {
+                double got = rt.getFlat(t0, i);
+                double d = got - refv[m1 + i];
+                if (d < 0.0) d = 0.0 - d;
+                if (d > maxD) maxD = d;
+                if (d > 1.0e-4) bad = bad + 1;
+                i = i + 1;
+            }
+            Console.writeString("reduce max diff vs ORT: ");
+            Console.writeFloat(maxD);
+            Console.writeString("  bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            return (bad == 0 && maxD < 1.0e-4) ? 1 : 0;
+        }
+}
+
+int main() {
+    ReduceTestApp app = new ReduceTestApp();
+    return 0;
+}

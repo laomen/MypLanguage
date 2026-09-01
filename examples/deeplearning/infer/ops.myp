@@ -2519,23 +2519,40 @@ class InferOps {
             }
         }
         // ReduceMean：mode 0 = 全规约（输出 1 元素）；mode 1 = 空间维规约（per-(n,c)）
+        // Reduce 族（G3）：mode 0 = 全规约；mode 1 = 空间维规约 per-(n,c)
+        // redType：0=mean（除以元素数）,1=sum,2=max,3=min
         void reduceMean(float[] arena, int inOff, int outOff, int mode,
-                        int N, int C, int S, int total, int keepdims) {
+                        int N, int C, int S, int total, int keepdims, int redType) {
             if (mode == 0) {
-                double sum = 0.0;
+                double acc = 0.0;
+                if (redType == 2) acc = -1.0e30;   // max 初始 -inf
+                else if (redType == 3) acc = 1.0e30;   // min 初始 +inf
                 int i = 0;
-                while (i < total) { double xv = arena[inOff + i]; sum = sum + xv; i = i + 1; }
-                arena[outOff + 0] = float(sum / total);
+                if (redType == 2 || redType == 3) {
+                    while (i < total) { double xv = arena[inOff + i]; if (redType == 2) { if (xv > acc) acc = xv; } else { if (xv < acc) acc = xv; } i = i + 1; }
+                    arena[outOff + 0] = float(acc);
+                } else {
+                    while (i < total) { double xv = arena[inOff + i]; acc = acc + xv; i = i + 1; }
+                    if (redType == 0) arena[outOff + 0] = float(acc / total);
+                    else arena[outOff + 0] = float(acc);
+                }
             } else {
                 int n = 0;
                 while (n < N) {
                     int c = 0;
                     while (c < C) {
                         int base = (n * C + c) * S;
-                        double sum = 0.0;
+                        double acc = 0.0;
+                        if (redType == 2) acc = -1.0e30;
+                        else if (redType == 3) acc = 1.0e30;
                         int i = 0;
-                        while (i < S) { double xv = arena[inOff + base + i]; sum = sum + xv; i = i + 1; }
-                        arena[outOff + n * C + c] = float(sum / S);
+                        if (redType == 2 || redType == 3) {
+                            while (i < S) { double xv = arena[inOff + base + i]; if (redType == 2) { if (xv > acc) acc = xv; } else { if (xv < acc) acc = xv; } i = i + 1; }
+                        } else {
+                            while (i < S) { double xv = arena[inOff + base + i]; acc = acc + xv; i = i + 1; }
+                            if (redType == 0) acc = acc / S;
+                        }
+                        arena[outOff + n * C + c] = float(acc);
                         c = c + 1;
                     }
                     n = n + 1;

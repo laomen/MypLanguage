@@ -3045,7 +3045,9 @@ class GpuInferOps {
         // 原"单线程串行"（mode 0 原 1 线程串行 total；mode 1 原每通道 1 线程串行 S）。
         // stats 写入 arena 尾部预留区 stOff，全设备计算（单数组 resident，无原子）。
         void reduceMean(float[] a, int work, int inOff, int outOff, int mode,
-                        int N, int C, int S, int total, int keepdims, long dev, int stOff) {
+                        int N, int C, int S, int total, int keepdims, long dev, int stOff, int redType) {
+            // G3：GPU 仅支持 mean(0)/sum(1)；max/min(2/3) 需 CPU fallback（当前无模型 GPU 触发）
+            if (redType == 2 || redType == 3) { Console.writeLine("GpuReduceMean: max/min not GPU-implemented"); return; }
             if (mode == 0) {
                 long totalL = long(total);
                 int np = 1024;
@@ -3070,7 +3072,8 @@ class GpuInferOps {
                             sum = sum + v0;
                             i0 = i0 + 1;
                         }
-                        a[outOff + 0] = float(sum / totalL);
+                        if (redType == 0) a[outOff + 0] = float(sum / totalL);
+                        else a[outOff + 0] = float(sum);
                     }
                 }
             } else {
@@ -3103,7 +3106,8 @@ class GpuInferOps {
                             s2 = s2 + v2;
                             b2 = b2 + 1;
                         }
-                        a[outOff + c2] = float(s2 / S);
+                        if (redType == 0) a[outOff + c2] = float(s2 / S);
+                        else a[outOff + c2] = float(s2);
                     }
                 }
             }

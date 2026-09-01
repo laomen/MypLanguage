@@ -98,6 +98,7 @@ class Graph {
             attrs_.resetNode(i);
             nRedMode_[i] = 0;                                   // F8: ReduceMean
             nPadCval_[i] = 0;                                   // F8: Pad constant_value
+            nRedType_[i] = 0;                                   // G3: reduce 类型（0=mean,1=sum,2=max,3=min）
             return i;
         }
         void endNode() { nodes_.end(); }
@@ -1087,6 +1088,8 @@ class Graph {
         int compilerAttrResizeW(int node) { return attrs_.resizeW(node); }
         int compilerNRedMode(int node) { return nRedMode_[node]; }
         void compilerSetNRedMode(int node, int v) { nRedMode_[node] = v; }
+        int compilerNRedType(int node) { return nRedType_[node]; }
+        void compilerSetNRedType(int node, int v) { nRedType_[node] = v; }
         int compilerNPadCval(int node) { return nPadCval_[node]; }
         void compilerSetNPadCval(int node, int v) { nPadCval_[node] = v; }
         int compilerShapeRank5(string name) { return shapeRank5(name); }
@@ -1116,6 +1119,7 @@ class Graph {
 
         int[512] nRedMode_;     // F8：ReduceMean mode（0=全规约,1=空间规约）
         int[512] nPadCval_;     // F8：Pad constant_value（float 位型）
+        int[512] nRedType_;     // G3：reduce 类型（0=mean,1=sum,2=max,3=min）
         int fuseCount_;          // G1：Conv+ReLU 融合数
         int gapCount_;           // G2：GAP+Flatten 融合数
         int dceCount_;           // G2：死算子消除数

@@ -954,15 +954,16 @@ class InferenceRuntime {
             opP3_[id] = d0; opP4_[id] = d1; opP5_[id] = d2; opP6_[id] = d3; opP7_[id] = d4;
             opCount_ = opCount_ + 1;
         }
-        // ReduceMean（opKind 30）：mode 0 = 全规约；mode 1 = 空间维规约 per-(n,c)
+        // Reduce 族（opKind 30）：mode 0 = 全规约；mode 1 = 空间维规约 per-(n,c)
+        // redType：0=mean,1=sum,2=max,3=min（G3：ReduceMean/Sum/Max/Min 共用）
         void addReduceMean(int inTid, int outTid, int mode,
-                           int N, int C, int S, int total, int keepdims) {
+                           int N, int C, int S, int total, int keepdims, int redType) {
             int id = opCount_;
             opKind_[id] = 30;
             opA_[id] = inTid;
             opB_[id] = outTid;
             opP0_[id] = mode; opP1_[id] = N; opP2_[id] = C; opP3_[id] = S;
-            opP4_[id] = total; opP5_[id] = keepdims;
+            opP4_[id] = total; opP5_[id] = keepdims; opP6_[id] = redType;
             opCount_ = opCount_ + 1;
         }
         // Sub / Div / Mul（opKind 31-33）：逐元素（b 标量/同尺寸/逐通道广播；C=通道数, S=空间乘积）

@@ -196,6 +196,9 @@ class OpCode {
         int REDUCE_MEAN() { return 51; }
         int RESIZE() { return 52; }
         int UPSAMPLE() { return 53; }
+        int REDUCE_SUM() { return 54; }
+        int REDUCE_MAX() { return 55; }
+        int REDUCE_MIN() { return 56; }
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -248,6 +251,9 @@ class OpCode {
             if (t == "Concat") return OpCode.CONCAT();
             if (t == "Sqrt") return OpCode.SQRT();
             if (t == "ReduceMean") return OpCode.REDUCE_MEAN();
+            if (t == "ReduceSum") return OpCode.REDUCE_SUM();
+            if (t == "ReduceMax") return OpCode.REDUCE_MAX();
+            if (t == "ReduceMin") return OpCode.REDUCE_MIN();
             if (t == "Resize") return OpCode.RESIZE();
             if (t == "Upsample") return OpCode.UPSAMPLE();
             return OpCode.UNKNOWN();

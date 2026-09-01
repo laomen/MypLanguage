@@ -432,14 +432,14 @@ class GraphCompiler {
                     rt.addMul(a, b, out, graph.compilerShapeDim(is, 1), ss);
                 } else if (code == OpCode.SQRT()) {
                     rt.addSqrt(a, out);
-                } else if (code == OpCode.REDUCE_MEAN()) {
+                } else if (code == OpCode.REDUCE_MEAN() || code == OpCode.REDUCE_SUM() || code == OpCode.REDUCE_MAX() || code == OpCode.REDUCE_MIN()) {
                     int mode = graph.compilerReduceMode(ni);
                     int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
                     int N = graph.compilerShapeDim(is, 0), C = graph.compilerShapeDim(is, 1);
                     int S = graph.compilerShapeDim(is, 2) * graph.compilerShapeDim(is, 3);
                     if (graph.compilerShapeR5(is) == 1) S = graph.compilerShapeDim(is, 2) * graph.compilerShapeDim(is, 3) * graph.compilerShapeDim(is, 4);
                     int total = N * C * S;
-                    rt.addReduceMean(a, out, mode, N, C, S, total, graph.compilerAttr(ni, NodeField.KEEP()));
+                    rt.addReduceMean(a, out, mode, N, C, S, total, graph.compilerAttr(ni, NodeField.KEEP()), graph.compilerNRedType(ni));
                 } else if (code == OpCode.INSTANCE_NORM()) {
                     int sT = tensorId(graph.nodeInAt(ni, 1));
                     int bT = tensorId(graph.nodeInAt(ni, 2));

@@ -1381,9 +1381,14 @@ int inferShapes(Graph graph) {
                     // F8：秩无关逐元素（输出形状 = 输入 0；标量/同形状广播）
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
                     graph.copyShape(graph.compilerNodeOutput(i, 0), a);
-                } else if (t == "ReduceMean") {
+                } else if (t == "ReduceMean" || t == "ReduceSum" || t == "ReduceMax" || t == "ReduceMin") {
                     // F8：mode 0 = 全规约（标量）；mode 1 = 空间维规约（per-(n,c)，秩无关）
-                    // G3：axes 归一化（负轴 + rank）后按覆盖维判定 mode，keepdims 0/1 均按 [N,C,1,1]。
+                    // G3：Reduce 族共用 axes 归一化 + mode 判定；redType 记录（mean/sum/max/min）。
+                    int redType = 0;
+                    if (t == "ReduceSum") redType = 1;
+                    else if (t == "ReduceMax") redType = 2;
+                    else if (t == "ReduceMin") redType = 3;
+                    graph.compilerSetNRedType(i, redType);
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
                     int rank = graph.compilerShapeR5(a) == 1 ? 5 : 4;
                     int nAx = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 8);   // axes 输入（opset18+；可缺省）
