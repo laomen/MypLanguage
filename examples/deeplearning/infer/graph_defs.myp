@@ -113,6 +113,28 @@ class IRPassKind {
         int FUSE_CONV_ADD() { return 13; }  // P4-2：Conv+残差Add 融合，依赖 DefUse
 }
 
+    // GraphWeights 元数据槽。Graph 组件间通过 get/set 访问，避免暴露 SoA 属性。
+    class WeightField {
+        static:
+        int ROWS() { return 0; }
+        int COLS() { return 1; }
+        int DTYPE() { return 2; }
+        int KIND() { return 3; }
+        int OFFSET() { return 4; }
+        int LENGTH() { return 5; }
+        int TRANSPOSED() { return 6; }
+        int BIAS() { return 7; }
+        int ROLE() { return 8; }
+        int NHWC() { return 9; }
+        int BN() { return 10; }
+        int BN_NODE() { return 11; }
+        int BN_SCALE() { return 12; }
+        int BN_BIAS() { return 13; }
+        int BN_MEAN() { return 14; }
+        int BN_VAR() { return 15; }
+        int BN_ONLY() { return 16; }
+    }
+
 // IR-P3a：算子类型枚举。取代 nType_ 字符串比较（字符串仅在 ONNX 边界/调试保留）。
 // 只枚举优化 pass 逻辑 + 训练/状态节点需要的算子；buildRuntime lowering 仍按字符串
 // 直读分派（P3b 迁移）。nodeOp()/opCode() 是唯一 string→enum 映射入口。
