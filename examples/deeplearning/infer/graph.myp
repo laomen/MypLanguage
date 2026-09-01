@@ -16,10 +16,11 @@ import "./graph_shapes.myp";
 import "./graph_weights.myp";
 import "./graph_nodes.myp";
 import "./graph_node_attrs.myp";
+import "./graph_analysis.myp";
 
 class Graph {
     action:
-        @constructor Graph() { pb_ = new PbReader(); shapes_ = new GraphShapes(); weights_ = new GraphWeights(); nodes_ = new GraphNodes(); attrs_ = new GraphNodeAttrs(); }
+        @constructor Graph() { pb_ = new PbReader(); shapes_ = new GraphShapes(); weights_ = new GraphWeights(); nodes_ = new GraphNodes(); attrs_ = new GraphNodeAttrs(); analysis_ = new GraphAnalysis(); }
 
         int tensorId(string name) {
             int i = 0;
@@ -47,15 +48,15 @@ class Graph {
         int bnCount() { return bnCount_; }
         int nodeCount() { return nodes_.count(); }
         // ---- IR-P1 AnalysisManager（轻量）：generation 可断言调用方未使用过期分析。----
-        int analysisGeneration() { return analysisGeneration_; }
-        int analysisValid(int mask) { return (analysisValid_ & mask) == mask ? 1 : 0; }
-        int defUseGeneration() { return duGeneration_; }
-        int topoGeneration() { return topoGeneration_; }
-        int livenessGeneration() { return livenessGeneration_; }
+        int analysisGeneration() { return analysis_.analysisGeneration(); }
+        int analysisValid(int mask) { return (analysis_.analysisValid() & mask) == mask ? 1 : 0; }
+        int defUseGeneration() { return analysis_.duGeneration(); }
+        int topoGeneration() { return analysis_.topoGeneration(); }
+        int livenessGeneration() { return analysis_.livenessGeneration(); }
         // IR-P1b PassResult（MYP 无轻量 record 返回值，故由 Graph 保存最后一次执行结果）。
-        int lastPassOk() { return lastPassOk_; }
-        int lastPassChanged() { return lastPassChanged_; }
-        int lastPassPreservedAnalyses() { return lastPassPreserved_; }
+        int lastPassOk() { return analysis_.lastPassOk(); }
+        int lastPassChanged() { return analysis_.lastPassChanged(); }
+        int lastPassPreservedAnalyses() { return analysis_.lastPassPreserved(); }
         // P1c：P2 rewrite pass 首次声明 DefUse；legacy pass 直接扫描 SoA，依赖为 0。
         int passRequiredAnalyses(int pass) {
             if (pass == IRPassKind.IDENTITY_FOLD()) return IRAnalysis.DEF_USE();
@@ -70,11 +71,11 @@ class Graph {
         }
         // 分析按需获取。ensureTopo 会先保证 DefUse；两者无 graph mutation，不改变 generation。
         int ensureDefUse() {
-            if (duValid_ == 0 || analysisValid(IRAnalysis.DEF_USE()) == 0 || duGeneration_ != analysisGeneration_) rebuildDefUse();
+            if (analysis_.duValid() == 0 || analysisValid(IRAnalysis.DEF_USE()) == 0 || analysis_.duGeneration() != analysis_.analysisGeneration()) rebuildDefUse();
             return 1;
         }
         int ensureTopo() {
-            if (analysisValid(IRAnalysis.TOPO()) == 0 || topoGeneration_ != analysisGeneration_) return topoSort();
+            if (analysisValid(IRAnalysis.TOPO()) == 0 || analysis_.topoGeneration() != analysis_.analysisGeneration()) return topoSort();
             return 1;
         }
         int ensurePassAnalyses(int pass) {
@@ -86,10 +87,10 @@ class Graph {
             return 1;
         }
         void invalidateAnalyses(int mask) {
-            analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - mask);
-            analysisGeneration_ = analysisGeneration_ + 1;
-            if ((mask & IRAnalysis.DEF_USE()) != 0) duValid_ = 0;
-            if ((mask & IRAnalysis.TOPO()) != 0) planOrderCount_ = 0;
+            analysis_.setAnalysisValid(analysis_.analysisValid() & (IRAnalysis.ALL() - mask));
+            analysis_.incrementAnalysisGeneration();
+            if ((mask & IRAnalysis.DEF_USE()) != 0) analysis_.setDuValid(0);
+            if ((mask & IRAnalysis.TOPO()) != 0) analysis_.setPlanOrderCount(0);
         }
         // 旧 pass 直接改 SoA；在其后调用此入口统一采取保守失效，避免遗留索引被误用。
         void markIRMutation() { invalidateAnalyses(IRAnalysis.ALL()); }
@@ -162,8 +163,8 @@ class Graph {
         void replaceNodeInput(int node, int slot, int value) {
             if (node < 0 || node >= nodes_.count() || slot < 0 || slot >= 5 || value < 0 || value >= shapes_.count()) return;
             nodeIn(node, slot, shapes_.nameAt(value));
-            duValid_ = 0;
-            analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
+            analysis_.setDuValid(0);
+            analysis_.setAnalysisValid(analysis_.analysisValid() & (IRAnalysis.ALL() - IRAnalysis.DEF_USE()));
         }
         void replaceOperand(int node, int slot, int value) { replaceNodeInput(node, slot, value); }
         // P2 rewrite 原语：把 oldValue 的每条精确 Use（包含重复 operand）改接到 newValue。
@@ -188,8 +189,8 @@ class Graph {
                 if (goName_[g] == oldName) goName_[g] = newName;
                 g = g + 1;
             }
-            duValid_ = 0;
-            analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
+            analysis_.setDuValid(0);
+            analysis_.setAnalysisValid(analysis_.analysisValid() & (IRAnalysis.ALL() - IRAnalysis.DEF_USE()));
         }
         // P3c：改写节点的单个结果槽（name-based；buildReverseGraph 在 DefUse 建立前构图用）。
         // 与 replaceAllUses 一致：改写后失效 DefUse，消费前由 ensureDefUse 重建。
@@ -199,8 +200,8 @@ class Graph {
             else if (slot == 1) nodes_.setOutput(node, 1, newName);
             else if (slot == 2) nodes_.setOutput(node, 2, newName);
             else nodes_.setOutput(node, 3, newName);
-            duValid_ = 0;
-            analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
+            analysis_.setDuValid(0);
+            analysis_.setAnalysisValid(analysis_.analysisValid() & (IRAnalysis.ALL() - IRAnalysis.DEF_USE()));
         }
         void replaceResultValue(int node, int slot, int value) {
             if (value < 0 || value >= shapes_.count()) return;
@@ -214,66 +215,66 @@ class Graph {
             if (attrs_.fused(node) == 1) markDeadTensor(nodes_.outputAt(node, 0));
             nodes_.setType(node, "");
             if (eff != "") markDeadTensor(eff);
-            duValid_ = 0;
-            analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
+            analysis_.setDuValid(0);
+            analysis_.setAnalysisValid(analysis_.analysisValid() & (IRAnalysis.ALL() - IRAnalysis.DEF_USE()));
         }
-        int valueProducer(int value) { if (duValid_ == 0 || value < 0 || value >= shapes_.count()) return -1; return duProducer_[value]; }
-        int valueUseCount(int value) { if (duValid_ == 0 || value < 0 || value >= shapes_.count()) return 0; return duUseCount_[value]; }
+        int valueProducer(int value) { if (analysis_.duValid() == 0 || value < 0 || value >= shapes_.count()) return -1; return analysis_.duProducer(value); }
+        int valueUseCount(int value) { if (analysis_.duValid() == 0 || value < 0 || value >= shapes_.count()) return 0; return analysis_.duUseCount(value); }
         int valueUseNode(int value, int use) {
-            if (duValid_ == 0 || value < 0 || value >= shapes_.count() || use < 0 || use >= duUseCount_[value]) return -1;
-            int edge = duFirstUse_[value];
+            if (analysis_.duValid() == 0 || value < 0 || value >= shapes_.count() || use < 0 || use >= analysis_.duUseCount(value)) return -1;
+            int edge = analysis_.duFirstUse(value);
             int ordinal = 0;
-            while (edge >= 0 && ordinal < use) { edge = duNextUse_[edge]; ordinal = ordinal + 1; }
+            while (edge >= 0 && ordinal < use) { edge = analysis_.duNextUse(edge); ordinal = ordinal + 1; }
             if (edge < 0) return -1;
-            return duUseNode_[edge];
+            return analysis_.duUseNode(edge);
         }
         int valueUseSlot(int value, int use) {
-            if (duValid_ == 0 || value < 0 || value >= shapes_.count() || use < 0 || use >= duUseCount_[value]) return -1;
-            int edge = duFirstUse_[value];
+            if (analysis_.duValid() == 0 || value < 0 || value >= shapes_.count() || use < 0 || use >= analysis_.duUseCount(value)) return -1;
+            int edge = analysis_.duFirstUse(value);
             int ordinal = 0;
-            while (edge >= 0 && ordinal < use) { edge = duNextUse_[edge]; ordinal = ordinal + 1; }
+            while (edge >= 0 && ordinal < use) { edge = analysis_.duNextUse(edge); ordinal = ordinal + 1; }
             if (edge < 0) return -1;
-            return duUseSlot_[edge];
+            return analysis_.duUseSlot(edge);
         }
         // 重建精确 def-use：每条 edge 记录 (consumer node, operand slot)，保留 Mul(x,x) 等重复 use。
         // 全图最多 5*nodes_.count() 条边，以压缩链表保存，避免每个 Value 预留 nodes_.count() 个槽。
         void rebuildDefUse() {
             int v = 0;
-            while (v < shapes_.count()) { duProducer_[v] = -1; duUseCount_[v] = 0; duFirstUse_[v] = -1; v = v + 1; }
-            duEdgeCount_ = 0;
+            while (v < shapes_.count()) { analysis_.setDuProducer(v, -1); analysis_.setDuUseCount(v, 0); analysis_.setDuFirstUse(v, -1); v = v + 1; }
+            analysis_.setDuEdgeCount(0);
             int node = 0;
             while (node < nodes_.count()) {
                 if (nodeAlive(node) == 1) {
                     int outSlot = 0;
                     while (outSlot < 4) {
                         int out = nodeOutputValue(node, outSlot);
-                        if (out >= 0 && duProducer_[out] < 0) duProducer_[out] = node;
+                        if (out >= 0 && analysis_.duProducer(out) < 0) analysis_.setDuProducer(out, node);
                         outSlot = outSlot + 1;
                     }
                     int inSlot = 0;
                     while (inSlot < 5) {
                         int input = nodeInputValue(node, inSlot);
-                        if (input >= 0 && duEdgeCount_ < 2560) {
-                            int edge = duEdgeCount_;
-                            duUseNode_[edge] = node;
-                            duUseSlot_[edge] = inSlot;
-                            duNextUse_[edge] = duFirstUse_[input];
-                            duFirstUse_[input] = edge;
-                            duUseCount_[input] = duUseCount_[input] + 1;
-                            duEdgeCount_ = duEdgeCount_ + 1;
+                        if (input >= 0 && analysis_.duEdgeCount() < 2560) {
+                            int edge = analysis_.duEdgeCount();
+                            analysis_.setDuUseNode(edge, node);
+                            analysis_.setDuUseSlot(edge, inSlot);
+                            analysis_.setDuNextUse(edge, analysis_.duFirstUse(input));
+                            analysis_.setDuFirstUse(input, edge);
+                            analysis_.setDuUseCount(input, analysis_.duUseCount(input) + 1);
+                            analysis_.setDuEdgeCount(analysis_.duEdgeCount() + 1);
                         }
                         inSlot = inSlot + 1;
                     }
                 }
                 node = node + 1;
             }
-            duValid_ = 1;
-            analysisValid_ = analysisValid_ | IRAnalysis.DEF_USE();
-            duGeneration_ = analysisGeneration_;
+            analysis_.setDuValid(1);
+            analysis_.setAnalysisValid(analysis_.analysisValid() | IRAnalysis.DEF_USE());
+            analysis_.setDuGeneration(analysis_.analysisGeneration());
         }
         // P0 验证器：检查精确 use edge、活节点输入形状、单 producer（图输入/常量 producer=-1 合法）。
         int verifyIR() {
-            if (duValid_ == 0) rebuildDefUse();
+            if (analysis_.duValid() == 0) rebuildDefUse();
             int bad = 0;
             int node = 0;
             while (node < nodes_.count()) {
@@ -405,7 +406,7 @@ class Graph {
         void addShapeD5(string name, int d0, int d1, int d2, int d3, int d4) { shapes_.addShapeD5(name, d0, d1, d2, d3, d4); }
         // 3D：按源张量秩复制输出形状（5D → addShapeD5，否则 addShapeD4）
         void copyShape(string name, int src) { shapes_.copyShape(name, src); }
-        void resetCounts() { weights_.reset(); nodes_.reset(); shapes_.reset(); tCount_=0; goCount_=0; giCount_=0; fuseCount_=0; gapCount_=0; dceCount_=0; foldCount_=0; bnCount_=0; fusedAddCount_=0; noReuse_=0; doNHWC_=0; trainingMode_=0; analysisValid_=0; analysisGeneration_=0; duValid_=0; planOrderCount_=0; topoGeneration_=-1; livenessGeneration_=-1; lastPassOk_=1; lastPassChanged_=0; lastPassPreserved_=IRAnalysis.ALL(); }
+        void resetCounts() { weights_.reset(); nodes_.reset(); shapes_.reset(); tCount_=0; goCount_=0; giCount_=0; fuseCount_=0; gapCount_=0; dceCount_=0; foldCount_=0; bnCount_=0; fusedAddCount_=0; noReuse_=0; doNHWC_=0; trainingMode_=0; analysis_.reset(); analysis_.setLastPassPreserved(IRAnalysis.ALL()); }
         // P3：覆盖张量形状（输入形状注入：动态维度模型）
         void setShape(string name, int d0, int d1, int d2, int d3, int d4, int is5) { shapes_.setShape(name, d0, d1, d2, d3, d4, is5); }
 
@@ -578,7 +579,7 @@ class Graph {
         }
         // IR-P1b pass dispatcher：PassResult 写入 lastPass*；仅 changed 时失效相关分析。
         int runIRPass(int pass) {
-            if (ensurePassAnalyses(pass) == 0) { lastPassOk_ = 0; lastPassChanged_ = 0; lastPassPreserved_ = 0; return 0; }
+            if (ensurePassAnalyses(pass) == 0) { analysis_.setLastPassOk(0); analysis_.setLastPassChanged(0); analysis_.setLastPassPreserved(0); return 0; }
             long before = analysisFingerprint();
             int ok = 1;
             if (pass == IRPassKind.FOLD_SHAPES()) ok = foldShapeChains();
@@ -594,16 +595,16 @@ class Graph {
             else if (pass == IRPassKind.IDENTITY_FOLD()) { foldIdentityOps(); ok = 1; }
             else if (pass == IRPassKind.FOLD_RELU()) { foldDoubleRelu(); ok = 1; }
             else if (pass == IRPassKind.FUSE_CONV_ADD()) ok = fuseConvAdd();
-            lastPassOk_ = ok;
-            lastPassChanged_ = 0;
-            lastPassPreserved_ = 0;
+            analysis_.setLastPassOk(ok);
+            analysis_.setLastPassChanged(0);
+            analysis_.setLastPassPreserved(0);
             if (ok == 1) {
                 long after = analysisFingerprint();
                 if (before != after) {
-                    lastPassChanged_ = 1;
+                    analysis_.setLastPassChanged(1);
                     markIRMutation();
                 } else {
-                    lastPassPreserved_ = IRAnalysis.ALL();
+                    analysis_.setLastPassPreserved(IRAnalysis.ALL());
                 }
             }
             return ok;
@@ -614,7 +615,7 @@ class Graph {
             int iter = 0;
             while (iter < maxIter) {
                 if (runIRPass(pass) == 0) return 0;
-                if (lastPassChanged_ == 0) return 1;
+                if (analysis_.lastPassChanged() == 0) return 1;
                 iter = iter + 1;
             }
             Console.writeLine("DBG pass fixpoint limit=" + Fmt.i(pass));
@@ -737,10 +738,10 @@ class Graph {
                 endNode();
             }
 
-            // 4) 反向拓扑遍历（planOrder_ 逆序）：输出梯度已知 → 按算子类型追加 backward
-            int oi = planOrderCount_ - 1;
+            // 4) 反向拓扑遍历（analysis_ order 逆序）：输出梯度已知 → 按算子类型追加 backward
+            int oi = analysis_.planOrderCount() - 1;
             while (oi >= 0) {
-                int ni = planOrder_[oi];
+                int ni = analysis_.planOrder(oi);
                 string t = nodes_.typeAt(ni);
                 if (t != "") {
                     string y = nodes_.outputAt(ni, 0);
@@ -2298,11 +2299,11 @@ class Graph {
                 if (valueProducer(nodeInputValue(i, 3)) >= 0) indeg[i] = indeg[i] + 1;
                 i = i + 1;
             }
-            planOrderCount_ = 0;
+            analysis_.setPlanOrderCount(0);
             int remaining = 0;
             i = 0;
             while (i < nodes_.count()) { if (nodes_.typeAt(i) != "") remaining = remaining + 1; i = i + 1; }
-            while (planOrderCount_ < remaining) {
+            while (analysis_.planOrderCount() < remaining) {
                 int picked = -1;
                 i = 0;
                 while (i < nodes_.count()) {
@@ -2324,8 +2325,8 @@ class Graph {
                     }
                     return 0;   // 有环
                 }
-                planOrder_[planOrderCount_] = picked;
-                planOrderCount_ = planOrderCount_ + 1;
+                analysis_.setPlanOrder(analysis_.planOrderCount(), picked);
+                analysis_.setPlanOrderCount(analysis_.planOrderCount() + 1);
                 indeg[picked] = -1;
                 // 多输出（Split/BwdDense/SoftmaxCE）：递减所有输出（out0..out3）的消费者
                 string out = effectiveOut(picked);
@@ -2349,8 +2350,8 @@ class Graph {
                     ps = ps + 1;
                 }
             }
-            analysisValid_ = analysisValid_ | IRAnalysis.TOPO();
-            topoGeneration_ = analysisGeneration_;
+            analysis_.setAnalysisValid(analysis_.analysisValid() | IRAnalysis.TOPO());
+            analysis_.setTopoGeneration(analysis_.analysisGeneration());
             return 1;
         }
         int producerIdx(string name) {
@@ -2369,16 +2370,16 @@ class Graph {
             while (si < shapes_.count()) { planProducer_[si] = -1; planLastUse_[si] = -1; planOff_[si] = 0; si = si + 1; }
             // producer = 产出该张量的节点在拓扑序中的位置（融合节点以 effectiveOut 计）
             int oi = 0;
-            while (oi < planOrderCount_) {
-                int ni = planOrder_[oi];
+            while (oi < analysis_.planOrderCount()) {
+                int ni = analysis_.planOrder(oi);
                 int s = shapeIdx(effectiveOut(ni));
                 if (s >= 0) planProducer_[s] = oi;
                 oi = oi + 1;
             }
             // lastUse = 消费该张量的最大拓扑位置（活节点）
             oi = 0;
-            while (oi < planOrderCount_) {
-                int ni = planOrder_[oi];
+            while (oi < analysis_.planOrderCount()) {
+                int ni = analysis_.planOrder(oi);
                 int a = shapeIdx(nodes_.inputAt(ni, 0)); if (a >= 0 && oi > planLastUse_[a]) planLastUse_[a] = oi;
                 int b = shapeIdx(nodes_.inputAt(ni, 1)); if (b >= 0 && oi > planLastUse_[b]) planLastUse_[b] = oi;
                 int c = shapeIdx(nodes_.inputAt(ni, 2)); if (c >= 0 && oi > planLastUse_[c]) planLastUse_[c] = oi;
@@ -2428,8 +2429,8 @@ class Graph {
                 planOff_[si] = off;
                 si = si + 1;
             }
-            analysisValid_ = analysisValid_ | IRAnalysis.LIVENESS();
-            livenessGeneration_ = analysisGeneration_;
+            analysis_.setAnalysisValid(analysis_.analysisValid() | IRAnalysis.LIVENESS());
+            analysis_.setLivenessGeneration(analysis_.analysisGeneration());
             return highWater;
         }
         int buildRuntime(InferenceRuntime rt) {
@@ -2484,8 +2485,8 @@ class Graph {
             }
             // 2) 接线算子（按拓扑序：G2 转置节点先于消费者执行）
             int oi = 0;
-            while (oi < planOrderCount_) {
-                int ni = planOrder_[oi];
+            while (oi < analysis_.planOrderCount()) {
+                int ni = analysis_.planOrder(oi);
                 if (nodes_.typeAt(ni) == "") { oi = oi + 1; continue; }   // 死节点跳过
                 int code = nodeOp(ni);   // P3b：按 op 枚举分派
                 int a = tensorId(nodes_.inputAt(ni, 0));
@@ -3160,6 +3161,7 @@ class Graph {
         int i64stTop_;        // P3：池顶
         double[8192] cF32_;   // P3：计算 float 常量 [wIdx*32+k]
         GraphNodeAttrs attrs_;
+        GraphAnalysis analysis_;
 
         int[512] nRedMode_;     // F8：ReduceMean mode（0=全规约,1=空间规约）
         int[512] nPadCval_;     // F8：Pad constant_value（float 位型）
@@ -3185,32 +3187,10 @@ class Graph {
         int[512] planOff_;
         int[512] planProducer_;
         int[512] planLastUse_;
-        int[512] planOrder_;        // G2：拓扑排序后的活节点下标（buildRuntime/planMemory 用）
-        int planOrderCount_;
         int[512] planROff_;
         int[512] planRSize_;
         int[512] planRLu_;
         int[512] planRPersist_;
-
-        // P0 DefUseAnalysis：ValueId=shape table index；use 用紧凑链表（总边上限=5*512）。
-        int[512] duProducer_;
-        int[512] duUseCount_;
-        int[512] duFirstUse_;
-        int[2560] duUseNode_;
-        int[2560] duUseSlot_;
-        int[2560] duNextUse_;
-        int duEdgeCount_;
-        int duValid_;
-
-        // IR-P1 AnalysisManager 状态；generation 随所有 graph mutation 递增。
-        int analysisValid_;
-        int analysisGeneration_;
-        int duGeneration_;
-        int topoGeneration_;
-        int livenessGeneration_;
-        int lastPassOk_;
-        int lastPassChanged_;
-        int lastPassPreserved_;
 
         string[512] tName_;
         int[512] tId_;

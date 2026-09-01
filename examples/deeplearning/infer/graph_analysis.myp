@@ -1,0 +1,75 @@
+// graph_analysis.myp — Analysis state storage for Graph IR.
+// Graph owns the algorithms; this class only owns their mutable state.
+class GraphAnalysis {
+    action:
+        @constructor GraphAnalysis() { reset(); }
+
+        void reset() {
+            duEdgeCount_ = 0; duValid_ = 0;
+            analysisValid_ = 0; analysisGeneration_ = 0;
+            duGeneration_ = -1; topoGeneration_ = -1; livenessGeneration_ = -1;
+            lastPassOk_ = 1; lastPassChanged_ = 0; lastPassPreserved_ = 0;
+            planOrderCount_ = 0;
+        }
+
+        int duProducer(int value) { return value < 0 || value >= 512 ? -1 : duProducer_[value]; }
+        void setDuProducer(int value, int node) { if (value >= 0 && value < 512) duProducer_[value] = node; }
+        int duUseCount(int value) { return value < 0 || value >= 512 ? 0 : duUseCount_[value]; }
+        void setDuUseCount(int value, int count) { if (value >= 0 && value < 512) duUseCount_[value] = count; }
+        int duFirstUse(int value) { return value < 0 || value >= 512 ? -1 : duFirstUse_[value]; }
+        void setDuFirstUse(int value, int edge) { if (value >= 0 && value < 512) duFirstUse_[value] = edge; }
+        int duUseNode(int edge) { return edge < 0 || edge >= 2560 ? -1 : duUseNode_[edge]; }
+        void setDuUseNode(int edge, int node) { if (edge >= 0 && edge < 2560) duUseNode_[edge] = node; }
+        int duUseSlot(int edge) { return edge < 0 || edge >= 2560 ? -1 : duUseSlot_[edge]; }
+        void setDuUseSlot(int edge, int slot) { if (edge >= 0 && edge < 2560) duUseSlot_[edge] = slot; }
+        int duNextUse(int edge) { return edge < 0 || edge >= 2560 ? -1 : duNextUse_[edge]; }
+        void setDuNextUse(int edge, int next) { if (edge >= 0 && edge < 2560) duNextUse_[edge] = next; }
+        int duEdgeCount() { return duEdgeCount_; }
+        void setDuEdgeCount(int count) { duEdgeCount_ = count; }
+        int duValid() { return duValid_; }
+        void setDuValid(int valid) { duValid_ = valid; }
+
+        int analysisValid() { return analysisValid_; }
+        void setAnalysisValid(int valid) { analysisValid_ = valid; }
+        int analysisGeneration() { return analysisGeneration_; }
+        void setAnalysisGeneration(int generation) { analysisGeneration_ = generation; }
+        void incrementAnalysisGeneration() { analysisGeneration_ = analysisGeneration_ + 1; }
+        int duGeneration() { return duGeneration_; }
+        void setDuGeneration(int generation) { duGeneration_ = generation; }
+        int topoGeneration() { return topoGeneration_; }
+        void setTopoGeneration(int generation) { topoGeneration_ = generation; }
+        int livenessGeneration() { return livenessGeneration_; }
+        void setLivenessGeneration(int generation) { livenessGeneration_ = generation; }
+
+        int lastPassOk() { return lastPassOk_; }
+        void setLastPassOk(int value) { lastPassOk_ = value; }
+        int lastPassChanged() { return lastPassChanged_; }
+        void setLastPassChanged(int value) { lastPassChanged_ = value; }
+        int lastPassPreserved() { return lastPassPreserved_; }
+        void setLastPassPreserved(int value) { lastPassPreserved_ = value; }
+
+        int planOrder(int index) { return index < 0 || index >= 512 ? -1 : planOrder_[index]; }
+        void setPlanOrder(int index, int node) { if (index >= 0 && index < 512) planOrder_[index] = node; }
+        int planOrderCount() { return planOrderCount_; }
+        void setPlanOrderCount(int count) { planOrderCount_ = count; }
+
+    property:
+        int[512] duProducer_;
+        int[512] duUseCount_;
+        int[512] duFirstUse_;
+        int[2560] duUseNode_;
+        int[2560] duUseSlot_;
+        int[2560] duNextUse_;
+        int duEdgeCount_;
+        int duValid_;
+        int analysisValid_;
+        int analysisGeneration_;
+        int duGeneration_;
+        int topoGeneration_;
+        int livenessGeneration_;
+        int lastPassOk_;
+        int lastPassChanged_;
+        int lastPassPreserved_;
+        int[512] planOrder_;
+        int planOrderCount_;
+}
