@@ -19,10 +19,12 @@ import "./graph_node_attrs.myp";
 import "./graph_analysis.myp";
 import "./graph_planner.myp";
 import "./graph_compiler.myp";
+import "./graph_optimizer.myp";
 
 class Graph {
+    interface class IGraphOptimizeHost;
     action:
-        @constructor Graph() { pb_ = new PbReader(); shapes_ = new GraphShapes(); weights_ = new GraphWeights(); nodes_ = new GraphNodes(); attrs_ = new GraphNodeAttrs(); analysis_ = new GraphAnalysis(); planner_ = new GraphPlanner(); compiler_ = new GraphCompiler(); }
+        @constructor Graph() { pb_ = new PbReader(); shapes_ = new GraphShapes(); weights_ = new GraphWeights(); nodes_ = new GraphNodes(); attrs_ = new GraphNodeAttrs(); analysis_ = new GraphAnalysis(); planner_ = new GraphPlanner(); compiler_ = new GraphCompiler(); optimizer_ = new GraphOptimizer(); }
 
         int tensorId(string name) { return compiler_.tensorId(name); }
 
@@ -616,53 +618,22 @@ class Graph {
             Console.writeLine("DBG pass fixpoint limit=" + Fmt.i(pass));
             return 0;
         }
-        // 公共 pass 管线（fold→inferShapes→classify→fusion→DCE→layout→topoSort）。
-        // optimize（推理）与 optimizeTrain（训练）共用；返回 1=成功。
-        int runPassPipeline() {
-            if (Console.getEnv("MYP_NO_REUSE") == "1") noReuse_ = 1;
-            runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链
-            runIRPass(IRPassKind.FOLD_CONSTS());
-            if (runIRPass(IRPassKind.INFER_SHAPES()) == 0) { Console.writeLine("DBG fail inferShapes"); return 0; }
-            runIRPass(IRPassKind.FOLD_SHAPES());  // P3：inferShapes 后折叠剩余链（Shape(中间)→…→Cast）
-            runIRPass(IRPassKind.CLASSIFY());
-            runIRPass(IRPassKind.FUSE_BN());
-            runIRPass(IRPassKind.FUSE_CONV_RELU());
-            runIRPass(IRPassKind.FUSE_RELU());
-            runIRPass(IRPassKind.FUSE_GAP_FLATTEN());
-            if (runIRPassToFixpoint(IRPassKind.IDENTITY_FOLD(), 4) == 0) { Console.writeLine("DBG fail identityFold"); return 0; }
-            if (runIRPassToFixpoint(IRPassKind.FOLD_RELU(), 4) == 0) { Console.writeLine("DBG fail foldRelu"); return 0; }
-            // P4-2/3：Conv+残差Add 融合（仅推理；convResidual 无 backward，训练图不融合）
-            if (trainingMode_ == 0) runIRPass(IRPassKind.FUSE_CONV_ADD());
-            runIRPass(IRPassKind.DCE());
-            if (doNHWC_ == 1) { if (runIRPass(IRPassKind.LAYOUT_NHWC()) == 0) { Console.writeLine("DBG fail layoutNHWC"); return 0; } }
-            if (topoSort() == 0) { Console.writeLine("DBG fail topoSort"); return 0; }
-            return 1;
+        int runTopoSort() { return topoSort(); }
+        int runPlanMemory() { return planMemory(); }
+        int lowerRuntime(InferenceRuntime rt) { return buildRuntime(rt); }
+        int buildReverseGraphForOptimizer() {
+            int ok = buildReverseGraph();
+            if (ok == 1) markIRMutation();
+            return ok;
         }
+        void setTrainingModeForOptimizer(int mode) { trainingMode_ = mode; }
+        void enableNoReuseForOptimizer() { noReuse_ = 1; }
+        int shouldFuseConvAddForOptimizer() { return trainingMode_ == 0 ? 1 : 0; }
+        int shouldRunNHWCForOptimizer() { return doNHWC_; }
+        void dumpResizeSizesForOptimizer() { dumpResizeSizes(); }
 
-        int optimize(InferenceRuntime rt) {
-            trainingMode_ = 0;
-            if (runPassPipeline() == 0) return 0;
-            int peak = planMemory();
-            if (peak <= 0) { Console.writeLine("DBG fail planMemory"); return 0; }
-            rt.resizeArena(peak);
-            if (buildRuntime(rt) == 0) { Console.writeLine("DBG fail buildRuntime"); return 0; }
-            if (Console.getEnv("MYP_RSZ_DBG") == "1") dumpResizeSizes();
-            return 1;
-        }
-
-        // 训练版管线：公共 pass → buildReverseGraph（追加反向/更新节点）→ 重排/重规划 → 构建。
-        int optimizeTrain(InferenceRuntime rt) {
-            trainingMode_ = 1;   // P4-3：训练图不跑 FUSE_CONV_ADD（convResidual 无 backward）
-            if (runPassPipeline() == 0) return 0;
-            if (buildReverseGraph() == 0) { Console.writeLine("DBG fail buildReverseGraph"); return 0; }
-            markIRMutation();             // buildReverseGraph 直接追加 Bwd*/Update 节点
-            if (topoSort() == 0) { Console.writeLine("DBG fail topoSort(reverse)"); return 0; }
-            int peak = planMemory();
-            if (peak <= 0) { Console.writeLine("DBG fail planMemory"); return 0; }
-            rt.resizeArena(peak);
-            if (buildRuntime(rt) == 0) { Console.writeLine("DBG fail buildRuntime"); return 0; }
-            return 1;
-        }
+        int optimize(InferenceRuntime rt) { return optimizer_.optimize(this, rt); }
+        int optimizeTrain(InferenceRuntime rt) { return optimizer_.optimizeTrain(this, rt); }
 
         // ---- 阶段2：图级反向 pass（reverse-mode AD）----
         // 前向图已跑完 pass + topoSort；本方法反向拓扑遍历，为每个可训算子追加
@@ -3157,6 +3128,7 @@ class Graph {
         GraphAnalysis analysis_;
         GraphPlanner planner_;
         GraphCompiler compiler_;
+        GraphOptimizer optimizer_;
 
         int[512] nRedMode_;     // F8：ReduceMean mode（0=全规约,1=空间规约）
         int[512] nPadCval_;     // F8：Pad constant_value（float 位型）

@@ -1,0 +1,67 @@
+// graph_optimizer.myp — Graph pass-pipeline orchestration.
+import env;
+import fmt;
+import "./runtime.myp";
+import "./graph_defs.myp";
+
+interface IGraphOptimizeHost {
+    int runIRPass(int pass);
+    int runIRPassToFixpoint(int pass, int maxIter);
+    int runTopoSort();
+    int runPlanMemory();
+    int lowerRuntime(InferenceRuntime rt);
+    int buildReverseGraphForOptimizer();
+    void setTrainingModeForOptimizer(int mode);
+    void enableNoReuseForOptimizer();
+    int shouldFuseConvAddForOptimizer();
+    int shouldRunNHWCForOptimizer();
+    void dumpResizeSizesForOptimizer();
+}
+
+class GraphOptimizer {
+    action:
+        int runPipeline(IGraphOptimizeHost host) {
+            if (Console.getEnv("MYP_NO_REUSE") == "1") host.enableNoReuseForOptimizer();
+            host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链
+            host.runIRPass(IRPassKind.FOLD_CONSTS());
+            if (host.runIRPass(IRPassKind.INFER_SHAPES()) == 0) { Console.writeLine("DBG fail inferShapes"); return 0; }
+            host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：inferShapes 后折叠剩余链（Shape(中间)→…→Cast）
+            host.runIRPass(IRPassKind.CLASSIFY());
+            host.runIRPass(IRPassKind.FUSE_BN());
+            host.runIRPass(IRPassKind.FUSE_CONV_RELU());
+            host.runIRPass(IRPassKind.FUSE_RELU());
+            host.runIRPass(IRPassKind.FUSE_GAP_FLATTEN());
+            if (host.runIRPassToFixpoint(IRPassKind.IDENTITY_FOLD(), 4) == 0) { Console.writeLine("DBG fail identityFold"); return 0; }
+            if (host.runIRPassToFixpoint(IRPassKind.FOLD_RELU(), 4) == 0) { Console.writeLine("DBG fail foldRelu"); return 0; }
+            // P4-2/3：Conv+残差Add 融合（仅推理；convResidual 无 backward，训练图不融合）
+            if (host.shouldFuseConvAddForOptimizer() == 1) host.runIRPass(IRPassKind.FUSE_CONV_ADD());
+            host.runIRPass(IRPassKind.DCE());
+            if (host.shouldRunNHWCForOptimizer() == 1) { if (host.runIRPass(IRPassKind.LAYOUT_NHWC()) == 0) { Console.writeLine("DBG fail layoutNHWC"); return 0; } }
+            if (host.runTopoSort() == 0) { Console.writeLine("DBG fail topoSort"); return 0; }
+            return 1;
+        }
+
+        int optimize(IGraphOptimizeHost host, InferenceRuntime rt) {
+            host.setTrainingModeForOptimizer(0);
+            if (runPipeline(host) == 0) return 0;
+            int peak = host.runPlanMemory();
+            if (peak <= 0) { Console.writeLine("DBG fail planMemory"); return 0; }
+            rt.resizeArena(peak);
+            if (host.lowerRuntime(rt) == 0) { Console.writeLine("DBG fail buildRuntime"); return 0; }
+            if (Console.getEnv("MYP_RSZ_DBG") == "1") host.dumpResizeSizesForOptimizer();
+            return 1;
+        }
+
+        // 训练版管线：公共 pass → buildReverseGraph（追加反向/更新节点）→ 重排/重规划 → 构建。
+        int optimizeTrain(IGraphOptimizeHost host, InferenceRuntime rt) {
+            host.setTrainingModeForOptimizer(1);   // P4-3：训练图不跑 FUSE_CONV_ADD（convResidual 无 backward）
+            if (runPipeline(host) == 0) return 0;
+            if (host.buildReverseGraphForOptimizer() == 0) { Console.writeLine("DBG fail buildReverseGraph"); return 0; }
+            if (host.runTopoSort() == 0) { Console.writeLine("DBG fail topoSort(reverse)"); return 0; }
+            int peak = host.runPlanMemory();
+            if (peak <= 0) { Console.writeLine("DBG fail planMemory"); return 0; }
+            rt.resizeArena(peak);
+            if (host.lowerRuntime(rt) == 0) { Console.writeLine("DBG fail buildRuntime"); return 0; }
+            return 1;
+        }
+}
