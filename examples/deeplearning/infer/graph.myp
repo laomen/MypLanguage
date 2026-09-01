@@ -159,6 +159,8 @@ class Graph {
         int passRequiredAnalyses(int pass) {
             if (pass == IRPassKind.IDENTITY_FOLD()) return IRAnalysis.DEF_USE();
             if (pass == IRPassKind.FUSE_CONV_RELU()) return IRAnalysis.DEF_USE();
+            if (pass == IRPassKind.FUSE_RELU()) return IRAnalysis.DEF_USE();
+            if (pass == IRPassKind.FUSE_GAP_FLATTEN()) return IRAnalysis.DEF_USE();
             return 0;
         }
         // 分析按需获取。ensureTopo 会先保证 DefUse；两者无 graph mutation，不改变 generation。
@@ -605,15 +607,18 @@ class Graph {
         }
         // P2b rewrite primitive：producer 的有效输出直接改为 Relu 输出，并 tombstone Relu。
         // 保留既有 nFused/nRelu lowering 协议，故后端仍选择 ConvRelu/Conv3d doRelu 内核。
-        void fuseReluIntoProducer(int producer, int relu) {
+        void fuseSingleUseOutput(int producer, int consumer, int withRelu) {
             string oldOut = effectiveOut(producer);
             nFused_[producer] = 1;
-            nFusedOut_[producer] = nOut0_[relu];
-            nFusedBy_[relu] = producer;
-            nRelu_[producer] = 1;
-            nType_[relu] = "";
+            nFusedOut_[producer] = nOut0_[consumer];
+            nFusedBy_[consumer] = producer;
+            if (withRelu == 1) nRelu_[producer] = 1;
+            nType_[consumer] = "";
             markDeadTensor(nOut0_[producer]);
             if (oldOut != nOut0_[producer]) markDeadTensor(oldOut);
+        }
+        void fuseReluIntoProducer(int producer, int relu) {
+            fuseSingleUseOutput(producer, relu, 1);
             fuseCount_ = fuseCount_ + 1;
         }
         // IR-P1b pass dispatcher：PassResult 写入 lastPass*；仅 changed 时失效相关分析。
@@ -1874,28 +1879,9 @@ class Graph {
                 if (nType_[i] != "InstanceNormalization") { i = i + 1; continue; }
                 string eff = effectiveOut(i);
                 if (isGraphOutput(eff) == 1) { i = i + 1; continue; }
-                int j = 0;
-                while (j < nCount_) {
-                    if (nType_[j] == "Relu" && nIn0_[j] == eff) break;
-                    j = j + 1;
-                }
-                if (j >= nCount_) { i = i + 1; continue; }
-                int consumers = 0;
-                int k = 0;
-                while (k < nCount_) {
-                    if (nType_[k] == "") { k = k + 1; continue; }
-                    if (nIn0_[k] == eff || nIn1_[k] == eff || nIn2_[k] == eff || nIn3_[k] == eff || nIn4_[k] == eff) consumers = consumers + 1;
-                    k = k + 1;
-                }
-                if (consumers != 1) { i = i + 1; continue; }
-                nFused_[i] = 1;
-                nFusedOut_[i] = nOut0_[j];
-                nFusedBy_[j] = i;
-                nRelu_[i] = 1;
-                nType_[j] = "";
-                markDeadTensor(nOut0_[i]);
-                if (eff != nOut0_[i]) markDeadTensor(eff);
-                fuseCount_ = fuseCount_ + 1;
+                int j = matchSingleUseOp(valueId(eff), "Relu", 0);
+                if (j < 0) { i = i + 1; continue; }
+                fuseReluIntoProducer(i, j);
                 i = i + 1;
             }
             return 1;
@@ -1915,27 +1901,9 @@ class Graph {
                 if (isGraphOutput(nOut0_[i]) == 1) { i = i + 1; continue; }
                 int s = shapeIdx(nOut0_[i]);
                 if (s >= 0 && shD0_[s] != 1) { i = i + 1; continue; }   // batch!=1 跳过
-                // 找以 gap 输出为输入的 Flatten 节点
-                int j = 0;
-                while (j < nCount_) {
-                    if (nType_[j] == "Flatten" && nIn0_[j] == nOut0_[i]) break;
-                    j = j + 1;
-                }
-                if (j >= nCount_) { i = i + 1; continue; }
-                // 安全条件：gap 输出只能被该 flatten 消费
-                int consumers = 0;
-                int k = 0;
-                while (k < nCount_) {
-                    if (nType_[k] == "") { k = k + 1; continue; }
-                    if (nIn0_[k] == nOut0_[i] || nIn1_[k] == nOut0_[i] || nIn2_[k] == nOut0_[i]) consumers = consumers + 1;
-                    k = k + 1;
-                }
-                if (consumers != 1) { i = i + 1; continue; }
-                nFused_[i] = 1;
-                nFusedOut_[i] = nOut0_[j];
-                nFusedBy_[j] = i;
-                nType_[j] = "";
-                markDeadTensor(nOut0_[i]);   // GAP 中间张量 [N,C,1,1] 不再分配
+                int j = matchSingleUseOp(valueId(nOut0_[i]), "Flatten", 0);
+                if (j < 0) { i = i + 1; continue; }
+                fuseSingleUseOutput(i, j, 0);
                 gapCount_ = gapCount_ + 1;
                 i = i + 1;
             }

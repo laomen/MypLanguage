@@ -19,6 +19,8 @@
 ### 验证
 - `MYP_IR_VERIFY=1`：带跳跃连接 3D U-Net GPU 训练 **acc 100%**。
 - ResNet GPU 推理正常（真实 Conv→Relu 与残差多消费者路径）。
+- 后续同一 matcher 已迁移 InstanceNorm→Relu 与 GAP→Flatten：`ops2d` GPU vs ORT
+  max diff **4.76837e-07**（`OPS2D ALL OK`）；ResNet GPU 推理仍正常。
 
 ---
 

@@ -318,6 +318,9 @@ P1b 将 existing pass 的返回 `ok` 扩展为不改变 MYP 方法签名的 Grap
 - `fuseReluIntoProducer(producer,relu)` 统一执行 rewrite：producer 的 effective output 改为
   Relu output，记录 `nFused/nFusedOut/nFusedBy/nRelu`，tombstone Relu，并标记旧中间 Value dead。
   它故意沿用已有 lowering 协议，因此 CPU/GPU backend 仍选择原有 ConvRelu/Conv3D doRelu 内核。
+- `InstanceNormalization→Relu` 已复用同一 matcher 与 `fuseReluIntoProducer`；
+  `GAP→Flatten` 使用同一个输出重定向 primitive（不设置 ReLU lowering 标志）。三条融合
+  不再包含私有的“找 consumer + 全图计数”循环。
 
 **后续 P2b 范围**：InstanceNorm→Relu 与 GAP→Flatten 可以复用该 matcher/rewrite primitive；
 Conv→BN 需要权重重写，必须在 Attribute/schema 基建完成后单独迁移。图输出 rewrite、
