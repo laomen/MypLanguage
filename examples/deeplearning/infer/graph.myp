@@ -17,10 +17,11 @@ import "./graph_weights.myp";
 import "./graph_nodes.myp";
 import "./graph_node_attrs.myp";
 import "./graph_analysis.myp";
+import "./graph_planner.myp";
 
 class Graph {
     action:
-        @constructor Graph() { pb_ = new PbReader(); shapes_ = new GraphShapes(); weights_ = new GraphWeights(); nodes_ = new GraphNodes(); attrs_ = new GraphNodeAttrs(); analysis_ = new GraphAnalysis(); }
+        @constructor Graph() { pb_ = new PbReader(); shapes_ = new GraphShapes(); weights_ = new GraphWeights(); nodes_ = new GraphNodes(); attrs_ = new GraphNodeAttrs(); analysis_ = new GraphAnalysis(); planner_ = new GraphPlanner(); }
 
         int tensorId(string name) {
             int i = 0;
@@ -406,7 +407,7 @@ class Graph {
         void addShapeD5(string name, int d0, int d1, int d2, int d3, int d4) { shapes_.addShapeD5(name, d0, d1, d2, d3, d4); }
         // 3D：按源张量秩复制输出形状（5D → addShapeD5，否则 addShapeD4）
         void copyShape(string name, int src) { shapes_.copyShape(name, src); }
-        void resetCounts() { weights_.reset(); nodes_.reset(); shapes_.reset(); tCount_=0; goCount_=0; giCount_=0; fuseCount_=0; gapCount_=0; dceCount_=0; foldCount_=0; bnCount_=0; fusedAddCount_=0; noReuse_=0; doNHWC_=0; trainingMode_=0; analysis_.reset(); analysis_.setLastPassPreserved(IRAnalysis.ALL()); }
+        void resetCounts() { weights_.reset(); nodes_.reset(); shapes_.reset(); tCount_=0; goCount_=0; giCount_=0; fuseCount_=0; gapCount_=0; dceCount_=0; foldCount_=0; bnCount_=0; fusedAddCount_=0; noReuse_=0; doNHWC_=0; trainingMode_=0; analysis_.reset(); planner_.reset(); analysis_.setLastPassPreserved(IRAnalysis.ALL()); }
         // P3：覆盖张量形状（输入形状注入：动态维度模型）
         void setShape(string name, int d0, int d1, int d2, int d3, int d4, int is5) { shapes_.setShape(name, d0, d1, d2, d3, d4, is5); }
 
@@ -2367,25 +2368,25 @@ class Graph {
         }
         int planMemory() {
             int si = 0;
-            while (si < shapes_.count()) { planProducer_[si] = -1; planLastUse_[si] = -1; planOff_[si] = 0; si = si + 1; }
+            while (si < shapes_.count()) { planner_.setPlanProducer(si, -1); planner_.setPlanLastUse(si, -1); planner_.setPlanOff(si, 0); si = si + 1; }
             // producer = 产出该张量的节点在拓扑序中的位置（融合节点以 effectiveOut 计）
             int oi = 0;
             while (oi < analysis_.planOrderCount()) {
                 int ni = analysis_.planOrder(oi);
                 int s = shapeIdx(effectiveOut(ni));
-                if (s >= 0) planProducer_[s] = oi;
+                if (s >= 0) planner_.setPlanProducer(s, oi);
                 oi = oi + 1;
             }
             // lastUse = 消费该张量的最大拓扑位置（活节点）
             oi = 0;
             while (oi < analysis_.planOrderCount()) {
                 int ni = analysis_.planOrder(oi);
-                int a = shapeIdx(nodes_.inputAt(ni, 0)); if (a >= 0 && oi > planLastUse_[a]) planLastUse_[a] = oi;
-                int b = shapeIdx(nodes_.inputAt(ni, 1)); if (b >= 0 && oi > planLastUse_[b]) planLastUse_[b] = oi;
-                int c = shapeIdx(nodes_.inputAt(ni, 2)); if (c >= 0 && oi > planLastUse_[c]) planLastUse_[c] = oi;
+                int a = shapeIdx(nodes_.inputAt(ni, 0)); if (a >= 0 && oi > planner_.planLastUse(a)) planner_.setPlanLastUse(a, oi);
+                int b = shapeIdx(nodes_.inputAt(ni, 1)); if (b >= 0 && oi > planner_.planLastUse(b)) planner_.setPlanLastUse(b, oi);
+                int c = shapeIdx(nodes_.inputAt(ni, 2)); if (c >= 0 && oi > planner_.planLastUse(c)) planner_.setPlanLastUse(c, oi);
                 // P4-2：残差融合把 Add 的 slot1 登记进 Conv 的 nIn3_——liveness 须覆盖 nIn3_/nIn4_
-                int d = shapeIdx(nodes_.inputAt(ni, 3)); if (d >= 0 && oi > planLastUse_[d]) planLastUse_[d] = oi;
-                int e = shapeIdx(nodes_.inputAt(ni, 4)); if (e >= 0 && oi > planLastUse_[e]) planLastUse_[e] = oi;
+                int d = shapeIdx(nodes_.inputAt(ni, 3)); if (d >= 0 && oi > planner_.planLastUse(d)) planner_.setPlanLastUse(d, oi);
+                int e = shapeIdx(nodes_.inputAt(ni, 4)); if (e >= 0 && oi > planner_.planLastUse(e)) planner_.setPlanLastUse(e, oi);
                 oi = oi + 1;
             }
             // first-fit 分配（按形状表顺序 = 拓扑序）
@@ -2394,11 +2395,11 @@ class Graph {
             int highWater = 0;
             si = 0;
             while (si < shapes_.count()) {
-                if (shapes_.deadAt(si) == 1) { planOff_[si] = 0; si = si + 1; continue; }   // G2：死张量不分配
+                if (shapes_.deadAt(si) == 1) { planner_.setPlanOff(si, 0); si = si + 1; continue; }   // G2：死张量不分配
                 int size = shapes_.d0(si) * shapes_.d1(si) * shapes_.d2(si) * shapes_.d3(si);
                 if (shapes_.r5(si) == 1) size = size * shapes_.d4(si);   // 3D：5D 张量乘 D 维
-                int producer = planProducer_[si];
-                int lastUse = planLastUse_[si];
+                int producer = planner_.planProducer(si);
+                int lastUse = planner_.planLastUse(si);
                 int persist = 0;
                 if (producer < 0) persist = 1;            // 权重 / 图输入
                 if (lastUse < 0) { persist = 1; lastUse = nodes_.count() - 1; }  // 图输出
@@ -2408,25 +2409,25 @@ class Graph {
                 if (persist == 0) {
                     int r = 0;
                     while (r < rc) {
-                        if (planRPersist_[r] == 0 && planRLu_[r] < producer && planRSize_[r] >= size) { best = r; r = rc; }
+                        if (planner_.planRPersist(r) == 0 && planner_.planRLu(r) < producer && planner_.planRSize(r) >= size) { best = r; r = rc; }
                         r = r + 1;
                     }
                 }
                 int off = 0;
                 if (best >= 0) {
-                    off = planROff_[best];
-                    planRSize_[best] = size;
-                    planRLu_[best] = lastUse;
+                    off = planner_.planROff(best);
+                    planner_.setPlanRSize(best, size);
+                    planner_.setPlanRLu(best, lastUse);
                 } else {
                     off = highWater;
                     highWater = highWater + size;
-                    planROff_[rc] = off;
-                    planRSize_[rc] = size;
-                    planRLu_[rc] = lastUse;
-                    planRPersist_[rc] = persist;
+                    planner_.setPlanROff(rc, off);
+                    planner_.setPlanRSize(rc, size);
+                    planner_.setPlanRLu(rc, lastUse);
+                    planner_.setPlanRPersist(rc, persist);
                     rc = rc + 1;
                 }
-                planOff_[si] = off;
+                planner_.setPlanOff(si, off);
                 si = si + 1;
             }
             analysis_.setAnalysisValid(analysis_.analysisValid() | IRAnalysis.LIVENESS());
@@ -2441,7 +2442,7 @@ class Graph {
                 string nm = shapes_.nameAt(si);
                 int kind = shapes_.kindAt(si);
                 int d0 = shapes_.d0(si); int d1 = shapes_.d1(si); int d2 = shapes_.d2(si); int d3 = shapes_.d3(si);
-                int off = planOff_[si];
+                int off = planner_.planOff(si);
                 int tid = -1;
                 if (kind == Kind.FC_ACT()) {
                     tid = rt.addTensorPlanned2(d1, d0, off);            // ONNX [M,N] → 运行时 [N,M]
@@ -3162,6 +3163,7 @@ class Graph {
         double[8192] cF32_;   // P3：计算 float 常量 [wIdx*32+k]
         GraphNodeAttrs attrs_;
         GraphAnalysis analysis_;
+        GraphPlanner planner_;
 
         int[512] nRedMode_;     // F8：ReduceMean mode（0=全规约,1=空间规约）
         int[512] nPadCval_;     // F8：Pad constant_value（float 位型）
@@ -3183,14 +3185,6 @@ class Graph {
         int giCount_;
 
         GraphShapes shapes_;
-
-        int[512] planOff_;
-        int[512] planProducer_;
-        int[512] planLastUse_;
-        int[512] planROff_;
-        int[512] planRSize_;
-        int[512] planRLu_;
-        int[512] planRPersist_;
 
         string[512] tName_;
         int[512] tId_;

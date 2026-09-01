@@ -1,0 +1,44 @@
+// graph_planner.myp — Memory-plan state storage for Graph IR.
+// Graph owns the planning algorithm; this class only owns its mutable state.
+class GraphPlanner {
+    action:
+        @constructor GraphPlanner() { reset(); }
+
+        void reset() {
+            int i = 0;
+            while (i < 512) {
+                planOff_[i] = 0;
+                planProducer_[i] = -1;
+                planLastUse_[i] = -1;
+                planROff_[i] = 0;
+                planRSize_[i] = 0;
+                planRLu_[i] = -1;
+                planRPersist_[i] = 0;
+                i = i + 1;
+            }
+        }
+
+        int planOff(int index) { return index < 0 || index >= 512 ? 0 : planOff_[index]; }
+        void setPlanOff(int index, int value) { if (index >= 0 && index < 512) planOff_[index] = value; }
+        int planProducer(int index) { return index < 0 || index >= 512 ? -1 : planProducer_[index]; }
+        void setPlanProducer(int index, int value) { if (index >= 0 && index < 512) planProducer_[index] = value; }
+        int planLastUse(int index) { return index < 0 || index >= 512 ? -1 : planLastUse_[index]; }
+        void setPlanLastUse(int index, int value) { if (index >= 0 && index < 512) planLastUse_[index] = value; }
+        int planROff(int index) { return index < 0 || index >= 512 ? 0 : planROff_[index]; }
+        void setPlanROff(int index, int value) { if (index >= 0 && index < 512) planROff_[index] = value; }
+        int planRSize(int index) { return index < 0 || index >= 512 ? 0 : planRSize_[index]; }
+        void setPlanRSize(int index, int value) { if (index >= 0 && index < 512) planRSize_[index] = value; }
+        int planRLu(int index) { return index < 0 || index >= 512 ? -1 : planRLu_[index]; }
+        void setPlanRLu(int index, int value) { if (index >= 0 && index < 512) planRLu_[index] = value; }
+        int planRPersist(int index) { return index < 0 || index >= 512 ? 0 : planRPersist_[index]; }
+        void setPlanRPersist(int index, int value) { if (index >= 0 && index < 512) planRPersist_[index] = value; }
+
+    property:
+        int[512] planOff_;
+        int[512] planProducer_;
+        int[512] planLastUse_;
+        int[512] planROff_;
+        int[512] planRSize_;
+        int[512] planRLu_;
+        int[512] planRPersist_;
+}
