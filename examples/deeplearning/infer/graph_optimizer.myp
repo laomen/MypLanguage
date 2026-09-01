@@ -48,6 +48,23 @@ class GraphOptimizer {
             return 1;
         }
 
+        // GAP+Flatten 融合：GlobalAveragePool → Flatten 折叠为一个 GAP 直写 flatten 输出。
+        int fuseGapFlatten(Graph graph) {
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                if (graph.nodeOp(i) != OpCode.GLOBAL_AVG_POOL()) { i = i + 1; continue; }
+                if (graph.compilerIsGraphOutput(graph.compilerNodeOutput(i, 0)) == 1) { i = i + 1; continue; }
+                int s = graph.compilerShapeIdx(graph.compilerNodeOutput(i, 0));
+                if (s >= 0 && graph.compilerShapeDim(s, 0) != 1) { i = i + 1; continue; }   // batch!=1 跳过
+                int j = graph.matchSingleUseOp(graph.valueId(graph.compilerNodeOutput(i, 0)), "Flatten", 0);
+                if (j < 0) { i = i + 1; continue; }
+                graph.fuseSingleUseOutput(i, j, 0);
+                graph.compilerIncGap();
+                i = i + 1;
+            }
+            return 1;
+        }
+
         int runPipeline(IGraphOptimizeHost host) {
             if (Console.getEnv("MYP_NO_REUSE") == "1") host.enableNoReuseForOptimizer();
             host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链

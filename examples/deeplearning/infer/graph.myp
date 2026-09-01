@@ -586,7 +586,7 @@ class Graph {
             else if (pass == IRPassKind.FUSE_BN()) ok = fuseConvBN();
             else if (pass == IRPassKind.FUSE_CONV_RELU()) ok = fuseConvRelu();
             else if (pass == IRPassKind.FUSE_RELU()) ok = fuseReluOp();
-            else if (pass == IRPassKind.FUSE_GAP_FLATTEN()) ok = fuseGapFlatten();
+            else if (pass == IRPassKind.FUSE_GAP_FLATTEN()) ok = optimizer_.fuseGapFlatten(this);
             else if (pass == IRPassKind.DCE()) ok = optimizer_.eliminateDeadNodes(this);
             else if (pass == IRPassKind.LAYOUT_NHWC()) ok = layoutNHWC();
             else if (pass == IRPassKind.IDENTITY_FOLD()) { foldIdentityOps(); ok = 1; }
@@ -1794,26 +1794,6 @@ class Graph {
             }
             return 0;
         }
-        int fuseGapFlatten() {
-            int i = 0;
-            while (i < nodes_.count()) {
-                if (nodeOp(i) != OpCode.GLOBAL_AVG_POOL()) { i = i + 1; continue; }
-                if (isGraphOutput(nodes_.outputAt(i, 0)) == 1) { i = i + 1; continue; }
-                int s = shapeIdx(nodes_.outputAt(i, 0));
-                if (s >= 0 && shapes_.d0(s) != 1) { i = i + 1; continue; }   // batch!=1 跳过
-                int j = matchSingleUseOp(valueId(nodes_.outputAt(i, 0)), "Flatten", 0);
-                if (j < 0) { i = i + 1; continue; }
-                fuseSingleUseOutput(i, j, 0);
-                gapCount_ = gapCount_ + 1;
-                i = i + 1;
-            }
-            return 1;
-        }
-        // P4-2/3：Conv+残差Add 融合。Conv（或 BN 折叠后）输出的唯一 Use = Add 的 slot0
-        // （残差为 slot1）→ 卷积内核直接加残差写入 Add 输出，省掉 conv 中间张量 arena 往返。
-        // Add 输出若唯一消费是 Relu → 一并折叠（conv+residual+relu 单内核，doRelu 后置）。
-        // 约束：不融合已带 Relu 的卷积（pre-activation 语义与此内核 doRelu 后置不同）；
-        // 残差必须是活张量。残差名登记到 nIn3_——planMemory liveness/指纹/接线共用。
         int fuseConvAdd() {
             int i = 0;
             while (i < nodes_.count()) {
@@ -2640,6 +2620,8 @@ class Graph {
         int compilerDceCount() { return dceCount_; }
         void compilerIncDce() { dceCount_ = dceCount_ + 1; }
         void ensureDefUseForOptimizer() { ensureDefUse(); }
+        int compilerGapCount() { return gapCount_; }
+        void compilerIncGap() { gapCount_ = gapCount_ + 1; }
 
     property:
         int[] file_;
