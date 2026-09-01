@@ -1,0 +1,42 @@
+// graph_node_attrs.myp — Scalar NodeField storage owned separately from Graph.
+import "./graph_defs.myp";
+
+class GraphNodeAttrs {
+    action:
+        @constructor GraphNodeAttrs() { values_ = new int[33280]; }
+
+        void resetNode(int node) {
+            int key = 0;
+            while (key <= NodeField.PDB()) {
+                values_[node * 65 + key] = 0;
+                key = key + 1;
+            }
+            values_[node * 65 + NodeField.AXIS()] = -1;
+            values_[node * 65 + NodeField.SH()] = 1;
+            values_[node * 65 + NodeField.SW()] = 1;
+            values_[node * 65 + NodeField.DH()] = 1;
+            values_[node * 65 + NodeField.DW()] = 1;
+            values_[node * 65 + NodeField.GROUP()] = 1;
+            values_[node * 65 + NodeField.CAST_TO()] = 0;
+        }
+
+        int get(int node, int key) {
+            if (node < 0 || node >= 512 || managed(key) == 0) return 0;
+            return values_[node * 65 + key];
+        }
+
+        void set(int node, int key, int value) {
+            if (node < 0 || node >= 512 || managed(key) == 0) return;
+            values_[node * 65 + key] = value;
+        }
+
+    function:
+        int managed(int key) {
+            if (key >= NodeField.TRANSB() && key <= NodeField.PDB()) return 1;
+            if (key == NodeField.CAST_TO()) return 1;
+            return 0;
+        }
+
+    property:
+        int[] values_;
+}

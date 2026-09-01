@@ -15,10 +15,11 @@ import "./graph_defs.myp";
 import "./graph_shapes.myp";
 import "./graph_weights.myp";
 import "./graph_nodes.myp";
+import "./graph_node_attrs.myp";
 
 class Graph {
     action:
-        @constructor Graph() { pb_ = new PbReader(); shapes_ = new GraphShapes(); weights_ = new GraphWeights(); nodes_ = new GraphNodes(); }
+        @constructor Graph() { pb_ = new PbReader(); shapes_ = new GraphShapes(); weights_ = new GraphWeights(); nodes_ = new GraphNodes(); attrs_ = new GraphNodeAttrs(); }
 
         int tensorId(string name) {
             int i = 0;
@@ -96,20 +97,11 @@ class Graph {
         void setFile(int[] f, int len) { file_ = f; fileLen_ = len; pb_.init(file_, fileLen_); }
         int beginNode() {
             int i = nodes_.begin();
-            nConstVal_[i] = 0; nEpsInt_[i] = 0; nHasEps_[i] = 0; nAlphaInt_[i] = 0; nHasAlpha_[i] = 0;
+            attrs_.resetNode(i);
             nFused_[i] = 0; nFusedBy_[i] = -1; nFusedOut_[i] = ""; nRelu_[i] = 0; nNHWC_[i] = 0;
-            nTransB_[i] = 0; nAxis_[i] = -1;
-            nSH_[i] = 1; nSW_[i] = 1; nPT_[i] = 0; nPB_[i] = 0; nPL_[i] = 0; nPR_[i] = 0;
-            nDH_[i] = 1; nDW_[i] = 1; nGroup_[i] = 1; nKH_[i] = 0; nKW_[i] = 0;
-            nP0_[i] = 0; nP1_[i] = 0; nP2_[i] = 0; nP3_[i] = 0; nPc_[i] = 0;   // F8: Transpose perm
-            nMode_[i] = 0; nTransform_[i] = 0; nUpSH_[i] = 0; nUpSW_[i] = 0;   // F8: Resize/Upsample
-            nKeep_[i] = 0; nRedMode_[i] = 0;                                   // F8: ReduceMean
-            nAx0_[i] = 0; nAx1_[i] = 0; nAx2_[i] = 0; nAx3_[i] = 0; nAxN_[i] = 0;
-            nCip_[i] = 0;                                                      // F8: AveragePool count_include_pad
-            nPadMode_[i] = 0; nPadCval_[i] = 0;                                // F8: Pad mode / constant_value
-            nOutPadH_[i] = 0; nOutPadW_[i] = 0;                                // F8: ConvTranspose output_padding
+            nRedMode_[i] = 0;                                   // F8: ReduceMean
+            nPadCval_[i] = 0;                                   // F8: Pad constant_value
             nOutN_[i] = 0;   // F8: Split 多输出
-            nSplitN_[i] = 0; nSp0_[i] = 0; nSp1_[i] = 0; nSp2_[i] = 0; nSp3_[i] = 0;
             return i;
         }
         void endNode() { nodes_.end(); }
@@ -146,65 +138,15 @@ class Graph {
         // 直读（EPS/ALPHA/Resize scales）；attrIntArr 取代 [node*N+k] 手算偏移。
         double attrFloat(int node, int key) {
             if (node < 0 || node >= nodes_.count()) return 0.0;
-            if (key == NodeField.EPS_INT()) return F32.toDouble(nEpsInt_[node]);
-            if (key == NodeField.ALPHA_INT()) return F32.toDouble(nAlphaInt_[node]);
-            if (key == NodeField.UPSH()) return F32.toDouble(nUpSH_[node]);
-            if (key == NodeField.UPSW()) return F32.toDouble(nUpSW_[node]);
+            if (key == NodeField.EPS_INT()) return F32.toDouble(attrs_.get(node, key));
+            if (key == NodeField.ALPHA_INT()) return F32.toDouble(attrs_.get(node, key));
+            if (key == NodeField.UPSH()) return F32.toDouble(attrs_.get(node, key));
+            if (key == NodeField.UPSW()) return F32.toDouble(attrs_.get(node, key));
             return 0.0;
         }
         int attrInt(int node, int key) {
             if (node < 0 || node >= nodes_.count()) return 0;
-            if (key == NodeField.TRANSB()) return nTransB_[node];
-            if (key == NodeField.AXIS()) return nAxis_[node];
-            if (key == NodeField.GROUP()) return nGroup_[node];
-            if (key == NodeField.SH()) return nSH_[node];
-            if (key == NodeField.SW()) return nSW_[node];
-            if (key == NodeField.PT()) return nPT_[node];
-            if (key == NodeField.PL()) return nPL_[node];
-            if (key == NodeField.PB()) return nPB_[node];
-            if (key == NodeField.PR()) return nPR_[node];
-            if (key == NodeField.DH()) return nDH_[node];
-            if (key == NodeField.DW()) return nDW_[node];
-            if (key == NodeField.KH()) return nKH_[node];
-            if (key == NodeField.KW()) return nKW_[node];
-            if (key == NodeField.EPS_INT()) return nEpsInt_[node];
-            if (key == NodeField.HAS_EPS()) return nHasEps_[node];
-            if (key == NodeField.ALPHA_INT()) return nAlphaInt_[node];
-            if (key == NodeField.HAS_ALPHA()) return nHasAlpha_[node];
-            if (key == NodeField.CONST_VAL()) return nConstVal_[node];
-            if (key == NodeField.CONST_OFF()) return nConstOff_[node];
-            if (key == NodeField.CONST_LEN()) return nConstLen_[node];
-            if (key == NodeField.PERM0()) return nP0_[node];
-            if (key == NodeField.PERM1()) return nP1_[node];
-            if (key == NodeField.PERM2()) return nP2_[node];
-            if (key == NodeField.PERM3()) return nP3_[node];
-            if (key == NodeField.PERM_N()) return nPc_[node];
-            if (key == NodeField.MODE()) return nMode_[node];
-            if (key == NodeField.TRANSFORM()) return nTransform_[node];
-            if (key == NodeField.UPSH()) return nUpSH_[node];
-            if (key == NodeField.UPSW()) return nUpSW_[node];
-            if (key == NodeField.KEEP()) return nKeep_[node];
-            if (key == NodeField.AXES0()) return nAx0_[node];
-            if (key == NodeField.AXES1()) return nAx1_[node];
-            if (key == NodeField.AXES2()) return nAx2_[node];
-            if (key == NodeField.AXES3()) return nAx3_[node];
-            if (key == NodeField.AXES_N()) return nAxN_[node];
-            if (key == NodeField.CIP()) return nCip_[node];
-            if (key == NodeField.PADMODE()) return nPadMode_[node];
-            if (key == NodeField.OPH()) return nOutPadH_[node];
-            if (key == NodeField.OPW()) return nOutPadW_[node];
-            if (key == NodeField.SPLIT0()) return nSp0_[node];
-            if (key == NodeField.SPLIT1()) return nSp1_[node];
-            if (key == NodeField.SPLIT2()) return nSp2_[node];
-            if (key == NodeField.SPLIT3()) return nSp3_[node];
-            if (key == NodeField.SPLIT_N()) return nSplitN_[node];
-            if (key == NodeField.SD3()) return nSD3_[node];
-            if (key == NodeField.DD3()) return nDD3_[node];
-            if (key == NodeField.KD3()) return nKD3_[node];
-            if (key == NodeField.PDT()) return nPDT_[node];
-            if (key == NodeField.PDB()) return nPDB_[node];
-            if (key == NodeField.CAST_TO()) return nCastTo_[node];
-            return 0;
+            return attrs_.get(node, key);
         }
         void setAttrInt(int node, int key, int value) { nodeInt(node, key, value); }
         // IR-P3d：统一数组属性访问（取代 buildRuntime 的 [node*N+k] 手算偏移）。
@@ -433,55 +375,7 @@ class Graph {
             nOutN_[i] = nOutN_[i] + 1;   // F8：Split 多输出计数
         }
         void nodeInt(int i, int code, int v) {
-            if (code == NodeField.TRANSB()) nTransB_[i] = v;
-            else if (code == NodeField.AXIS()) nAxis_[i] = v;
-            else if (code == NodeField.GROUP()) nGroup_[i] = v;
-            else if (code == NodeField.SH()) nSH_[i] = v;
-            else if (code == NodeField.SW()) nSW_[i] = v;
-            else if (code == NodeField.PT()) nPT_[i] = v;
-            else if (code == NodeField.PL()) nPL_[i] = v;
-            else if (code == NodeField.PB()) nPB_[i] = v;
-            else if (code == NodeField.PR()) nPR_[i] = v;
-            else if (code == NodeField.DH()) nDH_[i] = v;
-            else if (code == NodeField.DW()) nDW_[i] = v;
-            else if (code == NodeField.KH()) nKH_[i] = v;
-            else if (code == NodeField.KW()) nKW_[i] = v;
-            else if (code == NodeField.EPS_INT()) nEpsInt_[i] = v;
-            else if (code == NodeField.HAS_EPS()) nHasEps_[i] = v;
-            else if (code == NodeField.ALPHA_INT()) nAlphaInt_[i] = v;
-            else if (code == NodeField.HAS_ALPHA()) nHasAlpha_[i] = v;
-            else if (code == NodeField.CONST_VAL()) nConstVal_[i] = v;
-            else if (code == NodeField.CONST_OFF()) nConstOff_[i] = v;
-            else if (code == NodeField.CONST_LEN()) nConstLen_[i] = v;
-            else if (code == NodeField.PERM0()) nP0_[i] = v;
-            else if (code == NodeField.PERM1()) nP1_[i] = v;
-            else if (code == NodeField.PERM2()) nP2_[i] = v;
-            else if (code == NodeField.PERM3()) nP3_[i] = v;
-            else if (code == NodeField.PERM_N()) nPc_[i] = v;
-            else if (code == NodeField.MODE()) nMode_[i] = v;
-            else if (code == NodeField.TRANSFORM()) nTransform_[i] = v;
-            else if (code == NodeField.UPSH()) nUpSH_[i] = v;
-            else if (code == NodeField.UPSW()) nUpSW_[i] = v;
-            else if (code == NodeField.KEEP()) nKeep_[i] = v;
-            else if (code == NodeField.AXES0()) nAx0_[i] = v;
-            else if (code == NodeField.AXES1()) nAx1_[i] = v;
-            else if (code == NodeField.AXES2()) nAx2_[i] = v;
-            else if (code == NodeField.AXES3()) nAx3_[i] = v;
-            else if (code == NodeField.AXES_N()) nAxN_[i] = v;
-            else if (code == NodeField.CIP()) nCip_[i] = v;
-            else if (code == NodeField.PADMODE()) nPadMode_[i] = v;
-            else if (code == NodeField.OPH()) nOutPadH_[i] = v;
-            else if (code == NodeField.OPW()) nOutPadW_[i] = v;
-            else if (code == NodeField.SPLIT0()) nSp0_[i] = v;
-            else if (code == NodeField.SPLIT1()) nSp1_[i] = v;
-            else if (code == NodeField.SPLIT2()) nSp2_[i] = v;
-            else if (code == NodeField.SPLIT3()) nSp3_[i] = v;
-            else if (code == NodeField.SPLIT_N()) nSplitN_[i] = v;
-            else if (code == NodeField.SD3()) nSD3_[i] = v;   // 3D
-            else if (code == NodeField.DD3()) nDD3_[i] = v;   // 3D
-            else if (code == NodeField.KD3()) nKD3_[i] = v;   // 3D
-            else if (code == NodeField.PDT()) nPDT_[i] = v;   // 3D
-            else if (code == NodeField.PDB()) nPDB_[i] = v;   // 3D
+            if ((code >= NodeField.TRANSB() && code <= NodeField.PDB()) || code == NodeField.CAST_TO()) attrs_.set(i, code, v);
             else if (code == NodeField.ST0()) nSt3_[i * 3 + 0] = v;
             else if (code == NodeField.ST1()) nSt3_[i * 3 + 1] = v;
             else if (code == NodeField.ST2()) nSt3_[i * 3 + 2] = v;
@@ -497,7 +391,6 @@ class Graph {
             else if (code == NodeField.KK0()) nKk3_[i * 3 + 0] = v;
             else if (code == NodeField.KK1()) nKk3_[i * 3 + 1] = v;
             else if (code == NodeField.KK2()) nKk3_[i * 3 + 2] = v;
-            else if (code == NodeField.CAST_TO()) nCastTo_[i] = v;   // P3
         }
         void addWeight(string nm, int rows, int cols, int dt, int kind, int off, int len) {
             weights_.add(nm, rows, cols, dt, kind, off, len);
@@ -934,9 +827,9 @@ class Graph {
                             nodeOut(bd, gradName(nodes_.inputAt(ni, 1)));
                             nodeOut(bd, gradName(nodes_.inputAt(ni, 2)));   // 无偏置 → "" → runtime db=-1
                             endNode();
-                            nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
-                            nPT_[bd] = nPT_[ni]; nPL_[bd] = nPL_[ni];
-                            nDH_[bd] = nDH_[ni]; nDW_[bd] = nDW_[ni]; nGroup_[bd] = nGroup_[ni];
+                            attrs_.set(bd, NodeField.SH(), attrs_.get(ni, NodeField.SH())); attrs_.set(bd, NodeField.SW(), attrs_.get(ni, NodeField.SW()));
+                            attrs_.set(bd, NodeField.PT(), attrs_.get(ni, NodeField.PT())); attrs_.set(bd, NodeField.PL(), attrs_.get(ni, NodeField.PL()));
+                            attrs_.set(bd, NodeField.DH(), attrs_.get(ni, NodeField.DH())); attrs_.set(bd, NodeField.DW(), attrs_.get(ni, NodeField.DW())); attrs_.set(bd, NodeField.GROUP(), attrs_.get(ni, NodeField.GROUP()));
                         } else if (t == "MaxPool") {
                             // BwdMaxPool(dy, x) → (dx)；复制池化参数
                             int bd = nodes_.count();
@@ -946,9 +839,9 @@ class Graph {
                             nodeIn(bd, 1, nodes_.inputAt(ni, 0));
                             nodeOut(bd, gradName(nodes_.inputAt(ni, 0)));
                             endNode();
-                            nKH_[bd] = nKH_[ni]; nKW_[bd] = nKW_[ni];
-                            nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
-                            nPT_[bd] = nPT_[ni]; nPL_[bd] = nPL_[ni];
+                            attrs_.set(bd, NodeField.KH(), attrs_.get(ni, NodeField.KH())); attrs_.set(bd, NodeField.KW(), attrs_.get(ni, NodeField.KW()));
+                            attrs_.set(bd, NodeField.SH(), attrs_.get(ni, NodeField.SH())); attrs_.set(bd, NodeField.SW(), attrs_.get(ni, NodeField.SW()));
+                            attrs_.set(bd, NodeField.PT(), attrs_.get(ni, NodeField.PT())); attrs_.set(bd, NodeField.PL(), attrs_.get(ni, NodeField.PL()));
                         } else if (t == "ConvTranspose") {
                             // 阶段4d：BwdConvTranspose(dy, x, w) → (dx, dw, db)；复制转置卷积参数
                             int bd = nodes_.count();
@@ -961,9 +854,9 @@ class Graph {
                             nodeOut(bd, gradName(nodes_.inputAt(ni, 1)));
                             nodeOut(bd, gradName(nodes_.inputAt(ni, 2)));   // 无偏置 → "" → runtime db=-1
                             endNode();
-                            nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
-                            nPT_[bd] = nPT_[ni]; nPB_[bd] = nPB_[ni];
-                            nPL_[bd] = nPL_[ni]; nPR_[bd] = nPR_[ni];
+                            attrs_.set(bd, NodeField.SH(), attrs_.get(ni, NodeField.SH())); attrs_.set(bd, NodeField.SW(), attrs_.get(ni, NodeField.SW()));
+                            attrs_.set(bd, NodeField.PT(), attrs_.get(ni, NodeField.PT())); attrs_.set(bd, NodeField.PB(), attrs_.get(ni, NodeField.PB()));
+                            attrs_.set(bd, NodeField.PL(), attrs_.get(ni, NodeField.PL())); attrs_.set(bd, NodeField.PR(), attrs_.get(ni, NodeField.PR()));
                         } else if (t == "Conv3D") {
                             // 阶段4：BwdConv3D(dy, x, w) → (dx, dw, db)；复制 3D 卷积参数
                             // （kd/kh/kw 与 group 由 w 张量形状给出；dd/dh/dw 假定 1）
@@ -977,10 +870,10 @@ class Graph {
                             nodeOut(bd, gradName(nodes_.inputAt(ni, 1)));
                             nodeOut(bd, gradName(nodes_.inputAt(ni, 2)));   // 无偏置 → "" → runtime db=-1
                             endNode();
-                            nSD3_[bd] = nSD3_[ni]; nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
-                            nPDT_[bd] = nPDT_[ni]; nPDB_[bd] = nPDB_[ni];
-                            nPT_[bd] = nPT_[ni]; nPB_[bd] = nPB_[ni];
-                            nPL_[bd] = nPL_[ni]; nPR_[bd] = nPR_[ni];
+                            attrs_.set(bd, NodeField.SD3(), attrs_.get(ni, NodeField.SD3())); attrs_.set(bd, NodeField.SH(), attrs_.get(ni, NodeField.SH())); attrs_.set(bd, NodeField.SW(), attrs_.get(ni, NodeField.SW()));
+                            attrs_.set(bd, NodeField.PDT(), attrs_.get(ni, NodeField.PDT())); attrs_.set(bd, NodeField.PDB(), attrs_.get(ni, NodeField.PDB()));
+                            attrs_.set(bd, NodeField.PT(), attrs_.get(ni, NodeField.PT())); attrs_.set(bd, NodeField.PB(), attrs_.get(ni, NodeField.PB()));
+                            attrs_.set(bd, NodeField.PL(), attrs_.get(ni, NodeField.PL())); attrs_.set(bd, NodeField.PR(), attrs_.get(ni, NodeField.PR()));
                         } else if (t == "MaxPool3D") {
                             // 阶段4：BwdMaxPool3D(dy, x) → (dx)；复制 3D 池化参数
                             int bd = nodes_.count();
@@ -990,11 +883,11 @@ class Graph {
                             nodeIn(bd, 1, nodes_.inputAt(ni, 0));
                             nodeOut(bd, gradName(nodes_.inputAt(ni, 0)));
                             endNode();
-                            nKD3_[bd] = nKD3_[ni]; nKH_[bd] = nKH_[ni]; nKW_[bd] = nKW_[ni];
-                            nSD3_[bd] = nSD3_[ni]; nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
-                            nPDT_[bd] = nPDT_[ni]; nPDB_[bd] = nPDB_[ni];
-                            nPT_[bd] = nPT_[ni]; nPB_[bd] = nPB_[ni];
-                            nPL_[bd] = nPL_[ni]; nPR_[bd] = nPR_[ni];
+                            attrs_.set(bd, NodeField.KD3(), attrs_.get(ni, NodeField.KD3())); attrs_.set(bd, NodeField.KH(), attrs_.get(ni, NodeField.KH())); attrs_.set(bd, NodeField.KW(), attrs_.get(ni, NodeField.KW()));
+                            attrs_.set(bd, NodeField.SD3(), attrs_.get(ni, NodeField.SD3())); attrs_.set(bd, NodeField.SH(), attrs_.get(ni, NodeField.SH())); attrs_.set(bd, NodeField.SW(), attrs_.get(ni, NodeField.SW()));
+                            attrs_.set(bd, NodeField.PDT(), attrs_.get(ni, NodeField.PDT())); attrs_.set(bd, NodeField.PDB(), attrs_.get(ni, NodeField.PDB()));
+                            attrs_.set(bd, NodeField.PT(), attrs_.get(ni, NodeField.PT())); attrs_.set(bd, NodeField.PB(), attrs_.get(ni, NodeField.PB()));
+                            attrs_.set(bd, NodeField.PL(), attrs_.get(ni, NodeField.PL())); attrs_.set(bd, NodeField.PR(), attrs_.get(ni, NodeField.PR()));
                         } else if (t == "AveragePool3D") {
                             // 阶段4：BwdAvgPool3D(dy, x) → (dx)；复制 3D 池化参数 + cip
                             int bd = nodes_.count();
@@ -1004,12 +897,12 @@ class Graph {
                             nodeIn(bd, 1, nodes_.inputAt(ni, 0));
                             nodeOut(bd, gradName(nodes_.inputAt(ni, 0)));
                             endNode();
-                            nKD3_[bd] = nKD3_[ni]; nKH_[bd] = nKH_[ni]; nKW_[bd] = nKW_[ni];
-                            nSD3_[bd] = nSD3_[ni]; nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
-                            nPDT_[bd] = nPDT_[ni]; nPDB_[bd] = nPDB_[ni];
-                            nPT_[bd] = nPT_[ni]; nPB_[bd] = nPB_[ni];
-                            nPL_[bd] = nPL_[ni]; nPR_[bd] = nPR_[ni];
-                            nCip_[bd] = nCip_[ni];
+                            attrs_.set(bd, NodeField.KD3(), attrs_.get(ni, NodeField.KD3())); attrs_.set(bd, NodeField.KH(), attrs_.get(ni, NodeField.KH())); attrs_.set(bd, NodeField.KW(), attrs_.get(ni, NodeField.KW()));
+                            attrs_.set(bd, NodeField.SD3(), attrs_.get(ni, NodeField.SD3())); attrs_.set(bd, NodeField.SH(), attrs_.get(ni, NodeField.SH())); attrs_.set(bd, NodeField.SW(), attrs_.get(ni, NodeField.SW()));
+                            attrs_.set(bd, NodeField.PDT(), attrs_.get(ni, NodeField.PDT())); attrs_.set(bd, NodeField.PDB(), attrs_.get(ni, NodeField.PDB()));
+                            attrs_.set(bd, NodeField.PT(), attrs_.get(ni, NodeField.PT())); attrs_.set(bd, NodeField.PB(), attrs_.get(ni, NodeField.PB()));
+                            attrs_.set(bd, NodeField.PL(), attrs_.get(ni, NodeField.PL())); attrs_.set(bd, NodeField.PR(), attrs_.get(ni, NodeField.PR()));
+                            attrs_.set(bd, NodeField.CIP(), attrs_.get(ni, NodeField.CIP()));
                         } else if (t == "Resize" || t == "Upsample") {
                             // 阶段4d：Resize3D 反向 → BwdResize(dy, x) → dx；复制 mode/transform。
                             // 仅 3D（U-Net 上采样）；2D 反向未实现 → 跳过（梯度 0）。
@@ -1022,8 +915,8 @@ class Graph {
                                 nodeIn(bd, 1, nodes_.inputAt(ni, 0));
                                 nodeOut(bd, gradName(nodes_.inputAt(ni, 0)));
                                 endNode();
-                                nMode_[bd] = nMode_[ni];
-                                nTransform_[bd] = nTransform_[ni];
+                                attrs_.set(bd, NodeField.MODE(), attrs_.get(ni, NodeField.MODE()));
+                                attrs_.set(bd, NodeField.TRANSFORM(), attrs_.get(ni, NodeField.TRANSFORM()));
                             }
                         } else if (t == "Concat") {
                             // U-Net 跳跃连接反向：BwdConcat(dy, x0, x1, x2) → (dx0, dx1, dx2)。
@@ -1039,7 +932,7 @@ class Graph {
                             nodeOut(bd, gradName(nodes_.inputAt(ni, 1)));
                             nodeOut(bd, gradName(nodes_.inputAt(ni, 2)));
                             endNode();
-                            nAxis_[bd] = nAxis_[ni];
+                            attrs_.set(bd, NodeField.AXIS(), attrs_.get(ni, NodeField.AXIS()));
                         }
                         // Softmax 由 CE 处理；Conv3D/池化等暂不支持（梯度 0，跳过）
                     }
@@ -1164,7 +1057,7 @@ class Graph {
             while (i < nodes_.count()) {
                 string t = nodes_.typeAt(i);
                 if (t == "Gemm") {
-                    markFCWeight(nodes_.inputAt(i, 1), nTransB_[i]);   // transB=1：wire=[N,K]；transB=0：wire=[K,N]
+                    markFCWeight(nodes_.inputAt(i, 1), attrs_.get(i, NodeField.TRANSB()));   // transB=1：wire=[N,K]；transB=0：wire=[K,N]
                     markFCBias(nodes_.inputAt(i, 2));
                 } else if (t == "MatMul") {
                     markFCWeight(nodes_.inputAt(i, 1), 0);             // MatMul 无 transB，wire=[K,N]
@@ -1345,21 +1238,21 @@ class Graph {
             int sd = rawSt(i, 0); if (sd == 0) sd = 1;
             int sh = rawSt(i, 1); if (sh == 0) sh = 1;
             int sw = rawSt(i, 2); if (sw == 0) sw = 1;
-            nSD3_[i] = sd; nSH_[i] = sh; nSW_[i] = sw;
+            attrs_.set(i, NodeField.SD3(), sd); attrs_.set(i, NodeField.SH(), sh); attrs_.set(i, NodeField.SW(), sw);
             // pads：ONNX 3D 格式 [d_begin, h_begin, w_begin, d_end, h_end, w_end]
             // （此前按 [pdt,pdb,pt,pb,pl,pr] 顺序读取——PyTorch 风格。对称 padding
             // 时各维 top==bottom 看不出；非对称 pads（如 [1,0,0,1,0,0]）会错位，
             // 导致 Conv/AvgPool 输出形状与切片位置错误）
-            nPDT_[i] = rawPd(i, 0); nPDB_[i] = rawPd(i, 3);
-            nPT_[i] = rawPd(i, 1); nPB_[i] = rawPd(i, 4);
-            nPL_[i] = rawPd(i, 2); nPR_[i] = rawPd(i, 5);
+            attrs_.set(i, NodeField.PDT(), rawPd(i, 0)); attrs_.set(i, NodeField.PDB(), rawPd(i, 3));
+            attrs_.set(i, NodeField.PT(), rawPd(i, 1)); attrs_.set(i, NodeField.PB(), rawPd(i, 4));
+            attrs_.set(i, NodeField.PL(), rawPd(i, 2)); attrs_.set(i, NodeField.PR(), rawPd(i, 5));
             // dilations [dd,dh,dw]
             int dd = rawDl(i, 0); if (dd == 0) dd = 1;
             int dh = rawDl(i, 1); if (dh == 0) dh = 1;
             int dw = rawDl(i, 2); if (dw == 0) dw = 1;
-            nDD3_[i] = dd; nDH_[i] = dh; nDW_[i] = dw;
+            attrs_.set(i, NodeField.DD3(), dd); attrs_.set(i, NodeField.DH(), dh); attrs_.set(i, NodeField.DW(), dw);
             // kernel_shape [kd,kh,kw]
-            nKD3_[i] = rawKk(i, 0); nKH_[i] = rawKk(i, 1); nKW_[i] = rawKk(i, 2);
+            attrs_.set(i, NodeField.KD3(), rawKk(i, 0)); attrs_.set(i, NodeField.KH(), rawKk(i, 1)); attrs_.set(i, NodeField.KW(), rawKk(i, 2));
         }
         int inferShapes() {
             int i = 0;
@@ -1388,12 +1281,12 @@ class Graph {
                     int w = shapeIdx(nodes_.inputAt(i, 1)); if (w < 0) return 0;
                     int N = shapes_.d0(a); int Cin = shapes_.d1(a); int H = shapes_.d2(a); int W = shapes_.d3(a);
                     int Cout = shapes_.d1(w);
-                    int kh = nKH_[i]; if (kh <= 0) kh = shapes_.d2(w);
-                    int kw = nKW_[i]; if (kw <= 0) kw = shapes_.d3(w);
-                    int sh_ = nSH_[i]; if (sh_ <= 0) sh_ = 1;
-                    int sw_ = nSW_[i]; if (sw_ <= 0) sw_ = 1;
-                    int yH = (H - 1) * sh_ - nPT_[i] - nPB_[i] + kh + nOutPadH_[i];
-                    int yW = (W - 1) * sw_ - nPL_[i] - nPR_[i] + kw + nOutPadW_[i];
+                    int kh = attrs_.get(i, NodeField.KH()); if (kh <= 0) kh = shapes_.d2(w);
+                    int kw = attrs_.get(i, NodeField.KW()); if (kw <= 0) kw = shapes_.d3(w);
+                    int sh_ = attrs_.get(i, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = attrs_.get(i, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    int yH = (H - 1) * sh_ - attrs_.get(i, NodeField.PT()) - attrs_.get(i, NodeField.PB()) + kh + attrs_.get(i, NodeField.OPH());
+                    int yW = (W - 1) * sw_ - attrs_.get(i, NodeField.PL()) - attrs_.get(i, NodeField.PR()) + kw + attrs_.get(i, NodeField.OPW());
                     addShapeD4(nodes_.outputAt(i, 0), N, Cout, yH, yW);
                 } else if (t == "Conv") {
                     int a = shapeIdx(nodes_.inputAt(i, 0)); if (a < 0) return 0;
@@ -1401,10 +1294,10 @@ class Graph {
                     int N = shapes_.d0(a); int H = shapes_.d2(a); int W = shapes_.d3(a);
                     int yC = shapes_.d0(w);
                     int kh = shapes_.d2(w); int kw = shapes_.d3(w);
-                    if (nKH_[i] > 0) kh = nKH_[i];
-                    if (nKW_[i] > 0) kw = nKW_[i];
-                    int yH = (H + nPT_[i] + nPB_[i] - nDH_[i] * (kh - 1) - 1) / nSH_[i] + 1;
-                    int yW = (W + nPL_[i] + nPR_[i] - nDW_[i] * (kw - 1) - 1) / nSW_[i] + 1;
+                    if (attrs_.get(i, NodeField.KH()) > 0) kh = attrs_.get(i, NodeField.KH());
+                    if (attrs_.get(i, NodeField.KW()) > 0) kw = attrs_.get(i, NodeField.KW());
+                    int yH = (H + attrs_.get(i, NodeField.PT()) + attrs_.get(i, NodeField.PB()) - attrs_.get(i, NodeField.DH()) * (kh - 1) - 1) / attrs_.get(i, NodeField.SH()) + 1;
+                    int yW = (W + attrs_.get(i, NodeField.PL()) + attrs_.get(i, NodeField.PR()) - attrs_.get(i, NodeField.DW()) * (kw - 1) - 1) / attrs_.get(i, NodeField.SW()) + 1;
                     addShapeD4(nodes_.outputAt(i, 0), N, yC, yH, yW);
                 } else if (t == "Conv3D") {
                     // 3D：权重 [Cout,Cin,kd,kh,kw]（5D）；kd/kh/kw = shD2/shD3/shD4
@@ -1413,59 +1306,59 @@ class Graph {
                     int N = shapes_.d0(a); int D = shapes_.d2(a); int H = shapes_.d3(a); int W = shapes_.d4(a);
                     int yC = shapes_.d0(w);
                     int kd = shapes_.d2(w); int kh = shapes_.d3(w); int kw = shapes_.d4(w);
-                    if (nKD3_[i] > 0) kd = nKD3_[i];
-                    if (nKH_[i] > 0) kh = nKH_[i];
-                    if (nKW_[i] > 0) kw = nKW_[i];
-                    int sd = nSD3_[i]; if (sd <= 0) sd = 1;
-                    int sh_ = nSH_[i]; if (sh_ <= 0) sh_ = 1;
-                    int sw_ = nSW_[i]; if (sw_ <= 0) sw_ = 1;
-                    int dd = nDD3_[i]; if (dd <= 0) dd = 1;
-                    int dh = nDH_[i]; if (dh <= 0) dh = 1;
-                    int dw = nDW_[i]; if (dw <= 0) dw = 1;
-                    int yD = (D + nPDT_[i] + nPDB_[i] - dd * (kd - 1) - 1) / sd + 1;
-                    int yH = (H + nPT_[i] + nPB_[i] - dh * (kh - 1) - 1) / sh_ + 1;
-                    int yW = (W + nPL_[i] + nPR_[i] - dw * (kw - 1) - 1) / sw_ + 1;
+                    if (attrs_.get(i, NodeField.KD3()) > 0) kd = attrs_.get(i, NodeField.KD3());
+                    if (attrs_.get(i, NodeField.KH()) > 0) kh = attrs_.get(i, NodeField.KH());
+                    if (attrs_.get(i, NodeField.KW()) > 0) kw = attrs_.get(i, NodeField.KW());
+                    int sd = attrs_.get(i, NodeField.SD3()); if (sd <= 0) sd = 1;
+                    int sh_ = attrs_.get(i, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = attrs_.get(i, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    int dd = attrs_.get(i, NodeField.DD3()); if (dd <= 0) dd = 1;
+                    int dh = attrs_.get(i, NodeField.DH()); if (dh <= 0) dh = 1;
+                    int dw = attrs_.get(i, NodeField.DW()); if (dw <= 0) dw = 1;
+                    int yD = (D + attrs_.get(i, NodeField.PDT()) + attrs_.get(i, NodeField.PDB()) - dd * (kd - 1) - 1) / sd + 1;
+                    int yH = (H + attrs_.get(i, NodeField.PT()) + attrs_.get(i, NodeField.PB()) - dh * (kh - 1) - 1) / sh_ + 1;
+                    int yW = (W + attrs_.get(i, NodeField.PL()) + attrs_.get(i, NodeField.PR()) - dw * (kw - 1) - 1) / sw_ + 1;
                     addShapeD5(nodes_.outputAt(i, 0), N, yC, yD, yH, yW);
                 } else if (t == "MaxPool3D") {
                     int a = shapeIdx(nodes_.inputAt(i, 0)); if (a < 0) return 0;
                     int N = shapes_.d0(a); int C = shapes_.d1(a); int D = shapes_.d2(a); int H = shapes_.d3(a); int W = shapes_.d4(a);
-                    int kd = nKD3_[i]; if (kd <= 0) kd = 1;
-                    int kh = nKH_[i]; if (kh <= 0) kh = 1;
-                    int kw = nKW_[i]; if (kw <= 0) kw = 1;
-                    int sd = nSD3_[i]; if (sd <= 0) sd = 1;
-                    int sh_ = nSH_[i]; if (sh_ <= 0) sh_ = 1;
-                    int sw_ = nSW_[i]; if (sw_ <= 0) sw_ = 1;
-                    int yD = (D + nPDT_[i] + nPDB_[i] - kd) / sd + 1;
-                    int yH = (H + nPT_[i] + nPB_[i] - kh) / sh_ + 1;
-                    int yW = (W + nPL_[i] + nPR_[i] - kw) / sw_ + 1;
+                    int kd = attrs_.get(i, NodeField.KD3()); if (kd <= 0) kd = 1;
+                    int kh = attrs_.get(i, NodeField.KH()); if (kh <= 0) kh = 1;
+                    int kw = attrs_.get(i, NodeField.KW()); if (kw <= 0) kw = 1;
+                    int sd = attrs_.get(i, NodeField.SD3()); if (sd <= 0) sd = 1;
+                    int sh_ = attrs_.get(i, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = attrs_.get(i, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    int yD = (D + attrs_.get(i, NodeField.PDT()) + attrs_.get(i, NodeField.PDB()) - kd) / sd + 1;
+                    int yH = (H + attrs_.get(i, NodeField.PT()) + attrs_.get(i, NodeField.PB()) - kh) / sh_ + 1;
+                    int yW = (W + attrs_.get(i, NodeField.PL()) + attrs_.get(i, NodeField.PR()) - kw) / sw_ + 1;
                     addShapeD5(nodes_.outputAt(i, 0), N, C, yD, yH, yW);
                 } else if (t == "AveragePool3D") {
                     // 3D：各向异性核 kd/kh/kw + 6 pads + cip
                     int a = shapeIdx(nodes_.inputAt(i, 0)); if (a < 0) return 0;
                     int N = shapes_.d0(a); int C = shapes_.d1(a); int D = shapes_.d2(a); int H = shapes_.d3(a); int W = shapes_.d4(a);
-                    int kd = nKD3_[i]; if (kd <= 0) kd = 1;
-                    int kh = nKH_[i]; if (kh <= 0) kh = 1;
-                    int kw = nKW_[i]; if (kw <= 0) kw = 1;
-                    int sd = nSD3_[i]; if (sd <= 0) sd = 1;
-                    int sh_ = nSH_[i]; if (sh_ <= 0) sh_ = 1;
-                    int sw_ = nSW_[i]; if (sw_ <= 0) sw_ = 1;
-                    int yD = (D + nPDT_[i] + nPDB_[i] - kd) / sd + 1;
-                    int yH = (H + nPT_[i] + nPB_[i] - kh) / sh_ + 1;
-                    int yW = (W + nPL_[i] + nPR_[i] - kw) / sw_ + 1;
+                    int kd = attrs_.get(i, NodeField.KD3()); if (kd <= 0) kd = 1;
+                    int kh = attrs_.get(i, NodeField.KH()); if (kh <= 0) kh = 1;
+                    int kw = attrs_.get(i, NodeField.KW()); if (kw <= 0) kw = 1;
+                    int sd = attrs_.get(i, NodeField.SD3()); if (sd <= 0) sd = 1;
+                    int sh_ = attrs_.get(i, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = attrs_.get(i, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    int yD = (D + attrs_.get(i, NodeField.PDT()) + attrs_.get(i, NodeField.PDB()) - kd) / sd + 1;
+                    int yH = (H + attrs_.get(i, NodeField.PT()) + attrs_.get(i, NodeField.PB()) - kh) / sh_ + 1;
+                    int yW = (W + attrs_.get(i, NodeField.PL()) + attrs_.get(i, NodeField.PR()) - kw) / sw_ + 1;
                     addShapeD5(nodes_.outputAt(i, 0), N, C, yD, yH, yW);
                 } else if (t == "MaxPool") {
                     int a = shapeIdx(nodes_.inputAt(i, 0)); if (a < 0) return 0;
                     int N = shapes_.d0(a); int C = shapes_.d1(a); int H = shapes_.d2(a); int W = shapes_.d3(a);
-                    int kh = nKH_[i]; int kw = nKW_[i];
-                    int yH = (H + nPT_[i] + nPB_[i] - kh) / nSH_[i] + 1;
-                    int yW = (W + nPL_[i] + nPR_[i] - kw) / nSW_[i] + 1;
+                    int kh = attrs_.get(i, NodeField.KH()); int kw = attrs_.get(i, NodeField.KW());
+                    int yH = (H + attrs_.get(i, NodeField.PT()) + attrs_.get(i, NodeField.PB()) - kh) / attrs_.get(i, NodeField.SH()) + 1;
+                    int yW = (W + attrs_.get(i, NodeField.PL()) + attrs_.get(i, NodeField.PR()) - kw) / attrs_.get(i, NodeField.SW()) + 1;
                     addShapeD4(nodes_.outputAt(i, 0), N, C, yH, yW);
                 } else if (t == "AveragePool") {
                     int a = shapeIdx(nodes_.inputAt(i, 0)); if (a < 0) return 0;
                     int N = shapes_.d0(a); int C = shapes_.d1(a); int H = shapes_.d2(a); int W = shapes_.d3(a);
-                    int kh = nKH_[i]; int kw = nKW_[i];
-                    int yH = (H + nPT_[i] + nPB_[i] - kh) / nSH_[i] + 1;
-                    int yW = (W + nPL_[i] + nPR_[i] - kw) / nSW_[i] + 1;
+                    int kh = attrs_.get(i, NodeField.KH()); int kw = attrs_.get(i, NodeField.KW());
+                    int yH = (H + attrs_.get(i, NodeField.PT()) + attrs_.get(i, NodeField.PB()) - kh) / attrs_.get(i, NodeField.SH()) + 1;
+                    int yW = (W + attrs_.get(i, NodeField.PL()) + attrs_.get(i, NodeField.PR()) - kw) / attrs_.get(i, NodeField.SW()) + 1;
                     addShapeD4(nodes_.outputAt(i, 0), N, C, yH, yW);
                 } else if (t == "Pad") {
                     // F8：pads = [N,C,(D,)H,W] 各轴 begin/end（int64 初始器输入，opset11+）
@@ -1535,7 +1428,7 @@ class Graph {
                     int w = shapeIdx(nodes_.inputAt(i, 1)); if (w < 0) return 0;
                     int m = shapes_.d0(a);                     // [M,K]
                     int n = shapes_.d0(w);                     // transB=1: [N,K] → N=d0
-                    if (nTransB_[i] == 0) n = shapes_.d1(w);   // transB=0: [K,N] → N=d1
+                    if (attrs_.get(i, NodeField.TRANSB()) == 0) n = shapes_.d1(w);   // transB=0: [K,N] → N=d1
                     addShapeD4(nodes_.outputAt(i, 0), m, n, 1, 1);
                 } else if (t == "MatMul") {
                     int a = shapeIdx(nodes_.inputAt(i, 0)); if (a < 0) return 0;
@@ -1576,7 +1469,7 @@ class Graph {
                 } else if (t == "Concat") {
                     // F8：沿 axis 拼接（2-3 输入），输出 = 各输入沿 axis 之和，其余维同输入0
                     int a = shapeIdx(nodes_.inputAt(i, 0)); if (a < 0) return 0;
-                    int axis = nAxis_[i];
+                    int axis = attrs_.get(i, NodeField.AXIS());
                     if (axis < 0) axis = 0;
                     int is5 = shapes_.r5(a);
                     int[] dims = new int[5];
@@ -1607,10 +1500,10 @@ class Graph {
                     int a = shapeIdx(nodes_.inputAt(i, 0)); if (a < 0) return 0;
                     int nd = 4;
                     int p0, p1, p2, p3;
-                    if (nPc_[i] >= 4) { p0 = nP0_[i]; p1 = nP1_[i]; p2 = nP2_[i]; p3 = nP3_[i]; }
-                    else if (nPc_[i] == 3) { p0 = nP0_[i]; p1 = nP1_[i]; p2 = nP2_[i]; p3 = 3; }
-                    else if (nPc_[i] == 2) { p0 = nP0_[i]; p1 = nP1_[i]; p2 = 2; p3 = 3; }
-                    else if (nPc_[i] == 1) { p0 = nP0_[i]; p1 = 1; p2 = 2; p3 = 3; }
+                    if (attrs_.get(i, NodeField.PERM_N()) >= 4) { p0 = attrs_.get(i, NodeField.PERM0()); p1 = attrs_.get(i, NodeField.PERM1()); p2 = attrs_.get(i, NodeField.PERM2()); p3 = attrs_.get(i, NodeField.PERM3()); }
+                    else if (attrs_.get(i, NodeField.PERM_N()) == 3) { p0 = attrs_.get(i, NodeField.PERM0()); p1 = attrs_.get(i, NodeField.PERM1()); p2 = attrs_.get(i, NodeField.PERM2()); p3 = 3; }
+                    else if (attrs_.get(i, NodeField.PERM_N()) == 2) { p0 = attrs_.get(i, NodeField.PERM0()); p1 = attrs_.get(i, NodeField.PERM1()); p2 = 2; p3 = 3; }
+                    else if (attrs_.get(i, NodeField.PERM_N()) == 1) { p0 = attrs_.get(i, NodeField.PERM0()); p1 = 1; p2 = 2; p3 = 3; }
                     else { p0 = 3; p1 = 2; p2 = 1; p3 = 0; }   // 缺省反转
                     int id0 = shapes_.d0(a), id1 = shapes_.d1(a), id2 = shapes_.d2(a), id3 = shapes_.d3(a);
                     int[] od = new int[4];
@@ -1659,10 +1552,10 @@ class Graph {
                 } else if (t == "Split") {
                     // F8：沿 axis 分割为 nOutN_ 个输出（split attr 或均分；starts/lens 存 nSplitSt_/nSplitLn_）
                     int a = shapeIdx(nodes_.inputAt(i, 0)); if (a < 0) return 0;
-                    int axis = nAxis_[i]; if (axis < 0) axis = 0;
+                    int axis = attrs_.get(i, NodeField.AXIS()); if (axis < 0) axis = 0;
                     int D = (axis == 0) ? shapes_.d0(a) : ((axis == 1) ? shapes_.d1(a) : ((axis == 2) ? shapes_.d2(a) : shapes_.d3(a)));
                     int no = nOutN_[i]; if (no < 1) no = 1;
-                    int ns = nSplitN_[i];
+                    int ns = attrs_.get(i, NodeField.SPLIT_N());
                     int fromInput = 0;
                     if (ns <= 0 && nodes_.inputAt(i, 1) != "") { ns = readI64Init(nodes_.inputAt(i, 1), 4); fromInput = 1; }   // opset13+：split 为输入
                     int acc = 0;
@@ -1671,7 +1564,7 @@ class Graph {
                         int sz;
                         if (ns > j) {
                             if (fromInput == 1) sz = int(i64TmpL_[j]);
-                            else sz = (j == 0) ? nSp0_[i] : ((j == 1) ? nSp1_[i] : ((j == 2) ? nSp2_[i] : nSp3_[i]));
+                            else sz = (j == 0) ? attrs_.get(i, NodeField.SPLIT0()) : ((j == 1) ? attrs_.get(i, NodeField.SPLIT1()) : ((j == 2) ? attrs_.get(i, NodeField.SPLIT2()) : attrs_.get(i, NodeField.SPLIT3())));
                         } else {
                             sz = D / no;
                         }
@@ -1697,13 +1590,13 @@ class Graph {
                     // F8：mode 0 = 全规约（标量）；mode 1 = 空间维规约（per-(n,c)，秩无关）
                     int a = shapeIdx(nodes_.inputAt(i, 0)); if (a < 0) return 0;
                     int nAx = readI64Init(nodes_.inputAt(i, 1), 8);   // axes 输入（opset18+；可缺省）
-                    if (nAx <= 0 && nAxN_[i] > 0) {
+                    if (nAx <= 0 && attrs_.get(i, NodeField.AXES_N()) > 0) {
                         // 属性形式（opset<=17）
-                        nAx = nAxN_[i];
-                        i64TmpL_[0] = nAx0_[i];
-                        i64TmpL_[1] = nAx1_[i];
-                        i64TmpL_[2] = nAx2_[i];
-                        i64TmpL_[3] = nAx3_[i];
+                        nAx = attrs_.get(i, NodeField.AXES_N());
+                        i64TmpL_[0] = attrs_.get(i, NodeField.AXES0());
+                        i64TmpL_[1] = attrs_.get(i, NodeField.AXES1());
+                        i64TmpL_[2] = attrs_.get(i, NodeField.AXES2());
+                        i64TmpL_[3] = attrs_.get(i, NodeField.AXES3());
                     }
                     int mode = 0;
                     if (nAx > 0) {
@@ -1904,7 +1797,7 @@ class Graph {
             double s = f32At(weights_.get(scale, WeightField.OFFSET()) + oc * 4);
             double v = f32At(weights_.get(variance, WeightField.OFFSET()) + oc * 4);
             double e = 1.0e-5;
-            if (nHasEps_[j] == 1) e = attrFloat(j, NodeField.EPS_INT());   // P3a：统一属性访问
+            if (attrs_.get(j, NodeField.HAS_EPS()) == 1) e = attrFloat(j, NodeField.EPS_INT());   // P3a：统一属性访问
             return s / Math.sqrt(v + e);
         }
         double bnFoldBias(int wi, int oc, double b) {
@@ -2044,9 +1937,9 @@ class Graph {
         int foldConstants() {
             int i = 0;
             while (i < nodes_.count()) {
-                if (nodes_.typeAt(i) == "Constant" && nConstVal_[i] == 1) {
-                    int off = nConstOff_[i];
-                    int len = nConstLen_[i];
+                if (nodes_.typeAt(i) == "Constant" && attrs_.get(i, NodeField.CONST_VAL()) == 1) {
+                    int off = attrs_.get(i, NodeField.CONST_OFF());
+                    int len = attrs_.get(i, NodeField.CONST_LEN());
                     int end = off + len;
                     pb_.seek(off);
                     int[] dims = new int[8];
@@ -2134,8 +2027,8 @@ class Graph {
                 string t = nodes_.typeAt(i);
                 if (t == "") { i = i + 1; continue; }
                 if (t == "Constant") {
-                    if (nConstVal_[i] == 1) {
-                        i64RegConstant(nodes_.outputAt(i, 0), nConstOff_[i], nConstLen_[i]);
+                    if (attrs_.get(i, NodeField.CONST_VAL()) == 1) {
+                        i64RegConstant(nodes_.outputAt(i, 0), attrs_.get(i, NodeField.CONST_OFF()), attrs_.get(i, NodeField.CONST_LEN()));
                         if (i64Count(nodes_.outputAt(i, 0)) > 0) { nodes_.setType(i, ""); foldCount_ = foldCount_ + 1; }
                     }
                 } else if (t == "Shape") {
@@ -2272,7 +2165,7 @@ class Graph {
                         }
                     }
                 } else if (t == "Cast") {
-                    int to = nCastTo_[i];
+                    int to = attrs_.get(i, NodeField.CAST_TO());
                     if (to == 7 && i64Count(nodes_.inputAt(i, 0)) > 0) {
                         // int64 恒等（float 常量 Cast 折叠由第二次调用处理）
                         int c = i64Count(nodes_.inputAt(i, 0));
@@ -2381,7 +2274,7 @@ class Graph {
                 nodes_.setType(nodes_.count(), "NCHW2NHWC");
                 nodes_.setInput(nodes_.count(), 0, nm);
                 nodes_.setOutput(nodes_.count(), 0, tname);
-                nConstVal_[nodes_.count()] = 0;
+                attrs_.set(nodes_.count(), NodeField.CONST_VAL(), 0);
                 nNHWC_[nodes_.count()] = 1;
                 nFused_[nodes_.count()] = 0;
                 nFusedBy_[nodes_.count()] = -1;
@@ -2672,13 +2565,13 @@ class Graph {
                     int db = -1;
                     if (nodes_.outputAt(ni, 2) != "") db = tensorId(nodes_.outputAt(ni, 2));
                     rt.addBwdConv(dy, x, w, dx, dw, db,
-                                  nSH_[ni], nSW_[ni], nPT_[ni], nPL_[ni], nDH_[ni], nDW_[ni], nGroup_[ni]);
+                                  attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.DH()), attrs_.get(ni, NodeField.DW()), attrs_.get(ni, NodeField.GROUP()));
                 } else if (code == OpCode.BWD_MAXPOOL()) {
                     // 阶段3：maxpool 反向。dy=in0, x=in1; out0=dx
                     int dy = tensorId(nodes_.inputAt(ni, 0));
                     int x = tensorId(nodes_.inputAt(ni, 1));
                     int dx = tensorId(nodes_.outputAt(ni, 0));
-                    rt.addBwdMaxPool(dy, x, dx, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPL_[ni]);
+                    rt.addBwdMaxPool(dy, x, dx, attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PL()));
                 } else if (code == OpCode.BWD_CONV3D()) {
                     // 阶段4：Conv3D 反向。dy=in0, x=in1, w=in2; out0=dx, out1=dw, out2=db
                     int dy = tensorId(nodes_.inputAt(ni, 0));
@@ -2689,29 +2582,29 @@ class Graph {
                     int db = -1;
                     if (nodes_.outputAt(ni, 2) != "") db = tensorId(nodes_.outputAt(ni, 2));
                     rt.addBwdConv3D(dy, x, w, dx, dw, db,
-                                    nSD3_[ni], nSH_[ni], nSW_[ni],
-                                    nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni],
-                                    nPL_[ni], nPR_[ni]);
+                                    attrs_.get(ni, NodeField.SD3()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()),
+                                    attrs_.get(ni, NodeField.PDT()), attrs_.get(ni, NodeField.PDB()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()),
+                                    attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()));
                 } else if (code == OpCode.BWD_MAXPOOL3D()) {
                     // 阶段4：MaxPool3D 反向。dy=in0, x=in1; out0=dx
                     int dy = tensorId(nodes_.inputAt(ni, 0));
                     int x = tensorId(nodes_.inputAt(ni, 1));
                     int dx = tensorId(nodes_.outputAt(ni, 0));
                     rt.addBwdMaxPool3D(dy, x, dx,
-                                       nKD3_[ni], nKH_[ni], nKW_[ni],
-                                       nSD3_[ni], nSH_[ni], nSW_[ni],
-                                       nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni],
-                                       nPL_[ni], nPR_[ni]);
+                                       attrs_.get(ni, NodeField.KD3()), attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()),
+                                       attrs_.get(ni, NodeField.SD3()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()),
+                                       attrs_.get(ni, NodeField.PDT()), attrs_.get(ni, NodeField.PDB()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()),
+                                       attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()));
                 } else if (code == OpCode.BWD_AVGPOOL3D()) {
                     // 阶段4：AveragePool3D 反向。dy=in0, x=in1; out0=dx
                     int dy = tensorId(nodes_.inputAt(ni, 0));
                     int x = tensorId(nodes_.inputAt(ni, 1));
                     int dx = tensorId(nodes_.outputAt(ni, 0));
                     rt.addBwdAvgPool3D(dy, x, dx,
-                                       nKD3_[ni], nKH_[ni], nKW_[ni],
-                                       nSD3_[ni], nSH_[ni], nSW_[ni],
-                                       nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni],
-                                       nPL_[ni], nPR_[ni], nCip_[ni]);
+                                       attrs_.get(ni, NodeField.KD3()), attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()),
+                                       attrs_.get(ni, NodeField.SD3()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()),
+                                       attrs_.get(ni, NodeField.PDT()), attrs_.get(ni, NodeField.PDB()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()),
+                                       attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.CIP()));
                 } else if (code == OpCode.BWD_CONVTRANSPOSE()) {
                     // 阶段4d：ConvTranspose 反向。dy=in0, x=in1, w=in2; out0=dx, out1=dw, out2=db
                     int dy = tensorId(nodes_.inputAt(ni, 0));
@@ -2722,7 +2615,7 @@ class Graph {
                     int db = -1;
                     if (nodes_.outputAt(ni, 2) != "") db = tensorId(nodes_.outputAt(ni, 2));
                     rt.addBwdConvTranspose(dy, x, w, dx, dw, db,
-                                           nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
+                                           attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()));
                 } else if (code == OpCode.BWD_RESIZE()) {
                     // 阶段4d：Resize3D 反向。in0=dOut（输出梯度，形状=输出形状），
                     // in1=x（输入形状），out0=dIn；inD/inH/inW/outD/outH/outW 从形状推出。
@@ -2735,7 +2628,7 @@ class Graph {
                         int inD = shapes_.d2(is); int inH = shapes_.d3(is); int inW = shapes_.d4(is);
                         int outD = shapes_.d2(os); int outH = shapes_.d3(os); int outW = shapes_.d4(os);
                         rt.addBwdResize3d(dOut, dIn, inD, inH, inW, outD, outH, outW,
-                                          nMode_[ni], nTransform_[ni]);
+                                          attrs_.get(ni, NodeField.MODE()), attrs_.get(ni, NodeField.TRANSFORM()));
                     }
                 } else if (code == OpCode.DICE_LOSS()) {
                     // 阶段4d：Dice loss。in0=prob, in1=label; out0=dprob, out1=loss
@@ -2767,7 +2660,7 @@ class Graph {
                 } else if (code == OpCode.RE_LU6()) {
                     rt.addReLU6(a, out);
                 } else if (code == OpCode.LEAKY_RELU()) {
-                    rt.addLeakyRelu(a, out, nAlphaInt_[ni], nHasAlpha_[ni]);
+                    rt.addLeakyRelu(a, out, attrs_.get(ni, NodeField.ALPHA_INT()), attrs_.get(ni, NodeField.HAS_ALPHA()));
                 } else if (code == OpCode.SILU()) {
                     rt.addSiLU(a, out);
                 } else if (code == OpCode.HARD_SWISH()) {
@@ -2779,8 +2672,8 @@ class Graph {
                     // F8：ConvTranspose（group=1；kh/kw 由权重张量 tH_[w]/tW_[w] 给出）
                     int w = tensorId(nodes_.inputAt(ni, 1));
                     int b = tensorId(nodes_.inputAt(ni, 2));
-                    rt.addConvTranspose(a, w, b, out, nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni],
-                                        nOutPadH_[ni], nOutPadW_[ni], nGroup_[ni]);
+                    rt.addConvTranspose(a, w, b, out, attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()),
+                                        attrs_.get(ni, NodeField.OPH()), attrs_.get(ni, NodeField.OPW()), attrs_.get(ni, NodeField.GROUP()));
                 } else if (code == OpCode.SPLIT()) {
                     // F8：沿 axis 复制 [start, start+len) 到每个输出（一个输出一个 op）
                     int inS = shapeIdx(nodes_.inputAt(ni, 0));
@@ -2792,7 +2685,7 @@ class Graph {
                         string onm = (j == 0) ? nodes_.outputAt(ni, 0) : ((j == 1) ? nodes_.outputAt(ni, 1) : ((j == 2) ? nodes_.outputAt(ni, 2) : nodes_.outputAt(ni, 3)));
                         int o = tensorId(onm);
                         if (o >= 0) {
-                            rt.addSplit(a, o, nAxis_[ni], attrIntArr(ni, 6, j), attrIntArr(ni, 7, j),   // P3d：统一数组访问
+                            rt.addSplit(a, o, attrs_.get(ni, NodeField.AXIS()), attrIntArr(ni, 6, j), attrIntArr(ni, 7, j),   // P3d：统一数组访问
                                         d0, d1, d2, d3, 1);
                         }
                         j = j + 1;
@@ -2804,57 +2697,57 @@ class Graph {
                         // P4-2/3：Conv+残差Add 融合（残差登记在 nIn3_，写 add/relu 输出 out=effectiveOut）
                         int resid = tensorId(nodes_.inputAt(ni, 3));
                         rt.addConvResidual(a, w, b, out, resid,
-                                           nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni],
-                                           nDH_[ni], nDW_[ni], nGroup_[ni], nRelu_[ni]);
+                                           attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()),
+                                           attrs_.get(ni, NodeField.DH()), attrs_.get(ni, NodeField.DW()), attrs_.get(ni, NodeField.GROUP()), nRelu_[ni]);
                     } else if (nNHWC_[ni] == 1) {
                         // G2：NHWC 卷积（权重已在装载时转置 [Cout,KH,KW,Cin]）
-                        if (nRelu_[ni] == 1) rt.addConvNHWCRelu(a, w, b, out, nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nDH_[ni], nDW_[ni], nGroup_[ni]);
-                        else rt.addConvNHWC(a, w, b, out, nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nDH_[ni], nDW_[ni], nGroup_[ni]);
+                        if (nRelu_[ni] == 1) rt.addConvNHWCRelu(a, w, b, out, attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.DH()), attrs_.get(ni, NodeField.DW()), attrs_.get(ni, NodeField.GROUP()));
+                        else rt.addConvNHWC(a, w, b, out, attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.DH()), attrs_.get(ni, NodeField.DW()), attrs_.get(ni, NodeField.GROUP()));
                     } else if (nRelu_[ni] == 1) {
                         // G1：融合 Conv+ReLU → 写 relu 输出（中间张量不写回）
-                        rt.addConvRelu(a, w, b, out, nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nDH_[ni], nDW_[ni], nGroup_[ni]);
+                        rt.addConvRelu(a, w, b, out, attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.DH()), attrs_.get(ni, NodeField.DW()), attrs_.get(ni, NodeField.GROUP()));
                     } else {
                         // G3：BN 折叠的普通卷积（可能无 relu，勿套 relu）
-                        rt.addConv(a, w, b, out, nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nDH_[ni], nDW_[ni], nGroup_[ni]);
+                        rt.addConv(a, w, b, out, attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.DH()), attrs_.get(ni, NodeField.DW()), attrs_.get(ni, NodeField.GROUP()));
                     }
                 } else if (code == OpCode.CONV3D()) {
                     // 3D：kd/kh/kw 由权重张量 tD_[w]/tH_[w]/tW_[w] 给出
                     int w = tensorId(nodes_.inputAt(ni, 1));
                     int b = tensorId(nodes_.inputAt(ni, 2));
-                    int sd = nSD3_[ni]; if (sd <= 0) sd = 1;
-                    int sh_ = nSH_[ni]; if (sh_ <= 0) sh_ = 1;
-                    int sw_ = nSW_[ni]; if (sw_ <= 0) sw_ = 1;
-                    int dd = nDD3_[ni]; if (dd <= 0) dd = 1;
-                    int dh = nDH_[ni]; if (dh <= 0) dh = 1;
-                    int dw = nDW_[ni]; if (dw <= 0) dw = 1;
+                    int sd = attrs_.get(ni, NodeField.SD3()); if (sd <= 0) sd = 1;
+                    int sh_ = attrs_.get(ni, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = attrs_.get(ni, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    int dd = attrs_.get(ni, NodeField.DD3()); if (dd <= 0) dd = 1;
+                    int dh = attrs_.get(ni, NodeField.DH()); if (dh <= 0) dh = 1;
+                    int dw = attrs_.get(ni, NodeField.DW()); if (dw <= 0) dw = 1;
                     rt.addConv3D(a, w, b, out, sd, sh_, sw_,
-                        nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni],
-                        dd, dh, dw, nGroup_[ni]);
+                        attrs_.get(ni, NodeField.PDT()), attrs_.get(ni, NodeField.PDB()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()),
+                        dd, dh, dw, attrs_.get(ni, NodeField.GROUP()));
                 } else if (code == OpCode.MAXPOOL3D()) {
-                    int sd = nSD3_[ni]; if (sd <= 0) sd = 1;
-                    int sh_ = nSH_[ni]; if (sh_ <= 0) sh_ = 1;
-                    int sw_ = nSW_[ni]; if (sw_ <= 0) sw_ = 1;
-                    int kd = nKD3_[ni]; if (kd <= 0) kd = 1;
-                    int kh = nKH_[ni]; if (kh <= 0) kh = 1;
-                    int kw = nKW_[ni]; if (kw <= 0) kw = 1;
+                    int sd = attrs_.get(ni, NodeField.SD3()); if (sd <= 0) sd = 1;
+                    int sh_ = attrs_.get(ni, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = attrs_.get(ni, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    int kd = attrs_.get(ni, NodeField.KD3()); if (kd <= 0) kd = 1;
+                    int kh = attrs_.get(ni, NodeField.KH()); if (kh <= 0) kh = 1;
+                    int kw = attrs_.get(ni, NodeField.KW()); if (kw <= 0) kw = 1;
                     rt.addMaxPool3D(a, out, kd, kh, kw, sd, sh_, sw_,
-                        nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
+                        attrs_.get(ni, NodeField.PDT()), attrs_.get(ni, NodeField.PDB()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()));
                 } else if (code == OpCode.AVGPOOL3D()) {
-                    int sd = nSD3_[ni]; if (sd <= 0) sd = 1;
-                    int sh_ = nSH_[ni]; if (sh_ <= 0) sh_ = 1;
-                    int sw_ = nSW_[ni]; if (sw_ <= 0) sw_ = 1;
-                    int kd = nKD3_[ni]; if (kd <= 0) kd = 1;
-                    int kh = nKH_[ni]; if (kh <= 0) kh = 1;
-                    int kw = nKW_[ni]; if (kw <= 0) kw = 1;
+                    int sd = attrs_.get(ni, NodeField.SD3()); if (sd <= 0) sd = 1;
+                    int sh_ = attrs_.get(ni, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = attrs_.get(ni, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    int kd = attrs_.get(ni, NodeField.KD3()); if (kd <= 0) kd = 1;
+                    int kh = attrs_.get(ni, NodeField.KH()); if (kh <= 0) kh = 1;
+                    int kw = attrs_.get(ni, NodeField.KW()); if (kw <= 0) kw = 1;
                     rt.addAvgPool3D(a, out, kd, kh, kw, sd, sh_, sw_,
-                        nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nCip_[ni]);
+                        attrs_.get(ni, NodeField.PDT()), attrs_.get(ni, NodeField.PDB()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.CIP()));
                 } else if (code == OpCode.MAXPOOL()) {
-                    if (nNHWC_[ni] == 1) rt.addMaxPoolNHWC(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
-                    else rt.addMaxPool(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
+                    if (nNHWC_[ni] == 1) rt.addMaxPoolNHWC(a, out, attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()));
+                    else rt.addMaxPool(a, out, attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()));
                 } else if (code == OpCode.AVGPOOL()) {
                     // F8：AveragePool（cip = count_include_pad）
-                    if (nNHWC_[ni] == 1) rt.addAvgPoolNHWC(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nCip_[ni]);
-                    else rt.addAvgPool(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nCip_[ni]);
+                    if (nNHWC_[ni] == 1) rt.addAvgPoolNHWC(a, out, attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.CIP()));
+                    else rt.addAvgPool(a, out, attrs_.get(ni, NodeField.KH()), attrs_.get(ni, NodeField.KW()), attrs_.get(ni, NodeField.SH()), attrs_.get(ni, NodeField.SW()), attrs_.get(ni, NodeField.PT()), attrs_.get(ni, NodeField.PB()), attrs_.get(ni, NodeField.PL()), attrs_.get(ni, NodeField.PR()), attrs_.get(ni, NodeField.CIP()));
                 } else if (code == OpCode.PAD()) {
                     // F8：Pad（NHWC 时 pads 从逻辑 [N,C,H,W] 重排为 [N,H,W,C]）
                     int is5 = 0;
@@ -2865,15 +2758,15 @@ class Graph {
                         rt.addPad3D(a, out,
                             nPadB5_[ni * 5 + 0], nPadE5_[ni * 5 + 0], nPadB5_[ni * 5 + 1], nPadE5_[ni * 5 + 1], nPadB5_[ni * 5 + 2],
                             nPadE5_[ni * 5 + 2], nPadB5_[ni * 5 + 3], nPadE5_[ni * 5 + 3], nPadB5_[ni * 5 + 4], nPadE5_[ni * 5 + 4],
-                            nPadMode_[ni], nPadCval_[ni]);
+                            attrs_.get(ni, NodeField.PADMODE()), nPadCval_[ni]);
                     } else if (nNHWC_[ni] == 1) rt.addPadNHWC(a, out,
                         nPadB_[ni * 4 + 0], nPadB_[ni * 4 + 2], nPadB_[ni * 4 + 3], nPadB_[ni * 4 + 1],
                         nPadE_[ni * 4 + 0], nPadE_[ni * 4 + 2], nPadE_[ni * 4 + 3], nPadE_[ni * 4 + 1],
-                        nPadMode_[ni], nPadCval_[ni]);
+                        attrs_.get(ni, NodeField.PADMODE()), nPadCval_[ni]);
                     else rt.addPad(a, out,
                         nPadB_[ni * 4 + 0], nPadB_[ni * 4 + 1], nPadB_[ni * 4 + 2], nPadB_[ni * 4 + 3],
                         nPadE_[ni * 4 + 0], nPadE_[ni * 4 + 1], nPadE_[ni * 4 + 2], nPadE_[ni * 4 + 3],
-                        nPadMode_[ni], nPadCval_[ni]);
+                        attrs_.get(ni, NodeField.PADMODE()), nPadCval_[ni]);
                 } else if (code == OpCode.GLOBAL_AVG_POOL()) {
                     // G2：out 已是融合后的 flatten 输出（fuseGapFlatten 改写）；GAP 布局无关
                     if (nNHWC_[ni] == 1) rt.addGAPoolNHWC(a, out);
@@ -2889,8 +2782,8 @@ class Graph {
                     int mT = tensorId(nodes_.inputAt(ni, 3));
                     int vT = tensorId(nodes_.inputAt(ni, 4));
                     if (sT < 0 || bT < 0 || mT < 0 || vT < 0) return 0;
-                    if (nNHWC_[ni] == 1) rt.addBatchNormNHWC(a, out, sT, bT, mT, vT, nEpsInt_[ni], nHasEps_[ni]);
-                    else rt.addBatchNorm(a, out, sT, bT, mT, vT, nEpsInt_[ni], nHasEps_[ni]);
+                    if (nNHWC_[ni] == 1) rt.addBatchNormNHWC(a, out, sT, bT, mT, vT, attrs_.get(ni, NodeField.EPS_INT()), attrs_.get(ni, NodeField.HAS_EPS()));
+                    else rt.addBatchNorm(a, out, sT, bT, mT, vT, attrs_.get(ni, NodeField.EPS_INT()), attrs_.get(ni, NodeField.HAS_EPS()));
                 } else if (code == OpCode.RESHAPE()) {
                     // F8：连续拷贝（输出形状已由 inferShapes 按 shape 初始器登记）
                     rt.addReshape(a, out);
@@ -2900,7 +2793,7 @@ class Graph {
                     int c = tensorId(nodes_.inputAt(ni, 2));
                     int nIn = 2;
                     if (c >= 0) nIn = 3;
-                    int axis = nAxis_[ni];
+                    int axis = attrs_.get(ni, NodeField.AXIS());
                     if (axis < 0) axis = 0;
                     int os = shapeIdx(effectiveOut(ni));
                     int is5 = 0;
@@ -2933,7 +2826,7 @@ class Graph {
                     int dx2 = tensorId(dxn2);
                     int nIn = 2;
                     if (dx2 >= 0) nIn = 3;
-                    int axis = nAxis_[ni];
+                    int axis = attrs_.get(ni, NodeField.AXIS());
                     if (axis < 0) axis = 0;
                     int os = shapeIdx(nodes_.inputAt(ni, 0));   // dy 形状 = 原 Concat 输出
                     int is5 = 0;
@@ -2955,8 +2848,8 @@ class Graph {
                     rt.addAdd(tensorId(nodes_.inputAt(ni, 0)), tensorId(nodes_.inputAt(ni, 1)), tensorId(nodes_.outputAt(ni, 0)), 0);
                 } else if (code == OpCode.TRANSPOSE()) {
                     // F8：perm 转置（输入维度 = 输入形状表）
-                    int p0 = nP0_[ni], p1 = nP1_[ni], p2 = nP2_[ni], p3 = nP3_[ni];
-                    int pc = nPc_[ni];
+                    int p0 = attrs_.get(ni, NodeField.PERM0()), p1 = attrs_.get(ni, NodeField.PERM1()), p2 = attrs_.get(ni, NodeField.PERM2()), p3 = attrs_.get(ni, NodeField.PERM3());
+                    int pc = attrs_.get(ni, NodeField.PERM_N());
                     if (pc == 0) { p0 = 3; p1 = 2; p2 = 1; p3 = 0; }
                     int is = shapeIdx(nodes_.inputAt(ni, 0));
                     int id0 = shapes_.d0(is), id1 = shapes_.d1(is), id2 = shapes_.d2(is), id3 = shapes_.d3(is);
@@ -3002,7 +2895,7 @@ class Graph {
                     int S = shapes_.d2(is) * shapes_.d3(is);
                     if (shapes_.r5(is) == 1) S = shapes_.d2(is) * shapes_.d3(is) * shapes_.d4(is);   // 3D：D*H*W
                     int total = N * C * S;
-                    rt.addReduceMean(a, out, mode, N, C, S, total, nKeep_[ni]);
+                    rt.addReduceMean(a, out, mode, N, C, S, total, attrs_.get(ni, NodeField.KEEP()));
                 } else if (code == OpCode.INSTANCE_NORM()) {
                     int sT = tensorId(nodes_.inputAt(ni, 1));
                     int bT = tensorId(nodes_.inputAt(ni, 2));
@@ -3011,7 +2904,7 @@ class Graph {
                     int N = shapes_.d0(is), C = shapes_.d1(is);
                     int S = shapes_.d2(is) * shapes_.d3(is);
                     if (shapes_.r5(is) == 1) S = shapes_.d2(is) * shapes_.d3(is) * shapes_.d4(is);   // 3D：D*H*W
-                    rt.addInstanceNorm(a, sT, bT, out, N, C, S, nEpsInt_[ni], nHasEps_[ni], nRelu_[ni]);
+                    rt.addInstanceNorm(a, sT, bT, out, N, C, S, attrs_.get(ni, NodeField.EPS_INT()), attrs_.get(ni, NodeField.HAS_EPS()), nRelu_[ni]);
                 } else if (code == OpCode.RESIZE() || code == OpCode.UPSAMPLE()) {
                     int is = shapeIdx(nodes_.inputAt(ni, 0));
                     int os = shapeIdx(effectiveOut(ni));
@@ -3025,9 +2918,9 @@ class Graph {
                         int inD = shapes_.d2(is), outD = shapes_.d2(os);
                         int inH3 = shapes_.d3(is), inW3 = shapes_.d4(is);
                         int outH3 = shapes_.d3(os), outW3 = shapes_.d4(os);
-                        rt.addResize3d(a, out, inD, inH3, inW3, outD, outH3, outW3, nMode_[ni], nTransform_[ni]);
+                        rt.addResize3d(a, out, inD, inH3, inW3, outD, outH3, outW3, attrs_.get(ni, NodeField.MODE()), attrs_.get(ni, NodeField.TRANSFORM()));
                     } else {
-                        rt.addResize2d(a, out, N, C, inH, inW, outH, outW, nMode_[ni], nTransform_[ni]);
+                        rt.addResize2d(a, out, N, C, inH, inW, outH, outW, attrs_.get(ni, NodeField.MODE()), attrs_.get(ni, NodeField.TRANSFORM()));
                     }
                 } else {
                     if (Console.getEnv("MYP_GR_DBG") == "1") {
@@ -3290,79 +3183,30 @@ class Graph {
         long[512] slEn_;      // F8：Slice ends
         long[512] slAx_;      // F8：Slice axes（可缺省）
         long[512] slSp_;      // F8：Slice steps（可缺省）
+        GraphNodeAttrs attrs_;
+
         int[512] nSlN_;       // F8：Slice 每节点切片轴数
         int[2048] nSlAx_;     // F8：Slice 每节点每轴索引 [node*4+k]
         int[2048] nSlSt_;     // F8：Slice 调整后 start
         int[2048] nSlSp_;     // F8：Slice step
-
-        int[512] nTransB_;
-        int[512] nAxis_;
-        int[512] nSH_;
-        int[512] nSW_;
-        int[512] nPT_;
-        int[512] nPB_;
-        int[512] nPL_;
-        int[512] nPR_;
-        int[512] nDH_;
-        int[512] nDW_;
-        int[512] nGroup_;
-        int[512] nKH_;
-        int[512] nKW_;
-        int[512] nP0_;          // F8：Transpose perm[0]
-        int[512] nP1_;          // F8：Transpose perm[1]
-        int[512] nP2_;          // F8：Transpose perm[2]
-        int[512] nP3_;          // F8：Transpose perm[3]
-        int[512] nPc_;          // F8：perm 元素个数
-        int[512] nMode_;        // F8：Resize mode（0=nearest,1=linear）
-        int[512] nTransform_;   // F8：Resize coord（0=align_corners,1=half_pixel）
-        int[512] nUpSH_;        // F8：Upsample scales 高（floats 位型 → 需 F32 解码）
-        int[512] nUpSW_;        // F8：Upsample scales 宽
-        int[512] nKeep_;        // F8：ReduceMean keepdims（0/1）
         int[512] nRedMode_;     // F8：ReduceMean mode（0=全规约,1=空间规约）
-        int[512] nAx0_;         // F8：ReduceMean axes[0]（属性形式）
-        int[512] nAx1_;
-        int[512] nAx2_;
-        int[512] nAx3_;
-        int[512] nAxN_;         // F8：axes 元素数
-        int[512] nCip_;         // F8：AveragePool count_include_pad
         int[2048] nPadB_;       // F8：Pad 各轴 begin [node*4+k]（逻辑 [N,C,H,W]）
         int[2048] nPadE_;       // F8：Pad 各轴 end
         int[2560] nPadB5_;      // 3D：Pad 各轴 begin [node*5+k]（逻辑 [N,C,D,H,W]）
         int[2560] nPadE5_;      // 3D：Pad 各轴 end
-        int[512] nPadMode_;     // F8：Pad mode（0=const,1=reflect,2=edge）
         int[512] nPadCval_;     // F8：Pad constant_value（float 位型）
-        int[512] nOutPadH_;     // F8：ConvTranspose output_padding 高
-        int[512] nOutPadW_;     // F8：ConvTranspose output_padding 宽
         int[512] nOutN_;        // F8：Split 输出个数
-        int[512] nSplitN_;      // F8：Split split attr 尺寸个数
-        int[512] nSp0_;         // F8：Split 各输出尺寸
-        int[512] nSp1_;
-        int[512] nSp2_;
-        int[512] nSp3_;
         int[2048] nSplitSt_;    // F8：Split 各输出沿 axis 的 start [node*4+j]
         int[2048] nSplitLn_;    // F8：Split 各输出沿 axis 的 len
-        int[512] nSD3_;         // 3D：Conv3D/MaxPool3D 等 strides[0]（sd）
-        int[512] nDD3_;         // 3D：dilations[0]（dd）
-        int[512] nKD3_;         // 3D：kernel_shape[0]（kd）
-        int[512] nPDT_;         // 3D：pads D-begin
-        int[512] nPDB_;         // 3D：pads D-end
         int[1536] nSt3_;        // 原始 strides[node*3+k]（2D/3D 通用捕获）
         int[3072] nPd3_;        // 原始 pads[node*6+k]
         int[1536] nDl3_;        // 原始 dilations[node*3+k]
         int[1536] nKk3_;        // 原始 kernel_shape[node*3+k]
-        int[512] nCastTo_;      // P3：Cast 目标 dtype（1=float,7=int64）
-        int[512] nEpsInt_;       // G3：BN epsilon 属性位型
-        int[512] nHasEps_;       // G3：1 = 有 epsilon 属性
-        int[512] nAlphaInt_;     // G4：LeakyRelu alpha 属性位型
-        int[512] nHasAlpha_;     // G4：1 = 有 alpha 属性
         int[512] nFused_;        // G1：1 = Conv 已与 Relu 融合
         int[512] nFusedBy_;      // G1：被消掉的 Relu 记录取代它的 Conv 下标
         string[512] nFusedOut_;  // G1：fused Conv 的目标输出名（Relu 的输出）
         int[512] nRelu_;         // G4：1 = Conv 与 Relu 融合（G1 设置；与 BN 融合区分）
         int[512] nNHWC_;         // G2：1 = 节点在 NHWC 布局执行
-        int[512] nConstVal_;     // G2：1 = Constant 节点有 value 属性
-        int[512] nConstOff_;     // G2：Constant value TensorProto 偏移
-        int[512] nConstLen_;     // G2：Constant value TensorProto 长度
         int fuseCount_;          // G1：Conv+ReLU 融合数
         int gapCount_;           // G2：GAP+Flatten 融合数
         int dceCount_;           // G2：死算子消除数
