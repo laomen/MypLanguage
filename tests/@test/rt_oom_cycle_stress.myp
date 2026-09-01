@@ -1,0 +1,75 @@
+// rt_oom_cycle_stress.myp — 运行期环收集 OOM 压力验证（v3.15.200 退出跳过环收集后）
+// 目的：确认「跳过退出时环收集」不影响运行期回收——引用环不会无限累积导致 OOM。
+// 逻辑：ARC 无法回收引用环（Node<->Box 互指），只有环收集器能。验证：
+//   1) 不收集 → live 环对象线性累积（证明若长期不收集确实会涨）
+//   2) Memory.collectCycles / collectCyclesIfNeeded → live 回落近基线（运行期回收有效）
+//   3) 多轮"制造环+自动收集" → live 稳定在低水平（长期运行不爆炸）
+import test;
+import memory;
+import rtti;
+
+class Node {
+    action:
+        void setBox(Box<Node> b) { box = b; }
+    property:
+        Box<Node> box;
+}
+
+class Box<T> {
+    action:
+        void add(T v) {
+            if (data_ == null) { data_ = new T[8]; }
+            data_[cnt_] = v;
+            cnt_ = cnt_ + 1;
+        }
+    property:
+        T[] data_;
+        int cnt_ = 0;
+}
+
+@static class S {
+    static:
+        // 造 n 个独立环（每个 1 Node + 1 Box，互指 → ARC 收不掉）
+        void make(int n) {
+            for (int i = 0; i < n; i = i + 1) {
+                Node a = new Node();
+                Box<Node> b = new Box<Node>();
+                b.add(a);
+                a.setBox(b);
+            }
+        }
+}
+
+// ---- @test 断言（--test 运行器执行；输出无 "FAIL:" 即通过）----
+
+// 显式收集回收环：对照（不收集则累积）+ 显式 collectCycles 全回收
+@test void test_explicit_collect_reclaims() {
+    int tid = 0;
+    { Node t = new Node(); tid = Rtti.typeId(t); }
+    long base = Memory.liveObjectCountByType(tid);
+    S.make(50000);
+    long acc = Memory.liveObjectCountByType(tid) - base;
+    Test.assertTrue(acc >= 49000, "no-collect accumulates rings (live=" + acc + ")");
+    S.make(50000);
+    long pre = Memory.liveObjectCountByType(tid) - base;
+    Memory.collectCycles();
+    long after = Memory.liveObjectCountByType(tid) - base;
+    Test.assertTrue(after <= 10,
+        "explicit collectCycles reclaims rings (pre=" + pre + " after=" + after + ")");
+}
+
+// 自动收集（水位 collectCyclesIfNeeded）限制累积 → 长期运行不 OOM
+@test void test_auto_collect_bounds() {
+    int tid = 0;
+    { Node t = new Node(); tid = Rtti.typeId(t); }
+    long base = Memory.liveObjectCountByType(tid);
+    for (int r = 0; r < 20; r = r + 1) {
+        S.make(20000);
+        Memory.collectCyclesIfNeeded();
+    }
+    long live = Memory.liveObjectCountByType(tid) - base;
+    // 20 轮 × 2 万环 = 累计制造 40 万环；水位（每 10 万类对象分配）收集有滞后，
+    // 但应限制 live 远小于制造量（<50k = 12.5%），而非线性增长 → 不会 OOM。
+    Test.assertTrue(live < 50000,
+        "auto-collect bounds live rings (live=" + live + " of 400k created)");
+}
