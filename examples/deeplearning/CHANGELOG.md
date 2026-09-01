@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P3b：buildRuntime 分派迁移到 op 枚举
+
+### 变更（`infer/graph.myp`）
+- `OpCode` 扩至 53 算子（补全前向 lowering 算子 Gemm/MatMul/Conv3D/MaxPool/AveragePool/
+  Pad/ReLU6/LeakyRelu/SiLU/HardSwish/Clip/Split/NCHW2NHWC/Reshape/Transpose/Slice/Concat/
+  Sqrt/ReduceMean/Resize/Upsample 等），成为全图 string→enum 唯一映射。
+- `buildRuntime` 接线循环改 `nodeOp(ni)` 分派，全部 ~50 分支 `t == "X"` →
+  `code == OpCode.X()`；调试信息改用 `nType_[ni]`；属性读取保持直读（热点）。行为零变化。
+
+### 验证
+- 全量回归 `MYP_IR_VERIFY=1`：identity_fold 2 ops、BN maxDiff 0、ops2d 4.77e-7、
+  CONST FOLD OK、ONNX MLP 99%、conv3d/pad/slice/split/tensorops/avgpool 全 OK、
+  ResNet GPU top-1 lakeside(10.328)、skip U-Net GPU 训练 acc 100% + grad check OK。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P3a：op 枚举 + 保护 traits + 统一属性访问器
 
 ### 变更（`infer/graph.myp`）

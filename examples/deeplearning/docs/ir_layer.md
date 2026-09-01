@@ -197,7 +197,7 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | **P2c** | DCE 消费 DefUseAnalysis | **已实施**：每轮 DCE 前重建 use 表，按 `valueUseCount` 删除死节点 | identity 3→1、CONST FOLD OK、skip U-Net GPU 100% |
 | **P2d** | 图输出 rewrite（`replaceAllUses` 覆盖隐式消费者 + 指纹含 `goName_`） | **已实施**：`Add(x,0)`/`Mul(x,1)` 输出直接是图输出也能折叠，图输出名改指保留值 | identity_fold 双输出 1 op、skip U-Net GPU 100% |
 | **P2e** | 恒等族扩展 + 连续激活合并（`Sub(x,0)`/`Div(x,1)`、`Relu(Relu(x))`→`Relu(x)`） | **已实施**：foldIdentityOps 扩展 Sub/Div（恒等操作数仅限 slot1）；新增 `FOLD_RELU`（含融合 `ConvRelu→Relu`） | identity_fold 双 Relu+Sub/Div 链 2 ops、skip U-Net GPU 100% |
-| **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | P3a 已实施：OpCode 枚举（pass+训练算子）+ `opTraits`（stateful/trainOnly）+ `nodeOp`/`attrFloat` 访问器；DCE 保护受保护节点；P2 融合/恒等 pass 迁移到枚举；buildRuntime 枚举/属性迁移（P3b） | infer_tests + grad_check + opt_check |
+| **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | P3a/P3b 已实施：OpCode 枚举 53 算子 + `opTraits`（stateful/trainOnly）+ `nodeOp`/`attrFloat`；DCE 保护受保护节点；P2 pass 与 `buildRuntime` 全部 ~50 分支分派迁移到枚举；剩余：attrInt/attrIntArr 属性统一 + buildReverseGraph 走 mutation API | infer_tests + grad_check + opt_check |
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
 
 ## 6. 收益（预期）
@@ -399,5 +399,23 @@ P3 首切片：op 枚举 + 保护 traits + 统一属性访问器，零行为变�
 
 验证：identity_fold 2 ops、BN maxDiff 0、ops2d 4.77e-7、CONST FOLD OK、ONNX MLP 99%、
 ResNet GPU top-1 lakeside(10.328) 逐位一致、skip U-Net GPU 训练 acc 100% + grad check OK。
+
+## 18. 实施状态：P3b（2026-09-02）
+
+buildRuntime lowering 分派迁移到 op 枚举（完成 op 枚举化的最后一大块）：
+
+- `OpCode` 扩到 53 个算子（新增 Gemm/MatMul/Sigmoid/Conv3D/ConvTranspose/MaxPool/
+  AveragePool/MaxPool3D/AveragePool3D/Pad/ReLU6/LeakyRelu/SiLU/HardSwish/Clip/Split/
+  NCHW2NHWC/Reshape/Transpose/Slice/Concat/Sqrt/ReduceMean/Resize/Upsample），成为全图
+  string→enum 唯一映射（不再只是 pass 侧）。
+- `buildRuntime` 接线循环 `string t = nType_[ni]` 改为 `int code = nodeOp(ni)`，全部
+  ~50 个 `t == "X"` 分派分支改为 `code == OpCode.X()`（含 `Resize||Upsample` 合并分支）；
+  wire-fail/unsupported 调试信息改用 `nType_[ni]`。属性读取保持直读（热点，P3c 再统一）。
+- 行为零变化：纯枚举分派重构，回归全绿。
+
+验证：全量回归（identity_fold 2 ops、BN maxDiff 0、ops2d 4.77e-7、CONST FOLD OK、
+ONNX MLP 99%、conv3d/pad/slice/split/tensorops/avgpool 全 OK、ResNet GPU top-1
+lakeside(10.328)、skip U-Net GPU 训练 acc 100% + grad check OK）——每条 lowering 分支
+均被真实/合成模型执行覆盖。
 
 ---
