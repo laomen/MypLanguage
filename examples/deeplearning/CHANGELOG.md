@@ -6,6 +6,32 @@
 
 ---
 
+## 2026-09-01 — 阶段一完成：全部 pass 迁入 GraphOptimizer（Graph 降为组合根）
+
+- **具体 pass 算法全部迁出 `graph.myp`**：`eliminateDeadNodes`/`fuseGapFlatten`/
+  `foldIdentityOps`/`foldDoubleRelu`/`fuseConvRelu`/`fuseReluOp`/`fuseConvAdd`/
+  `topoSort`/`planMemory`/`layoutNHWC`/`classifyShapes`/`fuseConvBN`/
+  `buildReverseGraph`/`inferShapes`/`foldShapeChains`/`foldConstants`
+  （+ `normalize3DNode`/`sliceAxis`）移入 `graph_optimizer.myp`，各以「具体
+  `Graph` 参数 + `compiler*` 公共访问器」跨类访问 Graph 状态；`Graph.runIRPass`
+  只做分发委托。
+- **`graph.myp` 从 ~3670 行降至 ~1120 行**：仅保留组合、解析器入口 API
+  （`setShape`/`graphInput*`/`graphOutput*`/`isWeightName`）、i64/protobuf 字节
+  解释器（经桥暴露给 optimizer）、runIRPass 骨架与 `compiler*` 窄桥。阶段一
+  「GraphFacade 只保留组合、配置和生命周期」目标达成。
+- **新增 `compiler*` 桥**（Graph `action:` 段）：`WeightAdd/WeightRows/
+  LiveConsumers/BnCount/IncBn/LossMode/GradName/EnsureGrad/ReplaceResult/
+  IsNodeOutput/ShapeKindOfName/I64*/F32At/Pb*/AttrSetIntArray/LongArray/
+  SliceCount/OutputCount/Resize*/NRedMode/NPadCval/ReadF32Init/RegComputedF32` 等，
+  覆盖 shape 推断与融合 pass 的全部跨类查询/写操作。
+- **回归**：**27/27 infer_tests + grad_check（L0=1.92528）在 `MYP_GPU=1
+  MYP_IR_VERIFY=1` 下全部通过**；ResNet output sum `336.658`；bn/conv3d/
+  residual_add/split 等专项均 OK。关键提交：`f59337f`（DCE）→ `3eeef70`（GAP）→
+  `cd640cf`（identity/double-relu）→ `095157a`（conv-relu/in-relu）→ `b6963f9`
+  （conv+add）→ `2a26977`（topo）→ `23d0a52`（planMemory）→ `807c1d8`（NHWC）→
+  `c992df5`（classify）→ `82fd763`（BN）→ `8859fa4`（reverse graph）→ `ffc5dbf`
+  （inferShapes/fold*）。
+
 ## 2026-09-01 — 阶段一：GraphCompiler 拥有完整 lowering（buildRuntime 迁出）
 
 ### 变更

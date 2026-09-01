@@ -146,13 +146,25 @@ void eraseNode(int node);
 - **已完成：`GraphOptimizer` orchestration**。推理/训练 pipeline 编排（runPipeline/
   optimize/optimizeTrain）移入 `GraphOptimizer`，经唯一 `IGraphOptimizeHost` 回调
   Graph 执行具体 pass。
-- **已验证**：16 个 infer_tests + 训练在 `MYP_GPU=1 MYP_IR_VERIFY=1` 下通过；
-  ResNet output sum `336.658`。关键提交：`f6f969a`（Shapes）、`1e2589d`（Weights）、
-  `493d31b`/`87b8665`/`83220b8`（Nodes）、`8cce71d`（Analysis）、`9e14439`（Planner）、
-  `9a2fb26`（Compiler mapping）、`732f30e`（Compiler lowering）、`824c376`（Optimizer）。
-- **下一步：`GraphOptimizer` 具体 pass 算法迁移**。`inferShapes`/`fuseConv*`/
-  `foldConstants` 等约 40 个 pass 方法仍留在 Graph；迁移需按 `GraphCompiler.lower`
-  已验证的「具体 Graph 参数 + 公共访问器」模式推进，先取一个低依赖 pass 试点。
+- **已完成：全部具体 pass 算法迁移**。`GraphOptimizer` 现拥有全部 pass 实现：
+  `eliminateDeadNodes`/`fuseGapFlatten`/`foldIdentityOps`/`foldDoubleRelu`/
+  `fuseConvRelu`/`fuseReluOp`/`fuseConvAdd`/`topoSort`/`planMemory`/`layoutNHWC`/
+  `classifyShapes`/`fuseConvBN`/`buildReverseGraph`/`inferShapes`/`foldShapeChains`/
+  `foldConstants`（+ `normalize3DNode`/`sliceAxis` helper）。每个 pass 以
+  「具体 `Graph` 参数 + `compiler*` 公共访问器」跨类访问 Graph 状态；Graph 的
+  `runIRPass` 只做分发委托。Graph 从 ~3670 行降至 ~1120 行，仅保留组合、解析器
+  入口 API、i64/protobuf 字节解释器（经桥暴露）、runIRPass 骨架与 `compiler*`
+  窄桥——达成阶段一「GraphFacade 只保留组合、配置和生命周期」目标。
+- **已验证**：**27/27 个 infer_tests + grad_check（L0=1.92528）在
+  `MYP_GPU=1 MYP_IR_VERIFY=1` 下全部通过**；ResNet output sum `336.658`。
+  关键提交：`f6f969a`（Shapes）、`1e2589d`（Weights）、`493d31b`/`87b8665`/
+  `83220b8`（Nodes）、`8cce71d`（Analysis）、`9e14439`（Planner）、`9a2fb26`/
+  `732f30e`（Compiler）、`824c376`/`f59337f`/`3eeef70`/`cd640cf`/`095157a`/
+  `b6963f9`/`2a26977`/`23d0a52`/`807c1d8`/`c992df5`/`82fd763`/`8859fa4`/
+  `ffc5dbf`（Optimizer 与 pass 迁移）。
+- **阶段一完成**：Graph 已拆分为 `GraphShapes`/`GraphWeights`/`GraphNodes`/
+  `GraphNodeAttrs`/`GraphAnalysis`/`GraphPlanner`/`GraphCompiler`/`GraphOptimizer`
+  八个独立组件，`Graph` 为组合根（facade），无 pass 算法残留。
 
 `GraphWeights` 的迁移边界进一步固定为：
 
