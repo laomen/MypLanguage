@@ -711,6 +711,10 @@ const CodeGen::InterfaceMethodInfo* CodeGen::findInterfaceMethod(
 std::string CodeGen::resolveArgClassName(const Expr& arg) {
     if (arg.kind == ExprKind::NewExpr)
         return static_cast<const NewExpr&>(arg).class_name;
+    // `this` evaluates to the current concrete instance. It can enter an
+    // interface parameter context just like a local class variable.
+    if (arg.kind == ExprKind::ThisExpr && !current_class_name_.empty())
+        return current_class_name_;
     if (arg.kind == ExprKind::Identifier) {
         auto& id = static_cast<const IdentifierExpr&>(arg);
         auto vit = var_class_map_.find(id.name);

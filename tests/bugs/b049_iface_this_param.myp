@@ -1,0 +1,29 @@
+// BUG-049: this -> interface parameter must build a {data,vtable} fat pointer.
+// Previously resolveArgClassName/ upcastClsName could not resolve ThisExpr,
+// passing a raw ptr where the callee expected an interface value.
+import test;
+
+interface Greeter {
+    int value();
+}
+
+class Relay {
+    action:
+        int read(Greeter g) { return g.value(); }
+}
+
+class Source {
+    interface class Greeter;
+    action:
+        @constructor Source() { relay_ = new Relay(); }
+        int value() { return 49; }
+        int throughRelay() { return relay_.read(this); }
+    property:
+        Relay relay_;
+}
+
+@test void t_iface_this_param() {
+    Source source = new Source();
+    Test.assertEq(source.throughRelay(), 49, "this interface param");
+    Test.report("t_iface_this_param", true);
+}

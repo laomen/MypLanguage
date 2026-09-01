@@ -1166,6 +1166,8 @@ class CodeGen {
             string vc = e.valueClass();
             if (Str.len(vc) == 0) vc = e.resolvedClass();
             if (Str.len(vc) != 0 && isConcreteClassKind(vc) != 0) return vc;
+            // this 是当前具体类实例；传入接口形参时须构造 fat pointer。
+            if (e.kind() == "This" && Str.len(curClass_) != 0) return curClass_;
             // B) New 直接取类名
             if (e.kind() == "New") {
                 string cn = e.className();
