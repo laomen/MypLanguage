@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P1c/P2a：按需分析 + 首条 DefUse 驱动恒等 Rewrite
+
+### 变更（`infer/graph.myp`）
+- P1c：`ensureDefUse/ensureTopo/ensurePassAnalyses` 按需获取分析；`runIRPassToFixpoint`
+  以 `lastPassChanged` 最多迭代指定次数，未收敛即失败。Liveness 继续只由 lowering 前
+  `planMemory` 显式构建，防止优化 pass 隐式改写内存规划。
+- P2a：新增 `IDENTITY_FOLD`（声明 DefUse 依赖），严格匹配标量初始器 `Add(x,0)` 与
+  `Mul(x,1)`，通过 `replaceAllUses` 的精确 `(userNode,operandSlot)` edge 重连，再 tombstone
+  节点/中间 Value；跳过图输出、广播、动态或近似常量。
+- 修复 DefUse analysis validity：`replaceAllUses`/`replaceNodeInput` 除置 `duValid_=0` 外也
+  清 `analysisValid_` 的 DefUse 位；`ensureDefUse` 检查两者。此前链式 rewrite 第二轮会错用
+  旧 edge，导致消费者未重连、buildRuntime wire fail。
+
+### 验证
+- 新 `infer/tools/make_identity_fold_onnx.py` + `infer_tests/identity_fold_main.myp`：
+  `data→Add(0)→Mul(1)→Softmax` 优化后 runtime **3 ops→1 Softmax**，输出匹配 numpy，
+  `IDENTITY FOLD OK`（含 `MYP_IR_VERIFY=1`）。
+- 回归：带跳跃连接 3D U-Net GPU 训练 **acc 100%**（`MYP_IR_VERIFY=1`）。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P1b：PassResult changed 契约 + 指纹驱动分析保留
 
 ### 变更（`infer/graph.myp`）

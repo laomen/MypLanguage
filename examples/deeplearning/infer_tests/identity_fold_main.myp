@@ -1,0 +1,44 @@
+// identity_fold_main.myp — IR-P2: Add(x,0) / Mul(x,1) pattern rewrite regression.
+// 生成器图：data -> Add(0) -> Mul(1) -> Softmax；优化后运行时只应保留 Softmax。
+import env;
+import fmt;
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class IdentityFoldMain {
+    action:
+        @constructor IdentityFoldMain() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(4096);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load("./deeplearning/data/onnx/identity_fold.onnx", rt);
+            if (ok == 0) { Console.writeLine("IDENTITY FOLD LOAD FAIL"); return; }
+            int data = loader.tensorId("data");
+            int prob = loader.tensorId("prob");
+            if (data < 0 || prob < 0) { Console.writeLine("IDENTITY FOLD TENSOR FAIL"); return; }
+            rt.setFlat(data, 0, 1.0);
+            rt.setFlat(data, 1, 2.0);
+            rt.setFlat(data, 2, 3.0);
+            rt.run();
+            double p0 = rt.getFlat(prob, 0);
+            double p1 = rt.getFlat(prob, 1);
+            double p2 = rt.getFlat(prob, 2);
+            double e0 = 0.09003057;
+            double e1 = 0.24472847;
+            double e2 = 0.66524096;
+            int bad = 0;
+            if (Math.abs(p0 - e0) > 1.0e-5) bad = 1;
+            if (Math.abs(p1 - e1) > 1.0e-5) bad = 1;
+            if (Math.abs(p2 - e2) > 1.0e-5) bad = 1;
+            Console.writeString("identity runtime ops=");
+            Console.write(rt.opCount());
+            Console.writeLine("");
+            if (rt.opCount() == 1 && bad == 0) Console.writeLine("IDENTITY FOLD OK");
+            else Console.writeLine("IDENTITY FOLD FAIL");
+        }
+}
+
+int main() {
+    IdentityFoldMain app = new IdentityFoldMain();
+    return 0;
+}

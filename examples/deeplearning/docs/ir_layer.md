@@ -191,7 +191,9 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | **P0** | 稳定 NodeId/ValueId、Use(user,slot)、访问器、mutation API、`rebuildDefUse`、`verifyIR`；先只在导入后/每个既有 graph mutation pass 后重建，新增只读示例 pass | **已实施**：Shape table index=ValueId；压缩 use 链表（最大 5×512 边）；topoSort 改用索引 | ONNX MLP 99%、skip U-Net GPU 100%，均以 `MYP_IR_VERIFY=1` 运行 |
 | **P1a** | AnalysisManager 的保守有效性管理 + 固定 pass dispatcher | **已实施**：`IRAnalysis` valid 位/generation；每个旧 pass 后 ALL 失效；DefUse/Topo/Liveness 在重建点标记有效；`runIRPass` 驱动原固定顺序 | ONNX MLP 99%、skip U-Net GPU 100%，均以 `MYP_IR_VERIFY=1` 运行 |
 | **P1b** | `PassResult{ok,changed,preservedAnalyses}` + required analysis 声明；把保守失效收紧为按 pass 精确保留 | **已实施基础契约**：Graph `lastPassOk/Changed/Preserved`；结构指纹判断 changed；未改图保留 ALL，改图失效 ALL | ONNX MLP 99%、skip U-Net GPU 100%，均以 `MYP_IR_VERIFY=1` 运行 |
-| **P2** | pattern-match/rewrite 基建 + 迁移一个低风险融合（Conv→Relu）；新增 Add(x,0)、Mul(x,1) 等恒等简化 | 输出不变（优化只删冗余） | 与 `MYP_OLD_IR=1` 逐位对比 |
+| **P1c** | 按需 DefUse/Topo 获取 + 有上限的不动点执行器 | **已实施**：`ensureDefUse/ensureTopo/ensurePassAnalyses`；`runIRPassToFixpoint`；Liveness 保持 lowering 前显式构建 | identity-fold + ONNX MLP + skip U-Net |
+| **P2a** | pattern-match/rewrite 基建 + 迁移一个低风险融合（Conv→Relu）；新增 Add(x,0)、Mul(x,1) 等恒等简化 | **已实施首条 rewrite**：严格标量初始器的 Add(x,0)/Mul(x,1)，DefUse 重连后 tombstone | identity_fold.onnx：3 ops→1 Softmax，结果匹配 numpy |
+| **P2b** | 迁移 Conv→Relu 等既有融合为 pattern 描述 | 输出不变（重构） | 与旧 pass 逐位对比 |
 | **P3** | op 枚举化 + schema + 属性统一访问 + 反向图在 IR 上构建（buildReverseGraph 走 mutation API） | 零变化（重构） | infer_tests + grad_check + opt_check |
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
 
@@ -284,5 +286,25 @@ P1b 将 existing pass 的返回 `ok` 扩展为不改变 MYP 方法签名的 Grap
 **P1b 后续边界**：仍未实现 pass 的逐分析 preserved 掩码、PassManager 按需调用
 `rebuildDefUse/topoSort/planMemory`，也尚未实现不动点迭代。这些是 P1c，且只在 P2 需要
 迭代 pattern rewrite 时落地；当前 P1b 已提供正确的 changed 基础。
+
+## 12. 实施状态：P1c + P2a（2026-09-02）
+
+- `ensureDefUse/ensureTopo/ensurePassAnalyses` 使 pass 能声明并在执行前获取所需分析；
+  Liveness 不提供隐式 ensure，因为 `planMemory` 写入 lowering 规划，仍只能在 lowering 前
+  显式执行。`runIRPassToFixpoint(pass,maxIter)` 以 `lastPassChanged` 收敛，到上限仍变化即失败。
+- 第一条声明 `DEF_USE` 的 P2 pass 是 `IDENTITY_FOLD`。它只匹配精确 F32 标量初始化器：
+  `Add(x, 0)` 或 `Mul(x, 1)`，跳过图输出、动态标量、广播和近似值；通过
+  `replaceAllUses(out, keep)` 重连精确 `(user,slot)` edge，然后 tombstone 原节点/结果。
+  既有 DCE 随后回收失去用户的常量。
+- 专用 `identity_fold.onnx` 夹具为 `data → Add(0) → Mul(1) → Softmax`。P2a 后 runtime
+  op 数由 3 降为 1，Softmax 输出与 numpy 匹配，`MYP_IR_VERIFY=1` 无错误。
+- **DefUse 一致性修复**：首版 `replaceAllUses` 只置 `duValid_=0`，却没有清
+  `analysisValid_` 的 DEF_USE 位；链式 rewrite 的第二轮 `ensureDefUse` 因 generation 未变
+  错用旧 edge，留下 `Mul` 输出的悬空消费者。现 `ensureDefUse` 同时检查 `duValid_`，
+  `replaceNodeInput/replaceAllUses` 同步清 DEF_USE valid 位。这是 mutation API 必须同时维护
+  数据与 analysis validity 的直接证明。
+
+**下一步**：P2b 将先把现有 `Conv→Relu` 融合迁移到同一 match/rewrite API；此时需扩展
+`replaceResult/eraseNode` 与图输出 rewrite，不能把现有 fusion 循环直接复制为“pattern”。
 
 ---

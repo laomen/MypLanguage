@@ -114,6 +114,7 @@ class IRPassKind {
         int FUSE_GAP_FLATTEN() { return 8; }
         int DCE() { return 9; }
         int LAYOUT_NHWC() { return 10; }
+        int IDENTITY_FOLD() { return 11; }  // P2：Add(x,0)/Mul(x,1)，依赖 DefUse
 }
 
 class Graph {
@@ -154,7 +155,28 @@ class Graph {
         int lastPassOk() { return lastPassOk_; }
         int lastPassChanged() { return lastPassChanged_; }
         int lastPassPreservedAnalyses() { return lastPassPreserved_; }
-        int passRequiredAnalyses(int pass) { return 0; }  // P1b 现有 pass 不依赖缓存；P2 rewrite 再声明 DefUse。
+        // P1c：P2 rewrite pass 首次声明 DefUse；legacy pass 直接扫描 SoA，依赖为 0。
+        int passRequiredAnalyses(int pass) {
+            if (pass == IRPassKind.IDENTITY_FOLD()) return IRAnalysis.DEF_USE();
+            return 0;
+        }
+        // 分析按需获取。ensureTopo 会先保证 DefUse；两者无 graph mutation，不改变 generation。
+        int ensureDefUse() {
+            if (duValid_ == 0 || analysisValid(IRAnalysis.DEF_USE()) == 0 || duGeneration_ != analysisGeneration_) rebuildDefUse();
+            return 1;
+        }
+        int ensureTopo() {
+            if (analysisValid(IRAnalysis.TOPO()) == 0 || topoGeneration_ != analysisGeneration_) return topoSort();
+            return 1;
+        }
+        int ensurePassAnalyses(int pass) {
+            int required = passRequiredAnalyses(pass);
+            if ((required & IRAnalysis.DEF_USE()) != 0) { if (ensureDefUse() == 0) return 0; }
+            if ((required & IRAnalysis.TOPO()) != 0) { if (ensureTopo() == 0) return 0; }
+            // Liveness 只由 lowering 前 planMemory 显式构建；禁止在优化 pass 中隐式写规划结果。
+            if ((required & IRAnalysis.LIVENESS()) != 0 && analysisValid(IRAnalysis.LIVENESS()) == 0) return 0;
+            return 1;
+        }
         void invalidateAnalyses(int mask) {
             analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - mask);
             analysisGeneration_ = analysisGeneration_ + 1;
@@ -210,6 +232,23 @@ class Graph {
             if (node < 0 || node >= nCount_ || slot < 0 || slot >= 5 || value < 0 || value >= sCount_) return;
             nodeIn(node, slot, shName_[value]);
             duValid_ = 0;
+            analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
+        }
+        // P2 rewrite 原语：把 oldValue 的每条精确 Use（包含重复 operand）改接到 newValue。
+        // 必须先 ensureDefUse；扫描 use 快照期间只改 node 输入，最后一次性失效索引。
+        void replaceAllUses(int oldValue, int newValue) {
+            if (oldValue < 0 || newValue < 0 || oldValue >= sCount_ || newValue >= sCount_) return;
+            ensureDefUse();
+            int count = valueUseCount(oldValue);
+            int use = 0;
+            while (use < count) {
+                int user = valueUseNode(oldValue, use);
+                int slot = valueUseSlot(oldValue, use);
+                if (user >= 0 && slot >= 0) nodeIn(user, slot, shName_[newValue]);
+                use = use + 1;
+            }
+            duValid_ = 0;
+            analysisValid_ = analysisValid_ & (IRAnalysis.ALL() - IRAnalysis.DEF_USE());
         }
         int valueProducer(int value) { if (duValid_ == 0 || value < 0 || value >= sCount_) return -1; return duProducer_[value]; }
         int valueUseCount(int value) { if (duValid_ == 0 || value < 0 || value >= sCount_) return 0; return duUseCount_[value]; }
@@ -517,8 +556,47 @@ class Graph {
             }
             return hash;
         }
+        // P2：只处理严格标量初始化器的 Add(x,0) / Mul(x,1)。不折叠图输出，避免在 P2
+        // 引入 graph-output rewrite；不处理近似值、动态标量或 broadcast，保持数值语义严格。
+        int isScalarInitValue(string name, double expect) {
+            int wi = initIdx(name);
+            if (wi < 0 || wLen_[wi] != 4) return 0;
+            int s = shapeIdx(name);
+            if (s < 0 || shapeElementCount(name) != 1) return 0;
+            if (readF32Init(name, 1) != 1) return 0;
+            double delta = f32Tmp_[0] - expect;
+            if (delta < 0.0) delta = 0.0 - delta;
+            if (delta > 1.0e-12) return 0;
+            return 1;
+        }
+        int foldIdentityOps() {
+            int changed = 0;
+            int node = 0;
+            while (node < nCount_) {
+                string op = nType_[node];
+                if (op != "Add" && op != "Mul") { node = node + 1; continue; }
+                string output = effectiveOut(node);
+                if (output == "" || isGraphOutput(output) == 1) { node = node + 1; continue; }
+                double identity = (op == "Add") ? 0.0 : 1.0;
+                int in0 = nodeInputValue(node, 0);
+                int in1 = nodeInputValue(node, 1);
+                int keep = -1;
+                if (isScalarInitValue(nIn0_[node], identity) == 1) keep = in1;
+                else if (isScalarInitValue(nIn1_[node], identity) == 1) keep = in0;
+                int out = nodeOutputValue(node, 0);
+                if (keep >= 0 && out >= 0) {
+                    replaceAllUses(out, keep);
+                    nType_[node] = "";
+                    markDeadTensor(output);
+                    changed = 1;
+                }
+                node = node + 1;
+            }
+            return changed;
+        }
         // IR-P1b pass dispatcher：PassResult 写入 lastPass*；仅 changed 时失效相关分析。
         int runIRPass(int pass) {
+            if (ensurePassAnalyses(pass) == 0) { lastPassOk_ = 0; lastPassChanged_ = 0; lastPassPreserved_ = 0; return 0; }
             long before = analysisFingerprint();
             int ok = 1;
             if (pass == IRPassKind.FOLD_SHAPES()) ok = foldShapeChains();
@@ -531,6 +609,7 @@ class Graph {
             else if (pass == IRPassKind.FUSE_GAP_FLATTEN()) ok = fuseGapFlatten();
             else if (pass == IRPassKind.DCE()) ok = eliminateDeadNodes();
             else if (pass == IRPassKind.LAYOUT_NHWC()) ok = layoutNHWC();
+            else if (pass == IRPassKind.IDENTITY_FOLD()) { foldIdentityOps(); ok = 1; }
             lastPassOk_ = ok;
             lastPassChanged_ = 0;
             lastPassPreserved_ = 0;
@@ -545,6 +624,18 @@ class Graph {
             }
             return ok;
         }
+        // P1c：最多 maxIter 轮，直到 pass 报告 changed=0。达到上限仍变化即失败；P2 的
+        // 恒等 rewrite 使用此入口，防止错误 rewrite 在图上无限震荡。
+        int runIRPassToFixpoint(int pass, int maxIter) {
+            int iter = 0;
+            while (iter < maxIter) {
+                if (runIRPass(pass) == 0) return 0;
+                if (lastPassChanged_ == 0) return 1;
+                iter = iter + 1;
+            }
+            Console.writeLine("DBG pass fixpoint limit=" + Fmt.i(pass));
+            return 0;
+        }
         // 公共 pass 管线（fold→inferShapes→classify→fusion→DCE→layout→topoSort）。
         // optimize（推理）与 optimizeTrain（训练）共用；返回 1=成功。
         int runPassPipeline() {
@@ -558,6 +649,7 @@ class Graph {
             runIRPass(IRPassKind.FUSE_CONV_RELU());
             runIRPass(IRPassKind.FUSE_RELU());
             runIRPass(IRPassKind.FUSE_GAP_FLATTEN());
+            if (runIRPassToFixpoint(IRPassKind.IDENTITY_FOLD(), 4) == 0) { Console.writeLine("DBG fail identityFold"); return 0; }
             runIRPass(IRPassKind.DCE());
             if (doNHWC_ == 1) { if (runIRPass(IRPassKind.LAYOUT_NHWC()) == 0) { Console.writeLine("DBG fail layoutNHWC"); return 0; } }
             if (topoSort() == 0) { Console.writeLine("DBG fail topoSort"); return 0; }
