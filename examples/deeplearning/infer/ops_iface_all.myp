@@ -317,6 +317,26 @@ class ConvReluOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
+// ---- convResidual（opKind 73 前向，Conv+残差Add 融合；无独立反向）----
+class ConvResidualOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int rd = rt.opXAt(i, 0);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            InferOps.convResidual(rt.arenaRef(),
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorOff(rd),
+                rt.tensorH(wb), rt.tensorW(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- transposeNCHW2NHWC（opKind 12 前向）----
 class TransposeNchw2NhwcOp {
     interface class IOp;
@@ -422,6 +442,27 @@ class GpuConvReluOp {
                 rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
                 rt.tensorOff(wb), bOff,
                 rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorH(wb), rt.tensorW(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- convResidual（GPU，opKind 73）----
+class GpuConvResidualOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int rd = rt.opXAt(i, 0);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.convResidual(rt.arenaRef(), work,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), rt.tensorC(yd), rt.tensorH(yd), rt.tensorW(yd),
+                rt.tensorOff(rd),
                 rt.tensorH(wb), rt.tensorW(wb),
                 rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
                 rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.devRef());
@@ -1847,6 +1888,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(9, new GapoolOp(), 0);                rt.registerFwd(9, new GpuGapoolOp(), 1);
     rt.registerFwd(10, new FlattenOp(), 0);              rt.registerFwd(10, new GpuFlattenOp(), 1);
     rt.registerFwd(11, new ConvReluOp(), 0);             rt.registerFwd(11, new GpuConvReluOp(), 1);
+    rt.registerFwd(73, new ConvResidualOp(), 0);         rt.registerFwd(73, new GpuConvResidualOp(), 1);
     rt.registerFwd(12, new TransposeNchw2NhwcOp(), 0);   rt.registerFwd(12, new GpuTransposeNchw2NhwcOp(), 1);
     rt.registerFwd(13, new ConvNhwcOp(), 0);             rt.registerFwd(13, new GpuConvNhwcOp(), 1);
     rt.registerFwd(14, new ConvNhwcReluOp(), 0);         rt.registerFwd(14, new GpuConvNhwcReluOp(), 1);

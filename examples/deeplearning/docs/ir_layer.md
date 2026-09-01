@@ -201,6 +201,7 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 | **P4** | DefUse 增量维护、分析缓存、激活/残差/布局优化；容量动态化或受控扩容 | 增量优化 | 性能、图大小、峰值内存对比 |
 
 > P4 进展：**P4-1 已实施**（2026-09-02）——恒等折叠支持任意形状/广播常量张量（`isConstValue`）。
+> **P4-2 已实施**（2026-09-02）——残差 `Conv+Add` 融合（新 opKind 73 + `FUSE_CONV_ADD` + planMemory nIn3_/nIn4_）。
 
 ## 6. 收益（预期）
 
@@ -466,5 +467,24 @@ P4 首个优化：恒等折叠支持任意形状/广播常量张量。
 验证：identity_fold 夹具的 one/zero2/zero4/one4 改为全形状常量张量（zero 保持标量以覆盖旧
 路径）——优化后 runtime 仍 2 ops、图输出 rename 与读数一致；BN/ops2d/const/ONNX MLP/skip
 U-Net GPU 训练全回归绿。
+
+## 22. 实施状态：P4-2（2026-09-02）
+
+残差 `Conv+Add` 融合（ResNet/U-Net 每块省一次 arena 往返，P4 价值最大的优化）：
+
+- 图 pass `FUSE_CONV_ADD`（IRPassKind 13，声明 DefUse）：Conv（或 BN 折叠后）输出的唯一
+  Use = Add 的 slot0 → 卷积有效输出改接 Add 输出、残差（Add 的 slot1）登记到 `nIn3_`，
+  tombstone Add。约束：不融合已带 Relu 的卷积（`convResidual` 内核无 doRelu）；残差必须
+  是活张量。
+- 后端：新 opKind **73** `addConvResidual`（runtime）+ CPU/GPU `convResidual` 内核（输出
+  直接加残差，同布局同偏移）+ `ConvResidualOp`/`GpuConvResidualOp` 接口类注册。
+- `planMemory` 的 lastUse 现覆盖 `nIn3_`/`nIn4_`——残差融合把 Add 的 slot1 登记进 Conv 的
+  nIn3_，liveness 必须识别这个新增消费者，否则残差缓冲被提前复用而损坏（同时修正了
+  BwdConcat 第三输入此前未被 lastUse 覆盖的潜在问题）。
+
+验证：ResNet50 GPU `residual_fused=16`、ops 88→72、top-1 lakeside(10.328) 逐位一致、稳态
+推理 ~80ms（原 96ms，-17%）；ResNet50 CPU 同 fusion 输出一致；resnet18 top-5
+[236,237,238,896,897] 与参考一致；BN/ops2d/const/ONNX MLP/conv3d/skip U-Net GPU 训练
+acc 100% + grad check 全回归绿。
 
 ---

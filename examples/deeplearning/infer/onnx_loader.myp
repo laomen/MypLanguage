@@ -63,6 +63,7 @@ class OnnxLoader {
         void setDiceWMode(int v) { diceWMode_ = v; }
         int diceWMode() { return diceWMode_; }
         int fuseCount() { return g_.fuseCount(); }
+        int fusedAddCount() { return g_.fusedAddCount(); }
         int gapCount() { return g_.gapCount(); }
         int dceCount() { return g_.dceCount(); }
         int foldCount() { return g_.foldCount(); }

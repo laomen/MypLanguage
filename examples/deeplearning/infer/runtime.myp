@@ -508,6 +508,24 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
 
+        // 融合 Conv+残差Add（P4-2，opKind=73）：卷积输出直接加残差张量写入 out。
+        // 参数同 addConv；残差 tid 存 opX_[id*4+0]（residual 与 out 同形状同布局）。
+        void addConvResidual(int inTid, int wTid, int bTid, int outTid, int residTid,
+                             int strideH, int strideW, int padT, int padB, int padL, int padR,
+                             int dilH, int dilW, int group) {
+            int id = opCount_;
+            opKind_[id] = 73;
+            opA_[id] = inTid;
+            opB_[id] = wTid;
+            opC_[id] = bTid;
+            opD_[id] = outTid;
+            opP0_[id] = strideH; opP1_[id] = strideW; opP2_[id] = padT; opP3_[id] = padB;
+            opP4_[id] = padL; opP5_[id] = padR; opP6_[id] = dilH; opP7_[id] = dilW;
+            opP8_[id] = group;
+            opX_[id * 4 + 0] = residTid;
+            opCount_ = opCount_ + 1;
+        }
+
         // ---- F8：ConvTranspose（opKind 40，group=1）----
         // 权重 [Cin,Cout,kh,kw] 直接拷贝（ONNX 布局）；outPad 已并入输出形状（内核用不到）
         void addConvTranspose(int inTid, int wTid, int bTid, int outTid,

@@ -38,6 +38,8 @@ class ResnetInferApp {
             Console.writeLong(loader.fuseCount());
             Console.writeString("  bn_fused=");
             Console.writeLong(loader.bnCount());
+            Console.writeString("  residual_fused=");
+            Console.writeLong(loader.fusedAddCount());
             Console.writeString("  gapFlatten_fused=");
             Console.writeLong(loader.gapCount());
             Console.writeString("  dce=");

@@ -282,6 +282,53 @@ class GpuInferOps {
             }
         }
 
+        // 融合 Conv+残差Add（P4-2，opKind=73）：与 conv 同，输出直接加残差（同布局同偏移）。
+        void convResidual(float[] a, int work,
+                  int xOff, int xN, int xC, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yH, int yW,
+                  int rOff,
+                  int kh, int kw,
+                  int sh, int sw, int pt, int pb, int pl, int pr,
+                  int dh, int dw, int group, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long ox = p % yW;
+                    long oy = (p / yW) % yH;
+                    long oc = (p / (yW * yH)) % yC;
+                    long nn = p / (yW * yH * yC);
+                    int cpg = xC / group;
+                    int ocpg = yC / group;
+                    long g = oc / ocpg;
+                    int wc = cpg * kh * kw;
+                    float sum = 0.0f;
+                    if (bOff >= 0) sum = a[bOff + oc];
+                    int ic = 0;
+                    while (ic < cpg) {
+                        long cIn = g * cpg + ic;
+                        int ky = 0;
+                        while (ky < kh) {
+                            long iy = oy * sh - pt + ky * dh;
+                            if (iy >= 0 && iy < xH) {
+                                int kx = 0;
+                                while (kx < kw) {
+                                    long ix = ox * sw - pl + kx * dw;
+                                    if (ix >= 0 && ix < xW) {
+                                        sum = sum + a[xOff + nn * xC * xH * xW + cIn * xH * xW + iy * xW + ix]
+                                                   * a[wOff + oc * wc + ic * kh * kw + ky * kw + kx];
+                                    }
+                                    kx = kx + 1;
+                                }
+                            }
+                            ky = ky + 1;
+                        }
+                        ic = ic + 1;
+                    }
+                    a[yOff + p] = sum + a[rOff + p];   // 残差同布局：p 即输出内偏移
+                }
+            }
+        }
+
         // ---- 训练：反向内核（阶段3d，GPU；thread-per-gradient-element + 内层归约，无原子）----
 
         // 反向 dense：db[o]=Σb dY[o,b]；dW[o,i]=Σb dY[o,b]·x[i,b]；dX[i,b]=Σo dY[o,b]·W[o,i]

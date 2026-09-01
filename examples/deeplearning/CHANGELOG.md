@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-09-XX — 阶段 IR-P4.2：残差 Conv+Add 融合
+
+### 变更
+- 图 pass `FUSE_CONV_ADD`（graph.myp）：Conv/BN 折叠输出唯一 Use=Add(slot0) → 卷积有效输出
+  改接 Add 输出、残差（slot1）登记 `nIn3_`、tombstone Add；不融合带 Relu 的卷积。
+- 后端（runtime/ops/gpu_ops/ops_iface_all）：新 opKind 73 `addConvResidual` + CPU/GPU
+  `convResidual` 内核（输出直接加残差）+ 接口类注册。
+- `planMemory` lastUse 覆盖 `nIn3_`/`nIn4_`（残差消费者 + BwdConcat 第三输入）。
+
+### 验证
+- ResNet50 GPU：`residual_fused=16`、ops 88→72、top-1 lakeside(10.328) 逐位一致、稳态
+  ~80ms（原 96ms）；ResNet50 CPU / resnet18 top-5 参考一致。
+- 回归 `MYP_IR_VERIFY=1`：identity/BN/ops2d/const/ONNX MLP/conv3d 全 OK、skip U-Net GPU
+  训练 acc 100% + grad check OK。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P4.1：恒等折叠支持任意形状/广播常量张量
 
 ### 变更（`infer/graph.myp`）
