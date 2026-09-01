@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-01 — 阶段四 G5：Tile 算子（沿各维按倍数复制）
+
+- OpCode `TILE(76)` + `opCode` 映射；`consumerKindOf` Tile → CNN_ACT（4D）；
+  `classifyShapes` Tile repeats 初始器标 SHAPE/INT64 dead；`inferShapes` Tile
+  分支：输出 = 输入维 × repeats 维（逐元素乘，repeats 左对齐 rank 不足补 1）。
+- runtime `addTile(in,out,id0-3,od0-3)` opKind 76（opP0-3=id, opP4-7=od）；
+  ops/gpu_ops `tile` kernel：输出 index % 输入维（维=1 → 0），与 where1/expand
+  同构的 4D broadcast decode（输入维可为任意倍数，非仅 1）。
+- `ops_iface_all` 补 `TileOp`/`GpuTileOp` + `registerFwd(76)`。
+- 新增 `tools/make_tile_onnx.py`（opset13：in[1,2,3,4] tile [1,2,2,3] →
+  out[1,4,6,12]）+ `infer_tests/tile_main.myp`：`TILE ALL OK`，CPU+GPU
+  max diff 0 vs ORT。
+- 回归：32/32 infer_tests + grad_check（GRAD CHECK OK）+ ResNet output sum
+  `336.658`。
+
 ## 2026-09-01 — 阶段四 G5：Where 算子（逐元素选择）
 
 - OpCode `WHERE(75)` + `opCode` 映射；`consumerKindOf` Where → CNN_ACT（4D 数据）；

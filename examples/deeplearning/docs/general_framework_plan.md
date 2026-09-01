@@ -284,16 +284,23 @@ OpKind
   `where1`（保留字做函数名 → 整文件解析错乱）。新增 `tools/make_where_onnx.py`
   （opset13：cond[1,2,1,1]?x[1,2,3,4]:y[1,2,3,4]→out，cond 广播）+
   `infer_tests/where_main.myp`（WHERE ALL OK，CPU+GPU max diff 0 vs ORT）。
+- **已完成：阶段四 G5 Tile 算子**（commit `0b4eeb2`）。OpCode `TILE(76)` +
+  `opCode` 映射；`classifyShapes` repeats 初始器标 SHAPE/INT64 dead；
+  `inferShapes` 输出 = 输入维 × repeats 维；runtime `addTile(in,out,id0-3,od0-3)`
+  opKind 76；CPU/GPU kernel 输出 index % 输入维（与 where1/expand 同构的 4D
+  broadcast decode，输入维可为任意倍数）。新增 `tools/make_tile_onnx.py`
+  （opset13：in[1,2,3,4] tile [1,2,2,3] → out[1,4,6,12]）+
+  `infer_tests/tile_main.myp`（TILE ALL OK，CPU+GPU max diff 0 vs ORT）。
 - **已完成：阶段七 Unsupported op 诊断**（commit `627a58c`）。loader 解析时检测
   未知 ONNX op → 打印 op 类型/节点索引/输入名 + `badOp_` 标记 → `load()` 返回 0
   （显式失败而非静默错误/段错误）。OpCode 补 `CONSTANT(57)` 防误报。
-- **已验证**：31/31 infer_tests + grad_check（L0=1.92528，GRAD CHECK OK）在
+- **已验证**：32/32 infer_tests + grad_check（L0=1.92528，GRAD CHECK OK）在
   `MYP_GPU=1 MYP_IR_VERIFY=1` 下全部通过；ResNet output sum `336.658`。关键
   提交：`8a38beb`（G2 基础）、`9508a10`（DATA role）、`88d0fd2`（G3 负轴）、
   `0440a18`（Reduce 族）、`627a58c`（op 诊断）、`bad6242`（Expand）、
-  `6552144`（Where）。
+  `6552144`（Where）、`0b4eeb2`（Tile）。
 - **下一步**：G3 剩余（broadcast/ShapeExpr/dtype 转换规则）与阶段四其余算子
-  （Gather 完整/Tile/Squeeze）。当前模型集为 4D/5D 静态 shape +
+  （Gather 完整/Squeeze）。当前模型集为 4D/5D 静态 shape +
   全 FLOAT + 同形状广播，broadcast 统一与 ShapeExpr 无模型驱动——按「不为没有
   目标的模式提前堆代码」，优先推进有合成测试可验证的算子补全。
 
@@ -324,7 +331,7 @@ OpKind
 - `Gather`
 - `Expand`（✅ 完成，commit `bad6242`）
 - `Where`（✅ 完成，commit `6552144`）
-- `Tile`
+- `Tile`（✅ 完成，commit `0b4eeb2`）
 - `Squeeze`
 - `ReduceSum/ReduceMax/ReduceMin`（✅ 完成，commit `0440a18` + `62b8b21`）
 - 完整 broadcast 的 `MatMul/BatchMatMul`
