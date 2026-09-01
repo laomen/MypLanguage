@@ -205,6 +205,8 @@ class OpCode {
         int TILE() { return 76; }
         int SQUEEZE() { return 77; }
         int GATHER() { return 78; }
+        int LOG_SOFTMAX() { return 79; }
+        int EMBEDDING() { return 80; }
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -266,6 +268,8 @@ class OpCode {
             if (t == "Tile") return OpCode.TILE();
             if (t == "Squeeze") return OpCode.SQUEEZE();
             if (t == "Gather") return OpCode.GATHER();
+            if (t == "LogSoftmax") return OpCode.LOG_SOFTMAX();
+            if (t == "Embedding") return OpCode.EMBEDDING();
             if (t == "Resize") return OpCode.RESIZE();
             if (t == "Upsample") return OpCode.UPSAMPLE();
             return OpCode.UNKNOWN();

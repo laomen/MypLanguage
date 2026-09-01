@@ -2791,6 +2791,50 @@ class GpuInferOps {
                 }
             }
         }
+        // LogSoftmax（G5）：沿 axis 稳定 log-softmax。thread-per-(outer*inner) 列，
+        // 每线程在 axisDim 上归约（同 softmax 模式）。
+        void logSoftmax(float[] a, int work, int inOff, int outOff, int outer, int axisDim, int inner, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int oi = int(p / long(inner));
+                    int ii = int(p % long(inner));
+                    float m = a[inOff + (oi * axisDim + 0) * inner + ii];
+                    int k = 1;
+                    while (k < axisDim) {
+                        float v = a[inOff + (oi * axisDim + k) * inner + ii];
+                        if (v > m) m = v;
+                        k = k + 1;
+                    }
+                    float sum = 0.0f;
+                    k = 0;
+                    while (k < axisDim) {
+                        float e = Math.exp(a[inOff + (oi * axisDim + k) * inner + ii] - m);
+                        sum = sum + e;
+                        k = k + 1;
+                    }
+                    float lse = m + Math.log(sum);
+                    k = 0;
+                    while (k < axisDim) {
+                        float v = a[inOff + (oi * axisDim + k) * inner + ii];
+                        a[outOff + (oi * axisDim + k) * inner + ii] = float(v - lse);
+                        k = k + 1;
+                    }
+                }
+            }
+        }
+        // Embedding（G5）：查表 out[s*D+d] = w[ids[s]*D+d]。thread-per-(s*D)。
+        void embedding(float[] a, int work, int wOff, int idOff, int oOff, int vocab, int D, int S, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int s = int(p / long(D));
+                    int d = int(p % long(D));
+                    int id = int(a[idOff + s]);
+                    if (id < 0) id = 0;
+                    if (id >= vocab) id = vocab - 1;
+                    a[oOff + p] = a[wOff + id * D + d];
+                }
+            }
+        }
         // InstanceNormalization：逐 (n,c) 线程，S 上归约（float 累加）
         // 激进优化（2026-08-12）：3 阶段满并行，替代原"每通道 1 线程 × 串行 3 趟"
         // （原实现 work=N*C 个线程，每线程串行 3 趟 7M double → GPU 欠利用，占推理 87%）。

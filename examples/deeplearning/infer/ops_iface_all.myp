@@ -1309,6 +1309,56 @@ class GpuGatherOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
+// ---- logsoftmax（opKind 79 前向；沿 axis 稳定 log-softmax）----
+class LogSoftmaxOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            InferOps.logSoftmax(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd),
+                                rt.opP1At(i), rt.opP2At(i), rt.opP3At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- logsoftmax（GPU，opKind 79）----
+class GpuLogSoftmaxOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int work = rt.tensorRows(yd) * rt.tensorCols(yd);
+            GpuInferOps.logSoftmax(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd),
+                                   rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- embedding（opKind 80 前向；查表 out[s*D+d] = w[ids[s]*D+d]）----
+class EmbeddingOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int wt = rt.opAAt(i); int it = rt.opBAt(i); int ot = rt.opCAt(i);
+            InferOps.embedding(rt.arenaRef(), rt.tensorOff(wt), rt.tensorOff(it), rt.tensorOff(ot),
+                               rt.opP0At(i), rt.opP1At(i), rt.opP2At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- embedding（GPU，opKind 80）----
+class GpuEmbeddingOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int wt = rt.opAAt(i); int it = rt.opBAt(i); int ot = rt.opCAt(i);
+            int work = rt.tensorRows(ot) * rt.tensorCols(ot);
+            GpuInferOps.embedding(rt.arenaRef(), work, rt.tensorOff(wt), rt.tensorOff(it), rt.tensorOff(ot),
+                                  rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- instancenorm（GPU）----
 class GpuInstanceNormOp {
     interface class IOp;
@@ -2058,6 +2108,8 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(76, new TileOp(), 0);                 rt.registerFwd(76, new GpuTileOp(), 1);
     rt.registerFwd(77, new SqueezeOp(), 0);              rt.registerFwd(77, new GpuSqueezeOp(), 1);
     rt.registerFwd(78, new GatherOp(), 0);               rt.registerFwd(78, new GpuGatherOp(), 1);
+    rt.registerFwd(79, new LogSoftmaxOp(), 0);           rt.registerFwd(79, new GpuLogSoftmaxOp(), 1);
+    rt.registerFwd(80, new EmbeddingOp(), 0);            rt.registerFwd(80, new GpuEmbeddingOp(), 1);
     rt.registerFwd(35, new InstanceNormOp(), 0);         rt.registerFwd(35, new GpuInstanceNormOp(), 1);
     rt.registerFwd(36, new AvgpoolOp(), 0);              rt.registerFwd(36, new GpuAvgpoolOp(), 1);
     rt.registerFwd(37, new AvgpoolNhwcOp(), 0);          rt.registerFwd(37, new GpuAvgpoolNhwcOp(), 1);

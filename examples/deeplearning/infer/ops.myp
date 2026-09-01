@@ -2546,6 +2546,57 @@ class InferOps {
             }
         }
 
+        // LogSoftmax（G5）：沿 axis 的稳定 log-softmax。张量视作 [outer, axisDim, inner]
+        // （行优先）；对每 (outer,inner) 组：m=max、lse=m+log(Σexp(x-m))、y=x-lse。
+        void logSoftmax(float[] arena, int inOff, int outOff, int outer, int axisDim, int inner) {
+            int oi = 0;
+            while (oi < outer) {
+                int ii = 0;
+                while (ii < inner) {
+                    float m = arena[inOff + (oi * axisDim + 0) * inner + ii];
+                    int k = 1;
+                    while (k < axisDim) {
+                        float v = arena[inOff + (oi * axisDim + k) * inner + ii];
+                        if (v > m) m = v;
+                        k = k + 1;
+                    }
+                    float sum = 0.0f;
+                    k = 0;
+                    while (k < axisDim) {
+                        float e = Math.exp(arena[inOff + (oi * axisDim + k) * inner + ii] - m);
+                        sum = sum + e;
+                        k = k + 1;
+                    }
+                    float lse = m + Math.log(sum);
+                    k = 0;
+                    while (k < axisDim) {
+                        float v = arena[inOff + (oi * axisDim + k) * inner + ii];
+                        arena[outOff + (oi * axisDim + k) * inner + ii] = float(v - lse);
+                        k = k + 1;
+                    }
+                    ii = ii + 1;
+                }
+                oi = oi + 1;
+            }
+        }
+
+        // Embedding（G5）：查表 out[s*D+d] = w[ids[s]*D+d]（row-major [S,D]）。
+        // ids 存 float arena（int→float）；负索引 clamp 0，越界 clamp vocab-1。
+        void embedding(float[] arena, int wOff, int idOff, int oOff, int vocab, int D, int S) {
+            int s = 0;
+            while (s < S) {
+                int id = int(arena[idOff + s]);
+                if (id < 0) id = 0;
+                if (id >= vocab) id = vocab - 1;
+                int d = 0;
+                while (d < D) {
+                    arena[oOff + s * D + d] = arena[wOff + id * D + d];
+                    d = d + 1;
+                }
+                s = s + 1;
+            }
+        }
+
         // ---- F8：秩无关逐元素 / 规约 / 归一化 / 分割 / 上采样 ----
         // 设计原则：2D/3D 通用。元素级用 flat n；InstanceNorm/ReduceMean 用
         // (N, C, 空间乘积 S)；Split 用 rank≤5 的 5 维解码（2D 时 d4=1，3D 时真实）。

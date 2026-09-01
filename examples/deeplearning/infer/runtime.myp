@@ -1001,6 +1001,27 @@ class InferenceRuntime {
             opP2_[id] = dn; opP3_[id] = dc; opP4_[id] = dh; opP5_[id] = dw;
             opCount_ = opCount_ + 1;
         }
+        // LogSoftmax（opKind 79）：沿 axis 的稳定 log-softmax。
+        // 张量视作 [outer, axisDim, inner]（行优先）；outer=opP1, axisDim=opP2, inner=opP3。
+        void addLogSoftmax(int inTid, int outTid, int axis, int outer, int axisDim, int inner) {
+            int id = opCount_;
+            opKind_[id] = 79;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = axis; opP1_[id] = outer; opP2_[id] = axisDim; opP3_[id] = inner;
+            opCount_ = opCount_ + 1;
+        }
+        // Embedding（opKind 80）：查表 out[s*D+d] = w[ids[s]*D+d]（row-major [S,D]）。
+        // weights=opA, ids=opB, out=opC; vocab=opP0, D=opP1, S=opP2。
+        void addEmbedding(int wT, int idT, int outT, int vocab, int D, int S) {
+            int id = opCount_;
+            opKind_[id] = 80;
+            opA_[id] = wT;
+            opB_[id] = idT;
+            opC_[id] = outT;
+            opP0_[id] = vocab; opP1_[id] = D; opP2_[id] = S;
+            opCount_ = opCount_ + 1;
+        }
         // Split（opKind 29）：沿 axis 复制 [start, start+len)（一个输出一个 op）
         // d0..d4 为输入 5 维（2D 时 d4=1）；len = 该输出沿 axis 长度
         void addSplit(int inTid, int outTid, int axis, int start, int len,

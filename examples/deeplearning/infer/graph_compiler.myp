@@ -478,6 +478,39 @@ class GraphCompiler {
                     if (os < 0) return 0;
                     int dn = graph.compilerShapeDim(is, 0), dc = graph.compilerShapeDim(is, 1), dh = graph.compilerShapeDim(is, 2), dw = graph.compilerShapeDim(is, 3);
                     rt.addGather(a, idxT, out, axis, lenIdx, dn, dc, dh, dw);
+                } else if (code == OpCode.LOG_SOFTMAX()) {
+                    // G5：沿 axis 的稳定 log-softmax。outer/axisDim/inner 由图维度算。
+                    int axis = graph.compilerAttr(ni, NodeField.AXIS());
+                    int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                    if (is < 0) return 0;
+                    int rank = 4;
+                    if (graph.compilerShapeR5(is) == 1) rank = 5;
+                    int[] dd = new int[5];
+                    dd[0] = graph.compilerShapeDim(is, 0); dd[1] = graph.compilerShapeDim(is, 1); dd[2] = graph.compilerShapeDim(is, 2); dd[3] = graph.compilerShapeDim(is, 3); dd[4] = 1;
+                    if (rank == 5) dd[4] = graph.compilerShapeDim(is, 4);
+                    if (axis < 0) axis = axis + rank;
+                    if (axis < 0) axis = 0;
+                    if (axis >= rank) axis = rank - 1;
+                    int outer = 1, axisDim = 1, inner = 1;
+                    int k = 0;
+                    while (k < axis) { outer = outer * dd[k]; k = k + 1; }
+                    axisDim = dd[axis];
+                    k = axis + 1;
+                    while (k < rank) { inner = inner * dd[k]; k = k + 1; }
+                    rt.addLogSoftmax(a, out, axis, outer, axisDim, inner);
+                } else if (code == OpCode.EMBEDDING()) {
+                    // G5：查表 out[s*D+d] = w[ids[s]*D+d]。ids int64 初始器 → 临时 f32 张量。
+                    int lenS = graph.compilerReadI64Init(graph.nodeInAt(ni, 1), 64);
+                    if (lenS <= 0) return 0;
+                    int idxT = rt.addTensor(lenS, 1);
+                    if (idxT < 0) return 0;
+                    int k = 0;
+                    while (k < lenS) { rt.setFlat(idxT, k, double(int(graph.compilerI64Tmp(k)))); k = k + 1; }
+                    int ws = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                    if (ws < 0) return 0;
+                    int vocab = graph.compilerShapeDim(ws, 0);
+                    int D = graph.compilerShapeDim(ws, 1);
+                    rt.addEmbedding(a, idxT, out, vocab, D, lenS);
                 } else if (code == OpCode.INSTANCE_NORM()) {
                     int sT = tensorId(graph.nodeInAt(ni, 1));
                     int bT = tensorId(graph.nodeInAt(ni, 2));

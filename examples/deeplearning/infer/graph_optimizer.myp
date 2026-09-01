@@ -468,7 +468,7 @@ class GraphOptimizer {
             while (i < graph.nodeCount()) {
                 if (graph.nodeInAt(i, 0) == name || graph.nodeInAt(i, 1) == name || graph.nodeInAt(i, 2) == name) {
                     string t = graph.nodeTypeAt(i);
-                    if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization" || t == "Expand" || t == "Where" || t == "Tile" || t == "Squeeze" || t == "Gather") return Kind.CNN_ACT();   // G4/G5：4D 广播/数据算子
+                    if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization" || t == "Expand" || t == "Where" || t == "Tile" || t == "Squeeze" || t == "Gather" || t == "LogSoftmax") return Kind.CNN_ACT();   // G4/G5：4D 广播/数据算子
                     if (t == "Conv3D" || t == "MaxPool3D" || t == "AveragePool3D") return Kind.CNN_ACT();   // 3D
                     // F8：Concat/Transpose/Reshape 等 —— 若张量本身 4D 则按 CNN 激活
                     int s = graph.compilerShapeIdx(name);
@@ -531,6 +531,10 @@ class GraphOptimizer {
                 } else if (t == "Gather") {
                     // G5：数据 Gather 的 indices（int64 初始器）不登记为 f32 张量
                     // （graph_compiler 用 readI64Init 读；形状链 Gather 由 foldShapeChains 折叠）
+                    markInt64Param(graph, graph.nodeInAt(i, 1));
+                } else if (t == "Embedding") {
+                    // G5：Embedding 权重表 [vocab,D] 直接拷贝（transB=1），ids int64 标 dead
+                    markFCWeight(graph, graph.nodeInAt(i, 0), 1);
                     markInt64Param(graph, graph.nodeInAt(i, 1));
                 } else if (t == "Slice") {
                     // F8：starts/ends/axes/steps 参数初始器（int64）不登记为 f32 张量
@@ -1239,10 +1243,16 @@ int inferShapes(Graph graph) {
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
                     int b = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (b < 0) return 0;
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), graph.compilerShapeDim(a, 0), graph.compilerShapeDim(b, 1), 1, 1);
-                } else if (t == "Add" || t == "Relu" || t == "Sigmoid" || t == "Softmax" || t == "BatchNormalization"
+                } else if (t == "Add" || t == "Relu" || t == "Sigmoid" || t == "Softmax" || t == "LogSoftmax" || t == "BatchNormalization"
                            || t == "ReLU6" || t == "LeakyRelu" || t == "SiLU" || t == "HardSwish" || t == "Clip") {
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
                     graph.copyShape(graph.compilerNodeOutput(i, 0), a);
+                } else if (t == "Embedding") {
+                    // G5：查表。data[vocab,D] + ids[int64 初始器，S] → out[S,D,1,1]
+                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (w < 0) return 0;
+                    int lenS = graph.compilerReadI64Init(graph.nodeInAt(i, 1), 64);
+                    if (lenS <= 0) return 0;
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), lenS, graph.compilerShapeDim(w, 1), 1, 1);
                 } else if (t == "Reshape") {
                     // F8：shape 来自输入[1]（int64 初始器）；-1 = 由总元素数推断，0 = 复制对应输入维
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (a < 0) return 0;
