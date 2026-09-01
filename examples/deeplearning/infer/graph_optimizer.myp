@@ -623,7 +623,343 @@ class GraphOptimizer {
             return 1;
         }
 
-        int runPipeline(IGraphOptimizeHost host) {
+        int buildReverseGraph(Graph graph) {
+            // 1) 定位「输出是图输出的 Softmax」节点 → logits = 其输入
+            int smNode = -1;
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                if (graph.nodeOp(i) == OpCode.SOFTMAX() && graph.compilerIsGraphOutput(graph.compilerNodeOutput(i, 0)) == 1) { smNode = i; i = graph.nodeCount(); }
+                i = i + 1;
+            }
+            if (smNode < 0) {
+                Console.writeLine("buildReverseGraph: no Softmax graph output");
+                return 0;
+            }
+            string logits = graph.nodeInAt(smNode, 0);
+            int ls = graph.compilerShapeIdx(logits);
+            if (ls < 0) return 0;
+
+            // 2) label / loss / dlogits 张量（label 由训练循环灌 one-hot）
+            // 注意：label 必须与 logits 同秩且同 shape kind——5D 分割 logits
+            // [N,C,D,H,W] 走 addShapeD5，否则漏深度维（同 Flatten 5D BUG：4D
+            // 注册丢 shD4 → label 越界/覆盖）；shape kind 直接镜像 logits（否则
+            // FC_ACT 分支在 buildRuntime 里优先于 5D 分支 → label 被注册成 [C,1]）。
+            if (graph.compilerShapeR5(ls) == 1)
+                graph.addShapeD5("label", graph.compilerShapeDim(ls, 0), graph.compilerShapeDim(ls, 1), graph.compilerShapeDim(ls, 2), graph.compilerShapeDim(ls, 3), graph.compilerShapeDim(ls, 4));
+            else
+                graph.addShapeD4("label", graph.compilerShapeDim(ls, 0), graph.compilerShapeDim(ls, 1), graph.compilerShapeDim(ls, 2), graph.compilerShapeDim(ls, 3));
+            graph.compilerSetShapeKind("label", graph.compilerShapeKind(ls));
+            graph.addShapeD4("loss", 1, 1, 1, 1);
+            graph.compilerSetShapeKind("loss", Kind.FC_ACT());
+            graph.compilerEnsureGrad(logits);
+
+            // 3) loss 节点：CE（SoftmaxCE(logits,label)→(dlogits,loss)）或
+            //    Dice（DiceLoss(prob,label)→(dprob,loss) + BwdSoftmax(dprob,prob)→dlogits）
+            if (graph.compilerLossMode() == 1) {
+                // prob = Softmax 输出（图输出）；其梯度 dprob 由 DiceLoss 产出，
+                // 经 BwdSoftmax 链式回传到 logits 梯度 dlogits。
+                string prob = graph.compilerNodeOutput(smNode, 0);
+                graph.compilerEnsureGrad(prob);
+                int nid = graph.nodeCount();
+                graph.beginNode();
+                graph.nodeType(nid, "DiceLoss");
+                graph.nodeIn(nid, 0, prob);
+                graph.nodeIn(nid, 1, "label");
+                graph.nodeOut(nid, graph.compilerGradName(prob));
+                graph.nodeOut(nid, "loss");
+                graph.endNode();
+                int nid2 = graph.nodeCount();
+                graph.beginNode();
+                graph.nodeType(nid2, "BwdSoftmax");
+                graph.nodeIn(nid2, 0, graph.compilerGradName(prob));
+                graph.nodeIn(nid2, 1, prob);
+                graph.nodeOut(nid2, graph.compilerGradName(logits));
+                graph.endNode();
+            } else {
+                int nid = graph.nodeCount();
+                graph.beginNode();
+                graph.nodeType(nid, "SoftmaxCE");
+                graph.nodeIn(nid, 0, logits);
+                graph.nodeIn(nid, 1, "label");
+                graph.nodeOut(nid, graph.compilerGradName(logits));
+                graph.nodeOut(nid, "loss");
+                graph.endNode();
+            }
+
+            // 4) 反向拓扑遍历（analysis_ order 逆序）：输出梯度已知 → 按算子类型追加 backward
+            int oi = graph.compilerAnalysisPlanOrderCount() - 1;
+            while (oi >= 0) {
+                int ni = graph.compilerAnalysisPlanOrder(oi);
+                string t = graph.nodeTypeAt(ni);
+                if (t != "") {
+                    string y = graph.compilerNodeOutput(ni, 0);
+                    if (graph.compilerShapeIdx(graph.compilerGradName(y)) >= 0) {
+                        // 确保该节点各输入/输出的梯度张量形状都登记（否则 buildRuntime 注册不到）
+                        graph.compilerEnsureGrad(graph.nodeInAt(ni, 0));
+                        graph.compilerEnsureGrad(graph.nodeInAt(ni, 1));
+                        graph.compilerEnsureGrad(graph.nodeInAt(ni, 2));
+                        graph.compilerEnsureGrad(graph.nodeInAt(ni, 3));
+                        if (t == "Gemm") {
+                            // BwdDense(dy, x, w) → (dx, dw, db)
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdDense");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 2)));
+                            graph.endNode();
+                        } else if (t == "MatMul") {
+                            // 无偏置：db 输出用 0 占位（runtime 忽略）
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdDense");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
+                            graph.nodeOut(bd, "");
+                            graph.endNode();
+                        } else if (t == "Relu") {
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdRelu");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                        } else if (t == "Sigmoid") {
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdSigmoid");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, y);              // 用前向输出 y
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                        } else if (t == "Add") {
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdAdd");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
+                            graph.endNode();
+                        } else if (t == "Conv") {
+                            // BwdConv(dy, x, w) → (dx, dw, db)；复制卷积参数
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdConv");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 2)));   // 无偏置 → "" → runtime db=-1
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.SH(), graph.compilerAttr(ni, NodeField.SH())); graph.compilerAttrSet(bd, NodeField.SW(), graph.compilerAttr(ni, NodeField.SW()));
+                            graph.compilerAttrSet(bd, NodeField.PT(), graph.compilerAttr(ni, NodeField.PT())); graph.compilerAttrSet(bd, NodeField.PL(), graph.compilerAttr(ni, NodeField.PL()));
+                            graph.compilerAttrSet(bd, NodeField.DH(), graph.compilerAttr(ni, NodeField.DH())); graph.compilerAttrSet(bd, NodeField.DW(), graph.compilerAttr(ni, NodeField.DW())); graph.compilerAttrSet(bd, NodeField.GROUP(), graph.compilerAttr(ni, NodeField.GROUP()));
+                        } else if (t == "MaxPool") {
+                            // BwdMaxPool(dy, x) → (dx)；复制池化参数
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdMaxPool");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.KH(), graph.compilerAttr(ni, NodeField.KH())); graph.compilerAttrSet(bd, NodeField.KW(), graph.compilerAttr(ni, NodeField.KW()));
+                            graph.compilerAttrSet(bd, NodeField.SH(), graph.compilerAttr(ni, NodeField.SH())); graph.compilerAttrSet(bd, NodeField.SW(), graph.compilerAttr(ni, NodeField.SW()));
+                            graph.compilerAttrSet(bd, NodeField.PT(), graph.compilerAttr(ni, NodeField.PT())); graph.compilerAttrSet(bd, NodeField.PL(), graph.compilerAttr(ni, NodeField.PL()));
+                        } else if (t == "ConvTranspose") {
+                            // 阶段4d：BwdConvTranspose(dy, x, w) → (dx, dw, db)；复制转置卷积参数
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdConvTranspose");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 2)));   // 无偏置 → "" → runtime db=-1
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.SH(), graph.compilerAttr(ni, NodeField.SH())); graph.compilerAttrSet(bd, NodeField.SW(), graph.compilerAttr(ni, NodeField.SW()));
+                            graph.compilerAttrSet(bd, NodeField.PT(), graph.compilerAttr(ni, NodeField.PT())); graph.compilerAttrSet(bd, NodeField.PB(), graph.compilerAttr(ni, NodeField.PB()));
+                            graph.compilerAttrSet(bd, NodeField.PL(), graph.compilerAttr(ni, NodeField.PL())); graph.compilerAttrSet(bd, NodeField.PR(), graph.compilerAttr(ni, NodeField.PR()));
+                        } else if (t == "Conv3D") {
+                            // 阶段4：BwdConv3D(dy, x, w) → (dx, dw, db)；复制 3D 卷积参数
+                            // （kd/kh/kw 与 group 由 w 张量形状给出；dd/dh/dw 假定 1）
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdConv3D");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 2)));   // 无偏置 → "" → runtime db=-1
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.SD3(), graph.compilerAttr(ni, NodeField.SD3())); graph.compilerAttrSet(bd, NodeField.SH(), graph.compilerAttr(ni, NodeField.SH())); graph.compilerAttrSet(bd, NodeField.SW(), graph.compilerAttr(ni, NodeField.SW()));
+                            graph.compilerAttrSet(bd, NodeField.PDT(), graph.compilerAttr(ni, NodeField.PDT())); graph.compilerAttrSet(bd, NodeField.PDB(), graph.compilerAttr(ni, NodeField.PDB()));
+                            graph.compilerAttrSet(bd, NodeField.PT(), graph.compilerAttr(ni, NodeField.PT())); graph.compilerAttrSet(bd, NodeField.PB(), graph.compilerAttr(ni, NodeField.PB()));
+                            graph.compilerAttrSet(bd, NodeField.PL(), graph.compilerAttr(ni, NodeField.PL())); graph.compilerAttrSet(bd, NodeField.PR(), graph.compilerAttr(ni, NodeField.PR()));
+                        } else if (t == "MaxPool3D") {
+                            // 阶段4：BwdMaxPool3D(dy, x) → (dx)；复制 3D 池化参数
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdMaxPool3D");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.KD3(), graph.compilerAttr(ni, NodeField.KD3())); graph.compilerAttrSet(bd, NodeField.KH(), graph.compilerAttr(ni, NodeField.KH())); graph.compilerAttrSet(bd, NodeField.KW(), graph.compilerAttr(ni, NodeField.KW()));
+                            graph.compilerAttrSet(bd, NodeField.SD3(), graph.compilerAttr(ni, NodeField.SD3())); graph.compilerAttrSet(bd, NodeField.SH(), graph.compilerAttr(ni, NodeField.SH())); graph.compilerAttrSet(bd, NodeField.SW(), graph.compilerAttr(ni, NodeField.SW()));
+                            graph.compilerAttrSet(bd, NodeField.PDT(), graph.compilerAttr(ni, NodeField.PDT())); graph.compilerAttrSet(bd, NodeField.PDB(), graph.compilerAttr(ni, NodeField.PDB()));
+                            graph.compilerAttrSet(bd, NodeField.PT(), graph.compilerAttr(ni, NodeField.PT())); graph.compilerAttrSet(bd, NodeField.PB(), graph.compilerAttr(ni, NodeField.PB()));
+                            graph.compilerAttrSet(bd, NodeField.PL(), graph.compilerAttr(ni, NodeField.PL())); graph.compilerAttrSet(bd, NodeField.PR(), graph.compilerAttr(ni, NodeField.PR()));
+                        } else if (t == "AveragePool3D") {
+                            // 阶段4：BwdAvgPool3D(dy, x) → (dx)；复制 3D 池化参数 + cip
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdAvgPool3D");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.KD3(), graph.compilerAttr(ni, NodeField.KD3())); graph.compilerAttrSet(bd, NodeField.KH(), graph.compilerAttr(ni, NodeField.KH())); graph.compilerAttrSet(bd, NodeField.KW(), graph.compilerAttr(ni, NodeField.KW()));
+                            graph.compilerAttrSet(bd, NodeField.SD3(), graph.compilerAttr(ni, NodeField.SD3())); graph.compilerAttrSet(bd, NodeField.SH(), graph.compilerAttr(ni, NodeField.SH())); graph.compilerAttrSet(bd, NodeField.SW(), graph.compilerAttr(ni, NodeField.SW()));
+                            graph.compilerAttrSet(bd, NodeField.PDT(), graph.compilerAttr(ni, NodeField.PDT())); graph.compilerAttrSet(bd, NodeField.PDB(), graph.compilerAttr(ni, NodeField.PDB()));
+                            graph.compilerAttrSet(bd, NodeField.PT(), graph.compilerAttr(ni, NodeField.PT())); graph.compilerAttrSet(bd, NodeField.PB(), graph.compilerAttr(ni, NodeField.PB()));
+                            graph.compilerAttrSet(bd, NodeField.PL(), graph.compilerAttr(ni, NodeField.PL())); graph.compilerAttrSet(bd, NodeField.PR(), graph.compilerAttr(ni, NodeField.PR()));
+                            graph.compilerAttrSet(bd, NodeField.CIP(), graph.compilerAttr(ni, NodeField.CIP()));
+                        } else if (t == "Resize" || t == "Upsample") {
+                            // 阶段4d：Resize3D 反向 → BwdResize(dy, x) → dx；复制 mode/transform。
+                            // 仅 3D（U-Net 上采样）；2D 反向未实现 → 跳过（梯度 0）。
+                            int osr = graph.compilerShapeIdx(y);
+                            if (osr >= 0 && graph.compilerShapeR5(osr) == 1) {
+                                int bd = graph.nodeCount();
+                                graph.beginNode();
+                                graph.nodeType(bd, "BwdResize");
+                                graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                                graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                                graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                                graph.endNode();
+                                graph.compilerAttrSet(bd, NodeField.MODE(), graph.compilerAttr(ni, NodeField.MODE()));
+                                graph.compilerAttrSet(bd, NodeField.TRANSFORM(), graph.compilerAttr(ni, NodeField.TRANSFORM()));
+                            }
+                        } else if (t == "Concat") {
+                            // U-Net 跳跃连接反向：BwdConcat(dy, x0, x1, x2) → (dx0, dx1, dx2)。
+                            // nIn1_/nIn2_/nIn3_ = 原输入（buildRuntime 查轴长）；nOut0-2 = 各输入梯度。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdConcat");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
+                            graph.nodeIn(bd, 3, graph.nodeInAt(ni, 2));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 2)));
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.AXIS(), graph.compilerAttr(ni, NodeField.AXIS()));
+                        }
+                        // Softmax 由 CE 处理；Conv3D/池化等暂不支持（梯度 0，跳过）
+                    }
+                }
+                oi = oi - 1;
+            }
+
+            // 5) 权重/偏置追加 Update(W, W#g)（可训参数：FC_W/FC_B/CNN_W/CNN_B）
+            // 仅当梯度确实由某个反向算子产出（isNodeOutput）——Resize sizes/scales
+            // 等参数初始器虽被 ensureGrad 登记了形状，但没有反向节点产出其梯度，
+            // 不应生成 Update（否则 buildRuntime 因该常量非运行时张量而失败）。
+            int wi = 0;
+            while (wi < graph.compilerWeightCount()) {
+                string nm = graph.compilerWeightNameAt(wi);
+                int role = graph.compilerWeightGetField(wi, WeightField.ROLE());
+                if ((role == 0 || role == 1 || role == 2 || role == 3) && graph.compilerIsNodeOutput(graph.compilerGradName(nm)) == 1) {
+                    int uid = graph.nodeCount();
+                    // 输出用独立 dummy 标量（不能复用权重名——那会让 producerIdx(权重)=Update，
+                    // 权重"被产出"→ 前向消费权重 + Update 依赖梯度 → 环）
+                    string dummy = "upd" + Fmt.i(uid);
+                    graph.addShapeD4(dummy, 1, 1, 1, 1);
+                    graph.compilerSetShapeKind(dummy, Kind.FC_ACT());
+                    graph.beginNode();
+                    graph.nodeType(uid, "Update");
+                    graph.nodeIn(uid, 0, nm);
+                    graph.nodeIn(uid, 1, graph.compilerGradName(nm));
+                    graph.nodeOut(uid, dummy);
+                    graph.endNode();
+                }
+                wi = wi + 1;
+            }
+            // 5c) 多消费者梯度（U-Net 跳跃连接）：skip 张量（如 r1/r3）同时被编码器
+            //     算子与 Concat 消费 → 梯度名被多反向节点产出。BwdConcat 与主 producer
+            //     存在依赖环（编码器反向依赖 concat 上游输出 u#g），不能靠执行顺序累加。
+            //     改用显式累加：主 producer 输出改 g_a、BwdConcat 输出改 g_b、加
+            //     GradAcc(g_a, g_b) → g（纯前向 Add，消费者读 g）。
+            int cc = 0;
+            while (cc < graph.nodeCount()) {
+                if (graph.nodeOp(cc) == OpCode.BWD_CONCAT()) {
+                    int slot = 0;
+                    while (slot < 3) {
+                        string g;
+                        if (slot == 0) g = graph.compilerNodeOutput(cc, 0);
+                        else if (slot == 1) g = graph.compilerNodeOutput(cc, 1);
+                        else g = graph.compilerNodeOutput(cc, 2);
+                        if (g != "" && Str.len(g) >= 2 && Str.substring(g, Str.len(g) - 2, Str.len(g)) == "#g") {
+                            int other = -1;
+                            int jj = 0;
+                            while (jj < graph.nodeCount()) {
+                                if (jj != cc && graph.nodeTypeAt(jj) != "" && graph.nodeTypeAt(jj) != "BwdConcat") {
+                                    if (graph.compilerNodeOutput(jj, 0) == g || graph.compilerNodeOutput(jj, 1) == g || graph.compilerNodeOutput(jj, 2) == g || graph.compilerNodeOutput(jj, 3) == g) { other = jj; jj = graph.nodeCount(); }
+                                }
+                                jj = jj + 1;
+                            }
+                            if (other >= 0) {
+                                string ga = g + "_a";
+                                string gb = g + "_b";
+                                // P3c：结果槽改写走 canonical mutation API（不再直写 SoA）
+                                graph.replaceResult(cc, slot, gb);
+                                if (graph.compilerNodeOutput(other, 0) == g) graph.replaceResult(other, 0, ga);
+                                else if (graph.compilerNodeOutput(other, 1) == g) graph.replaceResult(other, 1, ga);
+                                else if (graph.compilerNodeOutput(other, 2) == g) graph.replaceResult(other, 2, ga);
+                                else if (graph.compilerNodeOutput(other, 3) == g) graph.replaceResult(other, 3, ga);
+                                // 登记 g_a/g_b 形状（同 g）
+                                int gs = graph.compilerShapeIdx(g);
+                                if (gs >= 0) {
+                                    if (graph.compilerShapeR5(gs) == 1) {
+                                        graph.addShapeD5(ga, graph.compilerShapeDim(gs, 0), graph.compilerShapeDim(gs, 1), graph.compilerShapeDim(gs, 2), graph.compilerShapeDim(gs, 3), graph.compilerShapeDim(gs, 4));
+                                        graph.addShapeD5(gb, graph.compilerShapeDim(gs, 0), graph.compilerShapeDim(gs, 1), graph.compilerShapeDim(gs, 2), graph.compilerShapeDim(gs, 3), graph.compilerShapeDim(gs, 4));
+                                    } else {
+                                        graph.addShapeD4(ga, graph.compilerShapeDim(gs, 0), graph.compilerShapeDim(gs, 1), graph.compilerShapeDim(gs, 2), graph.compilerShapeDim(gs, 3));
+                                        graph.addShapeD4(gb, graph.compilerShapeDim(gs, 0), graph.compilerShapeDim(gs, 1), graph.compilerShapeDim(gs, 2), graph.compilerShapeDim(gs, 3));
+                                    }
+                                    graph.compilerSetShapeKind(ga, graph.compilerShapeKind(gs));
+                                    graph.compilerSetShapeKind(gb, graph.compilerShapeKind(gs));
+                                }
+                                // GradAcc 纯前向累加节点
+                                int an = graph.nodeCount();
+                                graph.beginNode();
+                                graph.nodeType(an, "GradAcc");
+                                graph.nodeIn(an, 0, ga);
+                                graph.nodeIn(an, 1, gb);
+                                graph.nodeOut(an, g);
+                                graph.endNode();
+                            }
+                        }
+                        slot = slot + 1;
+                    }
+                }
+                cc = cc + 1;
+            }
+            return 1;
+        }
+
+                int runPipeline(IGraphOptimizeHost host) {
             if (Console.getEnv("MYP_NO_REUSE") == "1") host.enableNoReuseForOptimizer();
             host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链
             host.runIRPass(IRPassKind.FOLD_CONSTS());
