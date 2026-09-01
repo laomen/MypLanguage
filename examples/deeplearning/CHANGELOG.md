@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-09-02 — 阶段五：死权重裁剪（DCE 后移除未引用初始器）
+
+- graph_optimizer `eliminateDeadNodes` 末尾新增 `pruneDeadWeights`：遍历全部权重，
+  检查每个初始器是否被任一活节点（input slot 0-7）引用；未被引用即通过
+  `graph.compilerMarkDeadTensor(nm)` 标记 dead，后续不注册 runtime 张量、不搬运。
+- 效果：融合/DCE 折叠掉的节点对应权重在 IR/显存中一并移除（resnet 等模型
+  折叠链留下的孤儿权重会被清理）。
+- 回归：`infer_tests/deadweight_main.myp`（Conv 模型 + 未引用 `junk[3,3]` 初始器）；
+  验证输出 vs ORT max diff 2.4e-7 且 `compilerShapeDead(junk)==1`（CPU+GPU）。
+
+---
+
 ## 2026-09-02 — 阶段四：BatchMatMul（4D batch matmul + batch 广播）
 
 - inferShapes MatMul：A/B 任一 rank≥3 → batch 维逐维 max 广播 + 最后两维
