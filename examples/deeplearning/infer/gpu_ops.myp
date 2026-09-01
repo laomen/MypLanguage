@@ -235,9 +235,9 @@ class GpuInferOps {
 
         // ---- CNN：4D NCHW，每线程算一个输出元素 ----
 
-        // 卷积（支持 group/strides/pads/dilations）
+        // 卷积（支持 group/strides/pads/dilations）— thread-per-output（tiled 回退路径）
         // x: [N,C,H,W] flat N*C*H*W；w: [yC, C/group, kh, kw]；b: [yC]；y: [N,yC,yH,yW]
-        void conv(float[] a, int work,
+        void convPlain(float[] a, int work,
                   int xOff, int xN, int xC, int xH, int xW,
                   int wOff, int bOff,
                   int yOff, int yC, int yH, int yW,
@@ -282,8 +282,8 @@ class GpuInferOps {
             }
         }
 
-        // 融合 Conv+残差Add（P4-2/3，opKind=73）：与 conv 同，输出直接加残差（同布局同偏移），可接 doRelu。
-        void convResidual(float[] a, int work,
+        // 融合 Conv+残差Add（P4-2/3，opKind=73）：与 conv 同，输出直接加残差（同布局同偏移），可接 doRelu。— thread-per-output（tiled 回退路径）
+        void convResidualPlain(float[] a, int work,
                   int xOff, int xN, int xC, int xH, int xW,
                   int wOff, int bOff,
                   int yOff, int yC, int yH, int yW,
@@ -329,6 +329,187 @@ class GpuInferOps {
                     a[yOff + p] = v;
                 }
             }
+        }
+
+        // ---- 2D 卷积 tiled（implicit GEMM，P5，2026-09-01）----
+        // 把卷积写成 GEMM：Y[M,N] = W[M,K]·X[K,N]
+        //   M = yC（输出通道），N = xN*yH*yW（全部空间位置），K = cpg*kh*kw（归约维）。
+        // 块 = 32×32 输出 tile（M×N）；K 分块 BK=32 载 W tile 与 im2col X tile 到共享；
+        // 256 线程各算 2×2 子 tile。im2col 即时展开（stride/pad/dilation 全支持，越界填 0）。
+        // 与 conv3dTiled 不同：本内核按 denseTiled 的 GEMM 分块 + im2col，任意核/stride 都走
+        // 共享路径（不做 patch 尺寸假设）；group=1 才能进（group>1 罕见回退）。
+        // doRelu=1 尾接 ReLU，rOff>=0 输出加残差（同布局同偏移，P4-2/3 融合卷积共用）。
+        // 尺寸不足（M<32 或 N<32 或 M*N<4096）回退 thread-per-output。
+        void conv2dTiled(float[] a, int work,
+                  int xOff, int xN, int xC, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yH, int yW,
+                  int rOff,
+                  int kh, int kw,
+                  int sh, int sw, int pt, int pb, int pl, int pr,
+                  int dh, int dw, int group, int doRelu, long dev) {
+            int cpg = xC / group;
+            int N = xN * yH * yW;
+            int K = cpg * kh * kw;
+            if (group != 1 || yC < 32 || N < 32 || long(yC) * long(N) < 4096L) {
+                if (rOff >= 0) { GpuInferOps.convResidualPlain(a, work, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW, rOff, kh, kw, sh, sw, pt, pb, pl, pr, dh, dw, group, doRelu, dev); return; }
+                if (doRelu == 1) { GpuInferOps.convReluPlain(a, work, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW, kh, kw, sh, sw, pt, pb, pl, pr, dh, dw, group, dev); return; }
+                GpuInferOps.convPlain(a, work, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW, kh, kw, sh, sw, pt, pb, pl, pr, dh, dw, group, dev);
+                return;
+            }
+            int TM = 32; int TN = 32; int BK = 32;
+            int mT = (yC + TM - 1) / TM;
+            int nT = (N + TN - 1) / TN;
+            int nTiles = mT * nT;
+            int nKB = (K + BK - 1) / BK;
+            @gpu tile (float[6144] smem) grid(nTiles) resident(a = dev) {
+                long tb = kernel.bx;
+                long mi = tb / long(nT);
+                long ni = tb % long(nT);
+                long tid = kernel.tx;
+                long ti = tid / 16L;              // 16×16 线程网格 → 2×2 子 tile
+                long tj = tid % 16L;
+                long i0 = mi * 32L + ti * 2L;     // 输出通道起始（M 维）
+                long j0 = ni * 32L + tj * 2L;     // 空间位置起始（N 维）
+                float a00 = 0.0f; float a01 = 0.0f; float a10 = 0.0f; float a11 = 0.0f;
+                if (bOff >= 0 && i0 < long(yC)) {
+                    float bv = a[bOff + i0];
+                    a00 = bv; a01 = bv;
+                    if (i0 + 1L < long(yC)) { float bv2 = a[bOff + i0 + 1L]; a10 = bv2; a11 = bv2; }
+                }
+                int kb = 0;
+                while (kb < nKB) {
+                    // 载 W tile [32×32] → smem[0,1024)
+                    long rr = tid;
+                    while (rr < 1024L) {
+                        long wi = rr / 32L;         // M 维（0..31）
+                        long wk = rr % 32L;         // K 维（0..31）
+                        float wv = 0.0f;
+                        long gi = mi * 32L + wi;    // 全局输出通道
+                        long gk = long(kb) * 32L + wk;   // 全局归约索引（K=cpg*kh*kw）
+                        // 权重布局 w[oc, cIn, ky, kx]（oc=gi，cIn/ky/kx 由 gk 分解）
+                        // = wOff + gi*K + gk（K=cpg*kh*kw，W 行连续）
+                        if (gi < long(yC) && gk < long(K))
+                            wv = a[wOff + gi * long(K) + gk];
+                        smem[rr] = wv;
+                        rr = rr + 256L;
+                    }
+                    // 载 im2col X tile [32×32] → smem[1024,2048)
+                    rr = tid;
+                    while (rr < 1024L) {
+                        long xk = rr / 32L;         // K 维（0..31）
+                        long xj = rr % 32L;         // N 维（0..31）
+                        float xv = 0.0f;
+                        long gk2 = long(kb) * 32L + xk;   // 全局归约索引
+                        long gj = ni * 32L + xj;          // 全局空间位置
+                        if (gk2 < long(K) && gj < long(N)) {
+                            long cIdx = gk2 / (long(kh) * long(kw));
+                            long remK = gk2 % (long(kh) * long(kw));
+                            long ky = remK / long(kw);
+                            long kx = remK % long(kw);
+                            // 空间位置 gj → (n, oy, ox)
+                            long nn = gj / (long(yH) * long(yW));
+                            long remP = gj % (long(yH) * long(yW));
+                            long oy = remP / long(yW);
+                            long ox = remP % long(yW);
+                            long iy = oy * long(sh) - long(pt) + ky * long(dh);
+                            long ix = ox * long(sw) - long(pl) + kx * long(dw);
+                            if (iy >= 0L && iy < long(xH) && ix >= 0L && ix < long(xW)) {
+                                xv = a[xOff + nn * long(xC) * long(xH) * long(xW)
+                                          + cIdx * long(xH) * long(xW) + iy * long(xW) + ix];
+                            }
+                        }
+                        smem[1024L + rr] = xv;
+                        rr = rr + 256L;
+                    }
+                    kernel.sync();
+                    long k = 0L;
+                    while (k < 32L) {
+                        float w0 = smem[(ti * 2L) * 32L + k];
+                        float w1 = smem[(ti * 2L + 1L) * 32L + k];
+                        float x0 = smem[1024L + k * 32L + tj * 2L];
+                        float x1 = smem[1024L + k * 32L + tj * 2L + 1L];
+                        a00 = a00 + w0 * x0;
+                        a01 = a01 + w0 * x1;
+                        a10 = a10 + w1 * x0;
+                        a11 = a11 + w1 * x1;
+                        k = k + 1L;
+                    }
+                    kernel.sync();
+                    kb = kb + 1;
+                }
+                // 写 2×2 输出（NCHW 布局 [N,yC,yH,yW]：p = nn*yC*yH*yW + oc*yH*yW + oy*yW + ox）。
+                // GEMM 的 N 维 = 空间位置 gj = nn*yH*yW + oy*yW + ox（含 batch 偏移），
+                // 输出内偏移需把 gj 分解回 (nn, oy, ox) 再加 oc 平面偏移。
+                long HW = long(yH) * long(yW);
+                // i0 行（oc=i0），j0/j0+1 两列（gj）
+                if (i0 < long(yC)) {
+                    long ocA = i0;
+                    long nnA = j0 / HW;
+                    long remA = j0 % HW;
+                    long oA = nnA * long(yC) * HW + ocA * HW + remA;
+                    float v = a00;
+                    if (rOff >= 0) v = v + a[rOff + oA];
+                    if (doRelu == 1 && v < 0.0f) v = 0.0f;
+                    if (j0 < long(N)) a[yOff + oA] = v;
+                    if (j0 + 1L < long(N)) {
+                        long oB = (j0 + 1L) / HW * long(yC) * HW + ocA * HW + (j0 + 1L) % HW;
+                        float v2 = a01;
+                        if (rOff >= 0) v2 = v2 + a[rOff + oB];
+                        if (doRelu == 1 && v2 < 0.0f) v2 = 0.0f;
+                        a[yOff + oB] = v2;
+                    }
+                }
+                if (i0 + 1L < long(yC)) {
+                    long ocB2 = i0 + 1L;
+                    long nnB = j0 / HW;
+                    long remB = j0 % HW;
+                    long oC = nnB * long(yC) * HW + ocB2 * HW + remB;
+                    float v3 = a10;
+                    if (rOff >= 0) v3 = v3 + a[rOff + oC];
+                    if (doRelu == 1 && v3 < 0.0f) v3 = 0.0f;
+                    if (j0 < long(N)) a[yOff + oC] = v3;
+                    if (j0 + 1L < long(N)) {
+                        long oD = (j0 + 1L) / HW * long(yC) * HW + ocB2 * HW + (j0 + 1L) % HW;
+                        float v4 = a11;
+                        if (rOff >= 0) v4 = v4 + a[rOff + oD];
+                        if (doRelu == 1 && v4 < 0.0f) v4 = 0.0f;
+                        a[yOff + oD] = v4;
+                    }
+                }
+            }
+        }
+
+        // ---- 2D 卷积入口（P5：优先 tiled，不满足回退 thread-per-output）----
+        void conv(float[] a, int work,
+                  int xOff, int xN, int xC, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yH, int yW,
+                  int kh, int kw,
+                  int sh, int sw, int pt, int pb, int pl, int pr,
+                  int dh, int dw, int group, long dev) {
+            GpuInferOps.conv2dTiled(a, work, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW, -1, kh, kw, sh, sw, pt, pb, pl, pr, dh, dw, group, 0, dev);
+        }
+
+        void convRelu(float[] a, int work,
+                  int xOff, int xN, int xC, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yH, int yW,
+                  int kh, int kw,
+                  int sh, int sw, int pt, int pb, int pl, int pr,
+                  int dh, int dw, int group, long dev) {
+            GpuInferOps.conv2dTiled(a, work, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW, -1, kh, kw, sh, sw, pt, pb, pl, pr, dh, dw, group, 1, dev);
+        }
+
+        void convResidual(float[] a, int work,
+                  int xOff, int xN, int xC, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yH, int yW,
+                  int rOff,
+                  int kh, int kw,
+                  int sh, int sw, int pt, int pb, int pl, int pr,
+                  int dh, int dw, int group, int doRelu, long dev) {
+            GpuInferOps.conv2dTiled(a, work, xOff, xN, xC, xH, xW, wOff, bOff, yOff, yC, yH, yW, rOff, kh, kw, sh, sw, pt, pb, pl, pr, dh, dw, group, doRelu, dev);
         }
 
         // ---- 训练：反向内核（阶段3d，GPU；thread-per-gradient-element + 内层归约，无原子）----
@@ -1524,7 +1705,7 @@ class GpuInferOps {
 
         // 融合 Conv+ReLU（G1）：卷积输出直接过 ReLU，不写回中间张量（少一次
         // kernel 启动 + 少一次中间张量读写）。参数与 conv 相同，y 处写 max(sum,0)。
-        void convRelu(float[] a, int work,
+        void convReluPlain(float[] a, int work,
                   int xOff, int xN, int xC, int xH, int xW,
                   int wOff, int bOff,
                   int yOff, int yC, int yH, int yW,

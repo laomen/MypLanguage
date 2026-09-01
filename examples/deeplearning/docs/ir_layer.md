@@ -204,6 +204,8 @@ rewrite(g, matched, fusedOp, attrs, {consumers 重连}) // 替换并维护 def-u
 > **P4-2 已实施**（2026-09-02）——残差 `Conv+Add` 融合（新 opKind 73 + `FUSE_CONV_ADD` + planMemory nIn3_/nIn4_）。
 > **P4-3 已实施**（2026-09-02）——残差融合折叠 Add 后 Relu（doRelu 内核）+ `FUSE_CONV_ADD` 训练门控。
 > **P4-3b 已实施**（2026-09-02）——残差融合专用回归测试。
+> **P5 已实施**（2026-09-02）——2D 卷积 tiled 内核（`conv2dTiled`，implicit GEMM + 共享内存），
+> 图优化与后端执行两个维度的性能里程碑；ResNet50 GPU 95→37ms（2.6×），逐位一致。
 
 ## 6. 收益（预期）
 

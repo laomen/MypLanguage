@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-09-XX — 阶段 P5：2D 卷积 tiled（implicit GEMM + 共享内存）
+
+### 变更（`infer/gpu_ops.myp`）
+- 新增 `conv2dTiled`：把 2D 卷积写成 GEMM `Y[M,N]=W[M,K]·Xim2col[K,N]`
+  （M=yC、N=xN*yH*yW、K=cpg*kh*kw），块=32×32 输出 tile + K 分块 BK=32，
+  256 线程各算 2×2，W/im2col X tile 协作载入共享内存；im2col 即时展开
+  （stride/pad/dilation 全支持，越界填 0）。
+- `conv`/`convRelu`/`convResidual` 改为入口：满足 group=1 且 M≥32/N≥32/M*N≥4096
+  走 tiled，否则回退 thread-per-output（`convPlain`/`convReluPlain`/
+  `convResidualPlain`，原逻辑保留）；convResidual 的 rOff/doRelu 在 tiled 内处理。
+- 输出按 NCHW 布局写回（GEMM N 维=空间位置 gj，需分解回 (nn,oy,ox) 加 oc 平面偏移）。
+
+### 验证
+- 新 `bench/conv2d_gen_main.myp`：k5/s2、k3/dilation2（tiled）+ group2、yC8（回退）
+  + convRelu、convResidual+doRelu，GPU vs CPU **diff=0** 全过。
+- ResNet50 GPU **95 → 37ms（2.6×）**，ops-loop 76→18ms（convRelu 50→13ms、conv
+  7→1ms）；top-1 lakeside(10.328)、output sum 336.658 **逐位一致**（CPU 同）。
+- ResNet18 GPU 输出逐位一致；residual_add CPU/GPU OK（小卷积回退路径）；MLP 99% / BN
+  / ops2d / const / identity_fold / conv3d 全 OK；conv grad check OK、MNIST 97%、
+  CNN 96%、3D U-Net skip grad check OK。
+
+---
+
 ## 2026-09-XX — 阶段 IR-P4.3b：残差融合专用回归
 
 ### 新增
