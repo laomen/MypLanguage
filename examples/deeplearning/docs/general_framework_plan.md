@@ -291,18 +291,27 @@ OpKind
   broadcast decode，输入维可为任意倍数）。新增 `tools/make_tile_onnx.py`
   （opset13：in[1,2,3,4] tile [1,2,2,3] → out[1,4,6,12]）+
   `infer_tests/tile_main.myp`（TILE ALL OK，CPU+GPU max diff 0 vs ORT）。
+- **已完成：阶段四 G5 Squeeze + Gather**（commit `9f5dfee`）。**Squeeze**（opKind
+  77）：去 size-1 维，inferShapes 输出保持轴顺序左对齐补 1，数据不变复用
+  copyFlat（CPU+GPU）。**Gather**（opKind 78）：沿 axis 收集，axis 属性（opset11），
+  int64 indices 初始器标 dead，graph_compiler `readI64Init` 读入临时 f32 张量
+  （int→float），kernel 按 gatherRows 模式读 `int(a[iOff+k])`（负索引+dim、clamp）。
+  新增 `tools/make_squeeze_onnx.py`/`make_gather_onnx.py` +
+  `squeeze_main.myp`/`gather_main.myp`（SQUEEZE/GATHER ALL OK，CPU+GPU max diff
+  0 vs ORT）。
 - **已完成：阶段七 Unsupported op 诊断**（commit `627a58c`）。loader 解析时检测
   未知 ONNX op → 打印 op 类型/节点索引/输入名 + `badOp_` 标记 → `load()` 返回 0
   （显式失败而非静默错误/段错误）。OpCode 补 `CONSTANT(57)` 防误报。
-- **已验证**：32/32 infer_tests + grad_check（L0=1.92528，GRAD CHECK OK）在
+- **已验证**：34/34 infer_tests + grad_check（L0=1.92528，GRAD CHECK OK）在
   `MYP_GPU=1 MYP_IR_VERIFY=1` 下全部通过；ResNet output sum `336.658`。关键
   提交：`8a38beb`（G2 基础）、`9508a10`（DATA role）、`88d0fd2`（G3 负轴）、
   `0440a18`（Reduce 族）、`627a58c`（op 诊断）、`bad6242`（Expand）、
-  `6552144`（Where）、`0b4eeb2`（Tile）。
-- **下一步**：G3 剩余（broadcast/ShapeExpr/dtype 转换规则）与阶段四其余算子
-  （Gather 完整/Squeeze）。当前模型集为 4D/5D 静态 shape +
-  全 FLOAT + 同形状广播，broadcast 统一与 ShapeExpr 无模型驱动——按「不为没有
-  目标的模式提前堆代码」，优先推进有合成测试可验证的算子补全。
+  `6552144`（Where）、`0b4eeb2`（Tile）、`9f5dfee`（Squeeze+Gather）。
+- **下一步**：G3 剩余（broadcast/ShapeExpr/dtype 转换规则）与阶段四第一优先级
+  算子已全部完成（Gather/Expand/Where/Tile/Squeeze/ReduceSum-Max-Min）。当前
+  模型集为 4D/5D 静态 shape + 全 FLOAT + 同形状广播，broadcast 统一与 ShapeExpr
+  无模型驱动——按「不为没有目标的模式提前堆代码」，优先推进有合成测试可验证的
+  算子补全（如第二优先级 LogSoftmax/Embedding，或训练/生成式模型专项）。
 
 ## 5. 阶段三：Shape、DType 与 Broadcast 基础层
 
@@ -328,11 +337,11 @@ OpKind
 
 ### 第一优先级：提高模型覆盖率
 
-- `Gather`
+- `Gather`（✅ 完成，commit `9f5dfee`）
 - `Expand`（✅ 完成，commit `bad6242`）
 - `Where`（✅ 完成，commit `6552144`）
 - `Tile`（✅ 完成，commit `0b4eeb2`）
-- `Squeeze`
+- `Squeeze`（✅ 完成，commit `9f5dfee`）
 - `ReduceSum/ReduceMax/ReduceMin`（✅ 完成，commit `0440a18` + `62b8b21`）
 - 完整 broadcast 的 `MatMul/BatchMatMul`
 - `LogSoftmax`

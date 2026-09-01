@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-09-01 — 阶段四 G5：Squeeze + Gather 算子
+
+- **Squeeze（opKind 77）**：去 size-1 维。`consumerKindOf` Squeeze → CNN_ACT；
+  `inferShapes` 输出 = 去维后保持轴顺序 + 左对齐补 1 到 4D（axes 属性，无 axes
+  时去掉全部 size-1 维）；数据不变 → `copyFlat` 连续拷贝（CPU+GPU，复用 reshape
+  kernel 范式）。
+- **Gather（opKind 78）**：沿 axis 按 indices 收集（数据 Gather）。`axis` 属性
+  （opset11）；indices int64 初始器 `classifyShapes` 标 SHAPE/INT64 dead（不登记
+  f32 张量）；`inferShapes` 输出 = data dims 替换 axis 维为 len(indices)；
+  `graph_compiler` 用 `readI64Init` 读 indices → 临时 f32 张量（int→float，
+  <2^24 精确），kernel 按 gatherRows 模式 `int(a[iOff+k])` 读；负索引 +dim、越界
+  clamp；CPU/GPU thread-per-output kernel。
+- `ops_iface_all` 补 `SqueezeOp/GpuSqueezeOp/GatherOp/GpuGatherOp` +
+  `registerFwd(77/78)`。
+- 新增 `tools/make_squeeze_onnx.py`（opset11：x[1,2,3,4] axes=[0] → [2,3,4]）+
+  `squeeze_main.myp`；`tools/make_gather_onnx.py`（opset11：x[1,2,3,4] axis=1
+  indices=[1,0] → 翻转通道）+ `gather_main.myp`。两者 `SQUEEZE/GATHER ALL OK`，
+  CPU+GPU max diff 0 vs ORT。
+- 回归：34/34 infer_tests + grad_check（GRAD CHECK OK）+ ResNet output sum
+  `336.658`。
+
 ## 2026-09-01 — 阶段四 G5：Tile 算子（沿各维按倍数复制）
 
 - OpCode `TILE(76)` + `opCode` 映射；`consumerKindOf` Tile → CNN_ACT（4D）；
