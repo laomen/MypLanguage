@@ -188,6 +188,81 @@ class GraphOptimizer {
             return 1;
         }
 
+        // 拓扑排序（Kahn，精确 (user,slot) use edge 递减入度）。写 analysis 的 planOrder。
+        int topoSort(Graph graph) {
+            int[] indeg = new int[512];
+            // P0：所有既有 mutation pass 已完成，此处统一重建 def-use，再消费 O(1) producer 索引。
+            graph.compilerRebuildDefUse();
+            if (Console.getEnv("MYP_IR_VERIFY") == "1" && graph.compilerVerifyIR() == 0) {
+                Console.writeLine("DBG fail verifyIR");
+                return 0;
+            }
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                indeg[i] = 0;
+                if (graph.nodeTypeAt(i) == "") { i = i + 1; continue; }
+                if (graph.valueProducer(graph.nodeInputValue(i, 0)) >= 0) indeg[i] = indeg[i] + 1;
+                if (graph.valueProducer(graph.nodeInputValue(i, 1)) >= 0) indeg[i] = indeg[i] + 1;
+                if (graph.valueProducer(graph.nodeInputValue(i, 2)) >= 0) indeg[i] = indeg[i] + 1;
+                if (graph.valueProducer(graph.nodeInputValue(i, 3)) >= 0) indeg[i] = indeg[i] + 1;
+                i = i + 1;
+            }
+            graph.compilerAnalysisSetPlanOrderCount(0);
+            int remaining = 0;
+            i = 0;
+            while (i < graph.nodeCount()) { if (graph.nodeTypeAt(i) != "") remaining = remaining + 1; i = i + 1; }
+            while (graph.compilerAnalysisPlanOrderCount() < remaining) {
+                int picked = -1;
+                i = 0;
+                while (i < graph.nodeCount()) {
+                    if (graph.nodeTypeAt(i) != "" && indeg[i] == 0) { picked = i; i = graph.nodeCount(); }
+                    i = i + 1;
+                }
+                if (picked < 0) {
+                    if (Console.getEnv("MYP_GR_DBG") == "1") {
+                        Console.writeString("topoSort stuck remaining=" + Fmt.i(remaining) + " indeg[0..]:");
+                        Console.writeLine("");
+                        int d = 0;
+                        while (d < graph.nodeCount()) {
+                            if (graph.nodeTypeAt(d) != "" && indeg[d] > 0) {
+                                Console.writeString("  n" + Fmt.i(d) + " type=" + graph.nodeTypeAt(d) + " indeg=" + Fmt.i(indeg[d]) + " in0=" + graph.nodeInAt(d, 0) + " in1=" + graph.nodeInAt(d, 1) + " in2=" + graph.nodeInAt(d, 2));
+                                Console.writeLine("");
+                            }
+                            d = d + 1;
+                        }
+                    }
+                    return 0;   // 有环
+                }
+                graph.compilerAnalysisSetPlanOrder(graph.compilerAnalysisPlanOrderCount(), picked);
+                graph.compilerAnalysisSetPlanOrderCount(graph.compilerAnalysisPlanOrderCount() + 1);
+                indeg[picked] = -1;
+                // 多输出（Split/BwdDense/SoftmaxCE）：递减所有输出（out0..out3）的消费者
+                string out = graph.compilerEffectiveOut(picked);
+                string o1 = graph.compilerNodeOutput(picked, 1);
+                string o2 = graph.compilerNodeOutput(picked, 2);
+                string o3 = graph.compilerNodeOutput(picked, 3);
+                // P0：按精确 (user,slot) use edge 递减，重复 operand（Mul(x,x)）自然处理。
+                int[] produced = new int[4];
+                produced[0] = graph.valueId(out); produced[1] = graph.valueId(o1); produced[2] = graph.valueId(o2); produced[3] = graph.valueId(o3);
+                int ps = 0;
+                while (ps < 4) {
+                    int pv = produced[ps];
+                    if (pv >= 0) {
+                        int use = 0;
+                        while (use < graph.valueUseCount(pv)) {
+                            int user = graph.valueUseNode(pv, use);
+                            if (user >= 0 && indeg[user] >= 0) indeg[user] = indeg[user] - 1;
+                            use = use + 1;
+                        }
+                    }
+                    ps = ps + 1;
+                }
+            }
+            graph.compilerAnalysisSetValidOr(IRAnalysis.TOPO());
+            graph.compilerAnalysisSetTopoGeneration(graph.compilerAnalysisGeneration());
+            return 1;
+        }
+
         int runPipeline(IGraphOptimizeHost host) {
             if (Console.getEnv("MYP_NO_REUSE") == "1") host.enableNoReuseForOptimizer();
             host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链

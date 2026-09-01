@@ -72,7 +72,7 @@ class Graph {
             return 1;
         }
         int ensureTopo() {
-            if (analysisValid(IRAnalysis.TOPO()) == 0 || analysis_.topoGeneration() != analysis_.analysisGeneration()) return topoSort();
+            if (analysisValid(IRAnalysis.TOPO()) == 0 || analysis_.topoGeneration() != analysis_.analysisGeneration()) return optimizer_.topoSort(this);
             return 1;
         }
         int ensurePassAnalyses(int pass) {
@@ -560,7 +560,7 @@ class Graph {
             Console.writeLine("DBG pass fixpoint limit=" + Fmt.i(pass));
             return 0;
         }
-        int runTopoSort() { return topoSort(); }
+        int runTopoSort() { return optimizer_.topoSort(this); }
         int runPlanMemory() { return planMemory(); }
         int lowerRuntime(InferenceRuntime rt) { return compiler_.lower(this, rt); }
         int buildReverseGraphForOptimizer() {
@@ -2085,79 +2085,6 @@ class Graph {
         void setShapeNHWC(string name) {
             shapes_.setShapeNHWC(name);
         }
-        int topoSort() {
-            int[] indeg = new int[512];
-            // P0：所有既有 mutation pass 已完成，此处统一重建 def-use，再消费 O(1) producer 索引。
-            rebuildDefUse();
-            if (Console.getEnv("MYP_IR_VERIFY") == "1" && verifyIR() == 0) {
-                Console.writeLine("DBG fail verifyIR");
-                return 0;
-            }
-            int i = 0;
-            while (i < nodes_.count()) {
-                indeg[i] = 0;
-                if (nodes_.typeAt(i) == "") { i = i + 1; continue; }
-                if (valueProducer(nodeInputValue(i, 0)) >= 0) indeg[i] = indeg[i] + 1;
-                if (valueProducer(nodeInputValue(i, 1)) >= 0) indeg[i] = indeg[i] + 1;
-                if (valueProducer(nodeInputValue(i, 2)) >= 0) indeg[i] = indeg[i] + 1;
-                if (valueProducer(nodeInputValue(i, 3)) >= 0) indeg[i] = indeg[i] + 1;
-                i = i + 1;
-            }
-            analysis_.setPlanOrderCount(0);
-            int remaining = 0;
-            i = 0;
-            while (i < nodes_.count()) { if (nodes_.typeAt(i) != "") remaining = remaining + 1; i = i + 1; }
-            while (analysis_.planOrderCount() < remaining) {
-                int picked = -1;
-                i = 0;
-                while (i < nodes_.count()) {
-                    if (nodes_.typeAt(i) != "" && indeg[i] == 0) { picked = i; i = nodes_.count(); }
-                    i = i + 1;
-                }
-                if (picked < 0) {
-                    if (Console.getEnv("MYP_GR_DBG") == "1") {
-                        Console.writeString("topoSort stuck remaining=" + Fmt.i(remaining) + " indeg[0..]:");
-                        Console.writeLine("");
-                        int d = 0;
-                        while (d < nodes_.count()) {
-                            if (nodes_.typeAt(d) != "" && indeg[d] > 0) {
-                                Console.writeString("  n" + Fmt.i(d) + " type=" + nodes_.typeAt(d) + " indeg=" + Fmt.i(indeg[d]) + " in0=" + nodes_.inputAt(d, 0) + " in1=" + nodes_.inputAt(d, 1) + " in2=" + nodes_.inputAt(d, 2));
-                                Console.writeLine("");
-                            }
-                            d = d + 1;
-                        }
-                    }
-                    return 0;   // 有环
-                }
-                analysis_.setPlanOrder(analysis_.planOrderCount(), picked);
-                analysis_.setPlanOrderCount(analysis_.planOrderCount() + 1);
-                indeg[picked] = -1;
-                // 多输出（Split/BwdDense/SoftmaxCE）：递减所有输出（out0..out3）的消费者
-                string out = effectiveOut(picked);
-                string o1 = nodes_.outputAt(picked, 1);
-                string o2 = nodes_.outputAt(picked, 2);
-                string o3 = nodes_.outputAt(picked, 3);
-                // P0：按精确 (user,slot) use edge 递减，重复 operand（Mul(x,x)）自然处理。
-                int[] produced = new int[4];
-                produced[0] = valueId(out); produced[1] = valueId(o1); produced[2] = valueId(o2); produced[3] = valueId(o3);
-                int ps = 0;
-                while (ps < 4) {
-                    int pv = produced[ps];
-                    if (pv >= 0) {
-                        int use = 0;
-                        while (use < valueUseCount(pv)) {
-                            int user = valueUseNode(pv, use);
-                            if (user >= 0 && indeg[user] >= 0) indeg[user] = indeg[user] - 1;
-                            use = use + 1;
-                        }
-                    }
-                    ps = ps + 1;
-                }
-            }
-            analysis_.setAnalysisValid(analysis_.analysisValid() | IRAnalysis.TOPO());
-            analysis_.setTopoGeneration(analysis_.analysisGeneration());
-            return 1;
-        }
         int producerIdx(string name) {
             if (name == "") return -1;   // 空输入槽不算入度（nOut1_=="" 会误匹配）
             int i = 0;
@@ -2513,6 +2440,16 @@ class Graph {
         void ensureDefUseForOptimizer() { ensureDefUse(); }
         int compilerGapCount() { return gapCount_; }
         void compilerIncGap() { gapCount_ = gapCount_ + 1; }
+        int compilerAnalysisPlanOrderCount() { return analysis_.planOrderCount(); }
+        int compilerAnalysisPlanOrder(int i) { return analysis_.planOrder(i); }
+        void compilerAnalysisSetPlanOrder(int i, int v) { analysis_.setPlanOrder(i, v); }
+        void compilerAnalysisSetPlanOrderCount(int v) { analysis_.setPlanOrderCount(v); }
+        int compilerAnalysisValid() { return analysis_.analysisValid(); }
+        void compilerAnalysisSetValidOr(int mask) { analysis_.setAnalysisValid(analysis_.analysisValid() | mask); }
+        void compilerAnalysisSetTopoGeneration(int g) { analysis_.setTopoGeneration(g); }
+        int compilerAnalysisGeneration() { return analysis_.analysisGeneration(); }
+        void compilerRebuildDefUse() { rebuildDefUse(); }
+        int compilerVerifyIR() { return verifyIR(); }
 
     property:
         int[] file_;
