@@ -1022,6 +1022,16 @@ class InferenceRuntime {
             opP0_[id] = vocab; opP1_[id] = D; opP2_[id] = S;
             opCount_ = opCount_ + 1;
         }
+        // Dropout（opKind 81）：推理恒等 / 训练随机 mask（由 trainMode_ 决定）。
+        // in=opA, out=opB; ratio=opP0（F32 位型）。
+        void addDropout(int inTid, int outTid, int ratioBits) {
+            int id = opCount_;
+            opKind_[id] = 81;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = ratioBits;
+            opCount_ = opCount_ + 1;
+        }
         // Split（opKind 29）：沿 axis 复制 [start, start+len)（一个输出一个 op）
         // d0..d4 为输入 5 维（2D 时 d4=1）；len = 该输出沿 axis 长度
         void addSplit(int inTid, int outTid, int axis, int start, int len,

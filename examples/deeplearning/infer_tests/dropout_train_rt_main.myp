@@ -1,0 +1,47 @@
+// dropout_train_rt_main.myp — G5：Dropout 训练语义（直接 runtime API 单测）
+// 训练模式（rt.setTrain(1)）：y[i] = (u < ratio) ? 0 : x[i]（确定性 LCG）。
+// 验证：置 0 比例 ≈ ratio（0.5，容差 ±0.2），其余元素 == x。
+import env;
+import "../infer/runtime.myp";
+
+class DropoutTrainRtApp {
+    action:
+        @constructor DropoutTrainRtApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(2048);
+            rt.setTrain(1);
+            int n = 4000;
+            int xT = rt.addTensor(40, 100);
+            int outT = rt.addTensor(40, 100);
+            int i = 0;
+            while (i < n) { rt.setFlat(xT, i, double(i % 17) + 0.5); i = i + 1; }
+            rt.addDropout(xT, outT, F32.toBits(0.5));
+            rt.run();
+            int zeroCnt = 0;
+            int bad = 0;
+            double maxD = 0.0;
+            i = 0;
+            while (i < n) {
+                double got = rt.getFlat(outT, i);
+                if (got == 0.0) { zeroCnt = zeroCnt + 1; }
+                else {
+                    double xv = rt.getFlat(xT, i);
+                    double dv = got - xv;
+                    if (dv < 0.0) dv = 0.0 - dv;
+                    if (dv > 1.0e-4) bad = bad + 1;
+                    if (dv > maxD) maxD = dv;
+                }
+                i = i + 1;
+            }
+            double rate = double(zeroCnt) / double(n);
+            Console.writeString("zero rate=");
+            Console.writeFloat(rate);
+            Console.writeString("  (expect ~0.5)  bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            if (rate > 0.3 && rate < 0.7 && bad == 0) Console.writeLine("DROPOUT TRAIN OK");
+            else Console.writeLine("DROPOUT TRAIN MISMATCH");
+        }
+}
+
+int main() { DropoutTrainRtApp app = new DropoutTrainRtApp(); return 0; }

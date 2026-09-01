@@ -207,6 +207,7 @@ class OpCode {
         int GATHER() { return 78; }
         int LOG_SOFTMAX() { return 79; }
         int EMBEDDING() { return 80; }
+        int DROPOUT() { return 81; }
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -270,6 +271,7 @@ class OpCode {
             if (t == "Gather") return OpCode.GATHER();
             if (t == "LogSoftmax") return OpCode.LOG_SOFTMAX();
             if (t == "Embedding") return OpCode.EMBEDDING();
+            if (t == "Dropout") return OpCode.DROPOUT();
             if (t == "Resize") return OpCode.RESIZE();
             if (t == "Upsample") return OpCode.UPSAMPLE();
             return OpCode.UNKNOWN();

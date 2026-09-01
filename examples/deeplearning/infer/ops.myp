@@ -2597,6 +2597,20 @@ class InferOps {
             }
         }
 
+        // Dropout 训练（G5）：y[i] = (u < ratio) ? 0 : x[i]（u 为确定性 LCG 序列）。
+        // 推理恒等用 copyFlat（DropoutOp.forward 按 rt.trainMode() 分派）。
+        void dropoutTrain(float[] arena, int inOff, int outOff, int n, double ratio) {
+            int state = 12345;
+            int i = 0;
+            while (i < n) {
+                state = (state * 1103515245 + 12345) & 2147483647;
+                double u = double(state) / 2147483647.0;
+                if (u < ratio) arena[outOff + i] = 0.0f;
+                else arena[outOff + i] = arena[inOff + i];
+                i = i + 1;
+            }
+        }
+
         // ---- F8：秩无关逐元素 / 规约 / 归一化 / 分割 / 上采样 ----
         // 设计原则：2D/3D 通用。元素级用 flat n；InstanceNorm/ReduceMean 用
         // (N, C, 空间乘积 S)；Split 用 rank≤5 的 5 维解码（2D 时 d4=1，3D 时真实）。

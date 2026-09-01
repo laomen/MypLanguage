@@ -511,6 +511,13 @@ class GraphCompiler {
                     int vocab = graph.compilerShapeDim(ws, 0);
                     int D = graph.compilerShapeDim(ws, 1);
                     rt.addEmbedding(a, idxT, out, vocab, D, lenS);
+                } else if (code == OpCode.DROPOUT()) {
+                    // G5：Dropout。ratio f32 初始器（opset12 输入[1]，推理忽略）；
+                    // 训练/推理由 rt.trainMode() 决定（推理恒等，训练随机 mask）。
+                    double ratio = 0.5;
+                    int rc = graph.compilerReadF32Init(graph.nodeInAt(ni, 1), 1);
+                    if (rc > 0) ratio = graph.compilerF32Tmp(0);
+                    rt.addDropout(a, out, F32.toBits(ratio));
                 } else if (code == OpCode.INSTANCE_NORM()) {
                     int sT = tensorId(graph.nodeInAt(ni, 1));
                     int bT = tensorId(graph.nodeInAt(ni, 2));

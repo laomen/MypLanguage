@@ -1359,6 +1359,34 @@ class GpuEmbeddingOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
+// ---- dropout（opKind 81 前向；推理恒等 / 训练随机 mask，按 trainMode 分派）----
+class DropoutOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            int n = rt.tensorRows(xa) * rt.tensorCols(xa);
+            if (rt.trainMode() == 1) {
+                double ratio = F32.toDouble(rt.opP0At(i));
+                InferOps.dropoutTrain(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), n, ratio);
+            } else {
+                InferOps.copyFlat(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), n);
+            }
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- dropout（GPU，opKind 81；训练随机无 GPU 内核——训练路径退化恒等，无模型驱动）----
+class GpuDropoutOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int yd = rt.opBAt(i);
+            GpuInferOps.copyFlat(rt.arenaRef(), rt.tensorRows(xa) * rt.tensorCols(xa), rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- instancenorm（GPU）----
 class GpuInstanceNormOp {
     interface class IOp;
@@ -2110,6 +2138,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(78, new GatherOp(), 0);               rt.registerFwd(78, new GpuGatherOp(), 1);
     rt.registerFwd(79, new LogSoftmaxOp(), 0);           rt.registerFwd(79, new GpuLogSoftmaxOp(), 1);
     rt.registerFwd(80, new EmbeddingOp(), 0);            rt.registerFwd(80, new GpuEmbeddingOp(), 1);
+    rt.registerFwd(81, new DropoutOp(), 0);              rt.registerFwd(81, new GpuDropoutOp(), 1);
     rt.registerFwd(35, new InstanceNormOp(), 0);         rt.registerFwd(35, new GpuInstanceNormOp(), 1);
     rt.registerFwd(36, new AvgpoolOp(), 0);              rt.registerFwd(36, new GpuAvgpoolOp(), 1);
     rt.registerFwd(37, new AvgpoolNhwcOp(), 0);          rt.registerFwd(37, new GpuAvgpoolNhwcOp(), 1);
