@@ -263,6 +263,76 @@ class GraphOptimizer {
             return 1;
         }
 
+        // first-fit 内存规划（写 planner 区域）。返回峰值内存（张量元素数）。
+        int planMemory(Graph graph) {
+            int si = 0;
+            while (si < graph.compilerShapeCount()) { graph.compilerSetPlanProducer(si, -1); graph.compilerSetPlanLastUse(si, -1); graph.compilerSetPlanOff(si, 0); si = si + 1; }
+            // producer = 产出该张量的节点在拓扑序中的位置（融合节点以 effectiveOut 计）
+            int oi = 0;
+            while (oi < graph.compilerAnalysisPlanOrderCount()) {
+                int ni = graph.compilerAnalysisPlanOrder(oi);
+                int s = graph.compilerShapeIdx(graph.compilerEffectiveOut(ni));
+                if (s >= 0) graph.compilerSetPlanProducer(s, oi);
+                oi = oi + 1;
+            }
+            // lastUse = 消费该张量的最大拓扑位置（活节点）
+            oi = 0;
+            while (oi < graph.compilerAnalysisPlanOrderCount()) {
+                int ni = graph.compilerAnalysisPlanOrder(oi);
+                int a = graph.compilerShapeIdx(graph.nodeInAt(ni, 0)); if (a >= 0 && oi > graph.compilerPlanLastUse(a)) graph.compilerSetPlanLastUse(a, oi);
+                int b = graph.compilerShapeIdx(graph.nodeInAt(ni, 1)); if (b >= 0 && oi > graph.compilerPlanLastUse(b)) graph.compilerSetPlanLastUse(b, oi);
+                int c = graph.compilerShapeIdx(graph.nodeInAt(ni, 2)); if (c >= 0 && oi > graph.compilerPlanLastUse(c)) graph.compilerSetPlanLastUse(c, oi);
+                // P4-2：残差融合把 Add 的 slot1 登记进 Conv 的 nIn3_——liveness 须覆盖 nIn3_/nIn4_
+                int d = graph.compilerShapeIdx(graph.nodeInAt(ni, 3)); if (d >= 0 && oi > graph.compilerPlanLastUse(d)) graph.compilerSetPlanLastUse(d, oi);
+                int e = graph.compilerShapeIdx(graph.nodeInAt(ni, 4)); if (e >= 0 && oi > graph.compilerPlanLastUse(e)) graph.compilerSetPlanLastUse(e, oi);
+                oi = oi + 1;
+            }
+            // first-fit 分配（按形状表顺序 = 拓扑序）
+            // persistent：权重 / 图输入 / 图输出（多 pass 需全程存活，区域不可复用）
+            int rc = 0;
+            int highWater = 0;
+            si = 0;
+            while (si < graph.compilerShapeCount()) {
+                if (graph.compilerShapeDead(si) == 1) { graph.compilerSetPlanOff(si, 0); si = si + 1; continue; }   // G2：死张量不分配
+                int size = graph.compilerShapeDim(si, 0) * graph.compilerShapeDim(si, 1) * graph.compilerShapeDim(si, 2) * graph.compilerShapeDim(si, 3);
+                if (graph.compilerShapeR5(si) == 1) size = size * graph.compilerShapeDim(si, 4);   // 3D：5D 张量乘 D 维
+                int producer = graph.compilerPlanProducer(si);
+                int lastUse = graph.compilerPlanLastUse(si);
+                int persist = 0;
+                if (producer < 0) persist = 1;            // 权重 / 图输入
+                if (lastUse < 0) { persist = 1; lastUse = graph.nodeCount() - 1; }  // 图输出
+                if (graph.compilerIsGraphOutput(graph.compilerShapeName(si)) == 1) persist = 1;   // 图输出：run 后用户仍读，缓冲不可复用
+                if (graph.compilerNoReuse() == 1) persist = 1;            // 调试：不复用
+                int best = -1;
+                if (persist == 0) {
+                    int r = 0;
+                    while (r < rc) {
+                        if (graph.compilerPlanRPersist(r) == 0 && graph.compilerPlanRLu(r) < producer && graph.compilerPlanRSize(r) >= size) { best = r; r = rc; }
+                        r = r + 1;
+                    }
+                }
+                int off = 0;
+                if (best >= 0) {
+                    off = graph.compilerPlanROff(best);
+                    graph.compilerSetPlanRSize(best, size);
+                    graph.compilerSetPlanRLu(best, lastUse);
+                } else {
+                    off = highWater;
+                    highWater = highWater + size;
+                    graph.compilerSetPlanROff(rc, off);
+                    graph.compilerSetPlanRSize(rc, size);
+                    graph.compilerSetPlanRLu(rc, lastUse);
+                    graph.compilerSetPlanRPersist(rc, persist);
+                    rc = rc + 1;
+                }
+                graph.compilerSetPlanOff(si, off);
+                si = si + 1;
+            }
+            graph.compilerSetLivenessOr(IRAnalysis.LIVENESS());
+            graph.compilerSetLivenessGeneration(graph.compilerAnalysisGeneration());
+            return highWater;
+        }
+
         int runPipeline(IGraphOptimizeHost host) {
             if (Console.getEnv("MYP_NO_REUSE") == "1") host.enableNoReuseForOptimizer();
             host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链

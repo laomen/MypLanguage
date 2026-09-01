@@ -561,7 +561,7 @@ class Graph {
             return 0;
         }
         int runTopoSort() { return optimizer_.topoSort(this); }
-        int runPlanMemory() { return planMemory(); }
+        int runPlanMemory() { return optimizer_.planMemory(this); }
         int lowerRuntime(InferenceRuntime rt) { return compiler_.lower(this, rt); }
         int buildReverseGraphForOptimizer() {
             int ok = buildReverseGraph();
@@ -2085,85 +2085,6 @@ class Graph {
         void setShapeNHWC(string name) {
             shapes_.setShapeNHWC(name);
         }
-        int producerIdx(string name) {
-            if (name == "") return -1;   // 空输入槽不算入度（nOut1_=="" 会误匹配）
-            int i = 0;
-            while (i < nodes_.count()) {
-                if (nodes_.typeAt(i) == "") { i = i + 1; continue; }
-                if (effectiveOut(i) == name) return i;
-                if (nodes_.outputAt(i, 1) == name || nodes_.outputAt(i, 2) == name || nodes_.outputAt(i, 3) == name) return i;   // 多输出
-                i = i + 1;
-            }
-            return -1;
-        }
-        int planMemory() {
-            int si = 0;
-            while (si < shapes_.count()) { planner_.setPlanProducer(si, -1); planner_.setPlanLastUse(si, -1); planner_.setPlanOff(si, 0); si = si + 1; }
-            // producer = 产出该张量的节点在拓扑序中的位置（融合节点以 effectiveOut 计）
-            int oi = 0;
-            while (oi < analysis_.planOrderCount()) {
-                int ni = analysis_.planOrder(oi);
-                int s = shapeIdx(effectiveOut(ni));
-                if (s >= 0) planner_.setPlanProducer(s, oi);
-                oi = oi + 1;
-            }
-            // lastUse = 消费该张量的最大拓扑位置（活节点）
-            oi = 0;
-            while (oi < analysis_.planOrderCount()) {
-                int ni = analysis_.planOrder(oi);
-                int a = shapeIdx(nodes_.inputAt(ni, 0)); if (a >= 0 && oi > planner_.planLastUse(a)) planner_.setPlanLastUse(a, oi);
-                int b = shapeIdx(nodes_.inputAt(ni, 1)); if (b >= 0 && oi > planner_.planLastUse(b)) planner_.setPlanLastUse(b, oi);
-                int c = shapeIdx(nodes_.inputAt(ni, 2)); if (c >= 0 && oi > planner_.planLastUse(c)) planner_.setPlanLastUse(c, oi);
-                // P4-2：残差融合把 Add 的 slot1 登记进 Conv 的 nIn3_——liveness 须覆盖 nIn3_/nIn4_
-                int d = shapeIdx(nodes_.inputAt(ni, 3)); if (d >= 0 && oi > planner_.planLastUse(d)) planner_.setPlanLastUse(d, oi);
-                int e = shapeIdx(nodes_.inputAt(ni, 4)); if (e >= 0 && oi > planner_.planLastUse(e)) planner_.setPlanLastUse(e, oi);
-                oi = oi + 1;
-            }
-            // first-fit 分配（按形状表顺序 = 拓扑序）
-            // persistent：权重 / 图输入 / 图输出（多 pass 需全程存活，区域不可复用）
-            int rc = 0;
-            int highWater = 0;
-            si = 0;
-            while (si < shapes_.count()) {
-                if (shapes_.deadAt(si) == 1) { planner_.setPlanOff(si, 0); si = si + 1; continue; }   // G2：死张量不分配
-                int size = shapes_.d0(si) * shapes_.d1(si) * shapes_.d2(si) * shapes_.d3(si);
-                if (shapes_.r5(si) == 1) size = size * shapes_.d4(si);   // 3D：5D 张量乘 D 维
-                int producer = planner_.planProducer(si);
-                int lastUse = planner_.planLastUse(si);
-                int persist = 0;
-                if (producer < 0) persist = 1;            // 权重 / 图输入
-                if (lastUse < 0) { persist = 1; lastUse = nodes_.count() - 1; }  // 图输出
-                if (isGraphOutput(shapes_.nameAt(si)) == 1) persist = 1;   // 图输出：run 后用户仍读，缓冲不可复用
-                if (noReuse_ == 1) persist = 1;            // 调试：不复用
-                int best = -1;
-                if (persist == 0) {
-                    int r = 0;
-                    while (r < rc) {
-                        if (planner_.planRPersist(r) == 0 && planner_.planRLu(r) < producer && planner_.planRSize(r) >= size) { best = r; r = rc; }
-                        r = r + 1;
-                    }
-                }
-                int off = 0;
-                if (best >= 0) {
-                    off = planner_.planROff(best);
-                    planner_.setPlanRSize(best, size);
-                    planner_.setPlanRLu(best, lastUse);
-                } else {
-                    off = highWater;
-                    highWater = highWater + size;
-                    planner_.setPlanROff(rc, off);
-                    planner_.setPlanRSize(rc, size);
-                    planner_.setPlanRLu(rc, lastUse);
-                    planner_.setPlanRPersist(rc, persist);
-                    rc = rc + 1;
-                }
-                planner_.setPlanOff(si, off);
-                si = si + 1;
-            }
-            analysis_.setAnalysisValid(analysis_.analysisValid() | IRAnalysis.LIVENESS());
-            analysis_.setLivenessGeneration(analysis_.analysisGeneration());
-            return highWater;
-        }
         void writeWeight(InferenceRuntime rt, int wi, int tid) {
             int off = weights_.get(wi, WeightField.OFFSET());
             int count = weights_.get(wi, WeightField.LENGTH()) / 4;
@@ -2450,6 +2371,22 @@ class Graph {
         int compilerAnalysisGeneration() { return analysis_.analysisGeneration(); }
         void compilerRebuildDefUse() { rebuildDefUse(); }
         int compilerVerifyIR() { return verifyIR(); }
+        int compilerPlanProducer(int v) { return planner_.planProducer(v); }
+        void compilerSetPlanProducer(int v, int p) { planner_.setPlanProducer(v, p); }
+        int compilerPlanLastUse(int v) { return planner_.planLastUse(v); }
+        void compilerSetPlanLastUse(int v, int p) { planner_.setPlanLastUse(v, p); }
+        void compilerSetPlanOff(int v, int p) { planner_.setPlanOff(v, p); }
+        int compilerPlanROff(int r) { return planner_.planROff(r); }
+        void compilerSetPlanROff(int r, int v) { planner_.setPlanROff(r, v); }
+        int compilerPlanRSize(int r) { return planner_.planRSize(r); }
+        void compilerSetPlanRSize(int r, int v) { planner_.setPlanRSize(r, v); }
+        int compilerPlanRLu(int r) { return planner_.planRLu(r); }
+        void compilerSetPlanRLu(int r, int v) { planner_.setPlanRLu(r, v); }
+        int compilerPlanRPersist(int r) { return planner_.planRPersist(r); }
+        void compilerSetPlanRPersist(int r, int v) { planner_.setPlanRPersist(r, v); }
+        int compilerNoReuse() { return noReuse_; }
+        void compilerSetLivenessOr(int mask) { analysis_.setAnalysisValid(analysis_.analysisValid() | mask); }
+        void compilerSetLivenessGeneration(int g) { analysis_.setLivenessGeneration(g); }
 
     property:
         int[] file_;
