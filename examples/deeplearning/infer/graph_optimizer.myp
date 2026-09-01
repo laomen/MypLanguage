@@ -573,6 +573,56 @@ class GraphOptimizer {
             return 1;
         }
 
+        int fuseConvBN(Graph graph) {
+            int i = 0;
+            while (i < graph.nodeCount()) {
+                if (graph.nodeOp(i) != OpCode.CONV()) { i = i + 1; continue; }
+                if (graph.compilerAttrFused(i) == 1) { i = i + 1; continue; }
+                if (graph.compilerIsGraphOutput(graph.compilerNodeOutput(i, 0)) == 1) { i = i + 1; continue; }
+                // P2b：精确匹配 Conv 输出的唯一 Use = BatchNormalization operand0。
+                int j = graph.matchSingleUseOp(graph.valueId(graph.compilerNodeOutput(i, 0)), "BatchNormalization", 0);
+                if (j < 0) { i = i + 1; continue; }
+                // BN 4 参数必须是初始器
+                if (graph.compilerInitIdx(graph.nodeInAt(j, 1)) < 0 || graph.compilerInitIdx(graph.nodeInAt(j, 2)) < 0 || graph.compilerInitIdx(graph.nodeInAt(j, 3)) < 0 || graph.compilerInitIdx(graph.nodeInAt(j, 4)) < 0) { i = i + 1; continue; }
+                // 标记 conv 权重/偏置折叠（记录 BN 参数初始器下标 + BN 节点下标）
+                int wi = graph.compilerInitIdx(graph.nodeInAt(i, 1));
+                int wb = graph.compilerInitIdx(graph.nodeInAt(i, 2));
+                if (wi >= 0) { graph.compilerWeightSetField(wi, WeightField.BN(), 1); graph.compilerWeightSetField(wi, WeightField.BN_NODE(), j); graph.compilerWeightSetField(wi, WeightField.BN_SCALE(), graph.compilerInitIdx(graph.nodeInAt(j, 1))); graph.compilerWeightSetField(wi, WeightField.BN_BIAS(), graph.compilerInitIdx(graph.nodeInAt(j, 2))); graph.compilerWeightSetField(wi, WeightField.BN_MEAN(), graph.compilerInitIdx(graph.nodeInAt(j, 3))); graph.compilerWeightSetField(wi, WeightField.BN_VAR(), graph.compilerInitIdx(graph.nodeInAt(j, 4))); }
+                if (wb >= 0) { graph.compilerWeightSetField(wb, WeightField.BN(), 1); graph.compilerWeightSetField(wb, WeightField.BN_NODE(), j); graph.compilerWeightSetField(wb, WeightField.BN_SCALE(), graph.compilerInitIdx(graph.nodeInAt(j, 1))); graph.compilerWeightSetField(wb, WeightField.BN_BIAS(), graph.compilerInitIdx(graph.nodeInAt(j, 2))); graph.compilerWeightSetField(wb, WeightField.BN_MEAN(), graph.compilerInitIdx(graph.nodeInAt(j, 3))); graph.compilerWeightSetField(wb, WeightField.BN_VAR(), graph.compilerInitIdx(graph.nodeInAt(j, 4))); }
+                else {
+                    // G4：无卷积偏置的 Conv（真实模型常见）→ 由 BN 参数合成偏置
+                    int Cout = graph.compilerWeightRows(wi);
+                    string bname = graph.compilerNodeOutput(i, 0) + "#bnb";
+                    int[] bdims = new int[1];
+                    bdims[0] = Cout;
+                    int bw = graph.compilerWeightAdd(bname, Cout, 1, 1, 1, 0, Cout * 4);   // 无源字节，仅用于 count
+                    graph.compilerWeightSetField(bw, WeightField.ROLE(), 3);
+                    graph.compilerWeightSetField(bw, WeightField.BN(), 1);
+                    graph.compilerWeightSetField(bw, WeightField.BN_ONLY(), 1);
+                    graph.compilerWeightSetField(bw, WeightField.BN_NODE(), j);
+                    graph.compilerWeightSetField(bw, WeightField.BN_SCALE(), graph.compilerInitIdx(graph.nodeInAt(j, 1)));
+                    graph.compilerWeightSetField(bw, WeightField.BN_BIAS(), graph.compilerInitIdx(graph.nodeInAt(j, 2)));
+                    graph.compilerWeightSetField(bw, WeightField.BN_MEAN(), graph.compilerInitIdx(graph.nodeInAt(j, 3)));
+                    graph.compilerWeightSetField(bw, WeightField.BN_VAR(), graph.compilerInitIdx(graph.nodeInAt(j, 4)));
+                    graph.addShapeD(bname, bdims, 1);
+                    graph.compilerSetShapeKind(bname, Kind.CNN_B());
+                    graph.compilerSetNodeInput(i, 2, bname);
+                }
+                graph.compilerAttrSetFused(i, 1);
+                graph.compilerAttrSetFusedOut(i, graph.compilerNodeOutput(j, 0));
+                graph.compilerSetNodeType(j, "");
+                graph.compilerMarkDeadTensor(graph.compilerNodeOutput(i, 0));   // conv 中间输出
+                // BN 参数不再被消费 → 标死（不分配/不登记/不写权重）
+                if (graph.compilerLiveConsumers(graph.nodeInAt(j, 1)) == 0) graph.compilerMarkDeadTensor(graph.nodeInAt(j, 1));
+                if (graph.compilerLiveConsumers(graph.nodeInAt(j, 2)) == 0) graph.compilerMarkDeadTensor(graph.nodeInAt(j, 2));
+                if (graph.compilerLiveConsumers(graph.nodeInAt(j, 3)) == 0) graph.compilerMarkDeadTensor(graph.nodeInAt(j, 3));
+                if (graph.compilerLiveConsumers(graph.nodeInAt(j, 4)) == 0) graph.compilerMarkDeadTensor(graph.nodeInAt(j, 4));
+                graph.compilerIncBn();
+                i = i + 1;
+            }
+            return 1;
+        }
+
         int runPipeline(IGraphOptimizeHost host) {
             if (Console.getEnv("MYP_NO_REUSE") == "1") host.enableNoReuseForOptimizer();
             host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链

@@ -525,7 +525,7 @@ class Graph {
             else if (pass == IRPassKind.FOLD_CONSTS()) ok = foldConstants();
             else if (pass == IRPassKind.INFER_SHAPES()) ok = inferShapes();
             else if (pass == IRPassKind.CLASSIFY()) { optimizer_.classifyShapes(this); ok = 1; }
-            else if (pass == IRPassKind.FUSE_BN()) ok = fuseConvBN();
+            else if (pass == IRPassKind.FUSE_BN()) ok = optimizer_.fuseConvBN(this);
             else if (pass == IRPassKind.FUSE_CONV_RELU()) ok = optimizer_.fuseConvRelu(this);
             else if (pass == IRPassKind.FUSE_RELU()) ok = optimizer_.fuseReluOp(this);
             else if (pass == IRPassKind.FUSE_GAP_FLATTEN()) ok = optimizer_.fuseGapFlatten(this);
@@ -1486,57 +1486,6 @@ class Graph {
             attrs_.setIntArray(nodeIdx, 1, k, st);
             return cnt;
         }
-        int fuseConvBN() {
-            int i = 0;
-            while (i < nodes_.count()) {
-                if (nodeOp(i) != OpCode.CONV()) { i = i + 1; continue; }
-                if (attrs_.fused(i) == 1) { i = i + 1; continue; }
-                if (isGraphOutput(nodes_.outputAt(i, 0)) == 1) { i = i + 1; continue; }
-                // P2b：精确匹配 Conv 输出的唯一 Use = BatchNormalization operand0。
-                // 残差分支、重复 operand 或 BN 接在非主输入时均不融合。
-                int j = matchSingleUseOp(valueId(nodes_.outputAt(i, 0)), "BatchNormalization", 0);
-                if (j < 0) { i = i + 1; continue; }
-                // BN 4 参数必须是初始器
-                if (initIdx(nodes_.inputAt(j, 1)) < 0 || initIdx(nodes_.inputAt(j, 2)) < 0 || initIdx(nodes_.inputAt(j, 3)) < 0 || initIdx(nodes_.inputAt(j, 4)) < 0) { i = i + 1; continue; }
-                // 标记 conv 权重/偏置折叠（记录 BN 参数初始器下标 + BN 节点下标）
-                int wi = initIdx(nodes_.inputAt(i, 1));
-                int wb = initIdx(nodes_.inputAt(i, 2));
-                if (wi >= 0) { weights_.set(wi, WeightField.BN(), 1); weights_.set(wi, WeightField.BN_NODE(), j); weights_.set(wi, WeightField.BN_SCALE(), initIdx(nodes_.inputAt(j, 1))); weights_.set(wi, WeightField.BN_BIAS(), initIdx(nodes_.inputAt(j, 2))); weights_.set(wi, WeightField.BN_MEAN(), initIdx(nodes_.inputAt(j, 3))); weights_.set(wi, WeightField.BN_VAR(), initIdx(nodes_.inputAt(j, 4))); }
-                if (wb >= 0) { weights_.set(wb, WeightField.BN(), 1); weights_.set(wb, WeightField.BN_NODE(), j); weights_.set(wb, WeightField.BN_SCALE(), initIdx(nodes_.inputAt(j, 1))); weights_.set(wb, WeightField.BN_BIAS(), initIdx(nodes_.inputAt(j, 2))); weights_.set(wb, WeightField.BN_MEAN(), initIdx(nodes_.inputAt(j, 3))); weights_.set(wb, WeightField.BN_VAR(), initIdx(nodes_.inputAt(j, 4))); }
-                else {
-                    // G4：无卷积偏置的 Conv（真实模型常见）→ 由 BN 参数合成偏置
-                    // b'[oc] = (0 - mean[oc])*invStd[oc] + bnBias[oc]（writeWeight 按 wBNOnly_ 计算）
-                    int Cout = weights_.get(wi, WeightField.ROWS());
-                    string bname = nodes_.outputAt(i, 0) + "#bnb";
-                    int[] bdims = new int[1];
-                    bdims[0] = Cout;
-                    int bw = weights_.add(bname, Cout, 1, 1, 1, 0, Cout * 4);   // 无源字节，仅用于 count
-                    weights_.set(bw, WeightField.ROLE(), 3);
-                    weights_.set(bw, WeightField.BN(), 1);
-                    weights_.set(bw, WeightField.BN_ONLY(), 1);
-                    weights_.set(bw, WeightField.BN_NODE(), j);
-                    weights_.set(bw, WeightField.BN_SCALE(), initIdx(nodes_.inputAt(j, 1)));
-                    weights_.set(bw, WeightField.BN_BIAS(), initIdx(nodes_.inputAt(j, 2)));
-                    weights_.set(bw, WeightField.BN_MEAN(), initIdx(nodes_.inputAt(j, 3)));
-                    weights_.set(bw, WeightField.BN_VAR(), initIdx(nodes_.inputAt(j, 4)));
-                    addShapeD(bname, bdims, 1);
-                    setShapeKind(bname, Kind.CNN_B());
-                    nodes_.setInput(i, 2, bname);
-                }
-                attrs_.setFused(i, 1);
-                attrs_.setFusedOut(i, nodes_.outputAt(j, 0));
-                nodes_.setType(j, "");
-                markDeadTensor(nodes_.outputAt(i, 0));   // conv 中间输出
-                // BN 参数不再被消费 → 标死（不分配/不登记/不写权重）
-                if (liveConsumers(nodes_.inputAt(j, 1)) == 0) markDeadTensor(nodes_.inputAt(j, 1));
-                if (liveConsumers(nodes_.inputAt(j, 2)) == 0) markDeadTensor(nodes_.inputAt(j, 2));
-                if (liveConsumers(nodes_.inputAt(j, 3)) == 0) markDeadTensor(nodes_.inputAt(j, 3));
-                if (liveConsumers(nodes_.inputAt(j, 4)) == 0) markDeadTensor(nodes_.inputAt(j, 4));
-                bnCount_ = bnCount_ + 1;
-                i = i + 1;
-            }
-            return 1;
-        }
         double bnInvStd(int wi, int oc) {
             int j = weights_.get(wi, WeightField.BN_NODE());
             int scale = weights_.get(wi, WeightField.BN_SCALE());
@@ -2166,6 +2115,11 @@ class Graph {
         void compilerSetShapeKind(string name, int kind) { setShapeKind(name, kind); }
         void compilerWeightSetField(int wi, int field, int v) { weights_.set(wi, field, v); }
         int compilerWeightGetField(int wi, int field) { return weights_.get(wi, field); }
+        int compilerWeightAdd(string name, int rows, int cols, int dtype, int kind, int offset, int length) { return weights_.add(name, rows, cols, dtype, kind, offset, length); }
+        int compilerLiveConsumers(string name) { return liveConsumers(name); }
+        int compilerBnCount() { return bnCount_; }
+        void compilerIncBn() { bnCount_ = bnCount_ + 1; }
+        int compilerWeightRows(int wi) { return weights_.get(wi, WeightField.ROWS()); }
         void compilerAttrSet(int node, int key, int v) { attrs_.set(node, key, v); }
         void compilerAttrSetFusedBy(int node, int v) { attrs_.setFusedBy(node, v); }
         void compilerNodeSetOutput(int node, int slot, string v) { nodes_.setOutput(node, slot, v); }
