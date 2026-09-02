@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-09-02 — 阶段七：优化后 IR/计划缓存（dumpPlan/loadPlan）
+
+- `InferenceRuntime` 新增 `dumpPlan(path)` / `loadPlan(path)`：把 buildRuntime
+  后的执行计划序列化到磁盘——op 表（kind/A-D/P0-8/X0-3/Relu/Cval）+ tensor 表
+  （rows/cols/N/C/D/H/W/off）+ Slice 参数表（sCnt/sAx/sSt/sSp/sOd/sId）+
+  arena 权重区。重复加载同一模型 loadPlan 直接恢复，跳过 ONNX 解析 + 优化
+  pass + buildRuntime（大模型从秒级降到毫秒级）。
+- **关键坑**：ONNX 路径用 `addTensorPlanned*`（内存规划，不 bump `arenaTop_`），
+  dump 时 `arenaTop_` 为 0 → 权重区未写入 → 恢复全 0。修复：序列化整个
+  `arenaCap_ - statsSize()` 数据区（= 规划峰值，权重/常量全在其中），
+  loadPlan `resizeArena(dataLen)` 恢复。
+- 二进制格式：magic "MYPP" + version + tensorCount/opCount/dataLen + 各表 +
+  arena float（小端）。
+- 回归：`infer_tests/plan_main.myp`（Conv 单 op：normal vs plan max diff 0，
+  PLAN CACHE ALL OK，CPU+GPU）+ `infer_tests/planr18_main.myp`（真实 ResNet18
+  47MB 69-node 图：34 op/61 tensor 一致，sum diff 0，PLANR18 ALL OK，CPU+GPU）。
+- 阶段七已完：opset/version、unsupported 诊断、外置 weight、模型 mmap、计划缓存。
+  剩余：shape specialization、三阶段错误码分离、If/Loop/Scan 子图（已声明不支持）、
+  多输入/输出/可选输入（已覆盖）。
+
+---
+
 ## 2026-09-02 — 阶段七：模型 mmap 零拷贝加载
 
 - **字节源双模式抽象**：`PbReader` 加 `initMmap(MmapFile)` + `byteAt(p)`（mmap/

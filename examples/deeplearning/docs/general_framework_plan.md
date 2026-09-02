@@ -501,7 +501,12 @@ Graph
   PbReader/Graph 字节源双模式抽象（mmap 主文件 + int[] 追加区），
   `loadMmap` 大模型免 int[] 4x 拷贝；`infer_tests/mmap_main.myp` 回归
   CPU+GPU 通过，真实 ResNet50 102MB loadMmap 输出 336.658 精确保持）。
-- 优化后 IR/计划缓存。
+- 优化后 IR/计划缓存。✅ 已完成（2026-09-02，`InferenceRuntime` 新增
+  `dumpPlan`/`loadPlan`——op 表 + tensor 表 + Slice 参数 + arena 权重序列化到
+  磁盘，重复加载 loadPlan 直接恢复跳过 ONNX 解析+优化+buildRuntime；注意 ONNX
+  路径 arenaTop_ 不 bump 需序列化 arenaCap_-statsSize 全数据区；
+  `infer_tests/plan_main.myp` + `planr18_main.myp`（真实 ResNet18 47MB 34 op）
+  回归 CPU+GPU 通过）。
 - shape specialization 和多个 shape bucket。
 - 加载、编译、执行三个阶段的错误码与统计信息分离。
 - 保持 `onnx_loader.myp` 只负责格式解析，通用逻辑留在 `graph.myp` 及其组件。
