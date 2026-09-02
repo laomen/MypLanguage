@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-02 — 阶段七：三阶段错误码与统计信息分离
+
+- `OnnxLoader` 增加三阶段错误码与统计：`phase()`（0=未加载 1=加载中 2=编译中
+  3=已就绪）+ `loadError()`/`compileError()`/`runError()` 各阶段独立错误码——
+  加载：1=文件读失败 2=文件空 3=ONNX 解析失败 4=unsupported op；编译：1=pass
+  管线失败 2=buildRuntime 无算子；执行：0=无错。
+- 统计 getter：`compileMs()`（parseModel+optimize 耗时）/ `lastRunMs()`/
+  `lastRunOps()`；新增 `runRuntime`/`runGpuRuntime` 执行包装（记录耗时/算子数
+  + 成功返回 1）。
+- `loadCommon` 各失败点设置阶段错误码（替代原只有 load() 返回 0/1 的模糊语义）。
+- 回归：`infer_tests/phase_main.myp`——PHASE ALL OK，CPU+GPU：不存在文件
+  loadErr=1、FakeOp 模型 loadErr=4、known-good phase=3 且 loadErr/compileErr=0、
+  runRuntime 统计正确（ops=1 runErr=0，输出 vs ORT 2.4e-7）。
+- 阶段七全部完成：opset/version、unsupported 诊断、外置 weight、模型 mmap、
+  计划缓存、shape specialization、三阶段错误码分离。
+
+---
+
 ## 2026-09-02 — 阶段七：shape specialization 多个 shape bucket 验证
 
 - 验证编译期 shape specialization 对**多个 shape bucket** 的正确性：同一动态

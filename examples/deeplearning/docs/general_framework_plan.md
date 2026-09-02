@@ -511,7 +511,10 @@ Graph
   batch 输入 shape 注入 + 编译期 specialization 对多 bucket 验证：同一模型
   注入 batch 2/4/8 各 build 一个 runtime 输出各自 vs ORT 正确；
   `infer_tests/shapebucket_main.myp` 回归 CPU+GPU 通过）。
-- 加载、编译、执行三个阶段的错误码与统计信息分离。
+- 加载、编译、执行三个阶段的错误码与统计信息分离。✅ 已完成（2026-09-02，
+  `OnnxLoader` 增加 phase()/loadError()/compileError()/runError() + 编译/执行
+  耗时统计；`loadCommon` 各失败点设置阶段错误码；`infer_tests/phase_main.myp`
+  回归 CPU+GPU 通过）。**阶段七全部完成。**
 - 保持 `onnx_loader.myp` 只负责格式解析，通用逻辑留在 `graph.myp` 及其组件。
 
 ## 10. 阶段八：测试与发布质量
