@@ -102,9 +102,14 @@ class GraphCompiler {
                     int w = tensorId(graph.nodeInAt(ni, 1));
                     int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
                     int ws = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
-                    int ar = graph.compilerShapeR5(is) == 1 ? 5 : 4;
-                    int br = graph.compilerShapeR5(ws) == 1 ? 5 : 4;
-                    if (ar >= 3 && br >= 3) {
+                    // 2D vs 4D/5D（与 inferShapes MatMul 判据一致）：双方 2D 视图 → addMatmul
+                    int a2d = 1;
+                    if (graph.compilerShapeR5(is) == 1) a2d = 0;
+                    if (graph.compilerShapeDim(is, 2) > 1 || graph.compilerShapeDim(is, 3) > 1) a2d = 0;
+                    int b2d = 1;
+                    if (graph.compilerShapeR5(ws) == 1) b2d = 0;
+                    if (graph.compilerShapeDim(ws, 2) > 1 || graph.compilerShapeDim(ws, 3) > 1) b2d = 0;
+                    if (a2d == 0 || b2d == 0) {
                         // 阶段四：BatchMatMul——batch 维逐维 max + 最后两维 matmul
                         int aM = graph.compilerShapeDim(is, 2), aK = graph.compilerShapeDim(is, 3);
                         int bN = graph.compilerShapeDim(ws, 3);
@@ -156,6 +161,16 @@ class GraphCompiler {
                     int da = tensorId(graph.compilerNodeOutput(ni, 0));
                     int db = tensorId(graph.compilerNodeOutput(ni, 1));
                     rt.addBwdAdd(dy, da, db);
+                } else if (code == OpCode.BWD_SUB() || code == OpCode.BWD_MUL() || code == OpCode.BWD_DIV()) {
+                    // A2：Sub/Mul/Div 反向（A=dy,B=x0,C=x1,D=dx0,P0=dx1）
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int x0 = tensorId(graph.nodeInAt(ni, 1));
+                    int x1 = tensorId(graph.nodeInAt(ni, 2));
+                    int dx0 = tensorId(graph.compilerNodeOutput(ni, 0));
+                    int dx1 = tensorId(graph.compilerNodeOutput(ni, 1));
+                    if (code == OpCode.BWD_SUB()) rt.addBwdSub(dy, x0, x1, dx0, dx1);
+                    else if (code == OpCode.BWD_MUL()) rt.addBwdMul(dy, x0, x1, dx0, dx1);
+                    else rt.addBwdDiv(dy, x0, x1, dx0, dx1);
                 } else if (code == OpCode.BWD_CONV()) {
                     int dy = tensorId(graph.nodeInAt(ni, 0));
                     int x = tensorId(graph.nodeInAt(ni, 1));

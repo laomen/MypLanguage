@@ -4,7 +4,7 @@
     { "name": "x", "dims": [1, 4] },
     { "name": "img", "dims": [1, 2, 2, 2] }
   ],
-  "outputs": ["a2", "b2", "d_sub", "d_mul", "d_div", "d_add", "e", "gap", "sg", "flat"],
+  "outputs": ["a2", "b2", "d_sub", "d_mul", "d_div", "d_add", "e", "m", "gap", "sg", "flat"],
   "layers": [
     { "op": "Gemm", "in": "x", "out": "a", "transB": 1,
       "W": { "dims": [4, 4], "init": "const", "value": 2.0 }, "B": { "dims": [4], "init": "zeros" } },
@@ -17,6 +17,7 @@
     { "op": "Div", "in": "a2", "in2": "b2", "out": "d_div" },
     { "op": "Add", "in": "a2", "in2": "b2", "out": "d_add" },
     { "op": "Concat", "in": "a2", "in2": "b2", "out": "e", "axis": 1 },
+    { "op": "MatMul", "in": "a2", "out": "m", "W": { "dims": [4, 3], "init": "const", "value": 1.0 } },
     { "op": "GlobalAveragePool", "in": "img", "out": "gap" },
     { "op": "Sigmoid", "in": "gap", "out": "sg" },
     { "op": "Flatten", "in": "img", "out": "flat", "axis": 1 }

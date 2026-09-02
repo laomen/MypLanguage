@@ -503,6 +503,41 @@ class InferOps {
             }
         }
 
+        // A2：反向 y = a - b；dA = dY, dB = -dY（同尺寸线性）
+        void bwdSub(float[] arena, int dyOff, int daOff, int dbOff, int n) {
+            int i = 0;
+            while (i < n) {
+                float d = arena[dyOff + i];
+                arena[daOff + i] = d;
+                arena[dbOff + i] = 0.0f - d;
+                i = i + 1;
+            }
+        }
+
+        // A2：反向 y = a * b；dA = dY*b, dB = dY*a（同尺寸线性）
+        void bwdMul(float[] arena, int dyOff, int x0Off, int x1Off, int daOff, int dbOff, int n) {
+            int i = 0;
+            while (i < n) {
+                float d = arena[dyOff + i];
+                arena[daOff + i] = d * arena[x1Off + i];
+                arena[dbOff + i] = d * arena[x0Off + i];
+                i = i + 1;
+            }
+        }
+
+        // A2：反向 y = a / b；dA = dY/b, dB = -dY*a/(b*b)（同尺寸线性）
+        void bwdDiv(float[] arena, int dyOff, int x0Off, int x1Off, int daOff, int dbOff, int n) {
+            int i = 0;
+            while (i < n) {
+                float d = arena[dyOff + i];
+                float x0 = arena[x0Off + i];
+                float x1 = arena[x1Off + i];
+                arena[daOff + i] = d / x1;
+                arena[dbOff + i] = 0.0f - d * x0 / (x1 * x1);
+                i = i + 1;
+            }
+        }
+
         // Softmax + CrossEntropy 合并（batch=cols；标签 one-hot [rows,cols]）
         // 前向：probs = softmax(logits)；loss[每样本] = -log(probs[label])
         // 反向：dlogit[r,b] = probs[r,b] - label[r,b]

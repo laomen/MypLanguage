@@ -864,6 +864,21 @@ class GraphOptimizer {
                             graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
                             graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
                             graph.endNode();
+                        } else if (t == "Sub" || t == "Mul" || t == "Div") {
+                            // A2：BwdSub/Mul/Div(dy, x0, x1) → (dx0, dx1)。
+                            // 前向值 x0/x1 作为操作数（Mul/Div 反向需 a/b 值；
+                            // Sub 反向不需要但槽统一，buildRuntime 从槽读 x0/x1）。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            if (t == "Sub") graph.nodeType(bd, "BwdSub");
+                            else if (t == "Mul") graph.nodeType(bd, "BwdMul");
+                            else graph.nodeType(bd, "BwdDiv");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
+                            graph.endNode();
                         } else if (t == "Conv") {
                             // BwdConv(dy, x, w) → (dx, dw, db)；复制卷积参数
                             int bd = graph.nodeCount();
@@ -1326,9 +1341,15 @@ int inferShapes(Graph graph) {
                 } else if (t == "MatMul") {
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int b = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (graph.compilerValueExists(graph.nodeInAt(i, 1)) == 0) return 0;
-                    int ar = graph.compilerShapeR5(a) == 1 ? 5 : 4;
-                    int br = graph.compilerShapeR5(b) == 1 ? 5 : 4;
-                    if (ar >= 3 && br >= 3) {
+                    // 2D vs 4D/5D：双方都是 2D 视图（非 5D 且 d2/d3<=1）→ 普通 2D matmul；
+                    // 任一方含真实 batch/空间维（d2/d3>1 或 5D）→ BatchMatMul（batch 广播）
+                    int a2d = 1;
+                    if (graph.compilerShapeR5(a) == 1) a2d = 0;
+                    if (graph.compilerShapeDim(a, 2) > 1 || graph.compilerShapeDim(a, 3) > 1) a2d = 0;
+                    int b2d = 1;
+                    if (graph.compilerShapeR5(b) == 1) b2d = 0;
+                    if (graph.compilerShapeDim(b, 2) > 1 || graph.compilerShapeDim(b, 3) > 1) b2d = 0;
+                    if (a2d == 0 || b2d == 0) {
                         // 阶段四：BatchMatMul——batch 维逐维 max 广播 + 最后两维 matmul
                         // A [ab0,ab1,M,K] × B [bb0,bb1,K,N] → [max(ab0,bb0), max(ab1,bb1), M, N]
                         int od0 = graph.compilerShapeDim(a, 0); if (graph.compilerShapeDim(b, 0) > od0) od0 = graph.compilerShapeDim(b, 0);

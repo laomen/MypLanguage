@@ -1,0 +1,75 @@
+// bwd_rt_main.myp — A2：Sub/Mul/Div 反向 kernel 数值对拍（直接 runtime API）。
+// 构造 dy/x0/x1 固定值 → addBwdSub/addBwdMul/addBwdDiv → run()（train mode）
+// 读 dx0/dx1 与解析梯度对比：
+//   Sub: dx0=dy, dx1=-dy
+//   Mul: dx0=dy*x1, dx1=dy*x0
+//   Div: dx0=dy/x1, dx1=-dy*x0/(x1*x1)（x1 非零）
+// 三者独立 tensor 一次 run 全算。全部 PASS → BWD RT OK。
+import env;
+import "../infer/runtime.myp";
+
+class BwdRtApp {
+    action:
+        @constructor BwdRtApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(1024);
+            rt.setTrain(1);
+            int n = 5;
+            // ---- Sub ----
+            int dyS = rt.addTensor(n, 1);
+            int daS = rt.addTensor(n, 1);
+            int dbS = rt.addTensor(n, 1);
+            // ---- Mul ----
+            int dyM = rt.addTensor(n, 1);
+            int x0M = rt.addTensor(n, 1);
+            int x1M = rt.addTensor(n, 1);
+            int daM = rt.addTensor(n, 1);
+            int dbM = rt.addTensor(n, 1);
+            // ---- Div ----
+            int dyD = rt.addTensor(n, 1);
+            int x0D = rt.addTensor(n, 1);
+            int x1D = rt.addTensor(n, 1);
+            int daD = rt.addTensor(n, 1);
+            int dbD = rt.addTensor(n, 1);
+            int i = 0;
+            while (i < n) {
+                double dy = double(i) * 0.5 + 0.25;
+                double x0 = double(i * 3 + 1);
+                double x1 = double(i * 5 + 2) + 1.0;   // 非零除数
+                rt.setFlat(dyS, i, dy); rt.setFlat(dyM, i, dy); rt.setFlat(dyD, i, dy);
+                rt.setFlat(x0M, i, x0); rt.setFlat(x0D, i, x0);
+                rt.setFlat(x1M, i, x1); rt.setFlat(x1D, i, x1);
+                i = i + 1;
+            }
+            rt.addBwdSub(dyS, 0, 0, daS, dbS);   // x0/x1 槽 Sub 反向不用（值无关）
+            rt.addBwdMul(dyM, x0M, x1M, daM, dbM);
+            rt.addBwdDiv(dyD, x0D, x1D, daD, dbD);
+            rt.run();
+            int bad = 0;
+            i = 0;
+            while (i < n) {
+                double dy = double(i) * 0.5 + 0.25;
+                double x0 = double(i * 3 + 1);
+                double x1 = double(i * 5 + 2) + 1.0;
+                // Sub
+                if (absd(rt.getFlat(daS, i) - dy) > 1.0e-3) bad = bad + 1;
+                if (absd(rt.getFlat(dbS, i) + dy) > 1.0e-3) bad = bad + 1;
+                // Mul
+                if (absd(rt.getFlat(daM, i) - dy * x1) > 1.0e-3) bad = bad + 1;
+                if (absd(rt.getFlat(dbM, i) - dy * x0) > 1.0e-3) bad = bad + 1;
+                // Div
+                if (absd(rt.getFlat(daD, i) - dy / x1) > 1.0e-3) bad = bad + 1;
+                if (absd(rt.getFlat(dbD, i) + dy * x0 / (x1 * x1)) > 1.0e-3) bad = bad + 1;
+                i = i + 1;
+            }
+            Console.writeString("bwd sub/mul/div bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            if (bad == 0) Console.writeLine("BWD RT OK");
+            else Console.writeLine("BWD RT MISMATCH");
+        }
+
+        double absd(double v) { if (v < 0.0) return 0.0 - v; return v; }
+}
+
+int main() { BwdRtApp app = new BwdRtApp(); return 0; }

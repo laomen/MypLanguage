@@ -7,11 +7,11 @@
 //   a2 = 2·S = [10]*4；b2 = 3·S = [15]*4
 //   d_sub=a2-b2=[-5]*4  d_mul=a2*b2=[150]*4  d_div=a2/b2=10/15≈0.66667
 //   d_add=a2+b2=[25]*4  e=concat(a2,b2,axis1)=[10*4,15*4]（[1,8]）
+//   m=a2·W([4,3] const 1)=[40,40,40]（2D MatMul，A2D 判据修复）
 //   img=[1,2,3,4,2,4,6,8]（[1,2,2,2] NCHW：c0=[[1,2],[3,4]] c1=[[2,4],[6,8]]）
 //     gap=GAP(img)=[2.5,5]  sg=sigmoid(gap)≈[0.924142,0.993307]
 //     flat=flatten(img)=[1,2,3,4,2,4,6,8]（[1,8]）
-// 注：2D MatMul 未含（框架 MatMul 走 4D batch 路径）；JSON MatMul 支持保留，
-//     用户须以 4D batch 形状声明（见 json_model 注释）。
+// 注：2D MatMul 含于本 demo（m 断言）——A2D 判据（双方 d2/d3≤1 → 普通 matmul）。
 // CPU+GPU JSON BRANCH OK。
 import env;
 import fmt;
@@ -49,6 +49,7 @@ class JsonBranchApp {
             nf = nf + chk(s, "d_add", 4, 25.0, 0.0);
             nf = nf + chk(s, "e", 4, 10.0, 1.0e-4);      // 前 4 = 10（concat 有 float 尾差）
             nf = nf + chkOff(s, "e", 4, 4, 15.0, 1.0e-4); // 后 4 = 15
+            nf = nf + chk(s, "m", 3, 40.0, 1.0e-4);       // 2D MatMul a2[1,4]·W[4,3]const1
             nf = nf + chk2(s, "gap", 2, 2.5, 5.0, 1.0e-5);
             nf = nf + chk2(s, "sg", 2, 0.92414182, 0.99330715, 1.0e-4);
             nf = nf + chkFlat(s, "flat", 8);

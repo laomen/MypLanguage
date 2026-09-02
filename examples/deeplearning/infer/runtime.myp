@@ -245,6 +245,28 @@ class InferenceRuntime {
             opA_[id] = dyT; opB_[id] = daT; opC_[id] = dbT;
             opCount_ = opCount_ + 1;
         }
+        // A2：Sub/Mul/Div 反向（同尺寸线性；训练广播无驱动，与 Add 反向一致）。
+        // 槽：opA=dy, opB=x0, opC=x1, opD=dx0, opP0=dx1。
+        // Sub: dx0=dy, dx1=-dy；Mul: dx0=dy*x1, dx1=dy*x0；
+        // Div: dx0=dy/x1, dx1=-dy*x0/(x1*x1)。
+        void addBwdSub(int dyT, int x0T, int x1T, int dx0T, int dx1T) {
+            int id = opCount_;
+            opKind_[id] = 90;
+            opA_[id] = dyT; opB_[id] = x0T; opC_[id] = x1T; opD_[id] = dx0T; opP0_[id] = dx1T;
+            opCount_ = opCount_ + 1;
+        }
+        void addBwdMul(int dyT, int x0T, int x1T, int dx0T, int dx1T) {
+            int id = opCount_;
+            opKind_[id] = 91;
+            opA_[id] = dyT; opB_[id] = x0T; opC_[id] = x1T; opD_[id] = dx0T; opP0_[id] = dx1T;
+            opCount_ = opCount_ + 1;
+        }
+        void addBwdDiv(int dyT, int x0T, int x1T, int dx0T, int dx1T) {
+            int id = opCount_;
+            opKind_[id] = 92;
+            opA_[id] = dyT; opB_[id] = x0T; opC_[id] = x1T; opD_[id] = dx0T; opP0_[id] = dx1T;
+            opCount_ = opCount_ + 1;
+        }
         // Softmax+CE 合并：输入 logits + 标签(one-hot)，输出 dlogits + loss
         void addSoftmaxCE(int logitT, int labelT, int dlogitT, int lossT) {
             int id = opCount_;

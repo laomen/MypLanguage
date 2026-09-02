@@ -209,6 +209,9 @@ class OpCode {
         int EMBEDDING() { return 80; }
         int DROPOUT() { return 81; }
         int SHAPE() { return 82; }           // G5：形状链节点（Shape，被 foldShapeChains 折叠）
+        int BWD_SUB() { return 84; }         // A2：Sub/Mul/Div 反向（前向 opKind 31/33/32）
+        int BWD_MUL() { return 85; }
+        int BWD_DIV() { return 86; }
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -276,6 +279,9 @@ class OpCode {
             if (t == "Resize") return OpCode.RESIZE();
             if (t == "Upsample") return OpCode.UPSAMPLE();
             if (t == "Shape") return OpCode.SHAPE();
+            if (t == "BwdSub") return OpCode.BWD_SUB();
+            if (t == "BwdMul") return OpCode.BWD_MUL();
+            if (t == "BwdDiv") return OpCode.BWD_DIV();
             return OpCode.UNKNOWN();
         }
         // 节点保护 trait：非 0 表示受 DCE 保护。1=stateful（就地改权重/累加），
@@ -284,6 +290,7 @@ class OpCode {
             if (code == OpCode.UPDATE() || code == OpCode.GRAD_ACC()) return 1;
             if (code == OpCode.DICE_LOSS() || code == OpCode.SOFTMAX_CE()) return 2;
             if (code >= OpCode.BWD_DENSE() && code <= OpCode.BWD_SOFTMAX()) return 2;
+            if (code == OpCode.BWD_SUB() || code == OpCode.BWD_MUL() || code == OpCode.BWD_DIV()) return 2;
             return 0;
         }
 }
