@@ -58,6 +58,11 @@ class Session {
         int optimizer() { return rt_.optMode(); }
         void setWeightDecay(double wd) { rt_.setOptWd(wd); }
         double weightDecay() { return rt_.optWd(); }
+        // 梯度累积：K>0 时每 K 次 runTrain（micro-step）才应用一次权重更新
+        // （gAcc/K × lr，等效 batch×K 且 loss 平均；CPU runTrain；GPU 训练不累积）
+        void setGradAccumEvery(int k) { rt_.setGradAccumEvery(k); }
+        int gradAccumEvery() { return rt_.gradAccumEvery(); }
+        int gradAccumStep() { return rt_.gradAccumStep(); }
         // 训练 run（loadTrain 建的反向图）：trainMode=1 时 Update 按 lr 更新权重
         int runTrain() { return loader_.runRuntime(rt_); }
         // 当前 batch loss 标量（训练图输出 "loss"）

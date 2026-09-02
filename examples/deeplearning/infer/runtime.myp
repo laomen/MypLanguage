@@ -32,6 +32,7 @@ class InferenceRuntime {
             gpuPersist_ = 0;   // 阶段3d：持久化设备 arena 默认关闭
             gpuSyncN_ = 0;
             optMode_ = 0; optWd_ = 0.0; optStep_ = 0;
+            gradAccEvery_ = 0; gradAccStep_ = 0;
             statsOff_ = arenaCapacity;
             arenaCap_ = arenaCapacity + statsSize();
             if (arenaCap_ < 1) arenaCap_ = 1;
@@ -39,6 +40,8 @@ class InferenceRuntime {
             optBase_ = arenaCap_;
             int oi = 0;
             while (oi < 512) { optOff_[oi] = -1; oi = oi + 1; }
+            oi = 0;
+            while (oi < 512) { gradAccOff_[oi] = -1; oi = oi + 1; }
         }
 
         // 重建 arena 到指定容量（用于 ONNX 路径：加载器先做内存规划再建 arena）。
@@ -48,9 +51,12 @@ class InferenceRuntime {
             arena = new float[cap + statsSize()];
             arenaCap_ = cap + statsSize();
             optMode_ = 0; optWd_ = 0.0; optStep_ = 0;
+            gradAccEvery_ = 0; gradAccStep_ = 0;
             optBase_ = arenaCap_;
             int oi = 0;
             while (oi < 512) { optOff_[oi] = -1; oi = oi + 1; }
+            oi = 0;
+            while (oi < 512) { gradAccOff_[oi] = -1; oi = oi + 1; }
         }
 
         // 全 resident 归约暂存区大小（float 数）：nC*pt*2 + nC*2，1M 覆盖 nC≤1023
@@ -435,6 +441,31 @@ class InferenceRuntime {
             arenaCap_ = newCap;
         }
         double lr() { return lr_; }
+        // ---- 梯度累积（阶段4 训练专项）：K>0 时每 K 次 runTrain 才应用一次权重更新 ----
+        // 启用时遍历 Update(55) 权重预分配 gAcc 缓冲（arena 尾部，optBase_ 继续增长）。
+        // 语义：累积 ΣK 个 micro 梯度 → 应用 gAcc/K × lr（等效 batch×K 且 loss 平均）。
+        void prepGradAcc(int tid) {
+            if (tid < 0 || tid >= 512) return;
+            if (gradAccOff_[tid] >= 0) return;
+            int n = tensorSize(tid);
+            if (optBase_ + n > arenaCap_) growOptArena(optBase_ + n - arenaCap_);
+            gradAccOff_[tid] = optBase_;
+            optBase_ = optBase_ + n;
+        }
+        void setGradAccumEvery(int k) {
+            gradAccEvery_ = k;
+            gradAccStep_ = 0;
+            if (k > 0) {
+                int i = 0;
+                while (i < opCount_) {
+                    if (opKind_[i] == 55) prepGradAcc(opA_[i]);
+                    i = i + 1;
+                }
+            }
+        }
+        int gradAccumEvery() { return gradAccEvery_; }
+        int gradAccumStep() { return gradAccStep_; }
+        int gradAccOffAt(int tid) { if (tid < 0 || tid >= 512) return -1; return gradAccOff_[tid]; }
         // 调试访问器（MYP_DUMP_OPS=1 时训练入口打印 op 清单）
         int opCountDebug() { return opCount_; }
         int opKindDebug(int i) { if (i < 0 || i >= opCount_) return -1; return opKind_[i]; }
@@ -1204,6 +1235,7 @@ class InferenceRuntime {
             if (Console.getEnv("MYP_PROF_CPU") == "1") prof = 1;
             if (ifaceInit_ == 0) { ifaceInit_ = 1; registerAllIfaceOps(this); }   // 全接口分派：首调自动注册
             if (trainMode_ == 1) optStep_ = optStep_ + 1;   // 阶段5e：每训练步计数（Adam 偏差修正 t）
+            if (trainMode_ == 1 && gradAccEvery_ > 0) gradAccStep_ = gradAccStep_ + 1;   // 梯度累积 micro-step
             int i = 0;
             while (i < opCount_) {
                 long tOp0 = 0L;
@@ -1514,6 +1546,7 @@ class InferenceRuntime {
             curDev_ = dev;
             if (ifaceInit_ == 0) { ifaceInit_ = 1; registerAllIfaceOps(this); }   // 全接口分派：首调自动注册
             if (trainMode_ == 1) optStep_ = optStep_ + 1;   // 阶段5e：每训练步计数（Adam 偏差修正 t）
+            if (trainMode_ == 1 && gradAccEvery_ > 0) gradAccStep_ = gradAccStep_ + 1;   // 梯度累积 micro-step
             int i = 0;
             while (i < opCount_) {
                 long tOp0 = __myp_now_ms();
@@ -1770,6 +1803,9 @@ class InferenceRuntime {
         int optStep_;        // 阶段5e：优化步数（Adam 偏差修正 t）
         int[512] optOff_;    // 阶段5e：每权重优化器状态区偏移（-1=未分配）
         int optBase_;        // 阶段5e：状态区下一个空闲偏移（arena 尾部）
+        int gradAccEvery_;   // 梯度累积：每 K 步才应用一次权重更新（0=禁用）
+        int gradAccStep_;    // 梯度累积：当前累积的 micro-step 计数
+        int[512] gradAccOff_; // 梯度累积：每权重 gAcc 缓冲偏移（arena 尾部，-1=未分配）
         GpuBufferF gpuArena_;      // 阶段3d：持久化设备 arena（gpuPersist_=1 时有效）
         int gpuPersist_;           // 阶段3d：持久化 arena 模式激活标志
         int[512] dirtyTid_;        // 阶段3d：setFlat 置脏的张量（runGpu 增量 H2D）

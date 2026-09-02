@@ -1724,18 +1724,39 @@ class UpdateOp {
                 int w = rt.opAAt(i); int g = rt.opBAt(i);
                 int n = rt.tensorSize(w);
                 double lr = rt.lrRef();
-                double decay = lr * rt.optWd();
+                int K = rt.gradAccumEvery();
                 int mode = rt.optMode();
+                int wOff = rt.tensorOff(w);
+                int gradOff = rt.tensorOff(g);
                 int mOff = rt.optOffAt(w);
+                int goff = -1;
+                if (K > 0) {
+                    // 梯度累积：累积 gAcc += g；每 K 个 micro-step（gradAccStep_ % K==0）
+                    // 才应用一次 gAcc/K × lr（等效 batch×K 且 loss 平均），应用后清 gAcc。
+                    goff = rt.gradAccOffAt(w);
+                    if (goff < 0) return;   // 状态未预留（setGradAccumEvery 未调用/时序错）
+                    float[] acc = rt.arenaRef();
+                    int j = 0;
+                    while (j < n) { acc[goff + j] = acc[goff + j] + acc[gradOff + j]; j = j + 1; }
+                    if (rt.gradAccumStep() % K != 0) return;   // 未达 K：只累积，不更新
+                    gradOff = goff;        // 应用累积梯度（ΣK 个 micro）
+                    lr = lr / double(K);   // 除 K = loss 平均语义
+                }
+                double decay = lr * rt.optWd();
                 if (mode == 0) {
-                    InferOps.updateSGD(rt.arenaRef(), rt.tensorOff(w), rt.tensorOff(g), n, lr, decay);
+                    InferOps.updateSGD(rt.arenaRef(), wOff, gradOff, n, lr, decay);
                 } else if (mode == 1) {
-                    InferOps.updateMom(rt.arenaRef(), rt.tensorOff(w), rt.tensorOff(g), mOff, n, lr, decay);
+                    InferOps.updateMom(rt.arenaRef(), wOff, gradOff, mOff, n, lr, decay);
                 } else {
                     double t = double(rt.optStep());
                     double bc1 = 1.0 - Math.pow(0.9, t);
                     double bc2 = 1.0 - Math.pow(0.999, t);
-                    InferOps.updateAdamW(rt.arenaRef(), rt.tensorOff(w), rt.tensorOff(g), mOff, n, lr, decay, bc1, bc2);
+                    InferOps.updateAdamW(rt.arenaRef(), wOff, gradOff, mOff, n, lr, decay, bc1, bc2);
+                }
+                if (goff >= 0) {
+                    float[] acc = rt.arenaRef();
+                    int j = 0;
+                    while (j < n) { acc[goff + j] = float(0.0); j = j + 1; }
                 }
             }
         }
