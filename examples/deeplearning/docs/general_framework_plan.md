@@ -621,8 +621,14 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   一致；a/b 续跑 loss 一致 11.1062）。**约定**：loadPlan 会话无 loader，按名查返回
   -1/0（OnnxLoader @constructor 已建 g_，不再解引用崩溃），训练续跑须用 tid；
   训练 label 是 one-hot[10]；每次 run 前重建输入（arena 复用覆盖）。
-- **待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；`import dl` 单模块入口
-  命名；SLI 文档/示例；梯度累积/混合精度；训练完整循环（优化器/epoch）示例。
+- **`import dl` 单模块入口（完成）**：`dl/dl.myp` 薄转发——用户程序
+  `import dl;` 即得统一 Session（推理/训练/checkpoint/dump 全能力），不再
+  手动 import 5 模块。编译加 `--package-path examples/deeplearning` 后按包规则
+  命中 `<package-path>/dl/dl.myp`（对现有相对/stdlib import 无副作用）。
+  `infer_tests/sli_dl_main.myp` 端到端（deadweight vs ORT max diff 2.4e-7 +
+  tensorCount 校验，SLI DL OK，CPU+GPU）。测试数 63。
+- **待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；SLI 文档/示例；
+  梯度累积/混合精度；训练完整循环（优化器/epoch）示例。
 
 ## 11. 推荐执行顺序
 

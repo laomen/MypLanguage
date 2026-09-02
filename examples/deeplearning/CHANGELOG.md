@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-02 — 阶段九 SLI：`import dl` 单模块入口（统一 Standard Library Interface 包）
+
+- 新增 `dl/dl.myp` 薄转发入口模块——用户程序只需 `import dl;` 即得统一
+  Session facade（推理/训练/checkpoint/dump 全能力），不再手动 import
+  pb/runtime/graph/onnx_loader 拼装样板。MYP import 是 AST 合并，framework.myp
+  顶层 `Session` 经包入口直接可见。
+- **机制**：`--package-path examples/deeplearning` 下 `import dl` 按包解析规则命中
+  `<package-path>/dl/dl.myp`（MYP import 无路径搜索：stdlib → source 相对 → 
+  package-path `<seg>/<module>/<module>.myp`）。回归脚本全量统一加
+  `--package-path examples/deeplearning`（对现有相对/stdlib import 无副作用——
+  package-path 仅在该规则命中时生效）。
+- `Session` 补 `tensorCount()`（转发 rt.tensorCountDebug，dump/调试用）。
+- 测试 `infer_tests/sli_dl_main.myp`：`import dl;` 端到端——deadweight
+  load/runAuto/getOutput vs ORT max diff 2.4e-7 + tensorCount>0，CPU+GPU
+  `SLI DL OK`。测试数 62→63。
+
+---
+
 ## 2026-09-02 — 阶段九 SLI：训练 checkpoint（Session dumpPlan/loadPlan）+ 确定性回归
 
 - `Session` 暴露 `dumpPlan(path)`/`loadPlan(path)`（复用阶段七计划缓存）——训练
