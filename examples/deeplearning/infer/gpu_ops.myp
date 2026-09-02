@@ -11,12 +11,31 @@
 import env;
 import math;
 import atomic;
+import fmt;
+import gpu;   // 阶段六：cuBLAS SGEMM 厂商库 hook（GpuBackend.cublasAvailable/Sgemm）
 
 class GpuInferOps {
     static:
         // y = W x + b（batch 沿列；每线程算一个输出元素 + 串行归约 j）
         // n = arena 长度（传输范围），work = 有效输出数 = outDim*batch
         void dense(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int bOff, int yOff, long dev) {
+            // 阶段六：cuBLAS SGEMM 优先（列主序 C[m×n]=A[m×k]·B[k×n]，同步执行）。
+            // 行主序 y[outDim,batch]=W[outDim,xRows]·x[xRows,batch] 等价于列主序
+            // y^T[batch,outDim] = x^T[batch,xRows]·W^T[xRows,outDim] → m=batch,n=outDim,k=xRows。
+            // 规模足够（与 denseTiled 同阈值）且厂商库可用时走 cuBLAS（tensor core）。
+            if (dev != 0L && GpuBackend.cublasAvailable() == 1 &&
+                outDim >= 32 && batch >= 32 && long(outDim) * long(batch) >= 4096L) {
+                int r = GpuBackend.cublasSgemm(dev + long(xOff) * 4L, dev + long(wOff) * 4L,
+                                               dev + long(yOff) * 4L, batch, outDim, xRows, 1.0, 0.0);
+                if (Console.getEnv("MYP_CUBLAS_LOG") == "1") {
+                    Console.writeLine("cuBLAS dense m=" + Fmt.i(batch) + " n=" + Fmt.i(outDim) + " k=" + Fmt.i(xRows) + " r=" + Fmt.i(r));
+                }
+                if (r == 1) {
+                    if (bOff >= 0) GpuInferOps.addBiasRows(a, yOff, bOff, outDim, batch, dev);
+                    return;
+                }
+                // cuBLAS 失败 → 回退 denseTiled
+            }
             if (outDim >= 32 && batch >= 32 && long(outDim) * long(batch) >= 4096L) {
                 GpuInferOps.denseTiled(a, work, xOff, xRows, wOff, outDim, batch, bOff, yOff, dev);
                 return;
@@ -32,6 +51,17 @@ class GpuInferOps {
                         j = j + 1L;
                     }
                     a[yOff + i * batch + k] = sum;
+                }
+            }
+        }
+
+        // cuBLAS SGEMM 后加 bias（y[outDim,batch] 每行加 b[outDim]）。
+        void addBiasRows(float[] a, int yOff, int bOff, int outDim, int batch, long dev) {
+            @gpu for (long p = 0L; p < long(outDim) * long(batch); p = p + 1L) resident(a = dev) {
+                if (p < long(outDim) * long(batch)) {
+                    long i = p / long(batch);
+                    long k = p % long(batch);
+                    a[yOff + i * long(batch) + k] = a[yOff + i * long(batch) + k] + a[bOff + i];
                 }
             }
         }
@@ -62,6 +92,17 @@ class GpuInferOps {
 
         // y = W x（无偏置；batch 沿列）
         void matmul(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int yOff, long dev) {
+            // 阶段六：cuBLAS SGEMM 优先（同 dense 布局映射：m=batch,n=outDim,k=xRows，无 bias）。
+            if (dev != 0L && GpuBackend.cublasAvailable() == 1 &&
+                outDim >= 32 && batch >= 32 && long(outDim) * long(batch) >= 4096L) {
+                int r = GpuBackend.cublasSgemm(dev + long(xOff) * 4L, dev + long(wOff) * 4L,
+                                               dev + long(yOff) * 4L, batch, outDim, xRows, 1.0, 0.0);
+                if (Console.getEnv("MYP_CUBLAS_LOG") == "1") {
+                    Console.writeLine("cuBLAS matmul m=" + Fmt.i(batch) + " n=" + Fmt.i(outDim) + " k=" + Fmt.i(xRows) + " r=" + Fmt.i(r));
+                }
+                if (r == 1) return;
+                // cuBLAS 失败 → 回退 denseTiled
+            }
             if (outDim >= 32 && batch >= 32 && long(outDim) * long(batch) >= 4096L) {
                 GpuInferOps.denseTiled(a, work, xOff, xRows, wOff, outDim, batch, -1, yOff, dev);
                 return;
