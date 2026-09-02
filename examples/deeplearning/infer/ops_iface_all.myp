@@ -1723,6 +1723,10 @@ class UpdateOp {
             if (rt.trainMode() == 1) {
                 int w = rt.opAAt(i); int g = rt.opBAt(i);
                 int n = rt.tensorSize(w);
+                if (rt.ampSim() == 1) {
+                    // AMP 模拟：本步梯度就地 fp16 舍入（模拟 fp16 梯度传输/计算）
+                    InferOps.halfQuantizeGrad(rt.arenaRef(), rt.tensorOff(g), n);
+                }
                 double lr = rt.lrRef();
                 int K = rt.gradAccumEvery();
                 int mode = rt.optMode();

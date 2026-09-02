@@ -33,6 +33,7 @@ class InferenceRuntime {
             gpuSyncN_ = 0;
             optMode_ = 0; optWd_ = 0.0; optStep_ = 0;
             gradAccEvery_ = 0; gradAccStep_ = 0;
+            ampSim_ = 0;
             statsOff_ = arenaCapacity;
             arenaCap_ = arenaCapacity + statsSize();
             if (arenaCap_ < 1) arenaCap_ = 1;
@@ -52,6 +53,7 @@ class InferenceRuntime {
             arenaCap_ = cap + statsSize();
             optMode_ = 0; optWd_ = 0.0; optStep_ = 0;
             gradAccEvery_ = 0; gradAccStep_ = 0;
+            ampSim_ = 0;
             optBase_ = arenaCap_;
             int oi = 0;
             while (oi < 512) { optOff_[oi] = -1; oi = oi + 1; }
@@ -415,6 +417,9 @@ class InferenceRuntime {
         }
         void setTrain(int v) { trainMode_ = v; }
         void setLr(double v) { lr_ = v; }
+        // ---- AMP 模拟（阶段四训练专项）：1 = 更新前梯度经 fp16 舍入（模拟 fp16 梯度）----
+        void setAmpSim(int v) { ampSim_ = v; }
+        int ampSim() { return ampSim_; }
         // ---- 优化器（阶段5e）：0=SGD（默认），1=动量，2=AdamW；wd=weight decay ----
         void setOptMode(int v) { optMode_ = v; }
         int optMode() { return optMode_; }
@@ -1806,6 +1811,7 @@ class InferenceRuntime {
         int gradAccEvery_;   // 梯度累积：每 K 步才应用一次权重更新（0=禁用）
         int gradAccStep_;    // 梯度累积：当前累积的 micro-step 计数
         int[512] gradAccOff_; // 梯度累积：每权重 gAcc 缓冲偏移（arena 尾部，-1=未分配）
+        int ampSim_;         // AMP 模拟：1 = 梯度 fp16 舍入（模拟 fp16 训练）
         GpuBufferF gpuArena_;      // 阶段3d：持久化设备 arena（gpuPersist_=1 时有效）
         int gpuPersist_;           // 阶段3d：持久化 arena 模式激活标志
         int[512] dirtyTid_;        // 阶段3d：setFlat 置脏的张量（runGpu 增量 H2D）

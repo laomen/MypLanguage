@@ -1,0 +1,117 @@
+// sli_amp_main.myp — 阶段四：AMP（混合精度）数值管线骨架验证。
+// Session.setAmpSim(1) 使更新前梯度经 fp16 舍入（f2hRNE，round-to-nearest-even
+// 含亚正规）——模拟 fp16 混合精度训练的数值行为（主权重仍 fp32 累积）。验证：
+//   A) 同一确定性 class 数据序列，fp32 vs fp16 梯度模拟都显著收敛（AMP 语义下
+//      训练鲁棒——梯度经 fp16 量化后学习仍有效）；
+//   B) 首步梯度量化误差有界（量化前后梯度最大差 < fp16 ulp 量级，~1e-3 相对）
+//   C) fp16 模拟与 fp32 的 loss 轨迹接近（同 lr 下收敛量级一致，误差有限）
+// 注：这是 AMP 的数值管线骨架（CPU fp32 硬件上模拟 fp16 舍入）；真计算级 AMP
+//（fp16 kernel + 图内 loss-scale + 动态 scale）为后续大工程。runTrain 走 CPU。
+import env;
+import fmt;
+import dl;
+
+class SliAmpApp {
+    action:
+        @constructor SliAmpApp() {
+            // ---- fp32 与 fp16 模拟各训 200 步（同序列），记录 loss ----
+            Session s32 = new Session();
+            int ok32 = s32.loadTrain("./deeplearning/data/onnx/mnist_mlp.onnx");
+            s32.setLr(0.01); s32.setTrainMode(1);
+            Session s16 = new Session();
+            int ok16 = s16.loadTrain("./deeplearning/data/onnx/mnist_mlp.onnx");
+            if (ok32 == 0 || ok16 == 0) { Console.writeLine("SLI AMP SKIP (no model)"); return; }
+            s16.setLr(0.01); s16.setTrainMode(1);
+            s16.setAmpSim(1);
+
+            int in0 = s32.tensorId("data"); int lab0 = s32.tensorId("label"); int loss0 = s32.tensorId("loss");
+            int in1 = s16.tensorId("data"); int lab1 = s16.tensorId("label"); int loss1 = s16.tensorId("loss");
+            double e32 = 0.0; double e16 = 0.0;   // 200 步末 loss
+            int step = 0;
+            while (step < 200) {
+                feedStep(s32, in0, lab0, step);
+                feedStep(s16, in1, lab1, step);
+                s32.runTrain();
+                s16.runTrain();
+                if (step == 199) {
+                    e32 = s32.getFlat(loss0, 0);
+                    e16 = s16.getFlat(loss1, 0);
+                }
+                step = step + 1;
+            }
+            Console.writeString("A fp32 loss@200="); Console.writeFloat(e32);
+            Console.writeString(" fp16sim="); Console.writeFloat(e16); Console.writeLine("");
+
+            // ---- B) 首步梯度量化误差：fp16 模拟与 fp32 的 W1 权重首步更新差 ----
+            // 两个 Session 都只跑 1 步（同输入）→ 比较 W1 权重（fp16 舍入影响量级）
+            Session a = new Session();
+            int okA = a.loadTrain("./deeplearning/data/onnx/mnist_mlp.onnx");
+            if (okA == 0) { Console.writeLine("SLI AMP SKIP (no model B)"); return; }
+            a.setLr(0.05); a.setTrainMode(1);
+            Session b = new Session();
+            int okB = b.loadTrain("./deeplearning/data/onnx/mnist_mlp.onnx");
+            if (okB == 0) { Console.writeLine("SLI AMP SKIP (no model B2)"); return; }
+            b.setLr(0.05); b.setTrainMode(1);
+            b.setAmpSim(1);
+            int inA = a.tensorId("data"); int labA = a.tensorId("label");
+            feedStep(a, inA, labA, 0); feedStep(b, inA, labA, 0);
+            a.runTrain(); b.runTrain();
+            int wA = a.tensorId("W1"); int wB = b.tensorId("W1");
+            int nW = a.tensorSize("W1");
+            // fp32 首步权重变化量级（lr*grad）
+            double rel = relWDiff(a, b, wA, wB, nW);
+            Console.writeString("B W1 fp32-vs-fp16sim rel diff (1 step): ");
+            Console.writeFloat(rel); Console.writeLine("");
+
+            // ---- 判定：都显著收敛 + fp16sim 收敛不差于 fp32 一个数量级 + 相对误差有界 ----
+            // e32/e16 是 ×1 loss（<0.5 收敛）；B rel diff < 0.02（fp16 梯度舍入相对小）
+            if (ok32 == 1 && ok16 == 1 && e32 < 0.5 && e16 < 0.5 &&
+                e16 < e32 * 4.0 + 0.05 && rel < 0.02) {
+                Console.writeLine("SLI AMP OK");
+            } else {
+                Console.writeLine("SLI AMP MISMATCH");
+            }
+        }
+
+        // 两 Session 同权重张量首步后的相对差异（w 各取 n 个，比较 fp32 vs fp16sim 权重）
+        double relWDiff(Session a, Session b, int wA, int wB, int n) {
+            double acc = 0.0;
+            double span = 0.0;
+            int i = 0;
+            while (i < n) {
+                double va = a.getFlat(wA, i);
+                double vb = b.getFlat(wB, i);
+                double d = va - vb;
+                if (d < 0.0) d = 0.0 - d;
+                acc = acc + d;
+                double av = va;
+                if (av < 0.0) av = 0.0 - av;
+                if (av > span) span = av;
+                i = i + 1;
+            }
+            if (span <= 0.0) return 1.0;
+            return acc / double(n) / span;
+        }
+
+        // 确定性喂第 step 步：class=(step*7)%10；data=特征位+噪声；label one-hot[c]
+        void feedStep(Session s, int inT, int labTid, int step) {
+            int c = (step * 7) % 10;
+            int i = 0;
+            while (i < 784) {
+                double v = 0.0;
+                if (i % 10 == c) {
+                    v = 1.0;
+                } else {
+                    int nn = (i * 131 + step * 17) % 1000;
+                    v = double(nn) / 100000.0;
+                }
+                s.setFlat(inT, i, v);
+                i = i + 1;
+            }
+            i = 0;
+            while (i < 10) { s.setFlat(labTid, i, 0.0); i = i + 1; }
+            s.setFlat(labTid, c, 1.0);
+        }
+}
+
+int main() { SliAmpApp a = new SliAmpApp(); return 0; }

@@ -2,6 +2,7 @@
 import env;
 import math;
 import pool;
+import "./pb.myp";   // F32.toBits/toDouble（AMP fp16 舍入模拟）
 
 class InferOps {
     static:
@@ -535,6 +536,68 @@ class InferOps {
                 }
                 arena[lossOff + b] = lossb;
                 b = b + 1;
+            }
+        }
+
+        // IEEE half (F16) → F32 位型（本地拷贝：ops 不依赖 graph）
+        int halfToF32BitsL(int h) {
+            int sign = (h >> 15) & 1;
+            int exp = (h >> 10) & 31;
+            int man = h & 1023;
+            if (exp == 0) {
+                if (man == 0) return sign << 31;
+                int e = -14;
+                while ((man & 1024) == 0) { man = man << 1; e = e - 1; }
+                man = man & 1023;
+                exp = e + 127;
+            } else if (exp == 31) {
+                return (sign << 31) | (255 << 23) | (man << 13);
+            } else {
+                exp = exp - 15 + 127;
+            }
+            return (sign << 31) | (exp << 23) | (man << 13);
+        }
+        // F32 位型 → F16 位型（round-to-nearest-even，含亚正规/溢出/NaN）
+        int f2hRNE(int x) {
+            int sign = (x >> 16) & 0x8000;
+            int a = x & 0x7fffffff;
+            if (a >= 0x7f800000) {   // inf/nan
+                if (a > 0x7f800000) return sign | 0x7c00 | ((a >> 13) & 0x3ff) | 0x200;
+                return sign | 0x7c00;
+            }
+            int e = (a >> 23) - 127;          // unbiased f32 exponent
+            int m = a & 0x7fffff;
+            if (e >= 16) return sign | 0x7c00;    // overflow → ±inf
+            if (e >= -14) {
+                // 正规 half：24-bit mantissa（隐 1 + 23）舍入到 11 位（丢 13 位）
+                int m24 = 0x800000 | m;
+                int q = m24 >> 13;
+                int rem = m24 & 0x1fff;
+                if (rem > 0x1000 || (rem == 0x1000 && (q & 1) == 1)) q = q + 1;
+                if (q == 0x800) { q = 0; e = e + 1; }   // 尾数进位 → 指数 +1
+                if (e >= 16) return sign | 0x7c00;       // 进位溢出 → inf
+                return sign | ((e + 15) << 10) | (q & 0x3ff);   // 只存低 10 位 mantissa（隐位 0x400 不存）
+            }
+            // 亚正规 half（e ∈ [-24,-15]）：值 < 2^-14，ulp=2^-24
+            if (e <= -25) return sign;                  // < 2^-25 → ±0
+            int m24 = 0x800000 | m;
+            int sh = 24 - (e + 25);                     // 对齐到 ulp 2^-24
+            int q = m24 >> sh;
+            int rem = m24 & ((1 << sh) - 1);
+            int halfb = (1 << (sh - 1));
+            if (rem > halfb || (rem == halfb && (q & 1) == 1)) q = q + 1;
+            if (q == 1024) return sign | (1 << 10);     // 亚正规进位 → 最小正规 2^-14
+            return sign | q;
+        }
+        // AMP 模拟：梯度就地 fp16 舍入（f32→f16→f32 往返，模拟 fp16 梯度量化/下溢）
+        void halfQuantizeGrad(float[] arena, int off, int n) {
+            int i = 0;
+            while (i < n) {
+                double v = arena[off + i];
+                int bits = F32.toBits(v);
+                int h = InferOps.f2hRNE(bits);
+                arena[off + i] = float(F32.toDouble(InferOps.halfToF32BitsL(h)));
+                i = i + 1;
             }
         }
 

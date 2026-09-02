@@ -63,6 +63,10 @@ class Session {
         void setGradAccumEvery(int k) { rt_.setGradAccumEvery(k); }
         int gradAccumEvery() { return rt_.gradAccumEvery(); }
         int gradAccumStep() { return rt_.gradAccumStep(); }
+        // AMP 模拟：1 = 更新前梯度经 fp16 舍入（模拟 fp16 混合精度训练数值行为；
+        // 真计算级 fp16 kernel + 动态 loss-scale 为后续）
+        void setAmpSim(int v) { rt_.setAmpSim(v); }
+        int ampSim() { return rt_.ampSim(); }
         // 训练 run（loadTrain 建的反向图）：trainMode=1 时 Update 按 lr 更新权重
         int runTrain() { return loader_.runRuntime(rt_); }
         // 当前 batch loss 标量（训练图输出 "loss"）
