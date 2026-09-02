@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-09-02 — 修复 ResNet18 数值回归（常量去重误合并 BN 折叠 bias）
+
+- **现象**：ResNet18 推理 sum=1331.47（或注入 batch 后 0.008）vs ORT 0.101261，
+  top-1 matchstick(644) vs ORT lakeside(975)。ResNet50 336.658 正常。
+- **根因**：无 bias Conv 经 `fuseConvBN` 生成 `#bnb` 折叠 bias（G4，"无源字节仅用于
+  count"——内容在 writeWeight 时按各自 BN_NODE 的 scale/bias/mean/var 合成）。阶段五
+  常量去重在 writeWeight **之前**比较字节——`#bnb` 全 0 相同 → 全部合并到第一个 conv
+  的 `#bnb` → 每 stage 所有 conv 共享同一 bias（dump opC 全指 conv0_fwd#bnb）→ 输出错。
+  ResNet50 conv 自带 bias（折叠写回原张量，不生成 #bnb）故不受影响。
+- **修复**：`eliminateDeadNodes` 的 dedup 跳过 `BN()==1`/`BN_ONLY()==1` 张量（内容由
+  BN 参数合成，源字节不代表最终折叠内容，不参与内容去重）。
+- **配套**：r18_main/passverify 加载 ResNet18 前 `setInputShape("data",1,3,224,224,1,0)`
+  注入动态 batch（data 是 dim_param 'N'，不注入 d0=0 → runtime batch 0）。
+- **排查工具教训**：run 全跑后读中间层会被内存复用覆盖（relu0 区域被 stage1_relu0
+  复用）→ 逐层对拍须 `MYP_NO_REUSE=1`；ORT 提取中间层用
+  `del m.graph.output[:]` + `make_tensor_value_info` 替换 graph 输出。
+- **结果**：ResNet18 sum=0.101238（= ORT 0.101261，2e-5 浮点差），top-1 lakeside
+  (15.1839) 与 ORT 一致，CPU+GPU。
+
+---
+
 ## 2026-09-02 — 阶段九：统一 Standard Library Interface（SLI）facade 起步
 
 - 新增 `infer/framework.myp`：`Session` 单一入口类——用户程序从「手动 import
@@ -37,9 +58,8 @@
   解析梯度张量 id）。`infer_tests/sli_train_main.myp` 回归：mnist_mlp 训练模式
   12 ops，loss=11.1062，SLI TRAIN OK（CPU+GPU MYP_IR_VERIFY=1，训练反向图 wiring
   校验覆盖）。测试数 60→61。
-- **新发现既有 bug（待追查）**：ResNet18 推理输出 sum=1331.47 vs ORT 0.101261
-  （ResNet50 336.658 保持正常）——r18 数值回归，passverify/r18 只验证编译不断言
-  数值，故未被回归捕获。SLI 测试对 r18 只验编译。
+- ResNet18 数值回归已修复（常量去重误合并 BN 折叠 bias，见顶部条目）；SLI 测试对
+  r18 只验编译，r18_main 现输出 0.101238 vs ORT 0.101261。
 
 ---
 

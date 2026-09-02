@@ -530,10 +530,10 @@ Graph
 
 ```text
 verifyIR          ✅（既有，topoSort 前 MYP_IR_VERIFY=1 触发）
-verifyShapes      （由 inferShapes 失败即中止 + verifyIR 输入形状检查覆盖）
+verifyShapes      ✅（2026-09-02 显式化，topoSort 后：输入不引用死数据张量 + 有效输出有 shape）
 verifyDefUse      ✅（2026-09-02 新增，producer 一致性）
 verifyTopo        ✅（2026-09-02 新增，planOrder 无逆边）
-verifyRuntimeWiring（由 buildRuntime 失败即中止 + opCount>0 检查覆盖）
+verifyRuntimeWiring ✅（2026-09-02 显式化，buildRuntime 后：op>=1 + 无漏注册 + 无悬空引用）
 ```
 
 阶段八进度（2026-09-02）：
@@ -550,11 +550,16 @@ verifyRuntimeWiring（由 buildRuntime 失败即中止 + opCount>0 检查覆盖�
 - **新增 pass 等价性测试** `infer_tests/passverify_main.myp`（Conv + 真实 ResNet18
   + 动态 batch 三模型在 MYP_IR_VERIFY=1 下全管线通过，输出 vs ORT 一致；grad_check
   训练路径 + 真实 ResNet50 336.658 同步验证）。
-- 四层测试现状：IR 单元（inferShapes/verifyIR 失败即中止）、CPU/GPU 对拍（60 测试
+- 四层测试现状：IR 单元（inferShapes/verifyIR 失败即中止）、CPU/GPU 对拍（61 测试
   全 CPU+GPU）、pass 等价（passverify + 输出 vs ORT）、真实 ONNX/ORT（ResNet18/50、
   3D U-Net、LLM 等）。
-- **新发现既有 bug（待追查）**：ResNet18 推理 sum=1331.47 vs ORT 0.101261
-  （ResNet50 336.658 正常）；r18/passverify 只验编译不断言数值，未捕获。
+- **ResNet18 数值回归已修复（2026-09-02）**：sum 1331.47→0.101238（= ORT 0.101261）。
+  **根因**：常量去重（dedup）误合并 BN 折叠张量——无 bias Conv 经 fuseConvBN 生成
+  `#bnb` 折叠 bias（无源字节，内容在 writeWeight 时按 BN 参数合成）；dedup 在
+  writeWeight 前比较字节，#bnb 全 0 → 全部合并到第一个 conv 的 #bnb → 每 stage 所有
+  conv 共享同一 bias。ResNet50 conv 自带 bias 故正常。修复：dedup 跳过
+  BN()==1/BN_ONLY()==1。配套：r18_main 加载前 setInputShape 注入动态 batch。
+  r18_main 现输出 0.101238（top-1 lakeside 15.1839 vs ORT 一致），CPU+GPU。
 
 新增回归模型必须放入 `infer_tests/`，正向语言特性测试放入 `tests/@test/`，bug 复现放入 `tests/bugs/`。
 
