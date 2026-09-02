@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-09-02 — 声明式 JSON 模型（json_model.myp）—— 不经过 ONNX 的图构建新入口
+
+- 用户写层式 JSON（op/输入输出/权重 init）→ `Session.loadJson/loadJsonTrain`
+  直接填框架 Graph（beginNode/addMemWeight/addShapeD…）→ 复用 optimize/
+  optimizeTrain（训练自动补 label/loss + 反向）——ONNX 只是"填 Graph 的一种源"，
+  JSON 是第二种源，**用户全程看不到 ONNX**。
+- **GraphWeights 内存权重通道**：值存 `memVal_`（offset=-2 标记），`writeWeight`
+  内存分支直写 arena（跳过 file_/BN/NHWC——JSON 干净权重）；去重等 file_ 依赖 pass
+  对内存权重走 offset<0 跳过逻辑。
+- `infer/json_model.myp` JsonModelLoader：JSON 导航（stdlib json）+ 层→节点构建
+  （V1 op：Gemm/Relu/Add/Conv/ConvTranspose/MaxPool/AveragePool/Softmax + kernel/
+  strides/pads/dilations/group/transB/axis 属性）+ 权重 init（xavier/zeros/ones/
+  const/gauss，确定性 LCG seed）+ rows/cols 视图 + 图输入/输出登记。
+- `Session` 加 `loadJson/loadJsonTrain`（jsonMode 分派 tensorId/tensorSize/输入输出
+  枚举/run/loss/gradId/错误码/dump——JsonModelLoader 提供同批 getter 镜像）。
+- 测试 `infer_tests/json_model_main.myp` + `mlp.json`：JSON 定义 MLP（Gemm/Relu/
+  Softmax + xavier）——推理 prob softmax 归一 sum=1（CPU+GPU）+ 训练 loss
+  2.43→0.12（自动补 label/loss 收敛）。JSON MODEL OK。测试数 68→69。
+- 边界：V1 op 集 + 层式单输入层链；复杂拓扑/控制流/动态形状后续扩展。
+
+---
+
 ## 2026-09-02 — 阶段四：AMP 数值管线骨架（fp16 梯度舍入模拟 + 训练鲁棒性验证）
 
 - `Session.setAmpSim(1)`（runtime ampSim_）——更新前梯度经 fp16 舍入（模拟混合

@@ -41,6 +41,8 @@ double[] out = s.getOutput("y");
 s.dumpGraph(); s.dumpIR(); s.dumpMem();   // 结构/计划/内存 dump
 // 训练：setLr/setOptimizer(0|1|2)/setWeightDecay/setGradAccumEvery/setAmpSim
 //       setTrainMode(1) → runTrain() → loss()；dumpPlan/loadPlan checkpoint
+// 声明式 JSON 模型（不经过 ONNX）：s.loadJson("net.json") / s.loadJsonTrain
+//   ——层式 JSON 描述网络（Gemm/Conv/Pool/Relu/Softmax + 权重 init）直接构建 Graph
 ```
 
 **布局与测试**

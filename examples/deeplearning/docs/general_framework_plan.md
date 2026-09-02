@@ -650,8 +650,16 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   即 0.88→0.21→0.12）；@250 dumpPlan/loadPlan 续训 100 步继续降（82<116）。
   修正认知：恒等/简单数据被 mnist_mlp 数步过拟合（loss 骤 ~0）是真实收敛非 bug，
   "连续 runTrain loss=0" 即此；演示下降须多 class 轮换 + 适当 lr。测试数 64。
-- **待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；SLI 文档/示例；
-  梯度累积/混合精度。
+- **声明式 JSON 模型入口（完成，2026-09-02）**：`infer/json_model.myp`
+  JsonModelLoader——层式 JSON 直接填框架 Graph（不经过 ONNX，用户看不到 ONNX）；
+  `Session.loadJson/loadJsonTrain`（optimizeTrain 自动补 label/loss+反向）。
+  GraphWeights 内存权重通道（offset=-2 + memVal_，writeWeight 直写）。
+  V1 op：Gemm/Relu/Add/Conv/ConvTranspose/Pool/Softmax + 权重 init（xavier 等
+  确定性 LCG）。`infer_tests/json_model_main.myp` + `mlp.json`：JSON MLP 推理
+  (prob sum=1) + 训练收敛 (2.43→0.12)。测试数 69。
+- **训练专项全完成**：优化器（SGD/动量/AdamW+wd）/梯度累积/AMP 骨架/checkpoint
+  （阶段四记录）。**待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；SLI
+  文档/示例。
 
 ## 11. 推荐执行顺序
 
