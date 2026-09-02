@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-09-02 — 阶段九 SLI：训练完整循环 demo（真实收敛 + checkpoint 续训）
+
+- 新增 `infer_tests/sli_fit_main.myp`——Session 训练路径端到端演示：带 class 特征
+  信号数据（784 维中 10 类特征位，确定性伪随机）经 SGD（lr=0.002）250 步 runTrain，
+  loss 单调显著下降（882→205→116，即 0.88→0.21→0.12，@50/150/250）——证明 bwd
+  梯度 + Update 权重更新都真实生效；@250 dumpPlan → 新 Session loadPlan 续训 100
+  步 loss 继续降（82<116，同 lr 轨迹一致）。CPU+GPU 均 `SLI FIT OK`。测试数 63→64。
+- **修正认知（非 bug）**：早期 demo 误判 "loss 骤 0" 为回归——实测恒等/单类数据 +
+  足够大 lr 时 mnist_mlp 数步内即过拟合（loss 5.68→4e-5，B/C probe），**"连续
+  runTrain 第 2 次起 loss=0" 是真实快速收敛而非训练 bug**。loss 是否下降的正确判据
+  需数据带不可完全拟合的信号（多 class 轮换 + 适当 lr），否则 loss 早停于 ~0 无法
+  展示下降。demo 采样点须避开已收敛区。
+- **训练数据约定再确认**：mnist_mlp label 是 one-hot[10]（softmaxCE 依赖
+  label>0.5），非标量 class id；每次 run 前重建输入（arena 复用覆盖）。
+
+---
+
 ## 2026-09-02 — 阶段九 SLI：`import dl` 单模块入口（统一 Standard Library Interface 包）
 
 - 新增 `dl/dl.myp` 薄转发入口模块——用户程序只需 `import dl;` 即得统一

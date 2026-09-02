@@ -627,8 +627,13 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   命中 `<package-path>/dl/dl.myp`（对现有相对/stdlib import 无副作用）。
   `infer_tests/sli_dl_main.myp` 端到端（deadweight vs ORT max diff 2.4e-7 +
   tensorCount 校验，SLI DL OK，CPU+GPU）。测试数 63。
+- **训练完整循环 demo（完成）**：`infer_tests/sli_fit_main.myp`——Session 训练
+  端到端：class 特征数据 SGD（lr=0.002）250 步 loss 单调降（882→205→116，
+  即 0.88→0.21→0.12）；@250 dumpPlan/loadPlan 续训 100 步继续降（82<116）。
+  修正认知：恒等/简单数据被 mnist_mlp 数步过拟合（loss 骤 ~0）是真实收敛非 bug，
+  "连续 runTrain loss=0" 即此；演示下降须多 class 轮换 + 适当 lr。测试数 64。
 - **待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；SLI 文档/示例；
-  梯度累积/混合精度；训练完整循环（优化器/epoch）示例。
+  梯度累积/混合精度。
 
 ## 11. 推荐执行顺序
 
