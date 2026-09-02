@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-02 — 阶段七：shape specialization 多个 shape bucket 验证
+
+- 验证编译期 shape specialization 对**多个 shape bucket** 的正确性：同一动态
+  batch 模型（`dynbatch_test.onnx`，x[N,1,5,5]→Conv→y[N,1,3,3]）分别注入
+  batch=2/4/8 各 build 一个 InferenceRuntime，输出各自 vs ORT 参考（batch
+  维广播到注入值，inferShapes/arena 规划按 bucket 独立）。
+- 回归：`infer_tests/shapebucket_main.myp`——SHAPEBUCKET ALL OK，batch
+  2/4/8 三 bucket CPU+GPU max diff <9.6e-7 vs ORT（输入/参考由 python 按
+  bucket 生成 `dynbucket_in_<B>.f32`/`dynbucket_ort_<B>.bin`）。
+- 阶段七已完：opset/version、unsupported 诊断、外置 weight、模型 mmap、
+  计划缓存、shape specialization（多 bucket）。剩余：三阶段错误码分离、
+  If/Loop/Scan 子图（已声明不支持）、多输入/输出/可选输入（已覆盖）。
+
+---
+
 ## 2026-09-02 — 阶段七：优化后 IR/计划缓存（dumpPlan/loadPlan）
 
 - `InferenceRuntime` 新增 `dumpPlan(path)` / `loadPlan(path)`：把 buildRuntime

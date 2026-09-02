@@ -507,7 +507,10 @@ Graph
   路径 arenaTop_ 不 bump 需序列化 arenaCap_-statsSize 全数据区；
   `infer_tests/plan_main.myp` + `planr18_main.myp`（真实 ResNet18 47MB 34 op）
   回归 CPU+GPU 通过）。
-- shape specialization 和多个 shape bucket。
+- shape specialization 和多个 shape bucket。✅ 已完成（2026-09-02，动态
+  batch 输入 shape 注入 + 编译期 specialization 对多 bucket 验证：同一模型
+  注入 batch 2/4/8 各 build 一个 runtime 输出各自 vs ORT 正确；
+  `infer_tests/shapebucket_main.myp` 回归 CPU+GPU 通过）。
 - 加载、编译、执行三个阶段的错误码与统计信息分离。
 - 保持 `onnx_loader.myp` 只负责格式解析，通用逻辑留在 `graph.myp` 及其组件。
 
