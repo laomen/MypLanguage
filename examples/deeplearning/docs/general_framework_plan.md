@@ -496,7 +496,11 @@ Graph
 - Unsupported operator 诊断：节点名、op type、输入输出和原因。
 - 多输入、多输出和可选输入完整处理。
 - `If`、`Loop`、`Scan` 子图支持，或明确声明不支持。
-- 外置 weight、模型 mmap/分块读取。
+- 外置 weight、模型 mmap/分块读取。✅ 部分完成（2026-09-02，ONNX
+  `data_location=EXTERNAL` external data 权重读取：loader 解析 external_data
+  （location/offset/length）+ 追加外部文件字节 + 按 offset/length 定位 payload；
+  `infer_tests/extdata_main.myp` 回归 Conv 外置 w/b CPU+GPU 通过。mmap/分块
+  读取尚未做）。
 - 优化后 IR/计划缓存。
 - shape specialization 和多个 shape bucket。
 - 加载、编译、执行三个阶段的错误码与统计信息分离。

@@ -6,6 +6,30 @@
 
 ---
 
+## 2026-09-02 — 阶段七：ONNX external data 外置权重读取
+
+- onnx_loader 支持 `data_location=EXTERNAL` 权重：parseTensor 解析
+  `external_data`（field 13，StringStringEntryProto location/offset/length）+
+  `data_location`（field 14）；外部文件字节追加到 file_ 扩展区，payload 按
+  external offset/length 定位（单文件多张量正确区分）。
+- 新增 `appendExternalBytes`（读外部文件追加、file_ 增长缓冲，`cap_` 提升为
+  property 与 readFile 共享）+ `parseExternalData`（key/value 跨迭代保留——
+  修复 StringStringEntryProto key=1/value=2 分次读到的覆盖 bug）+ `atoi10`
+  （ASCII 十进制 string→int）+ `modelDir_`（Path.dirname 计算相对路径基）。
+- `g_.setFile` 在 append 后刷新（数组重分配时 Graph 的 file_ 引用需同步）。
+- 回归：`infer_tests/extdata_main.myp`（Conv w[1,1,3,3]/b[1] 外置到
+  `extdata_test.bin`，w=offset0,len36 / b=offset36,len4）——EXTDATA ALL OK，
+  CPU+GPU max diff 4.8e-7 vs ORT。生成器 `tools/make_extdata_onnx.py`（手动
+  set_external_data + SerializeToString 落盘——onnx 1.22 `save_as_external_data`
+  会把 external 写回内联，`convert_model_to_external_data` 的
+  `write_external_data_tensors` 有路径解析问题，故完全手动写 bin + proto）。
+- 阶段七已完：opset/version 检查、unsupported op 诊断、外置 weight。剩余：
+  多输入/多输出/可选输入完整处理（多输入多输出已覆盖）、If/Loop/Scan 子图
+  （已明确声明不支持）、模型 mmap/分块读取、IR/计划缓存、shape specialization、
+  三阶段错误码分离。
+
+---
+
 ## 2026-09-02 — 阶段七：Unsupported op 诊断完善（原因分类 + 输出列表）
 
 - onnx_loader unsupported 诊断输出补全：节点名/op/输入/输出 + 原因分类——
