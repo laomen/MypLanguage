@@ -1334,6 +1334,11 @@ class InferenceRuntime {
             }
         }
 
+        // 阶段六：持久化模式下最近一次 runGpu 增量 H2D 上传 / D2H 下载的张量数。
+        // 非持久化（整块往返）上传数=0（整块 H2D 由 GpuBufferF 构造器完成，D2H 整块）。
+        int gpuH2DUploads() { return h2dUploads_; }
+        int gpuH2DDownloads() { return h2dDownloads_; }
+
         // GPU 执行：M3 设备驻留。
         // 整块 arena 一次 H2D 到设备（GpuBufferF），各算子 resident(a=dev) 直接
         // 操作设备内存（零逐算子传输），最后一次 D2H 取回。
@@ -1348,6 +1353,8 @@ class InferenceRuntime {
             if (Console.getEnv("MYP_PROF_GPU") == "1") prof = 1;
             long tH2D0 = __myp_now_ms();
             if (GpuBackend.available() == 1) {
+                h2dUploads_ = 0;
+                h2dDownloads_ = 0;
                 if (gpuPersist_ == 1) {
                     // 持久化：复用常驻设备 arena，只上传 setFlat 置脏的输入张量
                     arenaBuf = gpuArena_;
@@ -1358,6 +1365,7 @@ class InferenceRuntime {
                         if (dirtyTid_[t] == 1) {
                             arenaBuf.copyFromHost(arena, tOff_[t], tOff_[t], tensorSize(t));
                             dirtyTid_[t] = 0;
+                            h2dUploads_ = h2dUploads_ + 1;
                         }
                         t = t + 1;
                     }
@@ -1405,6 +1413,7 @@ class InferenceRuntime {
                         int st = gpuSyncTids_[s];
                         if (st >= 0 && st < tensorCount_) {
                             arenaBuf.copyToHost(arena, tOff_[st], tOff_[st], tensorSize(st));
+                            h2dDownloads_ = h2dDownloads_ + 1;
                         }
                         s = s + 1;
                     }
@@ -1632,4 +1641,6 @@ class InferenceRuntime {
         int[512] dirtyTid_;        // 阶段3d：setFlat 置脏的张量（runGpu 增量 H2D）
         int[32] gpuSyncTids_;      // 阶段3d：runGpu 后需 D2H 的张量（宿主要读：loss/prob）
         int gpuSyncN_;
+        int h2dUploads_;           // 阶段六：最近一次 runGpu 增量 H2D 上传的张量数（持久化）
+        int h2dDownloads_;         // 阶段六：最近一次 runGpu D2H 下载的张量数（持久化）;
 }

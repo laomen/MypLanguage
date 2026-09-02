@@ -1,0 +1,117 @@
+// gpupersist_main.myp — 阶段六：GPU arena 常驻与增量同步（P5b 多帧）测试
+// gpupersist_test.onnx：x1,x2[1,1,5,5] → Sub → y[1,1,5,5]。
+// 帧1 setFlat x1a,x2a；帧2 仅 setFlat x1b（x2 保持）→ 断言帧2 增量 H2D 只上传 1
+// 个张量（脏输入 x1），输出 vs ORT 一致（多帧增量同步正确性）。
+// 无 GPU / MYP_GPU=0 时走 CPU run()（gpuInferStart 返回 0 → 普通路径，仍正确）。
+import env;
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class GpuPersistTestApp {
+    action:
+        @constructor GpuPersistTestApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(2048);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load("./deeplearning/data/onnx/gpupersist_test.onnx", rt);
+            if (ok == 0) { Console.writeLine("load failed"); return; }
+
+            int x1 = loader.tensorId("x1");
+            int x2 = loader.tensorId("x2");
+            int y = loader.tensorId("y");
+            if (x1 < 0 || x2 < 0 || y < 0) { Console.writeLine("tensor not found"); return; }
+            int n = rt.tensorSize(x1);   // 25
+
+            // 输入：帧1(x1a,x2a) + 帧2(x1b,x2b)，各 25 元素
+            double[] buf = new double[128];
+            readF32("./deeplearning/data/onnx/gpupersist_in.f32", buf, 100);
+
+            int useGpu = 0;
+            if (Console.getEnv("MYP_GPU") == "1") useGpu = 1;
+            int persist = 0;
+            if (useGpu == 1 && rt.gpuInferStart(y) == 1) persist = 1;
+            Console.writeString("persist mode=");
+            Console.writeLong(persist);
+            Console.writeLine("  (GPU 持久化=1, CPU=0)");
+
+            // 帧1：x1=x1a, x2=x2a
+            int i = 0;
+            while (i < n) { rt.setFlat(x1, i, buf[i]); i = i + 1; }
+            i = 0;
+            while (i < n) { rt.setFlat(x2, i, buf[25 + i]); i = i + 1; }
+            if (useGpu == 1) rt.runGpu(); else rt.run();
+            int up1 = rt.gpuH2DUploads();
+            int ok1 = checkOut(rt, y, "./deeplearning/data/onnx/gpupersist_test_ort.bin", n, 0);
+
+            // 帧2：仅改 x1=x1b，x2 保持 x2a
+            i = 0;
+            while (i < n) { rt.setFlat(x1, i, buf[50 + i]); i = i + 1; }
+            if (useGpu == 1) rt.runGpu(); else rt.run();
+            int up2 = rt.gpuH2DUploads();
+            int ok2 = checkOut(rt, y, "./deeplearning/data/onnx/gpupersist_test_ort.bin", n, n);
+
+            if (persist == 1) rt.gpuInferEnd();
+
+            Console.writeString("frame1 uploads=");
+            Console.writeLong(up1);
+            Console.writeString("  frame2 uploads=");
+            Console.writeLong(up2);
+            Console.writeLine("  (帧1=2 上传两输入, 帧2=1 只上传脏 x1)");
+
+            int upOk = 1;
+            if (useGpu == 1 && persist == 1 && (up1 != 2 || up2 != 1)) upOk = 0;
+            if (ok1 == 1 && ok2 == 1 && upOk == 1) Console.writeLine("GPUPERSIST ALL OK");
+            else Console.writeLine("GPUPERSIST MISMATCH");
+        }
+
+        void readF32(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                out[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        int checkOut(InferenceRuntime rt, int tid, string path, int n, int skip) {
+            int fd = __myp_io_fopen(path, "rb");
+            int sk = 0;
+            while (sk < skip * 4) { __myp_io_read_byte(); sk = sk + 1; }
+            double maxD = 0.0;
+            int bad = 0;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                double rv = F32.toDouble(bits);
+                double dv = rt.getFlat(tid, i) - rv;
+                if (dv < 0.0) dv = 0.0 - dv;
+                if (dv > maxD) maxD = dv;
+                if (dv > 1.0e-4) bad = bad + 1;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString("  frame max diff vs ORT: ");
+            Console.writeFloat(maxD);
+            Console.writeString("  bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            if (maxD <= 1.0e-4) return 1;
+            return 0;
+        }
+}
+
+int main() { GpuPersistTestApp app = new GpuPersistTestApp(); return 0; }
