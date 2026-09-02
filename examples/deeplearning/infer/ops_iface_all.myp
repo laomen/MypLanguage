@@ -1462,7 +1462,19 @@ class GatherOp {
                             rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
                             rt.tensorN(ot), rt.tensorC(ot), rt.tensorH(ot), rt.tensorW(ot));
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // B：BwdGather（opKind 98）：dy scatter-add 回 data 梯度 dx（先清零）
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int it = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                InferOps.bwdGather(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(it), rt.tensorOff(dx),
+                                   rt.tensorRows(dy) * rt.tensorCols(dy),
+                                   rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                                   rt.tensorN(dy), rt.tensorC(dy), rt.tensorH(dy), rt.tensorW(dy));
+            }
+        }
 }
 
 // ---- gather（GPU，opKind 78）----
@@ -2331,7 +2343,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(75, new WhereOp(), 0);                rt.registerFwd(75, new GpuWhereOp(), 1);
     rt.registerFwdBwd(76, 96, new TileOp(), 0);          rt.registerFwd(76, new GpuTileOp(), 1);
     rt.registerFwd(77, new SqueezeOp(), 0);              rt.registerFwd(77, new GpuSqueezeOp(), 1);
-    rt.registerFwd(78, new GatherOp(), 0);               rt.registerFwd(78, new GpuGatherOp(), 1);
+    rt.registerFwdBwd(78, 98, new GatherOp(), 0);        rt.registerFwd(78, new GpuGatherOp(), 1);
     rt.registerFwd(79, new LogSoftmaxOp(), 0);           rt.registerFwd(79, new GpuLogSoftmaxOp(), 1);
     rt.registerFwd(80, new EmbeddingOp(), 0);            rt.registerFwd(80, new GpuEmbeddingOp(), 1);
     rt.registerFwd(81, new DropoutOp(), 0);              rt.registerFwd(81, new GpuDropoutOp(), 1);

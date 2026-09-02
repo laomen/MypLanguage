@@ -319,6 +319,17 @@ class InferenceRuntime {
             opP0_[id] = mode; opP1_[id] = N; opP2_[id] = C; opP3_[id] = S; opP4_[id] = total; opP5_[id] = redType;
             opCount_ = opCount_ + 1;
         }
+        // B：Gather 反向（opKind 98）：dy 沿 axis scatter-add 回 data 梯度 dx。
+        // opA=dy, opB=idxT(临时 f32), opC=dx, opP0=axis, opP1=lenIdx, opP2-5=data dims。
+        void addBwdGather(int dyT, int idxT, int dxT, int axis, int lenIdx,
+                          int dn, int dc, int dh, int dw) {
+            int id = opCount_;
+            opKind_[id] = 98;
+            opA_[id] = dyT; opB_[id] = idxT; opC_[id] = dxT;
+            opP0_[id] = axis; opP1_[id] = lenIdx;
+            opP2_[id] = dn; opP3_[id] = dc; opP4_[id] = dh; opP5_[id] = dw;
+            opCount_ = opCount_ + 1;
+        }
         // Softmax+CE 合并：输入 logits + 标签(one-hot)，输出 dlogits + loss
         void addSoftmaxCE(int logitT, int labelT, int dlogitT, int lossT) {
             int id = opCount_;

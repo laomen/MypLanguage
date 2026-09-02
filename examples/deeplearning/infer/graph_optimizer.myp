@@ -921,6 +921,21 @@ class GraphOptimizer {
                             if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
                                 graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费（须 endNode 后）
                             }
+                        } else if (t == "Gather") {
+                            // B：Gather 反向（scatter-add 回 data）。indices=nodeIn2
+                            // （graph_compiler readI64Init 建临时 idxT）。复制 axis 属性。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdGather");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.AXIS(), graph.compilerAttr(ni, NodeField.AXIS()));
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");   // 图输入 data：dx 无上游消费（须 endNode 后）
+                            }
                         } else if (t == "Add") {
                             int bd = graph.nodeCount();
                             graph.beginNode();

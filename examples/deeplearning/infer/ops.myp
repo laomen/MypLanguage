@@ -2840,6 +2840,39 @@ class InferOps {
             }
         }
 
+        // BwdGather（B）：沿 axis 收集反向 = scatter-add。out 每元素来自 data 的
+        // idx[o_axis] 行（clamp/负索引同前向）——indices 可重复 → dx[src] 累加 dy。
+        // 先清零 dx（data 布局 dn/dc/dh/dw）；out 布局 on/oc/oh/ow（od 维）。
+        void bwdGather(float[] arena, int dyOff, int iOff, int dxOff, int work,
+                       int axis, int lenIdx, int dn, int dc, int dh, int dw,
+                       int on, int oc, int oh, int ow) {
+            int dTotal = dn * dc * dh * dw;
+            int i = 0;
+            while (i < dTotal) { arena[dxOff + i] = float(0.0); i = i + 1; }
+            i = 0;
+            while (i < work) {
+                int w3 = i % ow;
+                int t = i / ow;
+                int w2 = t % oh;
+                t = t / oh;
+                int w1 = t % oc;
+                int w0 = t / oc;
+                int axIdx = (axis == 0) ? w0 : ((axis == 1) ? w1 : ((axis == 2) ? w2 : w3));
+                int dim = (axis == 0) ? dn : ((axis == 1) ? dc : ((axis == 2) ? dh : dw));
+                int id = int(arena[iOff + axIdx]);
+                if (id < 0) id = id + dim;
+                if (id < 0) id = 0;
+                if (id >= dim) id = dim - 1;
+                int dn2 = (axis == 0) ? id : w0;
+                int dc2 = (axis == 1) ? id : w1;
+                int dh2 = (axis == 2) ? id : w2;
+                int dw2 = (axis == 3) ? id : w3;
+                int dFlat = ((dn2 * dc + dc2) * dh + dh2) * dw + dw2;
+                arena[dxOff + dFlat] = arena[dxOff + dFlat] + arena[dyOff + i];
+                i = i + 1;
+            }
+        }
+
         // LogSoftmax（G5）：沿 axis 的稳定 log-softmax。张量视作 [outer, axisDim, inner]
         // （行优先）；对每 (outer,inner) 组：m=max、lse=m+log(Σexp(x-m))、y=x-lse。
         void logSoftmax(float[] arena, int inOff, int outOff, int outer, int axisDim, int inner) {
