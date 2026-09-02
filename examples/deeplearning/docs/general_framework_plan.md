@@ -472,7 +472,10 @@ Graph
    gpuPersistentStart 增量脏输入 H2D + markGpuSync 输出 D2H），2026-09-02 补
    多帧增量同步正确性回归 `infer_tests/gpupersist_main.myp`（帧2 只上传 1 个
    脏输入，输出 vs ORT 一致，CPU 回退同样正确）。
-2. cuBLAS GEMM；
+2. cuBLAS GEMM；✅ 已完成（2026-09-02，GPU dense/matmul 规模达标时优先 cuBLAS
+   SGEMM——列主序映射 y^T=x^T·W^T，m=batch,n=outDim,k=xRows，dev+off*4 指针；
+   失败回退 denseTiled；`infer_tests/cublas_main.myp` 回归 CPU+GPU 通过，
+   MYP_CUBLAS_LOG 确认触发）。
 3. cuDNN Conv/Pool（可用时）；
 4. CPU 多线程、SIMD 和 cache blocking；
 5. CUDA stream/event 与异步传输；

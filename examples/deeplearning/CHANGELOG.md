@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-02 — 阶段六：cuBLAS GEMM（GPU dense/matmul 厂商库加速）
+
+- gpu_ops.myp `dense`/`matmul`：规模达标（outDim≥32 && batch≥32 && outDim*batch
+  ≥4096）且 `GpuBackend.cublasAvailable()==1` 时优先 cuBLAS SGEMM（列主序映射：
+  行主序 y=W·x → y^T[batch,outDim]=x^T[batch,xRows]·W^T[xRows,outDim]，即
+  m=batch,n=outDim,k=xRows，设备指针 = dev+off*4）；失败回退 denseTiled。
+- dense 走 cuBLAS 后若 bOff≥0 用 `addBiasRows` kernel 加 bias；matmul 无 bias
+  直返。`MYP_CUBLAS_LOG=1` 打印触发（实测 m=96 n=64 k=128 r=1）。
+- 回归：`infer_tests/cublas_main.myp`（4D BatchMatMul：A[1,1,64,128]@
+  B[1,1,128,96] 大→cuBLAS + C[1,1,96,64]@D[1,1,64,32] 小→thread-per-output，
+  双输出）——CUBLAS ALL OK，CPU+GPU max diff 5.7e-6。
+- **阶段六优先级 2（cuBLAS GEMM）完成**。剩余：cuDNN Conv/Pool（可用时）、
+  CPU 多线程/SIMD/cache blocking、CUDA stream/event 异步传输。
+
+---
+
 ## 2026-09-02 — 阶段六：GPU arena 持久化增量同步回归（P5b 多帧正确性）
 
 - runtime 加 `gpuH2DUploads()` / `gpuH2DDownloads()`：持久化模式最近一次
