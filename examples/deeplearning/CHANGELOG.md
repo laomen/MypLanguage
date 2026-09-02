@@ -34,12 +34,17 @@
   `bwdDense` dx 段加 `dxOff>=0` guard（dx=-1 不写）；③ graph_compiler wire 检查
   豁免反向节点 out（slot0 可合法为空）。修复后 json_train_submul MYP_IR_VERIFY
   通过（Sub/Mul 链训降不变）。
-- **⚠ 暴露框架既有 bug（Add 网 loss 恒 ln4，非本次引入，A2 反向本身正确）**：
-  loss 路径含 `Add` 汇合（logits=Add(…)，多分支 JSON 训练必需）时训练 loss 恒
-  ln4 不降。MYP_PROF_CPU 确认 BwdAdd/BwdRelu/BwdDense/Update 全部执行且权重
-  大幅更新、前向 logits 也变 → **问题在 loss tensor 读取/规划层**（loss() 恒读
-  到固定 ln4，疑似 plan 布局使 loss 区与中间/标签重叠或 loss() 读错位），非反向
-  接线。待办（A3/多分支 JSON 训练前置）。
+- **修复 Add forward 2D FC dims bug（Add 网 loss 恒 ln4 根因，MYP_PROF_CPU 定位）**：
+  loss 路径含 `Add` 汇合（logits=Add(…)）训练 loss 恒 ln4——排查确认 BwdAdd/
+  反向/Update 全执行 + 权重/logits 变化但 loss() 恒 → 再用 `prob`（图输出）dump
+  发现 **前向 logits 恒全等（softmax uniform）**，且 loadJson 推理同现（非训练
+  问题）。根因：`AddOp.forward` 输出 4D dims 从 `tensorN/C/H/W(oc)` 读——FC 2D
+  输出 tensor 这些为 **0** → add kernel 同尺寸快路径条件（阶段三防广播误判收紧
+  的 `an==on && ac==oc ...`）失败 → 掉 4D 通用 fallback → 0 维解码恒出首元素和
+  → 输出全等。branch.json 的 Add "对" 是假象（const 全等输入下首元素和=真值）。
+  **修复**：AddOp.forward 输出 dims 改从 opP（a/b dims）逐维 max（不读 tensorN）。
+  修后 Add 网训练 loss 1.139→0.417（prob 非 uniform），推理 prob 正确。**Add
+  训练反向本就可工作——阻塞在 forward dims**。多分支 JSON 训练（Add 汇合）现可用。
 
 ---
 
