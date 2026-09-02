@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-02 — 阶段七：多输入/多输出/可选输入完整处理（系统验证固化）
+
+- 新增 `tools/make_multiio_onnx.py`（opset13）：2 输入不同形状（x1[1,3,8,8]
+  Conv + x2[1,4] Gemm）+ 2 输出不同大小（y1=256、y2=3）+ Conv 无 bias
+  （B 可选输入槽省略）——多 IO 组合场景 + ORT 参考。
+- 新增 `infer_tests/multiio_main.myp`（Session/import dl 路径）：inputCount/
+  outputCount/inputName/outputName 枚举（x1/x2→y1/y2）、多输入按名注入
+  （loadInputFromFile）、多输出各自 getOutput vs ORT（y1 max diff 3.6e-7、
+  y2 2.4e-7），CPU+GPU 均 `MULTIIO ALL OK`。
+- **结论**：框架多输入/多输出/可选输入（无 bias Conv 空槽）此前经 bmm（4 输入
+  2 输出）隐式覆盖，本轮以不同形状/大小 + 无 bias Conv 组合系统固化；无框架
+  改动（直接通过）。测试数 64→65。阶段七全部待办清零。
+
+---
+
 ## 2026-09-02 — 阶段九 SLI：训练完整循环 demo（真实收敛 + checkpoint 续训）
 
 - 新增 `infer_tests/sli_fit_main.myp`——Session 训练路径端到端演示：带 class 特征

@@ -495,7 +495,13 @@ Graph
   明确声明不支持，其他 operator not implemented；`infer_tests/unsup_main.myp`
   回归 If/FakeOp load=0 + 诊断完整，known-good 不误伤）。
 - Unsupported operator 诊断：节点名、op type、输入输出和原因。
-- 多输入、多输出和可选输入完整处理。
+- 多输入、多输出和可选输入完整处理。✅ 已完成（2026-09-02，系统验证固化：
+  `tools/make_multiio_onnx.py` 造 2 输入不同形状 + 2 输出不同大小（y1=256/
+  y2=3）+ Conv 无 bias（B 可选槽省略）组合；`infer_tests/multiio_main.myp`
+  经 Session 枚举 inputCount/inputName/outputName + 多输入按名注入 + 多输出
+  各自 getOutput vs ORT（y1 3.6e-7/y2 2.4e-7），CPU+GPU MULTIIO ALL OK）。
+  注：多 IO 此前经 bmm（4 输入 2 输出）隐式覆盖，本轮不同形状/可选槽组合固化，
+  无框架改动）。
 - `If`、`Loop`、`Scan` 子图支持，或明确声明不支持。
 - 外置 weight、模型 mmap/分块读取。✅ 已完成（2026-09-02，ONNX
   `data_location=EXTERNAL` external data 权重读取 + 模型 mmap 零拷贝加载：
