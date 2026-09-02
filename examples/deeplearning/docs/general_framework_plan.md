@@ -721,6 +721,10 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   （mode/redType 经 compilerSetNRedMode/Type 复制——存 graph nRedMode_/nRedType_
   per-node 数组）。bwd_reduce_main 四组 dx 手算精确。测试数 79。剩余：
   ReduceMax/Min（argmax）、Gather（scatter）、Slice/Pad。
+- **JSON Slice 分派（完成，2026-09）**：starts/ends/axes/steps int64 内存常量接
+  nodeIn1-4（axes/steps 可缺省）。测试 json_slice_main x[1,2,3,4] Slice → out 16
+  值手算 CPU+GPU。测试数 83。剩余 A 组：Pad JSON（pads attr 数组 + mode）、
+  Split 多输出。
 - **JSON registerWeight 显式 values + Embedding 分派（完成，2026-09）**：
   registerWeight 加 `values`（row-major 手写权重数组，替代 init/LCG/safetensors，
   值可精确复现）；json_model 加 Embedding 分派（W 权重 + ids int64；第 3 步放宽 in

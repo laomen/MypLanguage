@@ -74,7 +74,8 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   `GlobalAveragePool`/`Flatten(axis)`；二元 `Add`/`Sub`/`Div`/`Mul`/`MatMul`；多输入
   `Concat(in/in2/in3, axis)`；权重型 `Gemm`/`Conv`/`ConvTranspose`/`MatMul(可选 W)`；
   池化 `MaxPool`/`AveragePool`(kernel/strides/pads)；**参数化（int64 常量）**
-  `Reshape(shape)`、`Gather(indices,axis)`、`Expand(shape)`、`Tile(repeats)`；
+  `Reshape(shape)`、`Gather(indices,axis)`、`Expand(shape)`、`Tile(repeats)`、
+  `Slice(starts,ends[,axes][,steps])`；
   **属性类** `Squeeze(axes)`、`Transpose(perm)`、`ReduceSum`/`ReduceMean`/`ReduceMax`/
   `ReduceMin(axes[,keepdims])`。示例：`infer_tests/branch.json`（多分支 DAG）、
   `mlp.json`、`safe_gemm.json`、`reshape.json`、`gather.json`、`ops2.json`。

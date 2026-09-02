@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-09 — JSON Slice 分派（starts/ends/axes/steps int64 内存常量）
+
+- **背景**：Slice 是框架最成熟算子之一（ONNX slice_main 位精确，inferShapes 用
+  readI64Init 读 nodeIn1-4 + compilerAttrSetLongArray 填 attr + sliceAxis 算维度），
+  JSON 只缺分派接线。
+- json_model 预注册 `starts/ends/axes/steps` → `out_"_s0.._s3"` 内存 int64 常量；
+  节点分派接 nodeIn1-4（**axes/steps 可缺省不接** → inferShapes 默认 axes=0..、
+  step=1）。数据输入 float → inferShapes 顶部 Slice 拦截守卫（i64Count(in0)）不触发。
+- 测试 `infer_tests/json_slice_main.myp` + `slice.json`：x[1,2,3,4] 值 1..24 → Slice
+  starts[1,0] ends[3,4] axes[2,3]（H 取 1..2、W 全取，ends 开区间，steps 缺省全 1）
+  → out[1,2,2,4] 16 值手算 [5..12,17..24]，CPU+GPU JSON SLICE OK。全量回归
+  pass=83 fail=0。
+- **剩余 A 组**：Pad JSON（pads attr 数组 + mode，需核对 compilerAttrIntArray 组号）、
+  Split 多输出（需多输出槽 out2/out3）。
+
+---
+
 ## 2026-09 — JSON registerWeight 显式 values + Embedding（查表）分派
 
 - **registerWeight 支持 `values` 数组**：JSON 权重 W/B 除 `init`(LCG)/`safetensors` 外
