@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-09-02 — 阶段七：模型 mmap 零拷贝加载
+
+- **字节源双模式抽象**：`PbReader` 加 `initMmap(MmapFile)` + `byteAt(p)`（mmap/
+  int[] 双源，readVarint/readString/readU32/readU64 统一走 byteAt）；`Graph` 加
+  `setFileMmap(MmapFile)`/`setFileAppend(int[] f, int extLen)`/`byteAt(k)`，
+  全部 `file_[k]` 直接字节访问替换为 `byteAt(k)`（writeWeight/f32At/
+  readF32Init/readI64Init/i64RegConstant/compilerWeightBytesEqual/
+  compilerFileByte）——mmap 主文件 + external data 追加区双段，逻辑偏移
+  = mmapLen_+本地。
+- `OnnxLoader.loadMmap`/`loadTrainMmap`：mmap 打开主模型（零拷贝，避免
+  readFile 的 int[] 全量拷贝 4x 内存膨胀）；external data 追加区仍走 file_，
+  appendExternalBytes 返回逻辑偏移（mmap 基）+ 刷新 Graph 追加区引用。
+- 验证：`infer_tests/mmap_main.myp`（deadweight + extdata 模型经 loadMmap
+  CPU+GPU max diff <4.8e-7 vs ORT，MMAP ALL OK）；**真实 ResNet50 102MB 经
+  loadMmap 输出 sum 336.658 精确保持**（resnet_main 加 `MYP_LOAD_MMAP=1`
+  opt-in 开关，默认仍走 load()）。
+- 阶段七已完：opset/version、unsupported 诊断、外置 weight、模型 mmap。
+  剩余：IR/计划缓存、shape specialization、三阶段错误码分离、If/Loop/Scan
+  子图（已明确声明不支持）、多输入/输出/可选输入（已覆盖）。
+
+---
+
 ## 2026-09-02 — 阶段七：ONNX external data 外置权重读取
 
 - onnx_loader 支持 `data_location=EXTERNAL` 权重：parseTensor 解析
