@@ -164,6 +164,9 @@ class JsonModelLoader {
                     if (j.type(lp + ".ends") != -1) { if (regI64Arr(j, lp + ".ends", out + "_s1") == 0) return 0; }
                     if (j.type(lp + ".axes") != -1) { if (regI64Arr(j, lp + ".axes", out + "_s2") == 0) return 0; }
                     if (j.type(lp + ".steps") != -1) { if (regI64Arr(j, lp + ".steps", out + "_s3") == 0) return 0; }
+                } else if (op == "Pad" && j.type(lp + ".pads") != -1) {
+                    // Pad：pads int64（ONNX opset11，8 值 [N,C,H,W] begin + [N,C,H,W] end）
+                    if (regI64Arr(j, lp + ".pads", out + "_pads") == 0) return 0;
                 }
                 ly = ly + 1;
             }
@@ -186,12 +189,22 @@ class JsonModelLoader {
                 if (op == "Embedding") {
                     // Embedding：查表 W[ids]；W=nodeIn0、ids int64=nodeIn1（覆盖空 in）
                     g_.nodeIn(ni, 0, out + "_W");
-                    if (j.type(lp + ".ids") != -1) g_.nodeIn(ni, 1, out + "_idx");                } else if (op == "Slice") {
+                    if (j.type(lp + ".ids") != -1) g_.nodeIn(ni, 1, out + "_idx");
+                } else if (op == "Slice") {
                     // Slice：starts/ends/axes/steps 内存 int64 常量接 nodeIn1-4
                     if (j.type(lp + ".starts") != -1) g_.nodeIn(ni, 1, out + "_s0");
                     if (j.type(lp + ".ends") != -1) g_.nodeIn(ni, 2, out + "_s1");
                     if (j.type(lp + ".axes") != -1) g_.nodeIn(ni, 3, out + "_s2");
-                    if (j.type(lp + ".steps") != -1) g_.nodeIn(ni, 4, out + "_s3");                } else if (op == "Gemm") {
+                    if (j.type(lp + ".steps") != -1) g_.nodeIn(ni, 4, out + "_s3");
+                } else if (op == "Pad") {
+                    // Pad：pads int64 常量接 nodeIn1；mode 字符串 → PADMODE（默认 constant=0）
+                    if (j.type(lp + ".pads") != -1) g_.nodeIn(ni, 1, out + "_pads");
+                    string pmod = gstr(j, lp + ".mode", "constant");
+                    int pm = 0;
+                    if (pmod == "reflect") pm = 1;
+                    else if (pmod == "edge") pm = 2;
+                    g_.nodeInt(ni, NodeField.PADMODE(), pm);
+                } else if (op == "Gemm") {
                     g_.nodeIn(ni, 1, out + "_W");
                     if (j.type(lp + ".B") != -1) g_.nodeIn(ni, 2, out + "_b");
                     g_.nodeInt(ni, NodeField.TRANSB(), gint(j, lp + ".transB", 1));
