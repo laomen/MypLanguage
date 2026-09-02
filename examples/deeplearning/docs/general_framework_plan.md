@@ -529,12 +529,20 @@ Graph
 每次 pass 变更至少执行：
 
 ```text
-verifyIR
-verifyShapes
-verifyDefUse
-verifyTopo
-verifyRuntimeWiring
+verifyIR          ✅（既有，topoSort 前 MYP_IR_VERIFY=1 触发）
+verifyShapes      （由 inferShapes 失败即中止 + verifyIR 输入形状检查覆盖）
+verifyDefUse      ✅（2026-09-02 新增，producer 一致性）
+verifyTopo        ✅（2026-09-02 新增，planOrder 无逆边）
+verifyRuntimeWiring（由 buildRuntime 失败即中止 + opCount>0 检查覆盖）
 ```
+
+阶段八进度（2026-09-02）：
+- **新增 verifyDefUse + verifyTopo**，挂接 topoSort 前后（MYP_IR_VERIFY=1）。
+- **新增 pass 等价性测试** `infer_tests/passverify_main.myp`（Conv + 真实 ResNet18
+  + 动态 batch 三模型在 MYP_IR_VERIFY=1 下全管线通过，输出 vs ORT 一致）。
+- 四层测试现状：IR 单元（inferShapes/verifyIR 失败即中止）、CPU/GPU 对拍（58 测试
+  全 CPU+GPU）、pass 等价（passverify + 输出 vs ORT）、真实 ONNX/ORT（ResNet18/50、
+  3D U-Net、LLM 等）。
 
 新增回归模型必须放入 `infer_tests/`，正向语言特性测试放入 `tests/@test/`，bug 复现放入 `tests/bugs/`。
 

@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-09-02 — 阶段八：IR 完整性 verifier（verifyDefUse/verifyTopo）+ pass 等价性测试
+
+- `Graph` 新增 `verifyDefUse`（每个活节点输出 value 的 duProducer 恰为该节点——
+  用 `nodeOutputValue` 与 rebuildDefUse 同口径，避免 fused 节点 effectiveOut 歧义）
+  与 `verifyTopo`（planOrder 中 producer 必须先于所有消费者，无逆边）。
+- 挂接：`topoSort` 前在 `MYP_IR_VERIFY=1` 下依次 verifyIR → verifyDefUse；topoSort
+  后 verifyTopo。新增 bridge `compilerVerifyDefUse`/`compilerVerifyTopo`。
+- **教训**：verifyDefUse 遍历输出槽须用 `nodeOutputValue(node,slot)`（同 rebuildDefUse
+  口径），不能用 `nodes_.outputAt(node,slot)`——fused 节点原始输出被 tombstone、
+  effectiveOut 指向融合目标，两者 value id 不同导致误报 prod=-1。
+- 回归：`infer_tests/passverify_main.myp`（Conv + 真实 ResNet18 + 动态 batch 三模型
+  在 MYP_IR_VERIFY=1 下全管线通过，输出 vs ORT 2.4e-7，PASSVERIFY ALL OK，CPU+GPU）。
+- 阶段八推进：pass 等价性（优化前后数值不变 + 管线 IR 完整）与四层测试中的
+  IR 单元 / CPU-GPU 对拍 / 真实 ONNX 层已由既有 58 测试 + passverify 覆盖。
+
+---
+
 ## 2026-09-02 — 阶段七：三阶段错误码与统计信息分离
 
 - `OnnxLoader` 增加三阶段错误码与统计：`phase()`（0=未加载 1=加载中 2=编译中
