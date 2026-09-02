@@ -1,0 +1,112 @@
+// sli_fit_main.myp — 阶段九 SLI：训练完整循环 demo（真实收敛 + checkpoint 续训）。
+// 展示 Session 训练路径端到端：带噪 class 特征数据（10 类隐含信号 + 小噪声防止
+// 单样本骤拟合）经 SGD 多步 runTrain，loss 显著单调下降（bwd 梯度 + Update 权重
+// 更新都生效）；训练中段 dumpPlan/loadPlan checkpoint，续训 loss 继续下降。
+// 说明：mnist_mlp.onnx 训练模式 label 是 one-hot[10]（softmaxCE 依赖 label>0.5），
+// 非标量 class id；训练 run 间 arena 复用覆盖输入 → 每步须重建 data+label；
+// 简单/恒等数据会被极快过拟合（loss 骤 ~0 是正常收敛，非 bug）。runTrain 走 CPU。
+import env;
+import fmt;
+import dl;
+
+class SliFitApp {
+    action:
+        @constructor SliFitApp() {
+            Session s = new Session();
+            int ok = s.loadTrain("./deeplearning/data/onnx/mnist_mlp.onnx");
+            Console.writeString("loadTrain ok="); Console.writeLong(ok);
+            Console.writeString(" phase="); Console.writeLong(s.phase());
+            Console.writeString(" ops="); Console.writeLong(s.opCount());
+            Console.writeLine("");
+            if (ok == 0) { Console.writeLine("SLI FIT SKIP (no model)"); return; }
+
+            s.setLr(0.002);
+            s.setTrainMode(1);
+
+            int inT = s.tensorId("data");
+            int labTid = s.tensorId("label");
+            int lossTid = s.tensorId("loss");
+            if (inT < 0 || labTid < 0 || lossTid < 0) { Console.writeLine("SLI FIT SKIP (no tensor)"); return; }
+
+            // ---- 1. 连续训练 250 步，记录 loss@50/150/250（double）----
+            double l50 = 0.0; double l150 = 0.0; double l250 = 0.0;
+            int step = 0;
+            while (step < 250) {
+                feedStep(s, inT, labTid, step);
+                s.runTrain();
+                double L = s.getFlat(lossTid, 0);
+                if (step == 49)  l50  = L;
+                if (step == 149) l150 = L;
+                if (step == 249) l250 = L;
+                step = step + 1;
+            }
+            Console.writeString("continuous loss@50/150/250 = ");
+            Console.writeString(strQ(l50)); Console.writeString("/");
+            Console.writeString(strQ(l150)); Console.writeString("/");
+            Console.writeString(strQ(l250));
+            Console.writeLine("");
+
+            // ---- 2. checkpoint @250：dump → 新 Session loadPlan 续训到 350 ----
+            int dk = s.dumpPlan("/tmp/sli_fit_ckpt.plan");
+            Session b = new Session();
+            int lk = b.loadPlan("/tmp/sli_fit_ckpt.plan");
+            b.setLr(0.002);
+            b.setTrainMode(1);
+            double l350 = 0.0;
+            step = 250;
+            while (step < 350) {
+                feedStep(b, inT, labTid, step);
+                b.runTrain();
+                double L = b.getFlat(lossTid, 0);
+                if (step == 349) l350 = L;
+                step = step + 1;
+            }
+            Console.writeString("resumed loss@250+100 = ");
+            Console.writeString(strQ(l350));
+            Console.writeLine("");
+            Console.writeString("resumed l350 vs continuous l250: ");
+            Console.writeString(strQ(l350)); Console.writeString(" vs "); Console.writeString(strQ(l250));
+            Console.writeLine("");
+
+            // ---- 判定：loss 单调显著下降（学习生效）+ 续训（恢复权重）继续降 ----
+            // l50 应显著高于 l150/l250（学习生效）；l250 明显低于 l50；
+            // l350（checkpoint 恢复后续训）< l250（权重正确恢复、优化器续跑）。
+            if (ok == 1 && s.phase() == 3 && dk == 1 && lk == 1 &&
+                l50 > 0.5 && l150 < l50 && l250 < l150 && l250 < l50 / 2.0 &&
+                l350 > 0.0 && l350 < l250) {
+                Console.writeLine("SLI FIT OK");
+            } else {
+                Console.writeLine("SLI FIT MISMATCH");
+            }
+        }
+
+        // 打印 loss 量化：int(L*1000) → 3 位小数（Console.writeFloat 精度/换行不便比对）
+        string strQ(double L) {
+            int qi = int(L * 1000.0);
+            return Fmt.i(qi);
+        }
+
+        // 确定性喂第 step 步：class=(step*7)%10；data=class 特征位 1.0 + 其余小噪声
+        // （(i*131+step*17)%1000 *1e-5，噪声底防骤拟合）；label one-hot[c]。
+        // 每步须重建（arena 复用覆盖输入区）。
+        void feedStep(Session s, int inT, int labTid, int step) {
+            int c = (step * 7) % 10;
+            int i = 0;
+            while (i < 784) {
+                double v = 0.0;
+                if (i % 10 == c) {
+                    v = 1.0;
+                } else {
+                    int n = (i * 131 + step * 17) % 1000;
+                    v = double(n) / 100000.0;
+                }
+                s.setFlat(inT, i, v);
+                i = i + 1;
+            }
+            i = 0;
+            while (i < 10) { s.setFlat(labTid, i, 0.0); i = i + 1; }
+            s.setFlat(labTid, c, 1.0);
+        }
+}
+
+int main() { SliFitApp a = new SliFitApp(); return 0; }
