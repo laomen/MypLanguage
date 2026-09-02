@@ -290,6 +290,26 @@ class InferenceRuntime {
             opP5_[id] = id0; opP6_[id] = id1; opP7_[id] = id2; opP8_[id] = id3;
             opCount_ = opCount_ + 1;
         }
+        // B2：Expand/Tile 反向（opKind 95/96）：dy 按源坐标 scatter-add 回 dx。
+        // opA=dy, opB=dx, opP0-3=id(x) dims, opP4-7=od(y) dims。
+        void addBwdExpand(int dyT, int dxT, int id0, int id1, int id2, int id3,
+                          int od0, int od1, int od2, int od3) {
+            int id = opCount_;
+            opKind_[id] = 95;
+            opA_[id] = dyT; opB_[id] = dxT;
+            opP0_[id] = id0; opP1_[id] = id1; opP2_[id] = id2; opP3_[id] = id3;
+            opP4_[id] = od0; opP5_[id] = od1; opP6_[id] = od2; opP7_[id] = od3;
+            opCount_ = opCount_ + 1;
+        }
+        void addBwdTile(int dyT, int dxT, int id0, int id1, int id2, int id3,
+                        int od0, int od1, int od2, int od3) {
+            int id = opCount_;
+            opKind_[id] = 96;
+            opA_[id] = dyT; opB_[id] = dxT;
+            opP0_[id] = id0; opP1_[id] = id1; opP2_[id] = id2; opP3_[id] = id3;
+            opP4_[id] = od0; opP5_[id] = od1; opP6_[id] = od2; opP7_[id] = od3;
+            opCount_ = opCount_ + 1;
+        }
         // Softmax+CE 合并：输入 logits + 标签(one-hot)，输出 dlogits + loss
         void addSoftmaxCE(int logitT, int labelT, int dlogitT, int lossT) {
             int id = opCount_;

@@ -93,6 +93,7 @@ class GraphCompiler {
                 if (code >= OpCode.BWD_DENSE() && code <= OpCode.BWD_SOFTMAX()) bwdLike = 1;
                 if (code == OpCode.BWD_SUB() || code == OpCode.BWD_MUL() || code == OpCode.BWD_DIV()) bwdLike = 1;
                 if (code == OpCode.BWD_RESHAPE() || code == OpCode.BWD_TRANSPOSE()) bwdLike = 1;
+                if (code == OpCode.BWD_EXPAND() || code == OpCode.BWD_TILE()) bwdLike = 1;
                 if (a < 0 || (out < 0 && bwdLike == 0)) {
                     if (Console.getEnv("MYP_GR_DBG") == "1") {
                         Console.writeString("buildRuntime wire fail type=" + graph.nodeTypeAt(ni) + " in0=" + graph.nodeInAt(ni, 0) + "(" + Fmt.i(a) + ") out=" + graph.compilerEffectiveOut(ni) + "(" + Fmt.i(out) + ")");
@@ -192,6 +193,19 @@ class GraphCompiler {
                     int id0 = 1, id1 = 1, id2 = 1, id3 = 1;
                     if (is >= 0) { id0 = graph.compilerShapeDim(is, 0); id1 = graph.compilerShapeDim(is, 1); id2 = graph.compilerShapeDim(is, 2); id3 = graph.compilerShapeDim(is, 3); }
                     rt.addBwdTranspose(dy, dx, p0, p1, p2, p3, pc, id0, id1, id2, id3);
+                } else if (code == OpCode.BWD_EXPAND() || code == OpCode.BWD_TILE()) {
+                    // B2：Expand/Tile 反向（dy → 源坐标 scatter-add 回 dx）。
+                    // id = x(nodeIn1) dims；od = dy(nodeIn0=前向输出 grad) shape。
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
+                    int id0 = 1, id1 = 1, id2 = 1, id3 = 1;
+                    if (is >= 0) { id0 = graph.compilerShapeDim(is, 0); id1 = graph.compilerShapeDim(is, 1); id2 = graph.compilerShapeDim(is, 2); id3 = graph.compilerShapeDim(is, 3); }
+                    int os = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                    int od0 = id0, od1 = id1, od2 = id2, od3 = id3;
+                    if (os >= 0) { od0 = graph.compilerShapeDim(os, 0); od1 = graph.compilerShapeDim(os, 1); od2 = graph.compilerShapeDim(os, 2); od3 = graph.compilerShapeDim(os, 3); }
+                    if (code == OpCode.BWD_EXPAND()) rt.addBwdExpand(dy, dx, id0, id1, id2, id3, od0, od1, od2, od3);
+                    else rt.addBwdTile(dy, dx, id0, id1, id2, id3, od0, od1, od2, od3);
                 } else if (code == OpCode.BWD_CONV()) {
                     int dy = tensorId(graph.nodeInAt(ni, 0));
                     int x = tensorId(graph.nodeInAt(ni, 1));

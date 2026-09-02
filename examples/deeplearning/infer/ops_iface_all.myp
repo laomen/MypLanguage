@@ -1146,7 +1146,17 @@ class ExpandOp {
                             rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i),
                             rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i));
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // B2：BwdExpand（opKind 95）：dy 按源坐标 scatter-add 回 dx（先清零）
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int dx = rt.opBAt(i);
+                if (dx < 0) return;
+                InferOps.bwdBroadcastCopy(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(dx),
+                                          rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i),
+                                          rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i));
+            }
+        }
 }
 
 // ---- instancenorm（opKind 35 前向）----
@@ -1381,7 +1391,17 @@ class TileOp {
                           rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i),
                           rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i));
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // B2：BwdTile（opKind 96）：dy 按源坐标（% id 维）scatter-add 回 dx
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int dx = rt.opBAt(i);
+                if (dx < 0) return;
+                InferOps.bwdBroadcastCopy(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(dx),
+                                          rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i),
+                                          rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i));
+            }
+        }
 }
 
 // ---- tile（GPU，opKind 76）----
@@ -2297,9 +2317,9 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwdBwd(32, 92, new DivOp(), 0);             rt.registerFwdBwd(32, 92, new GpuDivOp(), 1);
     rt.registerFwdBwd(33, 91, new MulOp(), 0);             rt.registerFwdBwd(33, 91, new GpuMulOp(), 1);
     rt.registerFwd(34, new SqrtOp(), 0);                 rt.registerFwd(34, new GpuSqrtOp(), 1);
-    rt.registerFwd(74, new ExpandOp(), 0);               rt.registerFwd(74, new GpuExpandOp(), 1);
+    rt.registerFwdBwd(74, 95, new ExpandOp(), 0);         rt.registerFwd(74, new GpuExpandOp(), 1);
     rt.registerFwd(75, new WhereOp(), 0);                rt.registerFwd(75, new GpuWhereOp(), 1);
-    rt.registerFwd(76, new TileOp(), 0);                 rt.registerFwd(76, new GpuTileOp(), 1);
+    rt.registerFwdBwd(76, 96, new TileOp(), 0);          rt.registerFwd(76, new GpuTileOp(), 1);
     rt.registerFwd(77, new SqueezeOp(), 0);              rt.registerFwd(77, new GpuSqueezeOp(), 1);
     rt.registerFwd(78, new GatherOp(), 0);               rt.registerFwd(78, new GpuGatherOp(), 1);
     rt.registerFwd(79, new LogSoftmaxOp(), 0);           rt.registerFwd(79, new GpuLogSoftmaxOp(), 1);

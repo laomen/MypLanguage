@@ -2758,6 +2758,34 @@ class InferOps {
             }
         }
 
+        // BwdExpand/BwdTile（B2）：广播/平铺反向 = scatter-add。前向 y 每元素来自
+        // x 的某源（源坐标 c_k = id_k==1 ? 0 : y_k%id_k，expand 与 tile 同规则）——
+        // 多对一 → dx[src] 累加 dy（先清零 dx）。共用同一 kernel（id/od dims）。
+        void bwdBroadcastCopy(float[] arena, int dyOff, int dxOff,
+                              int id0, int id1, int id2, int id3,
+                              int od0, int od1, int od2, int od3) {
+            int xTotal = id0 * id1 * id2 * id3;
+            int i = 0;
+            while (i < xTotal) { arena[dxOff + i] = float(0.0); i = i + 1; }
+            int total = od0 * od1 * od2 * od3;
+            i = 0;
+            while (i < total) {
+                int y3 = i % od3;
+                int t = i / od3;
+                int y2 = t % od2;
+                t = t / od2;
+                int y1 = t % od1;
+                int y0 = t / od1;
+                int c0 = (id0 == 1) ? 0 : (y0 % id0);
+                int c1 = (id1 == 1) ? 0 : (y1 % id1);
+                int c2 = (id2 == 1) ? 0 : (y2 % id2);
+                int c3 = (id3 == 1) ? 0 : (y3 % id3);
+                int inFlat = ((c0 * id1 + c1) * id2 + c2) * id3 + c3;
+                arena[dxOff + inFlat] = arena[dxOff + inFlat] + arena[dyOff + i];
+                i = i + 1;
+            }
+        }
+
         // Gather（G5）：沿 axis 按 indices 收集。data 4D dn/dc/dh/dw，out 4D on/oc/oh/ow
         // （out 的 axis 维 = lenIdx，其余维 = data 对应维）。indices 存 float arena
         // （int→float，<2^24 精确），读 int(a[iOff+k])；负索引 +dim，越界 clamp。

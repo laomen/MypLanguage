@@ -891,6 +891,20 @@ class GraphOptimizer {
                             if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
                                 graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费（须 endNode 后）
                             }
+                        } else if (t == "Expand" || t == "Tile") {
+                            // B2：Expand/Tile 反向（广播/平铺 scatter-add，无参）。
+                            // BwdExpand/BwdTile(dy, x) → dx。x 是节点输出才产 dx。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            if (t == "Expand") graph.nodeType(bd, "BwdExpand");
+                            else graph.nodeType(bd, "BwdTile");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费（须 endNode 后）
+                            }
                         } else if (t == "Add") {
                             int bd = graph.nodeCount();
                             graph.beginNode();
