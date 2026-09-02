@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-09-02 — 阶段七：Unsupported op 诊断完善（原因分类 + 输出列表）
+
+- onnx_loader unsupported 诊断输出补全：节点名/op/输入/输出 + 原因分类——
+  If/Loop/Scan 控制流子图 → `control-flow subgraph op not supported`（明确
+  声明不支持）；其他 → `operator not implemented`。
+- 回归：`infer_tests/unsup_main.myp`（If 控制流模型 + FakeOp 普通未知模型）——
+  UNSUP ALL OK，If/FakeOp load=0（badOp_ 中止）+ 诊断含原因/输入/输出，
+  known-good（opsetcheck v13）load=1 不误伤。
+- 阶段七已完：opset/version 检查、unsupported op 诊断。剩余：多输入/多输出/
+  可选输入完整处理（多输入多输出已覆盖）、If/Loop/Scan 子图（已明确声明不支持）、
+  外置 weight/mmap、IR/计划缓存、shape specialization、三阶段错误码分离。
+
+---
+
 ## 2026-09-02 — 阶段七：ONNX opset/version 检查
 
 - onnx_loader `parseModel` 新增解析 `ir_version`（ModelProto field 1）与

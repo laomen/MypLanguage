@@ -489,6 +489,10 @@ Graph
 - ONNX opset/version 检查。✅ 已完成（2026-09-02，parseModel 解析 ir_version +
   opset_import；irVersion()/opsetVersion()/opsetDomain()/opsetSupported()；
   `infer_tests/opsetcheck_main.myp` 回归 opset 13/21 CPU+GPU 通过）。
+- Unsupported operator 诊断：节点名、op type、输入输出和原因。✅ 已完成
+  （2026-09-02，诊断含节点名/op/输入/输出 + 原因分类——If/Loop/Scan 控制流子图
+  明确声明不支持，其他 operator not implemented；`infer_tests/unsup_main.myp`
+  回归 If/FakeOp load=0 + 诊断完整，known-good 不误伤）。
 - Unsupported operator 诊断：节点名、op type、输入输出和原因。
 - 多输入、多输出和可选输入完整处理。
 - `If`、`Loop`、`Scan` 子图支持，或明确声明不支持。
