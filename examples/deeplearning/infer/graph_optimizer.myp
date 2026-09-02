@@ -72,18 +72,24 @@ class GraphOptimizer {
             // 阶段五：常量去重——内容相同的初始器合并（DCE 后）。
             // 两两比较字节内容（rows/cols/dtype/transposed/role 相同 + 文件字节逐字节相同）；
             // 相同则把后者所有 use 重定向到前者并标 dead（runtime 只注册一份）。
+            // **BN 折叠张量（BN()==1 / BN_ONLY()==1）不参与去重**：其内容在 writeWeight
+            // 时按各自 BN_NODE 参数（scale/bias/mean/var）合成——#bnb 无源字节、折叠权重
+            // 的源字节是原始 W，都不代表最终折叠内容；去重会误合并（#bnb 全 0 相同 →
+            // 所有 conv 折叠 bias 指到第一个 conv 的 #bnb → ResNet18 无 bias conv 输出错）。
             int wa = 0;
             while (wa < graph.weightCount()) {
                 string na = graph.weightName(wa);
                 int sa = graph.compilerShapeIdx(na);
                 if (sa >= 0 && graph.compilerShapeDead(sa) == 1) { wa = wa + 1; continue; }
                 if (graph.compilerIsGraphOutput(na) == 1) { wa = wa + 1; continue; }
+                if (graph.compilerWeightGetField(wa, WeightField.BN()) == 1 || graph.compilerWeightGetField(wa, WeightField.BN_ONLY()) == 1) { wa = wa + 1; continue; }
                 int wb = wa + 1;
                 while (wb < graph.weightCount()) {
                     string nb = graph.weightName(wb);
                     int sb = graph.compilerShapeIdx(nb);
                     if (sb >= 0 && graph.compilerShapeDead(sb) == 1) { wb = wb + 1; continue; }
                     if (graph.compilerIsGraphOutput(nb) == 1) { wb = wb + 1; continue; }
+                    if (graph.compilerWeightGetField(wb, WeightField.BN()) == 1 || graph.compilerWeightGetField(wb, WeightField.BN_ONLY()) == 1) { wb = wb + 1; continue; }
                     if (graph.compilerWeightBytesEqual(wa, wb) == 1) {
                         // 合并：把 nb 的所有 use 改接到 na（replaceAllUses 覆盖节点 input + graph output）
                         if (sa >= 0 && sb >= 0) graph.replaceAllUses(sb, sa);
