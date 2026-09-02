@@ -40,6 +40,22 @@ class Session {
         int runGpu() { return loader_.runGpuRuntime(rt_); }
         int runAuto() { if (Console.getEnv("MYP_GPU") == "1") return loader_.runGpuRuntime(rt_); return loader_.runRuntime(rt_); }
 
+        // ---- 训练控制（loadTrain 后）：前向+反向+更新的统一封装 ----
+        void setLr(double lr) { rt_.setLr(lr); }
+        double lr() { return rt_.lr(); }
+        void setTrainMode(int m) { rt_.setTrain(m); }
+        int trainMode() { return rt_.trainMode(); }
+        // 训练 run（loadTrain 建的反向图）：trainMode=1 时 Update 按 lr 更新权重
+        int runTrain() { return loader_.runRuntime(rt_); }
+        // 当前 batch loss 标量（训练图输出 "loss"）
+        double loss() {
+            int t = loader_.tensorId("loss");
+            if (t < 0) return 0.0;
+            return rt_.getFlat(t, 0);
+        }
+        // 权重 w 的解析梯度张量 id（训练图建 "W#g"）
+        int gradId(string w) { return loader_.tensorId(w + "#g"); }
+
         // ---- 统一错误码与统计（阶段七）----
         int phase() { return loader_.phase(); }
         int loadError() { return loader_.loadError(); }
