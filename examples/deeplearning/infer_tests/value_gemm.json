@@ -1,0 +1,8 @@
+{ "name":"vgemm",
+  "inputs":[{"name":"x","dims":[1,2]}],
+  "outputs":["y"],
+  "layers":[
+    { "op":"Gemm","in":"x","out":"y","transB":1,
+      "W":{"dims":[3,2],"values":[3,4,5,6,7,8]},
+      "B":{"dims":[3],"values":[1,2,3]} }
+  ]}

@@ -152,6 +152,12 @@ class JsonModelLoader {
                 } else if (op == "Gather" && j.type(lp + ".indices") != -1) {
                     // A3：int64 indices 参数
                     if (regI64Arr(j, lp + ".indices", out + "_idx") == 0) return 0;
+                } else if (op == "Embedding") {
+                    // Embedding：W 权重（values/init 源）+ ids int64（查表索引）
+                    if (registerWeight(j, lp + ".W", out + "_W") == 0) return 0;
+                    if (j.type(lp + ".ids") != -1) {
+                        if (regI64Arr(j, lp + ".ids", out + "_idx") == 0) return 0;
+                    }
                 }
                 ly = ly + 1;
             }
@@ -163,14 +169,19 @@ class JsonModelLoader {
                 string op = gstr(j, lp + ".op", "");
                 string inm = gstr(j, lp + ".in", "");
                 string out = gstr(j, lp + ".out", "");
-                if (op == "" || inm == "" || out == "") { ly = ly + 1; continue; }
+                if (op == "" || out == "") { ly = ly + 1; continue; }
+                if (op != "Embedding" && inm == "") { ly = ly + 1; continue; }   // Embedding 无数据 in（W+ids 全内部）
                 string in2 = gstr(j, lp + ".in2", "");
                 string in3 = gstr(j, lp + ".in3", "");
                 string in4 = gstr(j, lp + ".in4", "");
                 int ni = g_.beginNode();
                 g_.nodeType(ni, op);
                 g_.nodeIn(ni, 0, inm);
-                if (op == "Gemm") {
+                if (op == "Embedding") {
+                    // Embedding：查表 W[ids]；W=nodeIn0、ids int64=nodeIn1（覆盖空 in）
+                    g_.nodeIn(ni, 0, out + "_W");
+                    if (j.type(lp + ".ids") != -1) g_.nodeIn(ni, 1, out + "_idx");
+                } else if (op == "Gemm") {
                     g_.nodeIn(ni, 1, out + "_W");
                     if (j.type(lp + ".B") != -1) g_.nodeIn(ni, 2, out + "_b");
                     g_.nodeInt(ni, NodeField.TRANSB(), gint(j, lp + ".transB", 1));
@@ -314,6 +325,15 @@ class JsonModelLoader {
                 if (sok == 0) return 0;
                 int got = st.readF32ByName(stn, vals, total);
                 if (got < total) return 0;
+                filled = 1;
+            }
+            if (j.type(p + ".values") != -1) {
+                // 显式值数组：按 dims row-major 手写权重（替代 init/LCG/safetensors）。
+                // 用途：手算验证（单 op 权重、Embedding 表等），值可精确复现。
+                int nv = arrLen(j, p + ".values");
+                if (nv != total) return 0;
+                int vi = 0;
+                while (vi < total) { vals[vi] = float(j.getDouble(p + ".values." + Fmt.i(vi))); vi = vi + 1; }
                 filled = 1;
             }
             if (filled == 0) {
