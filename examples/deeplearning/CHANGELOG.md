@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-02 — 阶段七：ONNX opset/version 检查
+
+- onnx_loader `parseModel` 新增解析 `ir_version`（ModelProto field 1）与
+  `opset_import`（field 8，OperatorSetIdProto domain=1/version=2）；标准 opset
+  （domain=""）优先记录，仅无标准时记自定义 domain。
+- getter：`irVersion()` / `opsetVersion()` / `opsetDomain()` /
+  `opsetSupported()`（opset ∈ [9,22] 返回 1，提示性）。
+- 回归：`infer_tests/opsetcheck_main.myp`（同 Conv 模型导出 opset 13 与 21）——
+  OPSETCHECK ALL OK，v13/v21 opsetVersion 各为 13/21、irVersion>0、
+  supported=1、输出 vs ORT max diff 4.8e-7（CPU+GPU）。
+- 阶段七其余项：unsupported op 诊断（badOp_ 已有）、多输入/多输出/可选输入
+  （多输入多输出已覆盖）、If/Loop/Scan 子图、外置 weight/mmap、IR/计划缓存、
+  shape specialization、加载/编译/执行阶段错误码分离。
+
+---
+
 ## 2026-09-02 — 阶段六：cuBLAS GEMM（GPU dense/matmul 厂商库加速）
 
 - gpu_ops.myp `dense`/`matmul`：规模达标（outDim≥32 && batch≥32 && outDim*batch

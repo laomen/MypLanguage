@@ -486,7 +486,9 @@ Graph
 
 ## 9. 阶段七：模型工程能力
 
-- ONNX opset/version 检查。
+- ONNX opset/version 检查。✅ 已完成（2026-09-02，parseModel 解析 ir_version +
+  opset_import；irVersion()/opsetVersion()/opsetDomain()/opsetSupported()；
+  `infer_tests/opsetcheck_main.myp` 回归 opset 13/21 CPU+GPU 通过）。
 - Unsupported operator 诊断：节点名、op type、输入输出和原因。
 - 多输入、多输出和可选输入完整处理。
 - `If`、`Loop`、`Scan` 子图支持，或明确声明不支持。
