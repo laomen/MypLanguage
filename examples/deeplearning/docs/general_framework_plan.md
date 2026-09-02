@@ -701,6 +701,15 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   `infer_tests/json_ops2_main.myp`+`ops2.json`：多输入 5 个 + 8 层 8 输出全手算断言
   CPU+GPU。测试数 76。剩余（复杂/验证难，留后续）：Slice(starts/ends/steps 多数组
   attr 组对齐)、Pad(pads 数组)、Split 多输出、Embedding(ids 需显式值权重源)。
+- **B1 训练反向补：Reshape/Flatten/Squeeze/Transpose（完成，2026-09）**：
+  buildReverseGraph 加纯数据重排反向——Reshape/Flatten/Squeeze 产 BwdReshape
+  （copyFlat，前向即连续拷贝）；Transpose 产 BwdTranspose（逆排列搬回，perm 属性
+  复制）。OpCode 87/88 + runtime opKind 93/94 + bwdTranspose kernel（遍历 x id dims，
+  dy 坐标=(i_{perm})，od=perm(id) 内部推）+ ReshapeOp/TransposeOp.backward +
+  registerFwdBwd(24→93)/(26→94)（GPU 前向保留；训练反向 CPU-only）。dx 图输入
+  guard（清 slot0）。bwd_rtr_main 数值对拍 dx=[10,30,20,40] 精确。测试数 77。
+  **剩余 B2（广播归约型反向）**：Expand/Tile（dx 需沿广播维 scatter-add）、Gather
+  （scatter）、Reduce 族（沿 axes 广播回 x）、Slice/Pad（切割 scatter）。
 - **训练专项全完成**：优化器（SGD/动量/AdamW+wd）/梯度累积/AMP 骨架/checkpoint
   （阶段四记录）。**待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；SLI
   文档/示例。

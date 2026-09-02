@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-09 — B1 训练反向补：Reshape/Flatten/Squeeze/Transpose（纯数据重排反向）
+
+- **背景**：buildReverseGraph 此前只覆盖 Gemm/MatMul/Conv/Relu/Sigmoid/SoftmaxCE/
+  Add/Sub/Mul/Div/Concat 反向——loss 路径含 Reshape/Flatten/Squeeze/Transpose（纯
+  数据重排，无参）时梯度链断。本轮补全链路（**训练反向只 CPU**：runTrain CPU-only，
+  run() 对无 fwd 表的 op 落 bwdCpu_ 表调 backward，GPU 表无需注册）。
+  - graph_defs OpCode `BWD_RESHAPE(87)/BWD_TRANSPOSE(88)`（紧跟 A2 84-86）+
+    opCode map + opTraits(2)（bwdLike/豁免 out 空在 graph_compiler）
+  - runtime `addBwdReshape`(opKind 93, A=dy B=dx)/`addBwdTranspose`(opKind 94,
+    opP0-3=perm opP4=pc opP5-8=x dims)
+  - ops.myp `bwdTranspose` kernel：遍历 x(id dims) 每元素，dy 坐标 = (i_{perm0..3})
+    （transpose 双射 → 无需累加）；dy dims od = perm(id) 内部推。
+  - **Reshape/Flatten/Squeeze 反向 = copyFlat**（框架前向即连续拷贝不重排）→
+    buildReverseGraph 对三者统一产 BwdReshape 节点；Transpose 产 BwdTranspose
+    （复制 perm 属性）。dx 仅当 x 是节点输出才产（图输入多节点共享同名 grad 冲突，
+    同 BwdDense guard，须 endNode 后 replaceResult）
+  - ops_iface_all ReshapeOp/TransposeOp.backward（trainMode==1 guard + dx<0 return）
+    + registerFwdBwd(24→93)/(26→94)（GPU 前向 registerFwd 保留）
+- 验证 `infer_tests/bwd_rtr_main.myp` runtime 数值对拍：Reshape fwd y==x、bwd
+  dx==dy；Transpose x[1,1,2,2]=[1,2,3,4] perm[0,1,3,2]（H/W 换）→ y=[1,3,2,4]，
+  dy=[10,20,30,40] → **dx=[10,30,20,40]**（手算精确）。CPU 全 PASS BWD RTR OK。
+  全量回归 pass=77 fail=0。
+- **范围与后续**：softmaxCE 是 2D rows/cols（FC logits）→ 训练 loss 路径末端须 2D；
+  Reshape/Transpose 是 4D op 且 classifyShapes 激活 kind 沿输入（2D↔4D reshape
+  kind 转换受限）→ 端到端可训网构造受限，本轮以 runtime 数值对拍做权威判据。
+  剩余（B2 待办）：Expand/Tile（反向需广播归约 scatter-add）、Gather（scatter）、
+  Reduce 族（广播回 x shape）、Slice/Pad。
+
+---
+
 ## 2026-09 — A3 扩展：JSON 属性/参数 op 批量分派（Expand/Tile/Reduce 族/Squeeze/Transpose/LogSoftmax）
 
 - **int64 参数类**（沿 A3 Reshape/Gather 模式，nodeIn1 接内存 int64 常量 +
