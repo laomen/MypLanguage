@@ -721,6 +721,12 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   （mode/redType 经 compilerSetNRedMode/Type 复制——存 graph nRedMode_/nRedType_
   per-node 数组）。bwd_reduce_main 四组 dx 手算精确。测试数 79。剩余：
   ReduceMax/Min（argmax）、Gather（scatter）、Slice/Pad。
+- **JSON registerWeight 显式 values + Embedding 分派（完成，2026-09）**：
+  registerWeight 加 `values`（row-major 手写权重数组，替代 init/LCG/safetensors，
+  值可精确复现）；json_model 加 Embedding 分派（W 权重 + ids int64；第 3 步放宽 in
+  条件——Embedding 无数据输入）。测试 json_value_main（W values 手写 Gemm
+  y=[12,19,26]）+ json_embedding_main（W values 查表 out=[30,31,10,11,20,21]）。
+  测试数 82。剩余 A 组：Slice/Pad JSON（attr 数组对齐）、Split 多输出。
 - **B1 训练反向补：Reshape/Flatten/Squeeze/Transpose（完成，2026-09）**：
   buildReverseGraph 加纯数据重排反向——Reshape/Flatten/Squeeze 产 BwdReshape
   （copyFlat，前向即连续拷贝）；Transpose 产 BwdTranspose（逆排列搬回，perm 属性

@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-09 — JSON registerWeight 显式 values + Embedding（查表）分派
+
+- **registerWeight 支持 `values` 数组**：JSON 权重 W/B 除 `init`(LCG)/`safetensors` 外
+  可内联 `"values":[...]` 按 dims row-major 手写权重（float 数组，`j.getDouble` 逐
+  元素读）——替代随机/文件权重源，**值可精确复现**（单 op 手算验证、Embedding 表等）。
+- **JSON Embedding 分派**：inferShapes/classifyShapes（markFCWeight transB=1 + ids
+  dead）/graph_compiler（readI64Init → 临时 idxT + addEmbedding）本就支持 Embedding——
+  补齐 json_model 分派：预注册 W 权重 + ids int64；buildGraph 第 3 步放宽 in 条件
+  （Embedding 无数据输入，W=nodeIn0 `out_W`、ids int64=nodeIn1 `out_idx`）。
+- 测试：`infer_tests/json_value_main.myp`+`value_gemm.json`（x[1,2]=[1,2] → Gemm
+  W values [3,4,5,6,7,8]=[[3,4],[5,6],[7,8]] B values [1,2,3] → y=[12,19,26] 手算
+  精确，CPU+GPU JSON VALUE OK）+ `json_embedding_main.myp`+`embedding.json`（W
+  values [10,11,20,21,30,31] + ids=[2,0,1] → out=[30,31,10,11,20,21] 查表，CPU+GPU
+  JSON EMBEDDING OK）。全量回归 pass=82 fail=0。
+
+---
+
 ## 2026-09 — B 训练反向补：Gather（scatter-add）
 
 - **背景**：B 系列后 loss 路径仍缺 Gather（沿 axis 收集）反向。收集反向 =
