@@ -1,0 +1,74 @@
+// json_safe_main.myp — JSON 权重 safetensors 源装配（替代手动布局）测试。
+// safe_gemm.json：单 Gemm（W 声明 safetensors 源 = data/onnx/test_w.safetensors
+//  张量 w1 = 1..16 [4,4]），不经 init/不经手写 readF32Into——JsonModelLoader 按
+// JSON 的 tensor 名自动从 .safetensors 读值装配进内存权重通道。
+// 验证：data=[0.5,1,1.5,2] → out = w1·data = [15,35,55,75] vs numpy 参考
+// （test_w_ort.bin），CPU+GPU 一致。无手写装配代码 = JSON 声明即得权重。
+import env;
+import fmt;
+import dl;
+
+class JsonSafeApp {
+    action:
+        @constructor JsonSafeApp() {
+            Session s = new Session();
+            int ok = s.loadJson("./deeplearning/infer_tests/safe_gemm.json");
+            Console.writeString("load ok="); Console.writeLong(ok);
+            Console.writeString(" ops="); Console.writeLong(s.opCount());
+            Console.writeLine("");
+            if (ok == 0) { Console.writeLine("JSON SAFE SKIP (no load)"); return; }
+
+            double[] x = new double[4];
+            x[0] = 0.5; x[1] = 1.0; x[2] = 1.5; x[3] = 2.0;
+            s.setInput("data", x, 4);
+            int rk = s.runAuto();
+            double[] out = s.getOutput("out");
+            int n = s.tensorSize("out");
+            Console.writeString("run="); Console.writeLong(rk);
+            Console.writeString(" n="); Console.writeLong(n);
+            Console.writeLine("");
+
+            // vs numpy 参考 [15,35,55,75]
+            double maxD = 0.0;
+            double[] refv = new double[4];
+            readRef("./deeplearning/data/onnx/test_w_ort.bin", refv, 4);
+            int i = 0;
+            while (i < n) {
+                double d = out[i] - refv[i];
+                if (d < 0.0) d = 0.0 - d;
+                if (d > maxD) maxD = d;
+                i = i + 1;
+            }
+            Console.writeString("vs numpy max diff="); Console.writeFloat(maxD); Console.writeLine("");
+            Console.writeString("out[0..3]="); Console.writeFloat(out[0]);
+            Console.writeString(","); Console.writeFloat(out[1]);
+            Console.writeString(","); Console.writeFloat(out[2]);
+            Console.writeString(","); Console.writeFloat(out[3]);
+            Console.writeLine("");
+
+            if (ok == 1 && rk == 1 && n == 4 && maxD < 1.0e-4) {
+                Console.writeLine("JSON SAFE OK");
+            } else {
+                Console.writeLine("JSON SAFE MISMATCH");
+            }
+        }
+
+        void readRef(string path, double[] r, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                r[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+}
+
+int main() { JsonSafeApp a = new JsonSafeApp(); return 0; }

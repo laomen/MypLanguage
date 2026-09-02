@@ -1,0 +1,10 @@
+{
+  "name": "safe_gemm",
+  "inputs": [{ "name": "data", "dims": [1, 4] }],
+  "outputs": ["out"],
+  "layers": [
+    { "op": "Gemm", "in": "data", "out": "out", "transB": 1,
+      "W": { "dims": [4, 4],
+             "safetensors": { "file": "deeplearning/data/onnx/test_w.safetensors", "tensor": "w1" } } }
+  ]
+}

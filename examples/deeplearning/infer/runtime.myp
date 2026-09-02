@@ -1175,7 +1175,7 @@ class InferenceRuntime {
         }
 
         int opCount() { return opCount_; }
-        int tensorOff(int tid) { return tOff_[tid]; }   // 调试用
+        int tensorOff(int tid) { if (tid < 0) return -1; return tOff_[tid]; }   // 调试用（tid=-1=无该张量，如无偏置层）
 
         // ---- 阶段4e POC：接口算子分派 ----
         // fwdCpu_/fwdGpu_：前向 opKind → 算子对象（调 forward）；bwdCpu_/bwdGpu_：反向

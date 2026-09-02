@@ -44,7 +44,8 @@ class GpuInferOps {
                 if (p < work) {
                     long i = p / batch;
                     long k = p % batch;
-                    float sum = a[bOff + i];
+                    float sum = 0.0f;
+                    if (bOff >= 0) sum = a[bOff + i];   // 无偏置 Gemm（bOff=-1）
                     long j = 0L;
                     while (j < xRows) {
                         sum = sum + a[wOff + i * xRows + j] * a[xOff + j * batch + k];
@@ -654,13 +655,15 @@ class GpuInferOps {
         void bwdDense(float[] a, long dev,
                       int dyOff, int xOff, int inDim, int batch, int wOff, int outDim,
                       int dxOff, int dwOff, int dbOff) {
-            @gpu for (long p = 0L; p < long(outDim); p = p + 1L) resident(a = dev) {
-                if (p < long(outDim)) {
-                    long o = p;
-                    float s = 0.0f;
-                    long k = 0L;
-                    while (k < long(batch)) { s = s + a[dyOff + o * long(batch) + k]; k = k + 1L; }
-                    a[dbOff + o] = s;
+            if (dbOff >= 0) {   // 无偏置层 dbOff=-1 → 跳过 db 归约
+                @gpu for (long p = 0L; p < long(outDim); p = p + 1L) resident(a = dev) {
+                    if (p < long(outDim)) {
+                        long o = p;
+                        float s = 0.0f;
+                        long k = 0L;
+                        while (k < long(batch)) { s = s + a[dyOff + o * long(batch) + k]; k = k + 1L; }
+                        a[dbOff + o] = s;
+                    }
                 }
             }
             @gpu for (long p = 0L; p < long(outDim) * long(inDim); p = p + 1L) resident(a = dev) {

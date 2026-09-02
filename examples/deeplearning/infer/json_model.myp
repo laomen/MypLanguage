@@ -26,6 +26,7 @@ import math;
 import json;
 import "./graph.myp";
 import "./runtime.myp";
+import "./safetensors.myp";
 
 class JsonModelLoader {
     action:
@@ -214,6 +215,19 @@ class JsonModelLoader {
             while (k < nd) { total = total * dims[k]; k = k + 1; }
             if (total <= 0 || total > 4000000) return 0;
             float[] vals = new float[total];
+            int filled = 0;
+            if (j.type(p + ".safetensors") != -1) {
+                // safetensors 权重源：按张量名从 .safetensors 读值（替代手动装配）
+                string sf = gstr(j, p + ".safetensors.file", "");
+                string stn = gstr(j, p + ".safetensors.tensor", "");
+                SafeTensors st = new SafeTensors();
+                int sok = st.load(sf);
+                if (sok == 0) return 0;
+                int got = st.readF32ByName(stn, vals, total);
+                if (got < total) return 0;
+                filled = 1;
+            }
+            if (filled == 0) {
             string init = gstr(j, p + ".init", "zeros");
             int fanIn = 1;
             if (nd == 2) fanIn = dims[1];
@@ -259,6 +273,7 @@ class JsonModelLoader {
                 k = 0;
                 while (k < total) { vals[k] = float(0.0); k = k + 1; }
             }
+            }   // filled==0（随机/常量 init）end——safetensors 源权重跳过 init
             // rows/cols 视图（对齐 ONNX parseTensor：2D rows=dims0 cols=dims1；≥3D rows=dims0 cols=prod rest）
             int rows = 1; int cols = 1;
             if (nd == 1) { rows = dims[0]; cols = 1; }

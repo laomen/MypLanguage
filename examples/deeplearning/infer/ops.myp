@@ -18,7 +18,8 @@ class InferOps {
             @parallel for (int i = 0; i < outDim; i = i + 1) {
                 int k = 0;
                 while (k < batch) {
-                    float sum = arena[bOff + i];
+                    float sum = 0.0f;
+                    if (bOff >= 0) sum = arena[bOff + i];   // 无偏置 Gemm（bOff=-1）
                     int j = 0;
                     while (j < inDim) {
                         sum = sum + arena[wOff + i * inDim + j] * arena[xOff + j * batch + k];
@@ -433,13 +434,13 @@ class InferOps {
                       int dyOff, int xOff, int inDim, int batch,
                       int wOff, int outDim,
                       int dxOff, int dwOff, int dbOff) {
-            // db[o] = Σ_b dY[o,b]
+            // db[o] = Σ_b dY[o,b]（无偏置层 dbOff=-1 → 不写）
             int i = 0;
             while (i < outDim) {
                 float s = 0.0f;
                 int k = 0;
                 while (k < batch) { s = s + arena[dyOff + i * batch + k]; k = k + 1; }
-                arena[dbOff + i] = s;
+                if (dbOff >= 0) arena[dbOff + i] = s;
                 i = i + 1;
             }
             // dW[o,i] = Σ_b dY[o,b]·x[i,b]
