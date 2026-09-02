@@ -667,6 +667,14 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   runtime `tensorOff` guard tid<0→-1；CPU `InferOps.dense` + GPU @gpu dense
   `sum=0; if (bOff>=0) sum=arena[bOff+i]`；bwdDense（CPU+GPU）db 归约
   dbOff>=0 才写。验证 gdb 定位（DenseOp_forward SIGSEGV）+ +bias zeros 对照。
+- **JSON 多分支/更多算子（完成，2026-09-02）**：层式 JSON 即 DAG（fan-out
+  名字引用 + fan-in in2/in3/in4 槽，向后兼容）。buildGraph 分派扩展：
+  Sigmoid/GlobalAveragePool/Flatten(axis)、Sub/Div/Mul（广播 in+in2）、
+  Concat（in2/in3+axis）、MatMul（in2 或可选 W=[K,N]）；修复 pool kernel
+  属性缺口。`infer_tests/json_branch_main.myp`+`branch.json`：双分支分叉→
+  fan-in 汇合（Add/Sub/Mul/Div/Concat axis1）+ 4D 算子（GAP/Sigmoid/Flatten）
+  12 op 全手算断言 CPU+GPU。测试数 71。**限制**：2D MatMul 走 4D batch 路径
+  （须 4D 声明）；Sub/Div/Mul 训练反向未补（buildReverseGraph 无 Bwd，待办）。
 - **训练专项全完成**：优化器（SGD/动量/AdamW+wd）/梯度累积/AMP 骨架/checkpoint
   （阶段四记录）。**待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；SLI
   文档/示例。

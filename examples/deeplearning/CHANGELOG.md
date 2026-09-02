@@ -6,6 +6,31 @@
 
 ---
 
+## 2026-09-02 — JSON 多分支/更多算子（fan-in·fan-out DAG + op 扩展，json_branch_main.myp）
+
+- **多分支语义（不引入新语法）**：层式 JSON 即 **DAG**——fan-out 靠名字引用
+  （一个 out 名被多个后续层 in），fan-in 汇合用多输入槽 `in2/in3/in4`
+  （nodeIn slot1..3，沿用 ONNX 输入槽序）。原有单输入 `in`/层链格式完全兼容。
+- **更多算子（json_model buildGraph 分派扩展，全部零 int64 常量依赖）**：
+  - 单输入：`Sigmoid` / `GlobalAveragePool` / `Flatten`(axis)
+  - 二元 fan-in：`Sub`/`Div`/`Mul`（与 Add 同款 numpy 广播，in+in2）
+  - 多元 fan-in：`Concat`（in+in2/in3 + axis 属性；框架 Concat axis=NodeField.AXIS）
+  - `MatMul`（in+in2 或可选 `W`{dims=[K,N]} 权重作第二输入）
+  - 顺带修复 V1 缺口：JSON `MaxPool`/`AveragePool` 此前未设 kernel/strides/pads
+    属性 → 现 setKernelAttrs。
+- 测试 `infer_tests/json_branch_main.myp` + `branch.json`：双分支分叉
+  （x→Gemm const2/const3→Relu 得 a2=[10]*4、b2=[15]*4）→ fan-in 汇合
+  Sub/Mul/Div/Add/Concat + 4D 图算子 GAP/Sigmoid/Flatten（img[1,2,2,2]），
+  12 op / 11 输出全手算断言（含 flat=[1,2,3,4,2,4,6,8]、gap=[2.5,5]）。
+  CPU+GPU JSON BRANCH OK。测试数 70→71。
+- **已知限制（已注明文档）**：2D `MatMul`（[1,4]×[4,3]）在框架走 4D batch 路径
+  （inferShapes MatMul 无条件 rank≥3 → batch 广播），值/形状错——2D MatMul 须以
+  4D batch 形状声明（与 ONNX BatchMatMul 同）；本次 demo 未含。Sub/Div/Mul 等
+  新算子**训练反向未补**（buildReverseGraph 仅 Gemm/MatMul/Relu/Sigmoid/Add/Conv/
+  Pool/Concat 有 Bwd，Sub/Div/Mul 输入梯度不产出 → 仅推理）——训练反向为后续项。
+
+---
+
 ## 2026-09-02 — JSON 权重 safetensors 源 + 无 bias Gemm 框架修复（json_safe_main.myp）
 
 - JSON 层权重 `W`/`B` 除 `init` 外支持 **`safetensors` 权重源**：`"W": {"dims":[...],
