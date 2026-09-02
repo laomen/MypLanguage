@@ -8,6 +8,7 @@
 import env;
 import math;
 import fmt;
+import fs;
 import "./pb.myp";
 import "./runtime.myp";
 import "./graph.myp";
@@ -33,6 +34,10 @@ class OnnxLoader {
             g_.setFile(file_, fileLen_);
             g_.resetCounts();
             badOp_ = 0;
+            modelDir_ = "";
+            Path p = new Path(path);
+            string d = p.dirname();
+            if (d != "" && d != ".") modelDir_ = d + "/";
             if (doNHWC_ == 1) g_.setLayoutNHWC(1);
             if (lossMode_ == 1) g_.setLossMode(1);
             if (diceWMode_ == 1) g_.setDiceWMode(1);
@@ -98,19 +103,19 @@ class OnnxLoader {
         int readFile(string path) {
             int fd = __myp_io_fopen(path, "rb");
             if (fd < 0) return 0;
-            int cap = 65536;
-            file_ = new int[cap];
+            cap_ = 65536;
+            file_ = new int[cap_];
             fileLen_ = 0;
             while (true) {
                 int b = __myp_io_read_byte();
                 if (b < 0) break;
-                if (fileLen_ >= cap) {
-                    int ncap = cap * 2;
+                if (fileLen_ >= cap_) {
+                    int ncap = cap_ * 2;
                     int[] nb = new int[ncap];
                     int i = 0;
                     while (i < fileLen_) { nb[i] = file_[i]; i = i + 1; }
                     file_ = nb;
-                    cap = ncap;
+                    cap_ = ncap;
                 }
                 file_[fileLen_] = b;
                 fileLen_ = fileLen_ + 1;
@@ -420,6 +425,10 @@ class OnnxLoader {
             int payloadOff = 0;
             int payloadLen = 0;
             string nm = "";
+            string extLoc = "";   // 阶段七：external data（data_location=EXTERNAL）相对模型目录的文件
+            int extData = 0;
+            extDataOff_ = 0;      // 阶段七：external_data offset/length（StringStringEntryProto）
+            extDataLen_ = 0;
             while (pb_.pos() < end) {
                 int f = pb_.nextTag();
                 if (f == -1) break;
@@ -456,8 +465,33 @@ class OnnxLoader {
                 } else if (f == 8) {    // name
                     int l = pb_.readLen(); int po = pb_.payloadOff();
                     nm = pb_.readString(l);
+                } else if (f == 13) {   // external_data（StringStringEntryProto：key=1, value=2）
+                    // 注意：location/offset/length 是 3 条独立的 repeated field 13，
+                    // 每次进入都会解析一条；location 只取首次（避免被空串覆盖）。
+                    int l = pb_.readLen(); int po = pb_.payloadOff();
+                    string thisLoc = parseExternalData(po, l);
+                    if (extLoc == "" && thisLoc != "") extLoc = thisLoc;
+                } else if (f == 14) {   // data_location（1 = EXTERNAL）
+                    extData = pb_.readVarint();
                 } else {
                     pb_.skipField();
+                }
+            }
+            // 阶段七：external data——读外部文件全部字节追加到 file_ 扩展区，
+            // payloadOff 指向追加区+external offset、payloadLen = external length
+            // （缺省则 = 追加区剩余字节）。writeWeight 现有从 file_[offset..offset+len]
+            // 读取的逻辑无需改动。
+            if (extData == 1 && extLoc != "") {
+                int extOff = appendExternalBytes(modelDir_ + extLoc);
+                if (extOff >= 0) {
+                    payloadKind = 1;
+                    payloadOff = extOff + extDataOff_;
+                    if (extDataLen_ > 0 && extDataLen_ <= (fileLen_ - payloadOff)) {
+                        payloadLen = extDataLen_;
+                    } else {
+                        payloadLen = fileLen_ - payloadOff;
+                    }
+                    g_.setFile(file_, fileLen_);   // 数组可能已重分配，刷新 Graph 引用
                 }
             }
             // 登记 initializer（4D 维度；wRows/cols 保留为 [d0, prod(rest)] 视图）
@@ -479,6 +513,82 @@ class OnnxLoader {
                 if (dt != 0) g_.setValueDType(nm, dt);
             }
             return 1;
+        }
+
+        // ---- StringStringEntryProto（external_data）：key=1（string）/ value=2（string）。
+        // 解析 location（相对模型目录的文件路径）+ offset/length（字节区间）。
+        // 注意：每条 field 13 只含一个键值对（location / offset / length 各自独立），
+        // 故以属性当前值为初值累加，避免互相覆盖。返回本条的 location（可能为空）。
+        string parseExternalData(int off, int len) {
+            int end = off + len;
+            pb_.seek(off);
+            string loc = "";
+            int o = extDataOff_;
+            int l = extDataLen_;
+            string key = "";   // 跨迭代保留（key=1 与 value=2 是独立字段，分次读到）
+            string val = "";
+            while (pb_.pos() < end) {
+                int f = pb_.nextTag();
+                if (f == -1) break;
+                if (f == 1) {
+                    int ll = pb_.readLen(); int po = pb_.payloadOff();
+                    key = pb_.readString(ll);
+                } else if (f == 2) {
+                    int ll = pb_.readLen(); int po = pb_.payloadOff();
+                    val = pb_.readString(ll);
+                    // 读完整条（key+value）后按 key 归类
+                    if (key == "location") loc = val;
+                    else if (key == "offset") o = atoi10(val);
+                    else if (key == "length") l = atoi10(val);
+                    key = "";
+                    val = "";
+                } else {
+                    pb_.skipField();
+                }
+            }
+            extDataOff_ = o;
+            extDataLen_ = l;
+            return loc;
+        }
+
+        // 简单十进制字符串→int（external_data 的 offset/length 均为 ASCII 十进制）
+        int atoi10(string s) {
+            int r = 0;
+            int i = 0;
+            int n = Str.len(s);
+            int neg = 0;
+            if (n > 0 && Str.substring(s, 0, 1) == "-") { neg = 1; i = 1; }
+            while (i < n) {
+                int c = __myp_charcode(s, i);
+                if (c >= 48 && c <= 57) r = r * 10 + (c - 48);
+                i = i + 1;
+            }
+            if (neg == 1) return 0 - r;
+            return r;
+        }
+
+        // 读外部文件全部字节追加到 file_ 尾部（增长缓冲）。返回追加区起始偏移
+        // （即原 fileLen_）；失败返回 -1。
+        int appendExternalBytes(string fullPath) {
+            int fd = __myp_io_fopen(fullPath, "rb");
+            if (fd < 0) { Console.writeString("external data file not found: " + fullPath); Console.writeLine(""); return -1; }
+            int start = fileLen_;
+            while (true) {
+                int b = __myp_io_read_byte();
+                if (b < 0) break;
+                if (fileLen_ >= cap_) {
+                    int ncap = cap_ * 2;
+                    int[] nb = new int[ncap];
+                    int i = 0;
+                    while (i < fileLen_) { nb[i] = file_[i]; i = i + 1; }
+                    file_ = nb;
+                    cap_ = ncap;
+                }
+                file_[fileLen_] = b;
+                fileLen_ = fileLen_ + 1;
+            }
+            __myp_io_fclose();
+            return start;
         }
 
         // ---- ValueInfoProto（graph input/output）：取 name + 形状，返回名字 ----
@@ -577,6 +687,10 @@ class OnnxLoader {
     property:
         int[] file_;
         int fileLen_;
+        int cap_;               // 阶段七：file_ 缓冲容量（readFile/appendExternalBytes 共享）
+        string modelDir_;       // 阶段七：模型所在目录（external data 相对路径基）
+        int extDataOff_;        // 阶段七：external_data offset（字节偏移，缺省 0）
+        int extDataLen_;        // 阶段七：external_data length（字节数，缺省 0）
         PbReader pb_;
         Graph g_;
         int doNHWC_;
