@@ -64,6 +64,11 @@ class InferenceRuntime {
         // 全 resident 归约暂存区大小（float 数）：nC*pt*2 + nC*2，1M 覆盖 nC≤1023
         int statsSize() { return 1048576; }
 
+        // lowerRuntime 前调用：把 bump 分配基移到规划峰值——buildRuntime 的临时
+        // 张量（readI64Init 建的 Gather indices / Slice 参数等）用 addTensor bump，
+        // 若从 arenaTop_=0 起会覆盖规划区/图输入（曾致 Gather idxT off=0 覆盖 data）。
+        void setBumpBase(int base) { arenaTop_ = base; }
+
         // 边界转换：调用方仍传 double，内部以 float（FP32）存储
         void setFlat(int tid, int index, double v) {
             arena[tOff_[tid] + index] = float(v);

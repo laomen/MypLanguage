@@ -1178,7 +1178,8 @@ int inferShapes(Graph graph) {
                 // Slice/Concat 是运行时算子）：Slice 判 nIn0_（数据），不能看 nIn1_（starts
                 // 恒为 int64 初始器，会把数据 Slice 误当形状链跳过 → 输出形状不登记 → 下游
                 // Concat shapeIdx 失败 "DBG fail inferShapes"）。
-                if (t == "Shape" || t == "Constant" || t == "Cast" || t == "ReduceProd" || t == "Unsqueeze" || t == "Gather" ||
+                if (t == "Shape" || t == "Constant" || t == "Cast" || t == "ReduceProd" || t == "Unsqueeze" ||
+                    (t == "Gather" && (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 || graph.compilerI64ChainAlive(graph.nodeInAt(i, 0)) == 1)) ||
                     (t == "Slice" && (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 || graph.compilerI64ChainAlive(graph.nodeInAt(i, 0)) == 1)) ||
                     (t == "Concat" && (graph.compilerI64Count(graph.nodeInAt(i, 0)) > 0 || graph.compilerI64Count(graph.nodeInAt(i, 1)) > 0)) ||
                     // G5：int64 四则/ReduceSum/Expand 形状链——仅当数据输入是 int64 链时
@@ -2114,7 +2115,8 @@ int foldShapeChains(Graph graph) {
             if (runPipeline(host) == 0) return 0;
             int peak = host.runPlanMemory();
             if (peak <= 0) { Console.writeLine("DBG fail planMemory"); return 0; }
-            rt.resizeArena(peak);
+            rt.resizeArena(peak + 4096);   // +4096 预留 buildRuntime 临时张量（readI64Init idx 等）
+            rt.setBumpBase(peak);          // 临时 bump 从规划峰值起，不覆盖规划区
             if (host.lowerRuntime(rt) == 0) { Console.writeLine("DBG fail buildRuntime"); return 0; }
             // 阶段八：Runtime wiring 验证——op/tensor 表与 IR 一致（无悬空引用/漏注册）。
             if (Console.getEnv("MYP_IR_VERIFY") == "1" && host.verifyRuntimeWiring(rt) == 0) { Console.writeLine("DBG fail verifyRuntimeWiring"); return 0; }
@@ -2130,7 +2132,8 @@ int foldShapeChains(Graph graph) {
             if (host.runTopoSort() == 0) { Console.writeLine("DBG fail topoSort(reverse)"); return 0; }
             int peak = host.runPlanMemory();
             if (peak <= 0) { Console.writeLine("DBG fail planMemory"); return 0; }
-            rt.resizeArena(peak);
+            rt.resizeArena(peak + 4096);
+            rt.setBumpBase(peak);
             if (host.lowerRuntime(rt) == 0) { Console.writeLine("DBG fail buildRuntime"); return 0; }
             // 阶段八：Runtime wiring 验证——op/tensor 表与 IR 一致（含训练反向/更新节点）。
             if (Console.getEnv("MYP_IR_VERIFY") == "1" && host.verifyRuntimeWiring(rt) == 0) { Console.writeLine("DBG fail verifyRuntimeWiring"); return 0; }

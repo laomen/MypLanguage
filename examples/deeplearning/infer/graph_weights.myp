@@ -9,9 +9,11 @@ class GraphWeights {
             count_ = 0;
             memCap_ = 0; memCount_ = 0;
             memVal_ = new float[1024];
+            memI64Cap_ = 0; memI64Count_ = 0;
+            memI64Val_ = new long[1024];
         }
 
-        void reset() { count_ = 0; memCount_ = 0; }
+        void reset() { count_ = 0; memCount_ = 0; memI64Count_ = 0; }
         int count() { return count_; }
         int idx(string name) {
             int i = 0;
@@ -107,6 +109,38 @@ class GraphWeights {
         int memBase(int weight) { if (weight < 0 || weight >= count_) return -1; return memOff_[weight]; }
         double memValD(int i) { double v = memVal_[i]; return v; }
 
+        // ---- 内存 int64 常量通道（A3：JSON Reshape shape / Gather indices 等 int64
+        //      参数，无 file_ 字节，offset=-3 标记；值存 long[] 池）----
+        void ensureMemI64Cap(int need) {
+            if (need <= memI64Cap_) return;
+            int newCap = memI64Cap_ * 2;
+            if (newCap < need) newCap = need;
+            if (newCap < 1024) newCap = 1024;
+            long[] na = new long[newCap];
+            int i = 0;
+            while (i < memI64Count_) { na[i] = memI64Val_[i]; i = i + 1; }
+            memI64Val_ = na;
+            memI64Cap_ = newCap;
+        }
+        int addMemI64(string name, int rows, int cols, long[] vals, int n) {
+            if (count_ >= 256) return -1;
+            ensureMemI64Cap(memI64Count_ + n);
+            int weight = count_;
+            name_[weight] = name;
+            rows_[weight] = rows; cols_[weight] = cols; dtype_[weight] = 7;   // INT64
+            kind_[weight] = 1; offset_[weight] = -3; length_[weight] = n * 8;
+            memI64Off_[weight] = memI64Count_;
+            int i = 0;
+            while (i < n) { memI64Val_[memI64Count_ + i] = vals[i]; i = i + 1; }
+            memI64Count_ = memI64Count_ + n;
+            transposed_[weight] = 0; bias_[weight] = 0; role_[weight] = 0;
+            nhwc_[weight] = 0; bn_[weight] = 0; bnOnly_[weight] = 0;
+            count_ = count_ + 1;
+            return weight;
+        }
+        int memI64Base(int weight) { if (weight < 0 || weight >= count_) return -1; return memI64Off_[weight]; }
+        long memI64ValAt(int i) { long v = memI64Val_[i]; return v; }
+
     property:
         string[256] name_;
         int[256] rows_;
@@ -131,5 +165,10 @@ class GraphWeights {
         int[256] memOff_;
         int memCap_;
         int memCount_;
+        // 内存 int64 常量（A3：JSON Reshape shape 等 int64 参数）
+        long[] memI64Val_;
+        int[256] memI64Off_;
+        int memI64Cap_;
+        int memI64Count_;
         int count_;
 }

@@ -568,6 +568,11 @@ class Graph {
         void addMemWeight(string nm, int rows, int cols, int dt, int kind, float[] vals, int n) {
             weights_.addMem(nm, rows, cols, dt, kind, vals, n);
         }
+        // 内存 int64 常量（A3：JSON Reshape shape / Gather indices 等 int64 参数，
+        // offset=-3 标记，值存 memI64Val_；readI64Init 内存分支读取）
+        void addMemI64Weight(string nm, int rows, int cols, long[] vals, int n) {
+            weights_.addMemI64(nm, rows, cols, vals, n);
+        }
         int weightCount() { return weights_.count(); }
         string weightName(int weight) { return weights_.nameAt(weight); }
         int weightRows(int weight) { return weights_.get(weight, WeightField.ROWS()); }
@@ -1037,7 +1042,17 @@ class Graph {
             int wi = initIdx(name);
             if (wi < 0) return 0;
             int cnt = 0;
-            if (weights_.get(wi, WeightField.KIND()) == 1) {
+            int off = weights_.get(wi, WeightField.OFFSET());
+            if (off < 0) {
+                // 内存 int64 常量（A3：JSON Reshape shape / indices 等，offset=-3 标记）
+                int base = weights_.memI64Base(wi);
+                int j = 0;
+                while (j < weights_.get(wi, WeightField.LENGTH()) / 8 && cnt < maxn) {
+                    i64TmpL_[cnt] = weights_.memI64ValAt(base + j);
+                    cnt = cnt + 1;
+                    j = j + 1;
+                }
+            } else if (weights_.get(wi, WeightField.KIND()) == 1) {
                 int j = 0;
                 while (j < weights_.get(wi, WeightField.LENGTH()) / 8 && cnt < maxn) {
                     long v = 0L;

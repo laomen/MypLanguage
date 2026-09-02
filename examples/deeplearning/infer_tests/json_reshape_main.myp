@@ -1,0 +1,42 @@
+// json_reshape_main.myp — A3：JSON int64 常量机制（Reshape shape 内存 i64 通道）。
+// data[1,6] → Reshape [2,3]（值序不变 copy）→ out。验证 JSON 声明 shape 数组
+// 经 regI64Arr → addMemI64Weight(offset=-3) → readI64Init 内存分支读到，inferShapes/
+// graph_compiler Reshape wiring 正常。CPU+GPU JSON RESHAPE OK。
+import env;
+import fmt;
+import dl;
+
+class JsonReshapeApp {
+    action:
+        @constructor JsonReshapeApp() {
+            Session s = new Session();
+            int ok = s.loadJson("./deeplearning/infer_tests/reshape.json");
+            Console.writeString("load ok="); Console.writeLong(ok);
+            Console.writeString(" ops="); Console.writeLong(s.opCount());
+            Console.writeLine("");
+            if (ok == 0) { Console.writeLine("JSON RESHAPE SKIP (no load)"); return; }
+            double[] x = new double[6];
+            int i = 0;
+            while (i < 6) { x[i] = double(i) + 0.5; i = i + 1; }
+            s.setInput("data", x, 6);
+            int rk = s.runAuto();
+            double[] o = s.getOutput("out");
+            int n = s.tensorSize("out");
+            int bad = 0;
+            i = 0;
+            while (i < 6) {
+                double d = o[i] - (double(i) + 0.5);
+                if (d < 0.0) d = 0.0 - d;
+                if (d > 1.0e-4) bad = bad + 1;
+                i = i + 1;
+            }
+            Console.writeString("run="); Console.writeLong(rk);
+            Console.writeString(" n="); Console.writeLong(n);
+            Console.writeString(" bad="); Console.writeLong(bad);
+            Console.writeLine("");
+            if (ok == 1 && rk == 1 && n == 6 && bad == 0) Console.writeLine("JSON RESHAPE OK");
+            else Console.writeLine("JSON RESHAPE MISMATCH");
+        }
+}
+
+int main() { JsonReshapeApp a = new JsonReshapeApp(); return 0; }

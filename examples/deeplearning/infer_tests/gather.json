@@ -1,0 +1,6 @@
+{ "name":"gather_test",
+  "inputs":[{ "name":"data", "dims":[1,3,2,2]}],
+  "outputs":["out"],
+  "layers":[
+    { "op":"Gather","in":"data","indices":[0,2],"axis":1,"out":"out" }
+  ]}
