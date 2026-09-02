@@ -1,0 +1,90 @@
+// multiio_main.myp — 阶段七：多输入/多输出/可选输入完整处理回归测试。
+// multiio_test.onnx（opset13）：2 输入不同形状 + 2 输出不同大小 + Conv 无 bias
+// （B 可选输入槽省略）+ Relu 无参。验证：
+//   1) inputCount/outputCount/inputName/outputName 枚举正确（x1/x2 → y1/y2）
+//   2) 多输入按名注入（loadInputFromFile x1[1,3,8,8] + x2[1,4]）
+//   3) 多输出各自读取：getOutput("y1")=256 元素、getOutput("y2")=3 元素，vs ORT
+//   4) Conv 无 bias（B 槽缺省）→ 走 BN 折叠/无 bias 路径不崩、输出正确
+// CPU（无 MYP_GPU）与 GPU（MYP_GPU=1）都应 MULTIIO ALL OK。
+import env;
+import fmt;
+import dl;
+
+class MultiIoApp {
+    action:
+        @constructor MultiIoApp() {
+            Session s = new Session();
+            int ok = s.load("./deeplearning/data/onnx/multiio_test.onnx");
+            Console.writeString("load ok="); Console.writeLong(ok);
+            Console.writeString(" phase="); Console.writeLong(s.phase());
+            Console.writeLine("");
+
+            // ---- 1. 输入/输出枚举 ----
+            Console.writeString("inputCount="); Console.writeLong(s.inputCount());
+            Console.writeString(" outputCount="); Console.writeLong(s.outputCount());
+            Console.writeLine("");
+            int enumOk = 1;
+            if (s.inputCount() != 2 || s.outputCount() != 2) enumOk = 0;
+            if (s.inputName(0) != "x1" || s.inputName(1) != "x2") enumOk = 0;
+            if (s.outputName(0) != "y1" || s.outputName(1) != "y2") enumOk = 0;
+
+            // ---- 2. 多输入按名注入 ----
+            int got1 = s.loadInputFromFile("x1", "./deeplearning/data/onnx/multiio_in_x1.f32");
+            int got2 = s.loadInputFromFile("x2", "./deeplearning/data/onnx/multiio_in_x2.f32");
+            Console.writeString("x1 read="); Console.writeLong(got1);
+            Console.writeString(" size="); Console.writeLong(s.tensorSize("x1"));
+            Console.writeString(" x2 read="); Console.writeLong(got2);
+            Console.writeString(" size="); Console.writeLong(s.tensorSize("x2"));
+            Console.writeLine("");
+
+            // ---- 3. 多输出各自 vs ORT（y1=256、y2=3 不同大小）----
+            int rk = s.runAuto();
+            Console.writeString("run ok="); Console.writeLong(rk);
+            Console.writeString(" ops="); Console.writeLong(s.lastRunOps());
+            Console.writeLine("");
+
+            double[] o1 = s.getOutput("y1");
+            double[] o2 = s.getOutput("y2");
+            int n1 = s.tensorSize("y1");
+            int n2 = s.tensorSize("y2");
+            int c1 = checkOut(o1, n1, "./deeplearning/data/onnx/multiio_test_ort_y1.bin");
+            int c2 = checkOut(o2, n2, "./deeplearning/data/onnx/multiio_test_ort_y2.bin");
+            Console.writeString("y1 size="); Console.writeLong(n1);
+            Console.writeString(" y2 size="); Console.writeLong(n2);
+            Console.writeLine("");
+
+            if (ok == 1 && enumOk == 1 && got1 == 1 && got2 == 1 && rk == 1 &&
+                n1 == 256 && n2 == 3 && c1 == 1 && c2 == 1) {
+                Console.writeLine("MULTIIO ALL OK");
+            } else {
+                Console.writeLine("MULTIIO MISMATCH");
+            }
+        }
+
+        // 对比输出 vs ORT 参考（.bin f32 小端），max diff 阈值 1e-4
+        int checkOut(double[] out, int n, string path) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return 0;
+            double maxD = 0.0;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                double rv = F32.toDouble(bits);
+                double dv = out[i] - rv;
+                if (dv < 0.0) dv = 0.0 - dv;
+                if (dv > maxD) maxD = dv;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString("  vs ORT max diff: "); Console.writeFloat(maxD); Console.writeLine("");
+            if (maxD <= 1.0e-4) return 1;
+            return 0;
+        }
+}
+
+int main() { MultiIoApp app = new MultiIoApp(); return 0; }
