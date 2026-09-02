@@ -91,11 +91,18 @@ class AddOp {
             int aa = rt.opAAt(i);
             int bb = rt.opBAt(i);
             int oc = rt.opCAt(i);
+            // 输出 4D dims = a/b dims 逐维 max（opP0-3=a dims、opP4-7=b dims）。
+            // 不能读 tensorN/C/H/W(oc)：FC 2D 输出 tensor 这些为 0 → add kernel 同尺寸
+            // 快路径条件（an==on 等）失败 → 掉 4D fallback → 0 维解码出首元素和 → 全等。
+            int om0 = rt.opP0At(i); if (rt.opP4At(i) > om0) om0 = rt.opP4At(i);
+            int om1 = rt.opP1At(i); if (rt.opP5At(i) > om1) om1 = rt.opP5At(i);
+            int om2 = rt.opP2At(i); if (rt.opP6At(i) > om2) om2 = rt.opP6At(i);
+            int om3 = rt.opP3At(i); if (rt.opP7At(i) > om3) om3 = rt.opP7At(i);
             InferOps.add(rt.arenaRef(), rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc),
                          rt.tensorRows(oc) * rt.tensorCols(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opReluAt(i),
                          rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i),
                          rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i),
-                         rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc));
+                         om0, om1, om2, om3);
         }
         void backward(InferenceRuntime rt, int i) {
             if (rt.trainMode() == 1) {

@@ -1,9 +1,12 @@
-// json_train_submul_main.myp — A2：Sub/Mul 训练反向（optimizeTrain 全链路）。
-// 两个 Session（均不含 Add 汇合——Add 训练反向为框架既有未验证 bug，另记待办）：
+// json_train_submul_main.myp — A2：Add/Sub/Mul 训练反向（optimizeTrain 全链路）。
+// 三个 Session（fan-in 汇合在 loss 路径）：
 //   (1) train_sub.json：x[1,4] → GemmC/GemmD(+Relu) → Sub(c2,d2) → Softmax(4 类)
 //   (2) train_mul.json：x[1,4] → GemmA/GemmB(+Relu) → Mul(a2,b2) → Softmax(4 类)
-// 各 SGD 200 步 label one-hot[4]：loss 显著下降（BwdSub/BwdMul 梯度经 BwdRelu/
-// BwdDense 回传更新 Gemm 权重）。Div 反向由 bwd_rt_main.myp 数值对拍覆盖。
+//   (3) train_add.json：x[1,4] → GemmA/GemmC(+Relu) → Add(a2,c2) → Softmax(4 类)
+//      （Add 汇合：AddOp.forward 输出 dims 修复回归——曾因 FC tensorN=0 掉 4D
+//        fallback 致 logits 全等 loss 恒 ln4，见 CHANGELOG）
+// 各 SGD 200 步 label one-hot[4]：loss 显著下降（BwdSub/BwdMul/BwdAdd 梯度经
+// BwdRelu/BwdDense 回传更新 Gemm 权重）。Div 反向由 bwd_rt_main.myp 数值对拍覆盖。
 // CPU+GPU JSON TRAIN SUBMUL OK。
 import env;
 import fmt;
@@ -14,7 +17,8 @@ class JsonTrainSubmulApp {
         @constructor JsonTrainSubmulApp() {
             int ok1 = runOne("./deeplearning/infer_tests/train_sub.json", "sub");
             int ok2 = runOne("./deeplearning/infer_tests/train_mul.json", "mul");
-            if (ok1 == 1 && ok2 == 1) Console.writeLine("JSON TRAIN SUBMUL OK");
+            int ok3 = runOne("./deeplearning/infer_tests/train_add.json", "add");
+            if (ok1 == 1 && ok2 == 1 && ok3 == 1) Console.writeLine("JSON TRAIN SUBMUL OK");
             else Console.writeLine("JSON TRAIN SUBMUL MISMATCH");
         }
 
