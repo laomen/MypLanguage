@@ -708,6 +708,12 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   数值对拍 dx=[3,5,7,15,17,19]/[6,8,10,12,14,16] 精确。测试数 78。
   **剩余**：Gather（scatter，重复 idx 累加）、Reduce 族（mean /S、sum 复制、
   max/min argmax 掩码）、Slice/Pad（切割 scatter）。
+- **B 训练反向补：Gather（完成，2026-09）**：收集反向 scatter-add（indices 可重复
+  累加）。OpCode 92 + runtime opKind 98（idxT 经 readI64Init 临时）+ bwdGather kernel
+  （out dims 从 dy tensor 读）+ GatherOp.backward + registerFwdBwd(78→98) +
+  buildReverseGraph Gather 分支（indices=nodeIn2 + AXIS 复制）。bwd_gather_main
+  dx=[5,0,7]/重复 idx dx=[7,0,0] 精确。测试数 80。剩余：ReduceMax/Min（argmax）、
+  Slice/Pad（低 ROI 留需）。
 - **B 训练反向补：ReduceSum/ReduceMean（完成，2026-09）**：归约反向 broadcast 回 x
   （mode0 全规约 dy 标量 broadcast mean/total；mode1 per-(n,c) broadcast mean/S；
   max/min 需 argmax 未做→跳过）。OpCode 91 + runtime opKind 97 + bwdReduce kernel

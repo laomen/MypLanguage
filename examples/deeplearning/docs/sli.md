@@ -98,8 +98,8 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   张量名自动从 .safetensors 读值，替代手写装配）。`B` 可选（无 bias Gemm/Conv 支持）。
 - **训练**：`loadJsonTrain` 自动补 label/loss + 反向图（Gemm/MatMul/Conv/Relu/
   Sigmoid/SoftmaxCE/Add/Sub/Mul/Div/Pool/Concat + Reshape/Flatten/Squeeze/
-  Transpose/Expand/Tile/ReduceSum/ReduceMean 反向——纯数据重排/广播/归约 op 现可
-  出现在 loss 路径）。
+  Transpose/Expand/Tile/ReduceSum/ReduceMean/Gather 反向——纯数据重排/广播/归约/
+  收集 op 现可出现在 loss 路径）。
 
 ## 4. 训练
 

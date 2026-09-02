@@ -63,7 +63,7 @@ infer/
 ├── tensor.myp / graph_node_attrs.myp / graph_nodes.myp
 ├── tools/             # make_*_onnx.py 合成模型 + ORT 参考；onnxvenv
 ../dl/dl.myp           # import dl 包入口（薄转发 framework.myp 的 Session）
-../infer_tests/        # 端到端回归（79 个 *_main.myp，见 README.md）
+../infer_tests/        # 端到端回归（80 个 *_main.myp，见 README.md）
 ../train ../llm ../diffusion   # 相邻分项目（3D 训练 / Qwen2+distilgpt2 / SD1.5）
 ```
 
@@ -73,7 +73,7 @@ infer/
     --stdlib stdlib --package-path examples/deeplearning
 cd examples && MYP_GPU=1 MYP_IR_VERIFY=1 /tmp/app     # 数据路径相对 examples/
 # 全量回归（CPU+GPU，自动发现 infer_tests/*_main.myp）：
-bash /tmp/run_infer_tests.sh    # → == pass=79 fail=0 ==
+bash /tmp/run_infer_tests.sh    # → == pass=80 fail=0 ==
 # 关键环境变量：MYP_GPU=1 GPU / MYP_IR_VERIFY=1 verifier / MYP_NO_REUSE=1 逐层对拍
 #   / MYP_PROF_CPU|GPU=1 剖析 / MYP_LAYOUT_NHWC=1 / MYP_FAST_MATH=1
 ```

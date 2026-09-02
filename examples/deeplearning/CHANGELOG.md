@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-09 — B 训练反向补：Gather（scatter-add）
+
+- **背景**：B 系列后 loss 路径仍缺 Gather（沿 axis 收集）反向。收集反向 =
+  **scatter-add**：out 每元素来自 data 的 idx[o_axis] 行，indices 可重复 →
+  dx[src] 累加 dy（先清零）。
+  - ops.myp `bwdGather` kernel：清零 dx（data dims dn/dc/dh/dw）后遍历 out 累加；
+    源索引 clamp/负索引同前向；out dims on/oc/oh/ow 从 dy tensor tN_/C_/H_/W_ 读
+  - graph_defs OpCode `BWD_GATHER(92)` + opCode map + opTraits(2)；runtime
+    `addBwdGather`（opKind 98，A=dy B=idxT C=dx P0=axis P1=lenIdx P2-5=data dims）
+  - graph_compiler BWD_GATHER：**indices=nodeIn2 → readI64Init 建临时 f32 idxT
+    （同 fwd GATHER）**；axis 从 bwd node attr；data dims 从 nodeIn1/x shape。
+    buildReverseGraph Gather 分支复制 AXIS + 传 indices 名；dx guard（Gather data
+    常是图输入 → dx 清空，backward dx<0 return）
+- 验证 `infer_tests/bwd_gather_main.myp` runtime 数值对拍：data[1,3,1,1] axis1
+  idx[0,2] dy=[5,7] → dx=[5,0,7]；**idx[0,0] 重复 → dx=[7,0,0]（累加）**。
+  CPU 全 PASS BWD GATHER OK。全量回归 pass=80 fail=0。
+- **剩余（记录，后续）**：ReduceMax/Min（argmax 掩码）、Slice/Pad（切割 scatter；
+  Slice 反向需 attr 数组，JSON 也未分派 Slice/Pad——两者在框架里常只做形状/中间
+  操作，训练价值低，留待需要时）。
+
+---
+
 ## 2026-09 — B 训练反向补：ReduceSum/ReduceMean（broadcast 回 x）
 
 - **背景**：B1/B2 后 loss 路径仍缺归约类（ReduceSum/ReduceMean）反向。归约反向 =
