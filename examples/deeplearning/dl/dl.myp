@@ -1,0 +1,26 @@
+// dl.myp — DeepLearning 统一 Standard Library Interface（SLI）入口模块。
+//
+// 用法：用户程序只需一行 import，即可用统一的 Session facade（推理/训练/
+// checkpoint/dump 全能力），无需手动 import pb/runtime/graph/onnx_loader 并拼装：
+//
+//   import dl;                       // 须 --package-path 指向本包父目录
+//   Session s = new Session();
+//   s.loadTrain("mnist_mlp.onnx");   // 训练模式加载（或 load/loadMmap/loadTrainMmap）
+//   s.setLr(0.01);
+//   s.runTrain();                    // 每步：前向+反向+权重更新；s.loss() 取损失
+//   s.dumpPlan("ckpt.plan");         // 训练中途 checkpoint
+//   Session t = new Session();
+//   t.loadPlan("ckpt.plan");         // 恢复权重直接续训（跳过 ONNX 解析+优化）
+//   s.dumpGraph(); s.dumpIR(); s.dumpMem();   // 结构/计划/内存 dump 调试
+//
+// 编译示例（仓库根 cwd）：
+//   ./build/mypc examples/deeplearning/infer_tests/your_app.myp -o /tmp/app \
+//     --stdlib stdlib --package-path examples/deeplearning
+//
+// 运行（数据路径相对 examples/）：
+//   cd examples && MYP_GPU=1 /tmp/app      # MYP_GPU=1 自动走 GPU
+//
+// 说明：本模块是薄转发层——MYP import 为 AST 合并，framework.myp 的顶层类
+// Session 在此直接可见。--package-path 解析规则：import dl →
+// <package-path>/dl/dl.myp（即本文件）。
+import "../infer/framework.myp";

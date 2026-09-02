@@ -73,6 +73,7 @@ class Session {
         int lastRunMs() { return loader_.lastRunMs(); }
         int lastRunOps() { return loader_.lastRunOps(); }
         int opCount() { return rt_.opCount(); }
+        int tensorCount() { return rt_.tensorCountDebug(); }
         int irVersion() { return loader_.irVersion(); }
         int opsetVersion() { return loader_.opsetVersion(); }
         int opsetSupported() { return loader_.opsetSupported(); }
