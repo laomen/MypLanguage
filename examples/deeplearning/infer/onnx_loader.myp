@@ -233,11 +233,20 @@ class OnnxLoader {
                     pb_.skipField();
                 }
             }
-            // 阶段7：Unsupported operator 诊断——未知 op 立即报具体信息（节点名/op/输入/输出）
+            // 阶段7：Unsupported operator 诊断——未知 op 立即报具体信息（节点名/op/输入/输出/原因）
             string ot = g_.nodeTypeAt(ni);
             if (ot != "" && OpCode.opCode(ot) == OpCode.UNKNOWN()) {
                 Console.writeString("Unsupported ONNX op: '" + ot + "' node=" + ni);
                 Console.writeLine("");
+                // 原因分类：控制流子图算子（If/Loop/Scan）→ 明确声明不支持；
+                // 否则 → 普通未实现算子（后续扩展）。
+                if (ot == "If" || ot == "Loop" || ot == "Scan") {
+                    Console.writeString("  reason: control-flow subgraph op (If/Loop/Scan) not supported");
+                    Console.writeLine("");
+                } else {
+                    Console.writeString("  reason: operator not implemented");
+                    Console.writeLine("");
+                }
                 int si = 0;
                 while (si < 5) {
                     string in = g_.nodeInAt(ni, si);
@@ -245,6 +254,14 @@ class OnnxLoader {
                     Console.writeString("  in[" + Fmt.i(si) + "]=" + in);
                     Console.writeLine("");
                     si = si + 1;
+                }
+                int so = 0;
+                while (so < 4) {
+                    string ou = g_.compilerNodeOutput(ni, so);
+                    if (ou == "") break;
+                    Console.writeString("  out[" + Fmt.i(so) + "]=" + ou);
+                    Console.writeLine("");
+                    so = so + 1;
                 }
                 badOp_ = 1;
             }

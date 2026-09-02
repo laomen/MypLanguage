@@ -1,0 +1,46 @@
+// unsup_main.myp — 阶段七：Unsupported operator 诊断测试
+// 验证：If（控制流子图）→ 诊断 "control-flow"；FakeOp（普通未知）→ 诊断
+// "not implemented"；两者 load 均返回 0（badOp_ 标记）。诊断输出含节点名/
+// op/输入/输出/原因。
+import env;
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class UnsupTestApp {
+    action:
+        @constructor UnsupTestApp() {
+            // If 控制流模型：应 load=0 且诊断含 "control-flow"
+            InferenceRuntime rt1 = new InferenceRuntime();
+            rt1.init(2048);
+            OnnxLoader l1 = new OnnxLoader();
+            int ok1 = l1.load("./deeplearning/data/onnx/unsup_if.onnx", rt1);
+            Console.writeString("If load=");
+            Console.writeLong(ok1);
+            Console.writeLine("  (expect 0, reason=control-flow)");
+
+            // FakeOp 普通未知模型：应 load=0 且诊断含 "not implemented"
+            InferenceRuntime rt2 = new InferenceRuntime();
+            rt2.init(2048);
+            OnnxLoader l2 = new OnnxLoader();
+            int ok2 = l2.load("./deeplearning/data/onnx/unsup_unknown.onnx", rt2);
+            Console.writeString("FakeOp load=");
+            Console.writeLong(ok2);
+            Console.writeLine("  (expect 0, reason=not implemented)");
+
+            // 断言：两个 unsupported 模型都返回 load=0（badOp_ 中止），
+            // 且已知支持模型（opsetcheck v13）仍正常加载（不误伤）。
+            InferenceRuntime rt3 = new InferenceRuntime();
+            rt3.init(2048);
+            OnnxLoader l3 = new OnnxLoader();
+            int ok3 = l3.load("./deeplearning/data/onnx/opsetcheck_v13.onnx", rt3);
+            Console.writeString("known-good load=");
+            Console.writeLong(ok3);
+            Console.writeLine("  (expect 1)");
+
+            if (ok1 == 0 && ok2 == 0 && ok3 == 1) Console.writeLine("UNSUP ALL OK");
+            else Console.writeLine("UNSUP MISMATCH");
+        }
+}
+
+int main() { UnsupTestApp app = new UnsupTestApp(); return 0; }
