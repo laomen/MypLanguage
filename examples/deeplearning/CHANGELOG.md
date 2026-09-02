@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-02 — 阶段九 SLI：优化器暴露 + 收敛验证（SGD/动量/AdamW + weight decay）
+
+- `Session` 补 `setOptimizer(m)/optimizer()`（0=SGD 默认，1=动量，2=AdamW）与
+  `setWeightDecay(wd)/weightDecay()`——runtime 阶段 5e 优化器机制（buildTrain 每
+  权重 prepOptState 预留 2n 状态区；UpdateOp 按 optMode 走 updateSGD/updateMom/
+  updateAdamW）此前从未经 facade 暴露/测试。
+- 新增 `infer_tests/sli_opt_main.myp`：mnist_mlp 训练模式同一确定性 class 数据
+  序列分别 SGD/动量/AdamW 各 250 步——三者 loss 均显著收敛（SGD 3.92→0.021、
+  动量 3.92→0.0008、AdamW 3.92→0.0028）；AdamW ±wd=0.01 对拍权重范数受约束
+  （559.9→533.1）。CPU+GPU 均 `SLI OPT OK`。测试数 65→66。
+- 陷阱：Console.writeFloat 逐 write 换行 + 精度低，收敛量级差异用 int(L*1000)
+  量化；动量可收敛到 loss~0.0008（量化后 0）——判据不得要求 loss 量化值 >0。
+
+---
+
 ## 2026-09-02 — 阶段七：多输入/多输出/可选输入完整处理（系统验证固化）
 
 - 新增 `tools/make_multiio_onnx.py`（opset13）：2 输入不同形状（x1[1,3,8,8]

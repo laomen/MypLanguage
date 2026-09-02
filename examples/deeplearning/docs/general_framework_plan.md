@@ -416,6 +416,11 @@ OpKind
 - `Embedding`（✅ 完成，commit `d3bd44f`，框架层 row-major 查表；ONNX 常规用 Gather axis=0）
 - `Dropout` 的训练/推理语义（✅ 完成，commit `fbcad0f`）
 - Checkpoint（✅ 完成，2026-09-02，复用 dumpPlan/loadPlan 训练持久化/续训）
+- 优化器暴露与验证（✅ 完成，2026-09-02：Session setOptimizer 0=SGD/1=动量/
+  2=AdamW + setWeightDecay；runtime 阶段 5e 机制（buildTrain prepOptState 每权重
+  2n 状态区 + UpdateOp updateSGD/updateMom/updateAdamW）此前未暴露/测试；
+  `infer_tests/sli_opt_main.myp` 三优化器同数据序列收敛验证 + AdamW±wd 范数对拍，
+  CPU+GPU SLI OPT OK）
 - 梯度累积和混合精度
 
 ### 暂不作为主线的 pass
