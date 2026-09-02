@@ -468,7 +468,10 @@ Graph
 
 ### 优先级
 
-1. GPU arena 常驻与增量同步继续完善；
+1. GPU arena 常驻与增量同步继续完善；✅ P5b 机制已就绪（gpuInferStart/
+   gpuPersistentStart 增量脏输入 H2D + markGpuSync 输出 D2H），2026-09-02 补
+   多帧增量同步正确性回归 `infer_tests/gpupersist_main.myp`（帧2 只上传 1 个
+   脏输入，输出 vs ORT 一致，CPU 回退同样正确）。
 2. cuBLAS GEMM；
 3. cuDNN Conv/Pool（可用时）；
 4. CPU 多线程、SIMD 和 cache blocking；

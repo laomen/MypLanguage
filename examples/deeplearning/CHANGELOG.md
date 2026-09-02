@@ -6,6 +6,20 @@
 
 ---
 
+## 2026-09-02 — 阶段六：GPU arena 持久化增量同步回归（P5b 多帧正确性）
+
+- runtime 加 `gpuH2DUploads()` / `gpuH2DDownloads()`：持久化模式最近一次
+  runGpu 增量 H2D 上传 / D2H 下载的张量数（非持久化整块往返为 0），供
+  多帧增量同步正确性断言。
+- 回归：`infer_tests/gpupersist_main.myp`（双输入 Sub 模型，gpuInferStart
+  持久化 + 两帧）——帧1 上传 2 输入、帧2 仅改 x1 只上传 1 个脏张量（
+  `dirtyTid_` 置脏 + runGpu 只增量 H2D），两帧输出 vs ORT max diff 0；
+  无 GPU 时 `gpuInferStart` 返回 0 → 回退 CPU 普通路径，仍正确。
+- **阶段六优先级 1（GPU arena 常驻与增量同步）P5b 机制已就绪 + 多帧回归
+  固化**。下一步：cuBLAS GEMM（优先级 2）。
+
+---
+
 ## 2026-09-02 — 阶段五：算子选择（BatchMatMul batch=1 降级 2D matmul）
 
 - ops.myp `matmulBcast`：`ob0==ob1==1`（batch 维全 1，等价普通 2D matmul
