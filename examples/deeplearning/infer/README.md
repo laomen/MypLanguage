@@ -46,8 +46,8 @@ s.dumpGraph(); s.dumpIR(); s.dumpMem();   // 结构/计划/内存 dump
 //      op：Gemm/Conv/Pool/Relu/Sigmoid/Softmax/GlobalAveragePool/Flatten +
 //          二元 Add/Sub/Div/Mul/MatMul(in+in2) + 多输入 Concat(in2/in3+axis)
 //      权重 init 或 safetensors 源 W.safetensors{file,tensor} 直接读值
-//   ——权重 B 可选（无 bias Gemm）；2D MatMul 已支持；Sub/Mul/Div 训练反向已补
-//      （注：loss 路径含 Add 汇合的训练为框架既有 bug，见 CHANGELOG 待办）
+//   ——权重 B 可选（无 bias Gemm）；2D MatMul 已支持；Add/Sub/Mul/Div 训练反向已补
+// 完整上手/陷阱/示例：docs/sli.md（本文件仅速览）
 ```
 
 **布局与测试**
@@ -63,7 +63,7 @@ infer/
 ├── tensor.myp / graph_node_attrs.myp / graph_nodes.myp
 ├── tools/             # make_*_onnx.py 合成模型 + ORT 参考；onnxvenv
 ../dl/dl.myp           # import dl 包入口（薄转发 framework.myp 的 Session）
-../infer_tests/        # 端到端回归（73 个 *_main.myp，见 README.md）
+../infer_tests/        # 端到端回归（75 个 *_main.myp，见 README.md）
 ../train ../llm ../diffusion   # 相邻分项目（3D 训练 / Qwen2+distilgpt2 / SD1.5）
 ```
 
@@ -73,7 +73,7 @@ infer/
     --stdlib stdlib --package-path examples/deeplearning
 cd examples && MYP_GPU=1 MYP_IR_VERIFY=1 /tmp/app     # 数据路径相对 examples/
 # 全量回归（CPU+GPU，自动发现 infer_tests/*_main.myp）：
-bash /tmp/run_infer_tests.sh    # → == pass=73 fail=0 ==
+bash /tmp/run_infer_tests.sh    # → == pass=75 fail=0 ==
 # 关键环境变量：MYP_GPU=1 GPU / MYP_IR_VERIFY=1 verifier / MYP_NO_REUSE=1 逐层对拍
 #   / MYP_PROF_CPU|GPU=1 剖析 / MYP_LAYOUT_NHWC=1 / MYP_FAST_MATH=1
 ```

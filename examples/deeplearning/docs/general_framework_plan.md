@@ -682,6 +682,18 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   bwd_rt 数值对拍 OK + train_sub/train_mul.json 各训降（2.16→0.47/1.28→0.158）。
   测试数 73。**待办（暴露既有 bug）**：loss 含 Add 汇合的训练恒 ln4（Add 反向
   从未被训练验证，BwdAdd 梯度未达两分支）——多分支 JSON 训练前置阻塞，需修。
+- **Add 训练正向 dims 修复（完成，2026-09-02）**：AddOp.forward 输出 dims 从
+  opP a/b 逐维 max（不读 FC tensorN/C/H/W=0）→ logits 不再 uniform，Add 网
+  loss 1.139→0.417；多分支 JSON 训练（Add 汇合）可用。
+- **A3 JSON int64 参数化 op + C7 SLI 端到端文档（完成，2026-09）**：
+  GraphWeights 加内存 int64 常量通道（addMemI64，offset=-3 标记 + memI64 数组，
+  含 reset）；readI64Init 内存分支；json_model regI64Arr 预注册内联 int64 常量；
+  分派 Reshape（slot1 shape）+ Gather（slot1 indices + axis）。修三 bug：inferShapes
+  顶部数据 Gather 误当形状链拦截（加 i64 守卫）、buildRuntime 临时 addTensor off0
+  覆盖 data（runtime setBumpBase + optimize 预留 arenaTop=peak 区）、JSON Gather
+  输出全首通道。测试 json_reshape_main（[2,6]→[3,4]）+ json_gather_main（axis=1
+  indices=[0,2] 期望 [0.1*4,0.3*4]），CPU+GPU OK。测试数 75。C7：docs/sli.md
+  SLI 端到端指南（import dl/ONNX/JSON/训练/checkpoint/诊断/陷阱）。
 - **训练专项全完成**：优化器（SGD/动量/AdamW+wd）/梯度累积/AMP 骨架/checkpoint
   （阶段四记录）。**待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；SLI
   文档/示例。

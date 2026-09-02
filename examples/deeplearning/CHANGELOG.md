@@ -6,6 +6,45 @@
 
 ---
 
+## 2026-09 — A3 JSON int64 参数化 op（Reshape/Gather）+ C7 SLI 端到端文档
+
+- **A3：int64 内存常量机制（参数化 op 解锁）**：此前 JSON/ONNX 权重型参数只走
+  float 通道（Gemm 权重等），Reshape 的 shape / Gather 的 indices 这类 **int64
+  参数**无源。新增 GraphWeights 内存 int64 常量通道：`addMemI64(name, rows, cols,
+  long[] vals, n)`（dtype=7 INT64、kind=1、offset_=-3 标记 + memI64Off_/memI64Val_/
+  memI64Cap_/memI64Count_ 数组，long[] 池初始 1024）+ `memI64Base(weight)` /
+  `memI64ValAt(i)` 读取器；graph `readI64Init` 加内存分支（offset<0 时从
+  `weights_.memI64Base(wi)` 读 long 至 i64TmpL_，kind1/3 file 分支保留）+
+  `addMemI64Weight(nm, rows, cols, long[] vals, n)` 包装；json_model
+  `regI64Arr(Json j, string p, string nm)`——读 JSON int64 数组 →
+  addMemI64Weight + addShapeD(nm,[n]) + role SHAPE + dtype INT64。reset 重置
+  memI64Count_=0。
+- **A3：JSON 分派 Reshape/Gather**：buildGraph 第 2 步预注册 Reshape 的
+  `out+"_shape"` 与 Gather 的 `out+"_idx"` 内联 int64 常量；第 3 步分派 Reshape
+  （nodeIn slot1 接 shape 常量）+ Gather（nodeIn slot1 接 indices 常量 +
+  NodeField.AXIS 属性）。
+- **修复 inferShapes 顶部形状链拦截误伤数据 Gather**：此前 `t=="Gather"` 无条件
+  当形状链拦截（i++;continue，out 无 shape）→ JSON 数据 Gather out noShape
+  （verifyShapes fail）。改为仅当输入含 int64 参数（`i64Count(in0)>0` 或
+  `i64ChainAlive(in0)==1`）才拦截。gather_main（数据 Gather）回归无损。
+- **修复 buildRuntime 临时张量 off0 覆盖 bug**：readI64Init 在 buildRuntime 期间
+  建临时 addTensor（Gather indices / Slice 参数等）从 arenaTop_=0 bump（plan 路径
+  不 bump arenaTop_）→ **off 0 覆盖 data** → JSON Gather 输出全首通道（idx 第二
+  个失效）。gather_main ONNX 此前侥幸通过（data 首两元素 -1,0 经 clamp 恰 encode
+  期望 idx）。修复：runtime 加 `setBumpBase(base){ arenaTop_=base; }` +
+  graph_optimizer optimize/optimizeTrain 在 buildRuntime 前 `resizeArena(peak+4096)`
+  + `setBumpBase(peak)`（peak 处预留临时张量区，不再覆盖数据）。
+- **C7：SLI 端到端文档（docs/sli.md）**：import dl 用法 / 编译运行 / 能力速览 /
+  ONNX 推理 / JSON 模型（schema+DAG+权重源）/ 训练（Sub/Mul/Div/Add 反向）/
+  checkpoint / 诊断（MYP_PROF_CPU 等）/ 语言陷阱 / 参考实现；infer/README 挂载
+  指针。
+- 测试：`infer_tests/json_reshape_main.myp`+`reshape.json`（[2,6]→[3,4] reshape，
+  JSON RESHAPE OK）+ `infer_tests/json_gather_main.myp`+`gather.json`（4D data
+  [1,3,2,2]，Gather axis=1 indices=[0,2]，期望 o=[0.1*4, 0.3*4] 段，JSON GATHER
+  OK CPU+GPU）。全量回归 pass=75 fail=0（含新两个 *_main）。
+
+---
+
 ## 2026-09-02 — A1 2D MatMul 修复 + A2 Sub/Mul/Div 训练反向（json_train_submul/bwd_rt）
 
 - **A1：修复 2D MatMul**（此前 JSON 2D MatMul [1,4]×[4,3] 布局错乱 sz=16）。根因：
