@@ -603,10 +603,14 @@ dl.framework（单一入口模块，如 infer/framework.myp）
 - **dump 命令**：`dumpGraph()`（节点 + 按 op 类型的关键属性：Conv/Pool k·s·p·g·d、
   Gemm transB、BN eps、Resize scale、Reduce axes 等）+ `dumpIR()`（IR 节点/张量
   [dims/kind/dtype/role/NHWC/r5/DEAD] + planOrder[带节点类型] + runtime op 完整展开
-  [opKind 名 + A/B/C/D 张量名·维度 + P 参数 + relu]）。Graph/OnnxLoader 加
+  [opKind 名 + A/B/C/D 张量名·维度 + P 参数 + relu]）+ `dumpMem()`（arena 偏移/元素
+  数/producer/lastUse/峰值——激活共享首块区复用可见）。Graph/OnnxLoader 加
   `tensorName(tid)` bridge。ResNet18 dump 直观呈现 69→34 融合、BN 折叠、残差 Add。
-- **待办**：train/llm 接入统一接口族（训练 Session、LLM 生成收敛到同一接口）；
-  `import dl` 单模块入口命名；SLI 文档/示例。
+- **训练接口（Session 统一）**：`loadTrain` 后 `setLr/lr/setTrainMode/trainMode/
+  runTrain` + `loss()` + `gradId(w)`。`infer_tests/sli_train_main.myp` 回归
+  （mnist_mlp 训练模式，CPU+GPU MYP_IR_VERIFY=1，SLI TRAIN OK）。
+- **待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；`import dl` 单模块入口
+  命名；SLI 文档/示例；训练完整循环（优化器/epoch）的示例。
 
 ## 11. 推荐执行顺序
 

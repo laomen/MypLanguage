@@ -26,10 +26,17 @@
   Conv/Pool 的 k/s/p/g/d、Gemm transB、BN eps、Resize scale、Reduce axes、Split/
   Pad/Softmax axis 等按 op 类型分派）+ `Session.dumpIR()`（IR 节点表 + 张量表
   [dims/kind/dtype/role/NHWC/r5/DEAD] + planOrder[带节点类型] + runtime op 完整
-  展开[opKind 名 + A/B/C/D 张量名及运行时 2D 维度 + P0..P7 参数 + relu 标记]）。
+  展开[opKind 名 + A/B/C/D 张量名及运行时 2D 维度 + P0..P7 参数 + relu 标记]）
+  + `Session.dumpMem()`（内存规划：每非 dead 张量 arena 偏移/元素数/producer/
+  lastUse + 峰值——ResNet18 全部激活共享首块 802816 元素区，复用清晰可见）。
   Graph/OnnxLoader 加 `tensorName(tid)` bridge（runtime tid → 张量名）。ResNet18
   dump：69 原始节点 → 34 runtime 算子，BN 参数 DEAD、`#bnb` 折叠权重、Conv+残差
   Add、GAP+Flatten 融合在 dump 中一目了然。
+- **训练接口（Session 统一）**：`loadTrain` 后 `setLr/lr/setTrainMode/trainMode/
+  runTrain`（前向+反向+更新）+ `loss()`（读 "loss" 标量）+ `gradId(w)`（读 "W#g"
+  解析梯度张量 id）。`infer_tests/sli_train_main.myp` 回归：mnist_mlp 训练模式
+  12 ops，loss=11.1062，SLI TRAIN OK（CPU+GPU MYP_IR_VERIFY=1，训练反向图 wiring
+  校验覆盖）。测试数 60→61。
 - **新发现既有 bug（待追查）**：ResNet18 推理输出 sum=1331.47 vs ORT 0.101261
   （ResNet50 336.658 保持正常）——r18 数值回归，passverify/r18 只验证编译不断言
   数值，故未被回归捕获。SLI 测试对 r18 只验编译。
