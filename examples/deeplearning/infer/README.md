@@ -1,5 +1,80 @@
 # DeepLearning Inference Framework (MYP)
 
+A general-purpose, static-graph **inference + training** framework implemented in pure MYP,
+driven by real ONNX models. No Python / onnxruntime at runtime.
+
+> ⚡ **当前状态（2026-09-02，阶段一~九已全量落地）**：本文件后半部分是早期
+> （阶段一~四 CNN/ResNet）逐阶段实现的详细历史记录；**现状与上手见下**。
+
+## 现状总览（2026-09-02）
+
+**算子覆盖（~80 opKind，CPU `ops.myp` + GPU `gpu_ops.myp`，全部 ORT 位精确对拍）**
+CNN（Conv/Conv3D/1x1/Pool/GAP/BN/IN/LayerNorm/Resize/Pad…）、FC（Gemm/MatMul/BatchMatMul/
+cuBLAS）、张量变换（Transpose/Slice/Concat/Split/Reshape/Expand/Where/Tile/Squeeze/Gather/
+Reduce 族/LogSoftmax/Softmax/CE…）、3D（Conv3D/Pool3D/Pad3D/Resize3D）、激活全族、训练反向
+算子、Dropout 推理/训练语义。真实模型：**ResNet18/ResNet50**（vs ORT 数值一致）、**3D U-Net**
+（coarse/fine）、动态 batch（shape specialization 多 bucket）、多输入/多输出/可选输入、
+FP16/BF16 权重、量化前全精度。
+
+**图优化 pass 管线**（graph_optimizer）：常量折叠 → inferShapes → classifyShapes →
+fuseConvBN → fuseConvRelu → GAP+Flatten → DCE → **常量去重 / 死权重裁剪 / 形状值传播 /
+Conv1x1 lowering / 算子选择** → NHWC(opt-in) → topoSort → 内存规划 → buildRuntime；
+`MYP_IR_VERIFY=1` 触发五重 verifier（verifyIR/verifyShapes/verifyDefUse/verifyTopo/
+verifyRuntimeWiring）。
+
+**模型工程（阶段七）**：opset/version 检查、unsupported op 诊断（If/Loop/Scan 明确拒绝）、
+external-data 权重、模型 mmap 零拷贝加载、优化后 IR/计划缓存 `dumpPlan/loadPlan`、
+shape specialization、加载/编译/执行三阶段错误码 + 统计。
+
+**训练（阶段四，Session 统一）**：静态反向图（bwd 梯度 + Update）；优化器
+SGD/动量/AdamW + weight decay；**梯度累积**（micro-batch）；**AMP 数值管线骨架**
+（fp16 梯度舍入模拟）；**checkpoint**（dumpPlan 中途保存 / loadPlan 恢复续训）。
+
+**SLI（阶段九，统一入口）**：`import dl;` 一个 import 即得全部能力 ——
+```myp
+import dl;                       // 编译加 --package-path examples/deeplearning
+Session s = new Session();
+s.loadTrain("model.onnx");       // 或 load/loadMmap/loadTrainMmap；setInputShape 可注入动态维
+s.setInput("data", buf, n);      // 或 loadInputFromFile(name, f32)
+s.runAuto();                     // MYP_GPU=1 → GPU，否则 CPU
+double[] out = s.getOutput("y");
+s.dumpGraph(); s.dumpIR(); s.dumpMem();   // 结构/计划/内存 dump
+// 训练：setLr/setOptimizer(0|1|2)/setWeightDecay/setGradAccumEvery/setAmpSim
+//       setTrainMode(1) → runTrain() → loss()；dumpPlan/loadPlan checkpoint
+```
+
+**布局与测试**
+```
+infer/
+├── framework.myp      # SLI facade：class Session（load/run/train/dump/checkpoint）
+├── runtime.myp        # InferenceRuntime：tensor/op 注册 + run()/runGpu() + 优化器/累积状态
+├── ops.myp / gpu_ops.myp / ops_iface_all.myp / op_iface.myp   # CPU/GPU 算子（接口分派）
+├── graph*.myp         # Graph 域：analysis/compiler/optimizer/planner/shapes/weights/defs
+├── onnx_loader.myp    # 纯 MYP protobuf ONNX 读取 + 训练图构建 + 错误码
+├── pb.myp             # protobuf wire reader（含 F32/half 工具）
+├── safetensors.myp    # safetensors 权重读取（mmap）
+├── tensor.myp / graph_node_attrs.myp / graph_nodes.myp
+├── tools/             # make_*_onnx.py 合成模型 + ORT 参考；onnxvenv
+../dl/dl.myp           # import dl 包入口（薄转发 framework.myp 的 Session）
+../infer_tests/        # 端到端回归（68 个 *_main.myp，见 README.md）
+../train ../llm ../diffusion   # 相邻分项目（3D 训练 / Qwen2+distilgpt2 / SD1.5）
+```
+
+**编译 / 运行 / 回归**
+```bash
+./build/mypc examples/deeplearning/infer_tests/your_app.myp -o /tmp/app \
+    --stdlib stdlib --package-path examples/deeplearning
+cd examples && MYP_GPU=1 MYP_IR_VERIFY=1 /tmp/app     # 数据路径相对 examples/
+# 全量回归（CPU+GPU，自动发现 infer_tests/*_main.myp）：
+bash /tmp/run_infer_tests.sh    # → == pass=68 fail=0 ==
+# 关键环境变量：MYP_GPU=1 GPU / MYP_IR_VERIFY=1 verifier / MYP_NO_REUSE=1 逐层对拍
+#   / MYP_PROF_CPU|GPU=1 剖析 / MYP_LAYOUT_NHWC=1 / MYP_FAST_MATH=1
+```
+
+---
+
+以下为早期（阶段一~四 CNN/ResNet）逐阶段实现记录与架构细节。
+
 A general-purpose, static-graph inference framework implemented in MYP, driven by real ONNX models.
 
 > 📚 相关文档（`deeplearning/docs/`）：
