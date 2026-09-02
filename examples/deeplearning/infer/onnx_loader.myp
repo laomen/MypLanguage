@@ -36,13 +36,17 @@ class OnnxLoader {
             return loadCommon(path, rt, 1);
         }
         // 从 .onnx 加载到运行时。成功返回 1，失败返回 0。
+        // 阶段七：三阶段错误码分离——loadErr_/compileErr_ 记录失败阶段与原因，
+        // phase_ 反映当前所处阶段（1=加载 2=编译 3=就绪）；getter 见 action 区。
         int loadCommon(string path, InferenceRuntime rt, int train) {
+            phase_ = 1; loadErr_ = 0; compileErr_ = 0; runErr_ = 0; compileMs_ = 0;
             if (mmapMode_ == 1) {
-                if (openMmap(path) == 0) return 0;
+                if (openMmap(path) == 0) { loadErr_ = 1; return 0; }   // 1=文件读失败
             } else {
-                if (readFile(path) == 0) return 0;
+                if (readFile(path) == 0) { loadErr_ = 1; return 0; }
             }
-            if (fileLen_ <= 0) return 0;
+            if (fileLen_ <= 0) { loadErr_ = 2; return 0; }             // 2=文件空
+            long t0 = __myp_now_ms();
             g_ = new Graph();
             if (mmapMode_ == 1) g_.setFileMmap(mm_);
             else g_.setFile(file_, fileLen_);
@@ -57,15 +61,22 @@ class OnnxLoader {
             if (diceWMode_ == 1) g_.setDiceWMode(1);
             if (mmapMode_ == 1) pb_.initMmap(mm_);
             else pb_.init(file_, fileLen_);
-            if (parseModel() == 0) return 0;
-            if (badOp_ == 1) { Console.writeLine("load aborted: unsupported op present"); return 0; }
+            if (parseModel() == 0) { loadErr_ = 3; return 0; }         // 3=ONNX 解析失败
+            if (badOp_ == 1) { loadErr_ = 4; return 0; }               // 4=unsupported op
             int k = 0;
             while (k < inpCnt_) {   // P3：输入形状注入（动态维度）
                 g_.setShape(inpName_[k], inpD0_[k], inpD1_[k], inpD2_[k], inpD3_[k], inpD4_[k], inpR5_[k]);
                 k = k + 1;
             }
-            if (train == 1) return g_.optimizeTrain(rt);
-            return g_.optimize(rt);
+            phase_ = 2;   // 编译阶段
+            int okC = 0;
+            if (train == 1) okC = g_.optimizeTrain(rt);
+            else okC = g_.optimize(rt);
+            compileMs_ = __myp_now_ms() - t0;
+            if (okC == 0) { compileErr_ = 1; return 0; }               // 编译失败
+            if (rt.opCount() <= 0) { compileErr_ = 2; return 0; }      // buildRuntime 无算子
+            phase_ = 3;   // 就绪
+            return 1;
         }
         // P3：加载前声明输入形状（动态维度模型；rank5=1 表示 5D NCDHW）
         void setInputShape(string name, int d0, int d1, int d2, int d3, int d4, int rank5) {
@@ -110,6 +121,40 @@ class OnnxLoader {
             if (opsetVersion_ < 0) return 0;
             if (opsetVersion_ < 9) return 0;
             if (opsetVersion_ > 22) return 0;
+            return 1;
+        }
+        // ---- 阶段七：三阶段错误码与统计分离 ----
+        // 阶段：0=未加载 1=加载中 2=编译中 3=已就绪（可执行）
+        int phase() { return phase_; }
+        // 加载阶段错误码：0=无 1=文件读失败 2=文件空 3=ONNX 解析失败 4=unsupported op
+        int loadError() { return loadErr_; }
+        // 编译阶段错误码：0=无 1=pass 管线失败 2=buildRuntime 无算子
+        int compileError() { return compileErr_; }
+        // 执行阶段错误码：0=无（run 成功）1=执行错误（详见 runRuntime）
+        int runError() { return runErr_; }
+        // 统计：编译耗时（parseModel+optimize，ms）/ 最近一次 run 耗时与算子数
+        long compileMs() { return compileMs_; }
+        long lastRunMs() { return lastRunMs_; }
+        long lastRunOps() { return lastRunOps_; }
+        // 执行包装：记录 run 耗时与算子数（成功返回 1，失败返回 0）
+        int runRuntime(InferenceRuntime rt) {
+            phase_ = 3;
+            long t0 = __myp_now_ms();
+            int opsBefore = rt.opCount();
+            rt.run();
+            lastRunMs_ = __myp_now_ms() - t0;
+            lastRunOps_ = long(opsBefore);
+            runErr_ = 0;
+            return 1;
+        }
+        int runGpuRuntime(InferenceRuntime rt) {
+            phase_ = 3;
+            long t0 = __myp_now_ms();
+            int opsBefore = rt.opCount();
+            rt.runGpu();
+            lastRunMs_ = __myp_now_ms() - t0;
+            lastRunOps_ = long(opsBefore);
+            runErr_ = 0;
             return 1;
         }
 
@@ -737,6 +782,19 @@ class OnnxLoader {
         int irVersion_;         // 阶段七：ModelProto.ir_version（-1=未解析）
         int opsetVersion_;      // 阶段七：标准 opset 版本（-1=未解析）
         string opsetDomain_;    // 阶段七：opset domain（""=标准算子集）
+        // ---- 阶段七：三阶段错误码与统计分离 ----
+        // phase_：当前阶段 0=未加载 1=加载中 2=编译中 3=已就绪（可执行）
+        // loadErr_/compileErr_/runErr_：各阶段错误码（0=无错）
+        //   加载阶段：1=文件读失败 2=文件空 3=ONNX 解析失败 4=unsupported op
+        //   编译阶段：1=pass 管线失败 2=planMemory 失败 3=buildRuntime 失败
+        //   执行阶段：1=运行时错误
+        int phase_;
+        int loadErr_;
+        int compileErr_;
+        int runErr_;
+        long compileMs_;        // 编译耗时（parseModel+optimize，ms）
+        long lastRunMs_;        // 最近一次 run/runGpu 耗时（ms）
+        long lastRunOps_;       // 最近一次 run/runGpu 执行算子数
         string[8] inpName_;     // P3：输入形状注入表
         int[8] inpD0_;
         int[8] inpD1_;
