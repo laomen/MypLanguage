@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09 — JSON Pad 分派（pads int64 + mode）
+
+- **背景**：Pad 框架链路本就完整（inferShapes Pad 分支 readI64Init 读 nodeIn1 折叠进
+  nPadB_/nPadE_ int 数组 + graph_compiler PAD 读回，ONNX 位精确），JSON 只缺分派。
+- json_model 预注册 `pads` → `out_"_pads"` int64（**ONNX opset11 8 值
+  [N,C,H,W] begin + [N,C,H,W] end**）；节点分派接 nodeIn1 + `mode` 字符串 →
+  NodeField.PADMODE（constant=0/reflect=1/edge=2，默认 constant）。constant_value
+  非零未支持（f32 标量常量内存通道未做，默认 0）。
+- 测试 `infer_tests/json_pad_main.myp` + `pad.json`：x[1,1,3,3] 1..9 → Pad
+  pads=[0,0,1,1,0,0,1,1]（H/W 四边各 1）→ out[1,1,5,5] constant 0 边界 + 中心
+  数据手算，CPU+GPU JSON PAD OK。全量回归 pass=84 fail=0。
+- **剩余 A 组**：Split 多输出（需多输出槽）、Where/Dropout/BN/InstanceNorm/Resize
+  JSON 分派（低 ROI 留需）。
+
+---
+
 ## 2026-09 — JSON Slice 分派（starts/ends/axes/steps int64 内存常量）
 
 - **背景**：Slice 是框架最成熟算子之一（ONNX slice_main 位精确，inferShapes 用
