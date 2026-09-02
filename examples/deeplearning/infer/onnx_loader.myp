@@ -9,6 +9,7 @@ import env;
 import math;
 import fmt;
 import fs;
+import mmap;
 import "./pb.myp";
 import "./runtime.myp";
 import "./graph.myp";
@@ -26,12 +27,25 @@ class OnnxLoader {
         int loadTrain(string path, InferenceRuntime rt) {
             return loadCommon(path, rt, 1);
         }
+        // 阶段七：mmap 零拷贝加载（主模型文件 mmap；external data 追加区走 file_）。
+        // 大模型（如 ResNet50 98MB）避免 readFile 的 int[] 全量拷贝（4x 内存膨胀）。
+        int loadMmap(string path, InferenceRuntime rt) {
+            return loadCommon(path, rt, 0);
+        }
+        int loadTrainMmap(string path, InferenceRuntime rt) {
+            return loadCommon(path, rt, 1);
+        }
         // 从 .onnx 加载到运行时。成功返回 1，失败返回 0。
         int loadCommon(string path, InferenceRuntime rt, int train) {
-            if (readFile(path) == 0) return 0;
+            if (mmapMode_ == 1) {
+                if (openMmap(path) == 0) return 0;
+            } else {
+                if (readFile(path) == 0) return 0;
+            }
             if (fileLen_ <= 0) return 0;
             g_ = new Graph();
-            g_.setFile(file_, fileLen_);
+            if (mmapMode_ == 1) g_.setFileMmap(mm_);
+            else g_.setFile(file_, fileLen_);
             g_.resetCounts();
             badOp_ = 0;
             modelDir_ = "";
@@ -41,7 +55,8 @@ class OnnxLoader {
             if (doNHWC_ == 1) g_.setLayoutNHWC(1);
             if (lossMode_ == 1) g_.setLossMode(1);
             if (diceWMode_ == 1) g_.setDiceWMode(1);
-            pb_.init(file_, fileLen_);
+            if (mmapMode_ == 1) pb_.initMmap(mm_);
+            else pb_.init(file_, fileLen_);
             if (parseModel() == 0) return 0;
             if (badOp_ == 1) { Console.writeLine("load aborted: unsupported op present"); return 0; }
             int k = 0;
@@ -99,6 +114,19 @@ class OnnxLoader {
         }
 
     function:
+        // 阶段七：mmap 主模型文件（零拷贝）。file_ 预留为 external data 追加区。
+        // 返回 1=成功（mmapMode_==1 生效，fileLen_=主文件字节数）。
+        int openMmap(string path) {
+            mm_ = new MmapFile();
+            if (mm_.open(path) == 0) return 0;
+            mmapMode_ = 1;
+            mmapLen_ = int(mm_.size());
+            fileLen_ = mmapLen_;
+            cap_ = 65536;
+            file_ = new int[cap_];
+            return 1;
+        }
+
         // 读文件字节到 file_（增长型缓冲，返回 1=成功）
         int readFile(string path) {
             int fd = __myp_io_fopen(path, "rb");
@@ -480,7 +508,7 @@ class OnnxLoader {
             // 阶段七：external data——读外部文件全部字节追加到 file_ 扩展区，
             // payloadOff 指向追加区+external offset、payloadLen = external length
             // （缺省则 = 追加区剩余字节）。writeWeight 现有从 file_[offset..offset+len]
-            // 读取的逻辑无需改动。
+            // 读取的逻辑无需改动（Graph.byteAt 统一 mmap/int[] 字节源）。
             if (extData == 1 && extLoc != "") {
                 int extOff = appendExternalBytes(modelDir_ + extLoc);
                 if (extOff >= 0) {
@@ -491,7 +519,8 @@ class OnnxLoader {
                     } else {
                         payloadLen = fileLen_ - payloadOff;
                     }
-                    g_.setFile(file_, fileLen_);   // 数组可能已重分配，刷新 Graph 引用
+                    // 数组可能已重分配，刷新 Graph 字节源引用（appendExternalBytes 已做，
+                    // 此处不再重复，避免 mmap 模式下破坏主文件 mmap 引用）
                 }
             }
             // 登记 initializer（4D 维度；wRows/cols 保留为 [d0, prod(rest)] 视图）
@@ -567,27 +596,31 @@ class OnnxLoader {
             return r;
         }
 
-        // 读外部文件全部字节追加到 file_ 尾部（增长缓冲）。返回追加区起始偏移
-        // （即原 fileLen_）；失败返回 -1。
+        // 读外部文件全部字节追加到 file_ 尾部（增长缓冲）。返回追加区起始逻辑偏移
+        // （mmap 模式 = mmapLen_+本地索引；readFile 模式 = 本地索引）；失败返回 -1。
         int appendExternalBytes(string fullPath) {
             int fd = __myp_io_fopen(fullPath, "rb");
             if (fd < 0) { Console.writeString("external data file not found: " + fullPath); Console.writeLine(""); return -1; }
-            int start = fileLen_;
+            int start = fileLen_;          // 逻辑起始（mmap: mmapLen_+本地；readFile: 本地）
             while (true) {
                 int b = __myp_io_read_byte();
                 if (b < 0) break;
-                if (fileLen_ >= cap_) {
+                int local = fileLen_ - mmapLen_;   // file_ 本地索引（mmap 模式基 = mmapLen_）
+                if (local >= cap_) {
                     int ncap = cap_ * 2;
                     int[] nb = new int[ncap];
                     int i = 0;
-                    while (i < fileLen_) { nb[i] = file_[i]; i = i + 1; }
+                    while (i < local) { nb[i] = file_[i]; i = i + 1; }
                     file_ = nb;
                     cap_ = ncap;
                 }
-                file_[fileLen_] = b;
+                file_[local] = b;
                 fileLen_ = fileLen_ + 1;
             }
             __myp_io_fclose();
+            // 刷新 Graph 字节源引用（数组可能重分配；mmap 模式仅追加区）
+            if (mmapMode_ == 1) g_.setFileAppend(file_, fileLen_ - mmapLen_);
+            else g_.setFile(file_, fileLen_);
             return start;
         }
 
@@ -691,6 +724,9 @@ class OnnxLoader {
         string modelDir_;       // 阶段七：模型所在目录（external data 相对路径基）
         int extDataOff_;        // 阶段七：external_data offset（字节偏移，缺省 0）
         int extDataLen_;        // 阶段七：external_data length（字节数，缺省 0）
+        MmapFile mm_;           // 阶段七：mmap 主文件字节源（mmapMode_==1）
+        int mmapMode_;          // 1=mmap 加载（file_ 为追加区），0=readFile 全量缓冲
+        int mmapLen_;           // mmap 主文件字节数（追加区逻辑偏移基）
         PbReader pb_;
         Graph g_;
         int doNHWC_;

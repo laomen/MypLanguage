@@ -3,19 +3,41 @@
 // 用于在运行时直接解析 ONNX（ModelProto）二进制文件。
 // 只实现读取所需子集：varint / 64-bit / 32-bit / length-delimited 四类 wire type，
 // 支持任意嵌套消息（以「进入 payload 子区间」方式递归）。float32→double 手写解码。
+// 阶段七：字节源双模式——int[] 缓冲（readFile）或 MmapFile（mmap 零拷贝）。
 import env;
 import math;
 import text;
+import mmap;
 
 class PbReader {
     action:
+        @constructor PbReader() { mm_ = new MmapFile(); }
+
         void init(int[] data, int len) {
             data_ = data;
             len_ = len;
+            mmapMode_ = 0;
             pos_ = 0;
             subEnd_ = len;
             field_ = 0;
             wire_ = 0;
+        }
+
+        // 阶段七：mmap 字节源模式（零拷贝，不复制到 int[]）。
+        void initMmap(MmapFile mf) {
+            mm_ = mf;
+            len_ = int(mf.size());
+            mmapMode_ = 1;
+            pos_ = 0;
+            subEnd_ = len_;
+            field_ = 0;
+            wire_ = 0;
+        }
+
+        // 统一字节读取：mmap 模式从映射文件读，否则从 int[] 缓冲读。
+        int byteAt(int p) {
+            if (mmapMode_ == 1) return mm_.u8(long(p));
+            return data_[p];
         }
 
         bool atEnd() { return pos_ >= subEnd_; }
@@ -38,7 +60,7 @@ class PbReader {
             long v = 0L;
             int shift = 0;
             while (true) {
-                int b = data_[pos_];
+                int b = byteAt(pos_);
                 pos_ = pos_ + 1;
                 v = v | (long(b & 127) << shift);
                 if ((b & 128) == 0) return v;
@@ -69,7 +91,7 @@ class PbReader {
             StringBuilder sb = new StringBuilder();
             int i = 0;
             while (i < n) {
-                sb.append(__myp_chr(data_[pos_ + i]));
+                sb.append(__myp_chr(byteAt(pos_ + i)));
                 i = i + 1;
             }
             pos_ = pos_ + n;
@@ -78,10 +100,10 @@ class PbReader {
 
         // 4 字节小端 → 32 位位型（可含负数位型，位模式不变）
         int readU32() {
-            int b0 = data_[pos_];
-            int b1 = data_[pos_ + 1];
-            int b2 = data_[pos_ + 2];
-            int b3 = data_[pos_ + 3];
+            int b0 = byteAt(pos_);
+            int b1 = byteAt(pos_ + 1);
+            int b2 = byteAt(pos_ + 2);
+            int b3 = byteAt(pos_ + 3);
             pos_ = pos_ + 4;
             return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
         }
@@ -91,7 +113,7 @@ class PbReader {
             long v = 0L;
             int i = 0;
             while (i < 8) {
-                int b = data_[pos_ + i];
+                int b = byteAt(pos_ + i);
                 v = v | (long(b) << (i * 8));
                 i = i + 1;
             }
@@ -107,6 +129,8 @@ class PbReader {
         int subEnd_;
         int field_;
         int wire_;
+        MmapFile mm_;       // 阶段七：mmap 字节源（mmapMode_==1 时使用）
+        int mmapMode_;      // 1=mmap，0=int[] 缓冲
 }
 
 // float32（IEEE754 位型）↔ double

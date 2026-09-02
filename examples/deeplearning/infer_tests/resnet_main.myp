@@ -20,7 +20,11 @@ class ResnetInferApp {
             // G2：布局变换 opt-in（MYP_LAYOUT_NHWC=1 切到 NHWC 布局）
             string lv = Console.getEnv("MYP_LAYOUT_NHWC");
             if (lv == "1") loader.setLayoutNHWC(1);
-            int ok = loader.load("./deeplearning/data/onnx/gluon_resnet50_v1b_Opset16.onnx", rt);
+            // 阶段七：mmap 零拷贝加载（大模型 98MB 避免 int[] 4x 膨胀）
+            string mv = Console.getEnv("MYP_LOAD_MMAP");
+            int ok = 0;
+            if (mv == "1") ok = loader.loadMmap("./deeplearning/data/onnx/gluon_resnet50_v1b_Opset16.onnx", rt);
+            else ok = loader.load("./deeplearning/data/onnx/gluon_resnet50_v1b_Opset16.onnx", rt);
             if (ok == 0) {
                 Console.writeLine("onnx load failed");
                 return;

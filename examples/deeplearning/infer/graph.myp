@@ -9,6 +9,7 @@
 import env;
 import math;
 import fmt;
+import mmap;
 import "./pb.myp";
 import "./runtime.myp";
 import "./graph_defs.myp";
@@ -24,7 +25,7 @@ import "./graph_optimizer.myp";
 class Graph {
     interface class IGraphOptimizeHost;
     action:
-        @constructor Graph() { pb_ = new PbReader(); shapes_ = new GraphShapes(); weights_ = new GraphWeights(); nodes_ = new GraphNodes(); attrs_ = new GraphNodeAttrs(); analysis_ = new GraphAnalysis(); planner_ = new GraphPlanner(); compiler_ = new GraphCompiler(); optimizer_ = new GraphOptimizer(); }
+        @constructor Graph() { pb_ = new PbReader(); mm_ = new MmapFile(); shapes_ = new GraphShapes(); weights_ = new GraphWeights(); nodes_ = new GraphNodes(); attrs_ = new GraphNodeAttrs(); analysis_ = new GraphAnalysis(); planner_ = new GraphPlanner(); compiler_ = new GraphCompiler(); optimizer_ = new GraphOptimizer(); }
 
         int tensorId(string name) { return compiler_.tensorId(name); }
 
@@ -92,7 +93,28 @@ class Graph {
         // 旧 pass 直接改 SoA；在其后调用此入口统一采取保守失效，避免遗留索引被误用。
         void markIRMutation() { invalidateAnalyses(IRAnalysis.ALL()); }
         // ---- G5：图构建 API（供解析器 OnnxLoader 调用）----
-        void setFile(int[] f, int len) { file_ = f; fileLen_ = len; pb_.init(file_, fileLen_); }
+        void setFile(int[] f, int len) { file_ = f; fileLen_ = len; mmapMode_ = 0; pb_.init(file_, fileLen_); }
+        // 阶段七：mmap 零拷贝字节源。外部文件追加区仍走 file_（逻辑偏移 = mmapLen_+本地）。
+        void setFileMmap(MmapFile mf) {
+            mm_ = mf;
+            mmapLen_ = int(mf.size());
+            fileLen_ = mmapLen_;
+            mmapMode_ = 1;
+            pb_.initMmap(mf);
+        }
+        // mmap 模式下 external data 追加区（file_ 本地缓冲，逻辑偏移 = mmapLen_+本地）。
+        void setFileAppend(int[] f, int extLen) {
+            file_ = f;
+            fileLen_ = mmapLen_ + extLen;
+        }
+        // 统一字节读取：mmap 模式主文件走 mmap，追加区走 file_；int[] 模式直接 file_。
+        int byteAt(int k) {
+            if (mmapMode_ == 1) {
+                if (k < mmapLen_) return mm_.u8(long(k));
+                return file_[k - mmapLen_];
+            }
+            return file_[k];
+        }
         int beginNode() {
             int i = nodes_.begin();
             attrs_.resetNode(i);
@@ -634,10 +656,10 @@ class Graph {
             int cnt = 0;
             int j = 0;
             while (j < weights_.get(wi, WeightField.LENGTH()) / 4 && cnt < maxn) {
-                int b0 = file_[weights_.get(wi, WeightField.OFFSET()) + j * 4];
-                int b1 = file_[weights_.get(wi, WeightField.OFFSET()) + j * 4 + 1];
-                int b2 = file_[weights_.get(wi, WeightField.OFFSET()) + j * 4 + 2];
-                int b3 = file_[weights_.get(wi, WeightField.OFFSET()) + j * 4 + 3];
+                int b0 = byteAt(weights_.get(wi, WeightField.OFFSET()) + j * 4);
+                int b1 = byteAt(weights_.get(wi, WeightField.OFFSET()) + j * 4 + 1);
+                int b2 = byteAt(weights_.get(wi, WeightField.OFFSET()) + j * 4 + 2);
+                int b3 = byteAt(weights_.get(wi, WeightField.OFFSET()) + j * 4 + 3);
                 int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
                 f32Tmp_[cnt] = F32.toDouble(bits);
                 cnt = cnt + 1;
@@ -742,7 +764,7 @@ class Graph {
                 int cnt = weights_.get(wi, WeightField.LENGTH()) / 2;
                 j = 0;
                 while (j < cnt) {
-                    int h = file_[off + j * 2] | (file_[off + j * 2 + 1] << 8);
+                    int h = byteAt(off + j * 2) | (byteAt(off + j * 2 + 1) << 8);
                     int bits = halfToF32Bits(h);
                     rt.setFlat(tid, j, F32.toDouble(bits));
                     j = j + 1;
@@ -752,7 +774,7 @@ class Graph {
                 int cnt = weights_.get(wi, WeightField.LENGTH()) / 2;
                 j = 0;
                 while (j < cnt) {
-                    int v = file_[off + j * 2] | (file_[off + j * 2 + 1] << 8);
+                    int v = byteAt(off + j * 2) | (byteAt(off + j * 2 + 1) << 8);
                     int bits = v << 16;
                     rt.setFlat(tid, j, F32.toDouble(bits));
                     j = j + 1;
@@ -834,10 +856,10 @@ class Graph {
             }
         }
         double f32At(int byteOff) {
-            int b0 = file_[byteOff];
-            int b1 = file_[byteOff + 1];
-            int b2 = file_[byteOff + 2];
-            int b3 = file_[byteOff + 3];
+            int b0 = byteAt(byteOff);
+            int b1 = byteAt(byteOff + 1);
+            int b2 = byteAt(byteOff + 2);
+            int b3 = byteAt(byteOff + 3);
             int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
             return F32.toDouble(bits);
         }
@@ -855,7 +877,7 @@ class Graph {
                     long v = 0L;
                     int k = 0;
                     while (k < 8) {
-                        int b = file_[weights_.get(wi, WeightField.OFFSET()) + j * 8 + k];
+                        int b = byteAt(weights_.get(wi, WeightField.OFFSET()) + j * 8 + k);
                         v = v | (long(b) << (k * 8));
                         k = k + 1;
                     }
@@ -945,7 +967,7 @@ class Graph {
                     while (j < rawLen / 8 && vc < 64) {
                         long v = 0L;
                         int k = 0;
-                        while (k < 8) { v = v | (long(file_[rawOff + j * 8 + k]) << (k * 8)); k = k + 1; }
+                        while (k < 8) { v = v | (long(byteAt(rawOff + j * 8 + k)) << (k * 8)); k = k + 1; }
                         vals[vc] = v; vc = vc + 1;
                         j = j + 1;
                     }
@@ -1095,7 +1117,7 @@ class Graph {
             if (oa + la > fileLen_ || ob + lb > fileLen_) return 0;
             int j = 0;
             while (j < la) {
-                if (file_[oa + j] != file_[ob + j]) return 0;
+                if (byteAt(oa + j) != byteAt(ob + j)) return 0;
                 j = j + 1;
             }
             return 1;
@@ -1127,7 +1149,7 @@ class Graph {
         int compilerFoldCount() { return foldCount_; }
         void compilerIncFold() { foldCount_ = foldCount_ + 1; }
         int compilerFileLen() { return fileLen_; }
-        int compilerFileByte(int k) { return file_[k]; }
+        int compilerFileByte(int k) { return byteAt(k); }
         // pb_ protobuf reader 转发（foldConstants 解析 Constant 节点）
         void compilerPbSeek(int off) { pb_.seek(off); }
         int compilerPbPos() { return pb_.pos(); }
@@ -1163,6 +1185,9 @@ class Graph {
         int[] file_;
         int fileLen_;
         PbReader pb_;
+        MmapFile mm_;       // 阶段七：mmap 字节源（mmapMode_==1）
+        int mmapMode_;      // 1=mmap 主文件，0=int[] 缓冲
+        int mmapLen_;       // mmap 主文件字节数（追加区逻辑偏移基）
         GraphNodes nodes_;
         GraphWeights weights_;
         long[512] i64TmpL_;   // F8：readI64Init 暂存（全 int64 long）
