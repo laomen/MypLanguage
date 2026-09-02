@@ -87,7 +87,12 @@ class GraphCompiler {
                 int code = graph.nodeOp(ni);   // P3b：按 op 枚举分派
                 int a = tensorId(graph.nodeInAt(ni, 0));
                 int out = tensorId(graph.compilerEffectiveOut(ni));     // G2：融合节点用有效输出（nFusedOut_）
-                if (a < 0 || out < 0) {
+                // 反向节点豁免 out 检查：dx（slot0）可为空（图输入 fan-out 的 BwdDense），
+                // 输出槽在各自分派分支内做空安全处理（tensorId("")=-1 → addXxx 接受）。
+                int bwdLike = 0;
+                if (code >= OpCode.BWD_DENSE() && code <= OpCode.BWD_SOFTMAX()) bwdLike = 1;
+                if (code == OpCode.BWD_SUB() || code == OpCode.BWD_MUL() || code == OpCode.BWD_DIV()) bwdLike = 1;
+                if (a < 0 || (out < 0 && bwdLike == 0)) {
                     if (Console.getEnv("MYP_GR_DBG") == "1") {
                         Console.writeString("buildRuntime wire fail type=" + graph.nodeTypeAt(ni) + " in0=" + graph.nodeInAt(ni, 0) + "(" + Fmt.i(a) + ") out=" + graph.compilerEffectiveOut(ni) + "(" + Fmt.i(out) + ")");
                         Console.writeLine("");

@@ -456,18 +456,20 @@ class InferOps {
                 }
                 i = i + 1;
             }
-            // dX[i,b] = Σ_o dY[o,b]·W[o,i]
-            int j = 0;
-            while (j < inDim) {
-                int k = 0;
-                while (k < batch) {
-                    float s = 0.0f;
-                    int o = 0;
-                    while (o < outDim) { s = s + arena[dyOff + o * batch + k] * arena[wOff + o * inDim + j]; o = o + 1; }
-                    arena[dxOff + j * batch + k] = s;
-                    k = k + 1;
+            // dX[i,b] = Σ_o dY[o,b]·W[o,i]（图输入 x 的 dx 不产出 → dxOff=-1 → 跳过）
+            if (dxOff >= 0) {
+                int j = 0;
+                while (j < inDim) {
+                    int k = 0;
+                    while (k < batch) {
+                        float s = 0.0f;
+                        int o = 0;
+                        while (o < outDim) { s = s + arena[dyOff + o * batch + k] * arena[wOff + o * inDim + j]; o = o + 1; }
+                        arena[dxOff + j * batch + k] = s;
+                        k = k + 1;
+                    }
+                    j = j + 1;
                 }
-                j = j + 1;
             }
         }
 

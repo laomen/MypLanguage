@@ -352,7 +352,7 @@ class Graph {
                         if (value >= 0 && value < shapes_.count()) {
                             int prod = valueProducer(value);
                             if (prod != node) {
-                                if (Console.getEnv("MYP_IR_VERIFY") == "1") { Console.writeString("DEFUSE node=" + Fmt.i(node) + " slot=" + Fmt.i(slot) + " val=" + Fmt.i(value) + " prod=" + Fmt.i(prod)); Console.writeLine(""); }
+                                if (Console.getEnv("MYP_IR_VERIFY") == "1") { Console.writeString("DEFUSE node=" + Fmt.i(node) + " type=" + nodes_.typeAt(node) + " slot=" + Fmt.i(slot) + " val=" + Fmt.i(value) + " prod=" + Fmt.i(prod) + " out0=" + nodes_.outputAt(node, 0)); Console.writeLine(""); }
                                 bad = 1;
                             }
                         }

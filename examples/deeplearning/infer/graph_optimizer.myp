@@ -817,7 +817,9 @@ class GraphOptimizer {
                         graph.compilerEnsureGrad(graph.nodeInAt(ni, 2));
                         graph.compilerEnsureGrad(graph.nodeInAt(ni, 3));
                         if (t == "Gemm") {
-                            // BwdDense(dy, x, w) → (dx, dw, db)
+                            // BwdDense(dy, x, w) → (dx, dw, db)。dx 仅当 x 是节点输出
+                            // （有上游需回传）才产出——图输入 x 被多 Gemm fan-out 共享，
+                            // 各自产 dx 会多节点输出同名 value → def-use 冲突 + 覆盖。
                             int bd = graph.nodeCount();
                             graph.beginNode();
                             graph.nodeType(bd, "BwdDense");
@@ -828,6 +830,12 @@ class GraphOptimizer {
                             graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
                             graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 2)));
                             graph.endNode();
+                            // 图输入 x（非节点输出）被多 Gemm fan-out：dx 无上游消费，
+                            // 各自产 dx 会多节点输出同名 value → 清空 slot0（须在 endNode 后，
+                            // 否则 replaceResult guard node>=count 静默丢弃）
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");
+                            }
                         } else if (t == "MatMul") {
                             // 无偏置：db 输出用 0 占位（runtime 忽略）
                             int bd = graph.nodeCount();
@@ -839,6 +847,9 @@ class GraphOptimizer {
                             graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
                             graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
                             graph.nodeOut(bd, "");
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费
+                            }
                             graph.endNode();
                         } else if (t == "Relu") {
                             int bd = graph.nodeCount();
