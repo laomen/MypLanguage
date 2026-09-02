@@ -415,7 +415,8 @@ OpKind
 - `LogSoftmax`（✅ 完成，commit `d3bd44f`）
 - `Embedding`（✅ 完成，commit `d3bd44f`，框架层 row-major 查表；ONNX 常规用 Gather axis=0）
 - `Dropout` 的训练/推理语义（✅ 完成，commit `fbcad0f`）
-- Checkpoint、梯度累积和混合精度
+- Checkpoint（✅ 完成，2026-09-02，复用 dumpPlan/loadPlan 训练持久化/续训）
+- 梯度累积和混合精度
 
 ### 暂不作为主线的 pass
 
@@ -614,8 +615,14 @@ dl.framework（单一入口模块，如 infer/framework.myp）
 - **训练接口（Session 统一）**：`loadTrain` 后 `setLr/lr/setTrainMode/trainMode/
   runTrain` + `loss()` + `gradId(w)`。`infer_tests/sli_train_main.myp` 回归
   （mnist_mlp 训练模式，CPU+GPU MYP_IR_VERIFY=1，SLI TRAIN OK）。
+- **训练 checkpoint（Session dumpPlan/loadPlan）**：复用阶段七计划缓存——训练中途
+  dump 当前 runtime（op 表+arena 权重），loadPlan 恢复跳过 ONNX 解析直接续训。
+  `infer_tests/sli_ckpt_main.myp` 确定性回归（lr=0 loss 稳定；dump→load 权重逐位
+  一致；a/b 续跑 loss 一致 11.1062）。**约定**：loadPlan 会话无 loader，按名查返回
+  -1/0（OnnxLoader @constructor 已建 g_，不再解引用崩溃），训练续跑须用 tid；
+  训练 label 是 one-hot[10]；每次 run 前重建输入（arena 复用覆盖）。
 - **待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；`import dl` 单模块入口
-  命名；SLI 文档/示例；训练完整循环（优化器/epoch）的示例。
+  命名；SLI 文档/示例；梯度累积/混合精度；训练完整循环（优化器/epoch）示例。
 
 ## 11. 推荐执行顺序
 

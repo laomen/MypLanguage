@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-09-02 — 阶段九 SLI：训练 checkpoint（Session dumpPlan/loadPlan）+ 确定性回归
+
+- `Session` 暴露 `dumpPlan(path)`/`loadPlan(path)`（复用阶段七计划缓存）——训练
+  中途 dump 当前 runtime（op 表 + arena 权重），loadPlan 恢复跳过 ONNX 解析直接续跑。
+  **注意**：loadPlan 恢复的 Session 无 OnnxLoader/graph → 按名 `tensorId()`/`loss()`
+  返回 -1/0（此前空 loader 会崩，见下健壮性修复），训练续跑须用 dump 前记录的
+  tid 经 `getFlat`/`setFlat` 访问。
+- 测试 `infer_tests/sli_ckpt_main.myp`（确定性）：mnist_mlp 训练 lr=0（loss 照算、
+  权重不变）→ run1 loss 稳定 → dumpPlan → 新 Session loadPlan → 权重逐位一致
+  （W1/W2 a=b）→ a/b 各续跑 loss 一致（11.1062）——SLI CKPT OK，CPU+GPU。
+- **健壮性修复**：`OnnxLoader` @constructor 即建 `g_`（Graph）——此前 g_ 在
+  loadCommon 才 new，loadPlan 恢复会话未走 loadCommon → g_=null，按名
+  `tensorId()`/`loss()` 解引用崩溃；修复后未 load 时 tensorId 安全返回 -1。
+- **教训（训练输入约定）**：mnist 训练 label 是 one-hot[10]（grad_check 写 10 位置
+  class=1，非标量）——softmaxCE 依赖 `label>0.5` 才累计 loss，写错 label 会导致
+  loss 异常/0；训练 run 间 arena 会复用覆盖输入区，**每次 run 前须重建 data+label**。
+- 阶段九待办推进：Checkpoint（训练持久化/续训）✅（复用 dumpPlan/loadPlan）；
+  测试数 61→62。
+
+---
+
 ## 2026-09-02 — 修复 ResNet18 数值回归（常量去重误合并 BN 折叠 bias）
 
 - **现象**：ResNet18 推理 sum=1331.47（或注入 batch 后 0.008）vs ORT 0.101261，
