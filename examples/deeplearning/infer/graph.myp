@@ -564,6 +564,10 @@ class Graph {
         void addWeight(string nm, int rows, int cols, int dt, int kind, int off, int len) {
             weights_.add(nm, rows, cols, dt, kind, off, len);
         }
+        // 内存权重（JSON codegen 路径）：值存 GraphWeights memVal_（offset=-2 标记）
+        void addMemWeight(string nm, int rows, int cols, int dt, int kind, float[] vals, int n) {
+            weights_.addMem(nm, rows, cols, dt, kind, vals, n);
+        }
         int weightCount() { return weights_.count(); }
         string weightName(int weight) { return weights_.nameAt(weight); }
         int weightRows(int weight) { return weights_.get(weight, WeightField.ROWS()); }
@@ -911,6 +915,14 @@ class Graph {
         }
         void writeWeight(InferenceRuntime rt, int wi, int tid) {
             int off = weights_.get(wi, WeightField.OFFSET());
+            if (off == -2) {
+                // 内存权重（JSON codegen 路径）：值直写 arena（干净权重，无 BN 折叠/NHWC）
+                int cnt = weights_.get(wi, WeightField.LENGTH()) / 4;
+                int base = weights_.memBase(wi);
+                int j = 0;
+                while (j < cnt) { rt.setFlat(tid, j, weights_.memValD(base + j)); j = j + 1; }
+                return;
+            }
             int count = weights_.get(wi, WeightField.LENGTH()) / 4;
             int j = 0;
             if (weights_.get(wi, WeightField.DTYPE()) == 10) {

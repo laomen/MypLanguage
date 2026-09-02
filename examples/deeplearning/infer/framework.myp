@@ -19,26 +19,32 @@ import "./runtime.myp";
 import "./graph_defs.myp";
 import "./graph.myp";
 import "./onnx_loader.myp";
+import "./json_model.myp";
 
 class Session {
     action:
         @constructor Session() {
             rt_ = new InferenceRuntime();
             loader_ = new OnnxLoader();
+            jsonLoader_ = new JsonModelLoader();
+            jsonMode_ = 0;
             rt_.init(2048);
         }
 
         // ---- 加载与编译（三阶段封装）----
-        int load(string path) { return loader_.load(path, rt_); }
-        int loadTrain(string path) { return loader_.loadTrain(path, rt_); }
-        int loadMmap(string path) { return loader_.loadMmap(path, rt_); }
-        int loadTrainMmap(string path) { return loader_.loadTrainMmap(path, rt_); }
+        int load(string path) { jsonMode_ = 0; return loader_.load(path, rt_); }
+        int loadTrain(string path) { jsonMode_ = 0; return loader_.loadTrain(path, rt_); }
+        int loadMmap(string path) { jsonMode_ = 0; return loader_.loadMmap(path, rt_); }
+        int loadTrainMmap(string path) { jsonMode_ = 0; return loader_.loadTrainMmap(path, rt_); }
+        // ---- JSON 声明式模型（json_model.myp，不经过 ONNX）----
+        int loadJson(string path) { jsonMode_ = 1; return jsonLoader_.loadJson(path, rt_, 0); }
+        int loadJsonTrain(string path) { jsonMode_ = 1; return jsonLoader_.loadJson(path, rt_, 1); }
         void setInputShape(string name, int d0, int d1, int d2, int d3, int d4, int rank5) { loader_.setInputShape(name, d0, d1, d2, d3, d4, rank5); }
 
         // ---- 执行（后端选择）----
-        int run() { return loader_.runRuntime(rt_); }
-        int runGpu() { return loader_.runGpuRuntime(rt_); }
-        int runAuto() { if (Console.getEnv("MYP_GPU") == "1") return loader_.runGpuRuntime(rt_); return loader_.runRuntime(rt_); }
+        int run() { if (jsonMode_ == 1) return jsonLoader_.runRuntime(rt_); return loader_.runRuntime(rt_); }
+        int runGpu() { if (jsonMode_ == 1) return jsonLoader_.runGpuRuntime(rt_); return loader_.runGpuRuntime(rt_); }
+        int runAuto() { if (Console.getEnv("MYP_GPU") == "1") return runGpu(); return run(); }
 
         // ---- 计划缓存 / checkpoint：dump 当前 runtime（op 表 + arena 权重）到磁盘 ----
         // 推理/训练中途 dump → 之后 loadPlan 恢复（跳过 ONNX 解析+优化+buildRuntime）
@@ -68,24 +74,24 @@ class Session {
         void setAmpSim(int v) { rt_.setAmpSim(v); }
         int ampSim() { return rt_.ampSim(); }
         // 训练 run（loadTrain 建的反向图）：trainMode=1 时 Update 按 lr 更新权重
-        int runTrain() { return loader_.runRuntime(rt_); }
+        int runTrain() { if (jsonMode_ == 1) return jsonLoader_.runRuntime(rt_); return loader_.runRuntime(rt_); }
         // 当前 batch loss 标量（训练图输出 "loss"）
         double loss() {
-            int t = loader_.tensorId("loss");
+            int t = tensorId("loss");
             if (t < 0) return 0.0;
             return rt_.getFlat(t, 0);
         }
         // 权重 w 的解析梯度张量 id（训练图建 "W#g"）
-        int gradId(string w) { return loader_.tensorId(w + "#g"); }
+        int gradId(string w) { return tensorId(w + "#g"); }
 
         // ---- 统一错误码与统计（阶段七）----
-        int phase() { return loader_.phase(); }
-        int loadError() { return loader_.loadError(); }
-        int compileError() { return loader_.compileError(); }
-        int runError() { return loader_.runError(); }
-        int compileMs() { return loader_.compileMs(); }
-        int lastRunMs() { return loader_.lastRunMs(); }
-        int lastRunOps() { return loader_.lastRunOps(); }
+        int phase() { if (jsonMode_ == 1) return jsonLoader_.phase(); return loader_.phase(); }
+        int loadError() { if (jsonMode_ == 1) return jsonLoader_.loadError(); return loader_.loadError(); }
+        int compileError() { if (jsonMode_ == 1) return jsonLoader_.compileError(); return loader_.compileError(); }
+        int runError() { if (jsonMode_ == 1) return jsonLoader_.runError(); return loader_.runError(); }
+        int compileMs() { if (jsonMode_ == 1) return jsonLoader_.compileMs(); return loader_.compileMs(); }
+        int lastRunMs() { if (jsonMode_ == 1) return jsonLoader_.lastRunMs(); return loader_.lastRunMs(); }
+        int lastRunOps() { if (jsonMode_ == 1) return jsonLoader_.lastRunOps(); return loader_.lastRunOps(); }
         int opCount() { return rt_.opCount(); }
         int tensorCount() { return rt_.tensorCountDebug(); }
         int irVersion() { return loader_.irVersion(); }
@@ -93,34 +99,34 @@ class Session {
         int opsetSupported() { return loader_.opsetSupported(); }
 
         // ---- 张量访问（隐藏 arena 细节）----
-        int tensorId(string name) { return loader_.tensorId(name); }
+        int tensorId(string name) { if (jsonMode_ == 1) return jsonLoader_.tensorId(name); return loader_.tensorId(name); }
         // 张量元素数（按 IR shape 表；CNN 张量 runtime 2D 投影 tRows 可能为 0，勿用 rt.tensorSize）
-        int tensorSize(string name) { return loader_.shapeElementCount(name); }
+        int tensorSize(string name) { if (jsonMode_ == 1) return jsonLoader_.shapeElementCount(name); return loader_.shapeElementCount(name); }
         int tensorRows(int tid) { return rt_.tensorRows(tid); }
         int tensorCols(int tid) { return rt_.tensorCols(tid); }
-        int inputCount() { return loader_.graphInputCount(); }
-        string inputName(int i) { return loader_.graphInputName(i); }
-        int outputCount() { return loader_.graphOutputCount(); }
-        string outputName(int i) { return loader_.graphOutputName(i); }
+        int inputCount() { if (jsonMode_ == 1) return jsonLoader_.graphInputCount(); return loader_.graphInputCount(); }
+        string inputName(int i) { if (jsonMode_ == 1) return jsonLoader_.graphInputName(i); return loader_.graphInputName(i); }
+        int outputCount() { if (jsonMode_ == 1) return jsonLoader_.graphOutputCount(); return loader_.graphOutputCount(); }
+        string outputName(int i) { if (jsonMode_ == 1) return jsonLoader_.graphOutputName(i); return loader_.graphOutputName(i); }
 
         void setFlat(int tid, int i, double v) { rt_.setFlat(tid, i, v); }
         double getFlat(int tid, int i) { return rt_.getFlat(tid, i); }
 
         // 按名写入输入张量（前 n 个元素；n 超界则截断到张量容量）
         void setInput(string name, double[] buf, int n) {
-            int tid = loader_.tensorId(name);
+            int tid = tensorId(name);
             if (tid < 0) return;
-            int cap = loader_.shapeElementCount(name);
+            int cap = tensorSize(name);
             int i = 0;
             while (i < n && i < cap) { rt_.setFlat(tid, i, buf[i]); i = i + 1; }
         }
 
         // 读取输出张量为 double[]（长度 = 张量元素数）
         double[] getOutput(string name) {
-            int tid = loader_.tensorId(name);
+            int tid = tensorId(name);
             double[] out = new double[0];
             if (tid < 0) return out;
-            int n = loader_.shapeElementCount(name);
+            int n = tensorSize(name);
             out = new double[n];
             int i = 0;
             while (i < n) { out[i] = rt_.getFlat(tid, i); i = i + 1; }
@@ -147,9 +153,9 @@ class Session {
         }
 
         int loadInputFromFile(string name, string f32path) {
-            int tid = loader_.tensorId(name);
+            int tid = tensorId(name);
             if (tid < 0) return 0;
-            int n = loader_.shapeElementCount(name);
+            int n = tensorSize(name);
             double[] buf = new double[n];
             int got = readF32File(f32path, buf, n);
             if (got < n) return 0;
@@ -159,7 +165,7 @@ class Session {
 
         // ---- 网络结构 dump（load 后调用）：图输入/输出 + 每个活节点 op/输入/属性/有效输出 ----
         void dumpGraph() {
-            Graph g = loader_.graph();
+            Graph g = curGraph();
             Console.writeString("graph: nodes=" + Fmt.i(g.nodeCount()));
             Console.writeString(" inputs=" + Fmt.i(g.graphInputCount()));
             Console.writeString(" outputs=" + Fmt.i(g.graphOutputCount()));
@@ -225,7 +231,7 @@ class Session {
 
         // ---- 优化后 IR dump：节点表 + 张量表（shape/dtype/role/kind/layout/dead）+ planOrder + runtime op 完整展开 ----
         void dumpIR() {
-            Graph g = loader_.graph();
+            Graph g = curGraph();
             Console.writeLine("=== IR (optimized) nodes ===");
             int i = 0;
             while (i < g.nodeCount()) {
@@ -291,7 +297,7 @@ class Session {
 
         // ---- 内存规划 dump：每个非 dead 张量的 arena 偏移/元素数/producer/lastUse + 峰值 ----
         void dumpMem() {
-            Graph g = loader_.graph();
+            Graph g = curGraph();
             Console.writeLine("=== memory plan ===");
             int peak = 0;
             int si = 0;
@@ -314,7 +320,7 @@ class Session {
         // runtime tensor id → "name[d0xd1xd2xd3]"（空名显示 tid）
         string tensorStr(int tid) {
             if (tid < 0) return "-";
-            string nm = loader_.tensorName(tid);
+            string nm = tensorName(tid);
             if (nm == "") nm = "t" + Fmt.i(tid);
             return nm + "[" + Fmt.i(rt_.tensorRows(tid)) + "x" + Fmt.i(rt_.tensorCols(tid)) + "]";
         }
@@ -335,4 +341,17 @@ class Session {
     property:
         InferenceRuntime rt_;
         OnnxLoader loader_;
+        JsonModelLoader jsonLoader_;
+        int jsonMode_;
+
+    action:
+        // 当前加载源（onnx / json）的 Graph 组合根
+        Graph curGraph() {
+            if (jsonMode_ == 1) return jsonLoader_.graph();
+            return loader_.graph();
+        }
+        string tensorName(int tid) {
+            if (jsonMode_ == 1) return jsonLoader_.tensorName(tid);
+            return loader_.tensorName(tid);
+        }
 }

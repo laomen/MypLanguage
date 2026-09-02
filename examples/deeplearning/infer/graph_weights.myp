@@ -5,9 +5,13 @@ import "./graph_defs.myp";
 
 class GraphWeights {
     action:
-        @constructor GraphWeights() { count_ = 0; }
+        @constructor GraphWeights() {
+            count_ = 0;
+            memCap_ = 0; memCount_ = 0;
+            memVal_ = new float[1024];
+        }
 
-        void reset() { count_ = 0; }
+        void reset() { count_ = 0; memCount_ = 0; }
         int count() { return count_; }
         int idx(string name) {
             int i = 0;
@@ -71,6 +75,38 @@ class GraphWeights {
             else if (field == WeightField.BN_ONLY()) bnOnly_[weight] = value;
         }
 
+        // ---- 内存权重通道（JSON codegen 路径）：值存 memVal_，offset=-2 标记 ----
+        void ensureMemCap(int need) {
+            if (need <= memCap_) return;
+            int newCap = memCap_ * 2;
+            if (newCap < need) newCap = need;
+            if (newCap < 1024) newCap = 1024;
+            float[] na = new float[newCap];
+            int i = 0;
+            while (i < memCount_) { na[i] = memVal_[i]; i = i + 1; }
+            memVal_ = na;
+            memCap_ = newCap;
+        }
+        int addMem(string name, int rows, int cols, int dt, int kind, float[] vals, int n) {
+            if (count_ >= 256) return -1;
+            ensureMemCap(memCount_ + n);
+            int weight = count_;
+            name_[weight] = name;
+            rows_[weight] = rows; cols_[weight] = cols; dtype_[weight] = dt;
+            kind_[weight] = kind; offset_[weight] = -2; length_[weight] = n * 4;
+            memOff_[weight] = memCount_;
+            int i = 0;
+            while (i < n) { memVal_[memCount_ + i] = vals[i]; i = i + 1; }
+            memCount_ = memCount_ + n;
+            transposed_[weight] = 0; bias_[weight] = 0; role_[weight] = 0;
+            nhwc_[weight] = 0; bn_[weight] = 0; bnOnly_[weight] = 0;
+            count_ = count_ + 1;
+            return weight;
+        }
+        // 该权重是否为内存权重（offset=-2）；内存值起点（memVal_ 索引）
+        int memBase(int weight) { if (weight < 0 || weight >= count_) return -1; return memOff_[weight]; }
+        double memValD(int i) { double v = memVal_[i]; return v; }
+
     property:
         string[256] name_;
         int[256] rows_;
@@ -90,5 +126,10 @@ class GraphWeights {
         int[256] bnMean_;
         int[256] bnVar_;
         int[256] bnOnly_;
+        // 内存权重（JSON codegen）：值缓冲 + 每权重起点
+        float[] memVal_;
+        int[256] memOff_;
+        int memCap_;
+        int memCount_;
         int count_;
 }

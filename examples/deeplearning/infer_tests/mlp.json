@@ -1,0 +1,13 @@
+{
+  "name": "mlp_json",
+  "inputs": [{ "name": "data", "dims": [1, 784] }],
+  "outputs": ["prob"],
+  "layers": [
+    { "op": "Gemm", "in": "data", "out": "h", "transB": 1,
+      "W": { "dims": [64, 784], "init": "xavier" }, "B": { "dims": [64], "init": "zeros" } },
+    { "op": "Relu", "in": "h", "out": "h_relu" },
+    { "op": "Gemm", "in": "h_relu", "out": "logits", "transB": 1,
+      "W": { "dims": [10, 64], "init": "xavier" }, "B": { "dims": [10], "init": "zeros" } },
+    { "op": "Softmax", "in": "logits", "out": "prob", "axis": 1 }
+  ]
+}
