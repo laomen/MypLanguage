@@ -657,6 +657,16 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   V1 op：Gemm/Relu/Add/Conv/ConvTranspose/Pool/Softmax + 权重 init（xavier 等
   确定性 LCG）。`infer_tests/json_model_main.myp` + `mlp.json`：JSON MLP 推理
   (prob sum=1) + 训练收敛 (2.43→0.12)。测试数 69。
+- **JSON 权重 safetensors 源（完成，2026-09-02）**：json_model registerWeight
+  的 `W`/`B` 除 `init` 外支持 `safetensors:{file,tensor}`——按 JSON 张量名从
+  .safetensors 读值装配（替代手写 readF32Into/手动布局，JSON 声明即得权重）。
+  `infer_tests/json_safe_main.myp` + `safe_gemm.json`：单 Gemm 无 bias，
+  W=test_w.safetensors w1=1..16 → out=[15,35,55,75] vs numpy max diff=0
+  （CPU+GPU）。测试数 70。
+  **顺带修复框架无 bias Gemm**（JSON/ONNX 合法无 B Gemm 此前必崩 139）：
+  runtime `tensorOff` guard tid<0→-1；CPU `InferOps.dense` + GPU @gpu dense
+  `sum=0; if (bOff>=0) sum=arena[bOff+i]`；bwdDense（CPU+GPU）db 归约
+  dbOff>=0 才写。验证 gdb 定位（DenseOp_forward SIGSEGV）+ +bias zeros 对照。
 - **训练专项全完成**：优化器（SGD/动量/AdamW+wd）/梯度累积/AMP 骨架/checkpoint
   （阶段四记录）。**待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；SLI
   文档/示例。

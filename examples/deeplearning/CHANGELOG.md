@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-09-02 — JSON 权重 safetensors 源 + 无 bias Gemm 框架修复（json_safe_main.myp）
+
+- JSON 层权重 `W`/`B` 除 `init` 外支持 **`safetensors` 权重源**：`"W": {"dims":[...],
+  "safetensors": {"file":"<.safetensors 路径>", "tensor":"<张量名>"}}`——JsonModelLoader
+  registerWeight 按 JSON 张量名自动从 .safetensors 读值装配进内存权重通道（filled=1
+  跳过 init 块），**替代手写 readF32Into/手动布局**（safetensors 本有名字段，JSON
+  声明即得权重，无手写装配代码）。
+- 测试 `infer_tests/json_safe_main.myp` + `safe_gemm.json`（单 Gemm data[1,4]→out[1,4]，
+  W=deeplearning/data/onnx/test_w.safetensors 张量 w1=1..16，**无 bias**）：
+  out=w1·[0.5,1,1.5,2]=[15,35,55,75] vs numpy（test_w_ort.bin）max diff=0，CPU+GPU
+  JSON SAFE OK。测试数 69→70。
+- **修复框架无 bias Gemm（隔离出的老缺口，非 safetensors 问题）**：JSON/ONNX 合法无
+  bias Gemm（B 可选槽省略）此前**必段错误 139**（init/xavier 权重源同样崩 → 隔离到
+  "无 bias Gemm 图本身 run 崩"）。根因：graph_compiler GEMM 分支无 B 时
+  `addDense(a, w, -1, out)`（bias tid=-1），DenseOp.forward `tensorOff(-1)` 无 guard
+  越界读 tOff_ 数组 → bOff 垃圾 → dense `arena[bOff+i]` 越界读（gdb: DenseOp_forward
+  SIGSEGV；对照 +bias zeros 即不崩、数值精确）。**修复**：① runtime `tensorOff`
+  guard `tid<0 → -1`（全局防御）；② CPU `InferOps.dense` + GPU `GpuInferOps.dense`
+  @gpu 内核改 `sum=0.0; if (bOff>=0) sum=arena[bOff+i]`（同 conv 既有的 bias-free
+  guard）；③ 反向 `bwdDense`（CPU+GPU）db 归约 `dbOff>=0` 才写（无 bias Gemm 训练）。
+  denseTiled/cuBLAS 路径本就 guard 过 bOff=-1。
+- MYP 坑：bwdDense db guard 若用 `if (dbOff >= 0) { int i = 0; ... }` 引入块作用域，
+  后续 dW 段复用 `i = 0`（无新声明）报 `undefined symbol 'i'`——guard 须放循环内
+  写处（`if (dbOff >= 0) arena[...] = s;`），保持循环变量函数级。
+
+---
+
 ## 2026-09-02 — 声明式 JSON 模型（json_model.myp）—— 不经过 ONNX 的图构建新入口
 
 - 用户写层式 JSON（op/输入输出/权重 init）→ `Session.loadJson/loadJsonTrain`
