@@ -1,0 +1,102 @@
+// sli_ckpt_main.myp — 阶段九 SLI 训练 checkpoint 验证（复用阶段七 dumpPlan/loadPlan）。
+// 确定性方案：lr=0（Update no-op，权重不变，loss 照算）→ runTrain loss 稳定非 0；
+// dumpPlan 保存 → 新 Session loadPlan 恢复（跳过 ONNX 解析）→ 验证权重逐位一致 +
+// 续跑 loss 与原连续 run 一致（run 可重复 + checkpoint 正确恢复）。
+// label 须按 one-hot[10] 重建（softmaxCE 依赖 label>0.5），每次 run 前重建输入。
+import env;
+import fmt;
+import "../infer/framework.myp";
+
+class SliCkptApp {
+    action:
+        @constructor SliCkptApp() {
+            // ---- 1. 首次 runTrain（lr=0：loss 照算、权重不变）----
+            Session a = new Session();
+            int ok = a.loadTrain("./deeplearning/data/onnx/mnist_mlp.onnx");
+            Console.writeString("loadTrain ok="); Console.writeLong(ok);
+            Console.writeString(" ops="); Console.writeLong(a.opCount());
+            Console.writeLine("");
+            if (ok == 0) { Console.writeLine("SLI CKPT SKIP (no model)"); return; }
+            int w1Tid = a.tensorId("W1");
+            int w2Tid = a.tensorId("W2");
+            int inT = a.tensorId("data");
+            int labTid = a.tensorId("label");
+            int lossTid = a.tensorId("loss");
+            if (w1Tid < 0 || lossTid < 0) { Console.writeLine("SLI CKPT SKIP (no tensor)"); return; }
+            a.setLr(0.0);
+            a.setTrainMode(1);
+            feedInputByTid(a, inT, labTid, 0);
+            int rk1 = a.runTrain();
+            double loss1 = a.loss();
+            Console.writeString("run1 ok="); Console.writeLong(rk1);
+            Console.writeString(" loss="); Console.writeFloat(loss1);
+            Console.writeLine("");
+            if (loss1 <= 0.0) { Console.writeLine("SLI CKPT SKIP (loss0 unstable)"); return; }
+
+            // ---- 2. dumpPlan 保存当前 runtime（权重 + op 表）----
+            int dk = a.dumpPlan("/tmp/sli_ckpt_mnist.bin");
+            Console.writeString("dumpPlan="); Console.writeLong(dk); Console.writeLine("  (expect 1)");
+
+            // ---- 3. 新 Session loadPlan 恢复（无 model 加载）----
+            Session b = new Session();
+            int lk = b.loadPlan("/tmp/sli_ckpt_mnist.bin");
+            Console.writeString("loadPlan="); Console.writeLong(lk);
+            Console.writeString(" ops="); Console.writeLong(b.opCount());
+            Console.writeLine("");
+            if (lk == 0) { Console.writeLine("SLI CKPT MISMATCH: loadPlan failed"); return; }
+
+            // ---- 4. 权重恢复一致（tid 布局与 dump 时一致）----
+            int wSame = 1;
+            int wc = 0;
+            while (wc < 4 && wSame == 1) {
+                if (a.getFlat(w1Tid, wc) != b.getFlat(w1Tid, wc)) wSame = 0;
+                if (a.getFlat(w2Tid, wc) != b.getFlat(w2Tid, wc)) wSame = 0;
+                wc = wc + 1;
+            }
+            Console.writeString("W1[0] a="); Console.writeFloat(a.getFlat(w1Tid, 0));
+            Console.writeString(" b="); Console.writeFloat(b.getFlat(w1Tid, 0));
+            Console.writeString("  W2[0] a="); Console.writeFloat(a.getFlat(w2Tid, 0));
+            Console.writeString(" b="); Console.writeFloat(b.getFlat(w2Tid, 0));
+            Console.writeString("  wSame="); Console.writeLong(wSame);
+            Console.writeLine("");
+
+            // ---- 5. 续跑一致性：a（连续）与 b（恢复）各再 run，loss 应相同 ----------------
+            // b 无 OnnxLoader → 用 tid 重建输入；a 同样重建保证确定性
+            feedInputByTid(a, inT, labTid, 0);
+            feedInputByTid(b, inT, labTid, 0);
+            a.setLr(0.0); b.setLr(0.0);
+            a.setTrainMode(1); b.setTrainMode(1);
+            int rkA2 = a.runTrain();
+            int rkB2 = b.runTrain();
+            double lossA2 = a.loss();
+            double lossB2 = b.getFlat(lossTid, 0);
+            Console.writeString("run2 a="); Console.writeFloat(lossA2);
+            Console.writeString(" b="); Console.writeFloat(lossB2);
+            Console.writeLine("");
+            double dl = lossA2 - lossB2;
+            if (dl < 0.0) dl = 0.0 - dl;
+            double dl1 = loss1 - lossA2;
+            if (dl1 < 0.0) dl1 = 0.0 - dl1;
+
+            if (ok == 1 && dk == 1 && lk == 1 && rk1 == 1 && wSame == 1 && dl < 1.0e-4 && dl1 < 1.0e-4 && rkA2 == 1 && rkB2 == 1) {
+                Console.writeLine("SLI CKPT OK");
+            } else {
+                Console.writeLine("SLI CKPT MISMATCH");
+            }
+        }
+
+        // 重建训练输入：data（确定性伪随机）+ label one-hot[10]（class=1）。
+        // 只用 tid（setFlat）——b（loadPlan 恢复）无 OnnxLoader，按名 setInput 不可用。
+        void feedInputByTid(Session s, int inT, int labTid, int cls) {
+            if (inT < 0) return;
+            int n = 784;
+            int i = 0;
+            while (i < n) { double bv = double((i * 37) % 100) / 100.0; s.setFlat(inT, i, bv); i = i + 1; }
+            if (labTid < 0) return;
+            i = 0;
+            while (i < 10) { s.setFlat(labTid, i, 0.0); i = i + 1; }
+            if (cls >= 0 && cls < 10) s.setFlat(labTid, cls, 1.0);
+        }
+}
+
+int main() { SliCkptApp a = new SliCkptApp(); return 0; }

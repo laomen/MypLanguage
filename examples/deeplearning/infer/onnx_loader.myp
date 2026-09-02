@@ -17,7 +17,7 @@ import "./graph_defs.myp";
 
 class OnnxLoader {
     action:
-        @constructor OnnxLoader() { pb_ = new PbReader(); }
+        @constructor OnnxLoader() { pb_ = new PbReader(); g_ = new Graph(); }
 
         // 从 .onnx 加载到运行时。成功返回 1，失败返回 0。
         int load(string path, InferenceRuntime rt) {

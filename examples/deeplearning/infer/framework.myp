@@ -40,6 +40,14 @@ class Session {
         int runGpu() { return loader_.runGpuRuntime(rt_); }
         int runAuto() { if (Console.getEnv("MYP_GPU") == "1") return loader_.runGpuRuntime(rt_); return loader_.runRuntime(rt_); }
 
+        // ---- 计划缓存 / checkpoint：dump 当前 runtime（op 表 + arena 权重）到磁盘 ----
+        // 推理/训练中途 dump → 之后 loadPlan 恢复（跳过 ONNX 解析+优化+buildRuntime）
+        // 直接续跑。训练 checkpoint：runTrain 若干步后 dumpPlan，loadPlan 恢复权重续训。
+        int dumpPlan(string path) { return rt_.dumpPlan(path); }
+        // 注意：loadPlan 恢复后无 OnnxLoader/graph，按名 tensorId() 不可用——用 dump 前
+        // 记录的 tid（runtime tensor 布局与 dump 时一致）经 getFlat/setFlat 访问。
+        int loadPlan(string path) { return rt_.loadPlan(path); }
+
         // ---- 训练控制（loadTrain 后）：前向+反向+更新的统一封装 ----
         void setLr(double lr) { rt_.setLr(lr); }
         double lr() { return rt_.lr(); }
