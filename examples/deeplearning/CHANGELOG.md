@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-02 — 阶段四：AMP 数值管线骨架（fp16 梯度舍入模拟 + 训练鲁棒性验证）
+
+- `Session.setAmpSim(1)`（runtime ampSim_）——更新前梯度经 fp16 舍入（模拟混合
+  精度训练：主权重 fp32 累积、梯度 fp16 传输/计算）。ops.myp 新增纯位运算
+  `f2hRNE`（f32→fp16 round-to-nearest-even，含亚正规/溢出/NaN，与 numpy float16
+  逐位对拍 14 值全等）+ `halfToF32BitsL` + `halfQuantizeGrad`（梯度就地
+  f32→f16→f32）；UpdateOp.backward 在 ampSim 时对每步梯度量化（累积模式在累积前）。
+- 新增 `infer_tests/sli_amp_main.myp`：fp32 vs fp16 梯度模拟同一序列 200 步都显著
+  收敛（loss 0.027）；首步 W1 权重相对差 2.6e-7（mnist 梯度对 fp16 高度鲁棒）。
+  CPU+GPU `SLI AMP OK`。测试数 67→68。
+- **MYP 教训**：类内 static 方法互调（`halfQuantizeGrad` 内裸名 `f2hRNE`）codegen
+  成**顶层裸符号 @f2hRNE**（无类前缀）→ opt "undefined value"——须用全名
+  `InferOps.f2hRNE`。方法名避免 `f32*` 前缀（非根因，但 f2hRNE 命名更稳）。
+- **标注**：这是 AMP 数值管线骨架（CPU fp32 上模拟 fp16 舍入）。真计算级 AMP
+  （fp16 kernel + 图内 loss-scale + 动态 scale + 溢出回退）为后续大工程。
+
+---
+
 ## 2026-09-02 — 阶段四：梯度累积（Session.setGradAccumEvery，micro-batch 累积）
 
 - runtime 加梯度累积：`setGradAccumEvery(K)/gradAccumEvery()/gradAccumStep()/`

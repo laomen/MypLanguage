@@ -425,7 +425,10 @@ OpKind
   gradAccOff_ 每权重 gAcc 缓冲 + gradAccStep_ micro 计数 + UpdateOp 累积 gAcc、
   达 K 应用 gAcc/K×lr 并清空；`infer_tests/sli_acc_main.myp` K=1 退化逐位一致 +
   K=4 更新节奏 + K=4 收敛，CPU SLI ACC OK。GPU 训练不累积）
-- 混合精度
+- AMP 数值管线骨架（✅ 完成，2026-09-02：Session setAmpSim——更新前梯度 fp16
+  舍入模拟；ops f2hRNE（f32→fp16 RNE 含亚正规，与 numpy 对拍全等）+ halfQuantizeGrad；
+  `infer_tests/sli_amp_main.myp` fp32 vs fp16 梯度模拟收敛一致。CPU+GPU SLI AMP OK。
+  **真计算级 AMP（fp16 kernel + 图内 loss-scale + 动态 scale）为后续大工程**）
 
 ### 暂不作为主线的 pass
 
