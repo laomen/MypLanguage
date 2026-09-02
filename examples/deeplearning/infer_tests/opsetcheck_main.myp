@@ -1,0 +1,111 @@
+// opsetcheck_main.myp — 阶段七：ONNX opset/version 检查测试
+// 同一 Conv 模型导出 opset 13 与 opset 21，验证 loader 读出 opsetVersion/
+// irVersion 与声明一致、opsetSupported() 判断正确、输出 vs ORT 正确。
+import env;
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class OpsetCheckApp {
+    action:
+        @constructor OpsetCheckApp() {
+            // --- opset 13 模型 ---
+            InferenceRuntime rt13 = new InferenceRuntime();
+            rt13.init(2048);
+            OnnxLoader l13 = new OnnxLoader();
+            int ok13 = l13.load("./deeplearning/data/onnx/opsetcheck_v13.onnx", rt13);
+            Console.writeString("v13 load=");
+            Console.writeLong(ok13);
+            Console.writeString("  opset=");
+            Console.writeLong(l13.opsetVersion());
+            Console.writeString("  ir=");
+            Console.writeLong(l13.irVersion());
+            Console.writeString("  supported=");
+            Console.writeLong(l13.opsetSupported());
+            Console.writeLine("");
+
+            // --- opset 21 模型 ---
+            InferenceRuntime rt21 = new InferenceRuntime();
+            rt21.init(2048);
+            OnnxLoader l21 = new OnnxLoader();
+            int ok21 = l21.load("./deeplearning/data/onnx/opsetcheck_v21.onnx", rt21);
+            Console.writeString("v21 load=");
+            Console.writeLong(ok21);
+            Console.writeString("  opset=");
+            Console.writeLong(l21.opsetVersion());
+            Console.writeString("  ir=");
+            Console.writeLong(l21.irVersion());
+            Console.writeString("  supported=");
+            Console.writeLong(l21.opsetSupported());
+            Console.writeLine("");
+
+            // 输出验证（用 v13 的 rt）
+            int inT = l13.tensorId("x");
+            int outT = l13.tensorId("y");
+            int nIn = rt13.tensorSize(inT);
+            double[] buf = new double[64];
+            readF32("./deeplearning/data/onnx/opsetcheck_in.f32", buf, nIn);
+            int i = 0;
+            while (i < nIn) { rt13.setFlat(inT, i, buf[i]); i = i + 1; }
+            rt13.run();
+            int m = rt13.tensorSize(outT);
+            int okC = checkOut(rt13, outT, "./deeplearning/data/onnx/opsetcheck_ort.bin", m);
+
+            int pass = 0;
+            if (ok13 == 1 && ok21 == 1 && l13.opsetVersion() == 13 && l21.opsetVersion() == 21 &&
+                l13.irVersion() > 0 && l21.irVersion() > 0 &&
+                l13.opsetSupported() == 1 && l21.opsetSupported() == 1 && okC == 1) {
+                pass = 1;
+            }
+            if (pass == 1) Console.writeLine("OPSETCHECK ALL OK");
+            else Console.writeLine("OPSETCHECK MISMATCH");
+        }
+
+        void readF32(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                out[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        int checkOut(InferenceRuntime rt, int tid, string path, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            double maxD = 0.0;
+            int bad = 0;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                double rv = F32.toDouble(bits);
+                double dv = rt.getFlat(tid, i) - rv;
+                if (dv < 0.0) dv = 0.0 - dv;
+                if (dv > maxD) maxD = dv;
+                if (dv > 1.0e-4) bad = bad + 1;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString("max diff vs ORT: ");
+            Console.writeFloat(maxD);
+            Console.writeString("  bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            if (maxD <= 1.0e-4) return 1;
+            return 0;
+        }
+}
+
+int main() { OpsetCheckApp app = new OpsetCheckApp(); return 0; }

@@ -81,6 +81,17 @@ class OnnxLoader {
         string graphOutputName(int i) { return g_.graphOutputName(i); }
         int isWeightName(string nm) { return g_.isWeightName(nm); }
         int shapeElementCount(string nm) { return g_.shapeElementCount(nm); }
+        // 阶段七：ONNX opset/version 检查——模型 ir_version / 标准 opset 版本 / 域。
+        int irVersion() { return irVersion_; }
+        int opsetVersion() { return opsetVersion_; }
+        string opsetDomain() { return opsetDomain_; }
+        // 兼容性检查：opset 在支持范围 [9, 22] 内返回 1（提示性；解析本身不设上限）。
+        int opsetSupported() {
+            if (opsetVersion_ < 0) return 0;
+            if (opsetVersion_ < 9) return 0;
+            if (opsetVersion_ > 22) return 0;
+            return 1;
+        }
 
     function:
         // 读文件字节到 file_（增长型缓冲，返回 1=成功）
@@ -108,12 +119,23 @@ class OnnxLoader {
             return 1;
         }
 
-        // ---- 顶层 ModelProto：只取 graph（field 7）----
+        // ---- 顶层 ModelProto：取 ir_version（field 1）、opset_import（field 8）、
+        // graph（field 7）。阶段七：opset/version 检查——记录模型 opset 与 IR 版本，
+        // 供加载方诊断/兼容性判断（getter：opsetVersion/irVersion/opsetDomain）。
         int parseModel() {
+            irVersion_ = -1;
+            opsetVersion_ = -1;
+            opsetDomain_ = "";
             while (pb_.pos() < fileLen_) {
                 int f = pb_.nextTag();
                 if (f == -1) break;
-                if (f == 7) {
+                if (f == 1) {
+                    irVersion_ = int(pb_.readVarint64());   // ModelProto.ir_version (int64)
+                } else if (f == 8) {
+                    int l = pb_.readLen();
+                    int po = pb_.payloadOff();
+                    parseOpsetId(po, l);                    // OperatorSetIdProto：domain=1, version=2
+                } else if (f == 7) {
                     int l = pb_.readLen();
                     int po = pb_.payloadOff();
                     parseGraph(po, l);
@@ -121,6 +143,31 @@ class OnnxLoader {
                     pb_.skipField();
                 }
             }
+            return 1;
+        }
+
+        // OperatorSetIdProto：domain（field 1，string）/ version（field 2，int64）。
+        // 标准 opset（domain=""）优先记录；仅当无标准 opset 时才记自定义 domain 的版本。
+        int parseOpsetId(int off, int len) {
+            int end = off + len;
+            pb_.seek(off);
+            string dom = "";
+            int ver = -1;
+            while (pb_.pos() < end) {
+                int f = pb_.nextTag();
+                if (f == -1) break;
+                if (f == 1) {
+                    int l = pb_.readLen(); int po = pb_.payloadOff();
+                    dom = pb_.readString(l);
+                } else if (f == 2) {
+                    ver = int(pb_.readVarint64());
+                } else {
+                    pb_.skipField();
+                }
+            }
+            if (ver <= 0) return 1;
+            if (dom == "" && opsetVersion_ < 0) { opsetVersion_ = ver; opsetDomain_ = ""; }
+            else if (dom != "" && opsetVersion_ < 0 && opsetDomain_ == "") { opsetVersion_ = ver; opsetDomain_ = dom; }
             return 1;
         }
 
@@ -520,6 +567,9 @@ class OnnxLoader {
         int diceWMode_;         // Dice 类权重：0=等权，1=逆频率加权
         int lastElemType_;      // G2：最近解析 ValueInfo 的 elem_type（dtype 建模）
         int badOp_;             // 阶段7：检测到 unsupported ONNX op（诊断标记）
+        int irVersion_;         // 阶段七：ModelProto.ir_version（-1=未解析）
+        int opsetVersion_;      // 阶段七：标准 opset 版本（-1=未解析）
+        string opsetDomain_;    // 阶段七：opset domain（""=标准算子集）
         string[8] inpName_;     // P3：输入形状注入表
         int[8] inpD0_;
         int[8] inpD1_;
