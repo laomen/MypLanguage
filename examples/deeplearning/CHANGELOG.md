@@ -6,6 +6,43 @@
 
 ---
 
+## 2026-09-02 — A1 2D MatMul 修复 + A2 Sub/Mul/Div 训练反向（json_train_submul/bwd_rt）
+
+- **A1：修复 2D MatMul**（此前 JSON 2D MatMul [1,4]×[4,3] 布局错乱 sz=16）。根因：
+  inferShapes/graph_compiler 的 MatMul 恒判 rank≥3（`ar=4`）→ 一律走 4D batch
+  广播。修复：双方均为 2D 视图（非 5D 且 d2/d3≤1）→ 普通 2D matmul（`addMatmul`/
+  `[d0(a),d1(b)]`），任一方含 batch/空间维 → BatchMatMul。branch.json 恢复
+  `m=a2·W([4,3])` 断言 [40,40,40]。bmm/opselect/multiio 4D batch 回归无损。
+- **A2：Sub/Mul/Div 训练反向补齐**（此前仅推理）。全链路：
+  - graph_defs OpCode `BWD_SUB(84)/BWD_MUL(85)/BWD_DIV(86)` + opCode map + opTraits
+    保护（trainOnly）；runtime `addBwdSub/Mul/Div`（bwd opKind 90/91/92，
+    opA=dy,opB=x0,opC=x1,opD=dx0,opP0=dx1）；ops.myp `bwdSub/bwdMul/bwdDiv`
+    kernel（同尺寸线性：Sub dx0=dy/dx1=-dy；Mul dx0=dy*x1/dx1=dy*x0；Div
+    dx0=dy/x1/dx1=-dy*x0/(x1²)）；SubOp/DivOp/MulOp.backward 填充 + 注册改
+    registerFwdBwd(31→90/32→92/33→91)；buildReverseGraph 加 Sub/Mul/Div →
+    Bwd 节点生成（带前向 x0/x1 作操作数）。
+  - 测试 `bwd_rt_main.myp`（runtime 直接对拍三反向解析梯度，BWD RT OK）+
+    `json_train_submul_main.myp`（train_sub.json Sub 链 + train_mul.json Mul 链
+    各 SGD 200 步 loss 显著降：sub 2.16→0.47 / mul 1.28→0.158，证明梯度经
+    BwdRelu/BwdDense 回传更新权重）。测试数 71→73。
+- **修复 BwdDense 共享图输入 fan-out def-use 冲突（MYP_IR_VERIFY 训练图回归阻塞）**：
+  图输入 x 被多 Gemm 消费时，各 BwdDense 都产出 grad(x) → 多节点输出同名 value →
+  `verifyDefUse`/`topoSort(reverse)` fail（json_train_submul RUNTIME FAIL）。
+  修复：① buildReverseGraph Gemm/MatMul 的 BwdDense dx（slot0）当输入非节点输出
+  （=图输入，无上游需回传）时清空——**须在 endNode() 后**（count 在 end 才 +1，
+  replaceResult 的 guard `node>=count` 会静默丢弃，曾导致修复无效）；② ops.myp
+  `bwdDense` dx 段加 `dxOff>=0` guard（dx=-1 不写）；③ graph_compiler wire 检查
+  豁免反向节点 out（slot0 可合法为空）。修复后 json_train_submul MYP_IR_VERIFY
+  通过（Sub/Mul 链训降不变）。
+- **⚠ 暴露框架既有 bug（Add 网 loss 恒 ln4，非本次引入，A2 反向本身正确）**：
+  loss 路径含 `Add` 汇合（logits=Add(…)，多分支 JSON 训练必需）时训练 loss 恒
+  ln4 不降。MYP_PROF_CPU 确认 BwdAdd/BwdRelu/BwdDense/Update 全部执行且权重
+  大幅更新、前向 logits 也变 → **问题在 loss tensor 读取/规划层**（loss() 恒读
+  到固定 ln4，疑似 plan 布局使 loss 区与中间/标签重叠或 loss() 读错位），非反向
+  接线。待办（A3/多分支 JSON 训练前置）。
+
+---
+
 ## 2026-09-02 — JSON 多分支/更多算子（fan-in·fan-out DAG + op 扩展，json_branch_main.myp）
 
 - **多分支语义（不引入新语法）**：层式 JSON 即 **DAG**——fan-out 靠名字引用

@@ -675,6 +675,13 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   fan-in 汇合（Add/Sub/Mul/Div/Concat axis1）+ 4D 算子（GAP/Sigmoid/Flatten）
   12 op 全手算断言 CPU+GPU。测试数 71。**限制**：2D MatMul 走 4D batch 路径
   （须 4D 声明）；Sub/Div/Mul 训练反向未补（buildReverseGraph 无 Bwd，待办）。
+- **A1 2D MatMul 修复 + A2 Sub/Mul/Div 训练反向（完成，2026-09-02）**：
+  MatMul 判据改「双方 2D 视图（非5D 且 d2/d3≤1）→ 普通 2D matmul」否则 4D batch
+  （inferShapes+graph_compiler 同步，bmm/opselect 无损）；BwdSub/BwdMul/BwdDiv
+  （OpCode 84-86 + runtime opKind 90-92 + kernel + buildReverseGraph 分支）全链路，
+  bwd_rt 数值对拍 OK + train_sub/train_mul.json 各训降（2.16→0.47/1.28→0.158）。
+  测试数 73。**待办（暴露既有 bug）**：loss 含 Add 汇合的训练恒 ln4（Add 反向
+  从未被训练验证，BwdAdd 梯度未达两分支）——多分支 JSON 训练前置阻塞，需修。
 - **训练专项全完成**：优化器（SGD/动量/AdamW+wd）/梯度累积/AMP 骨架/checkpoint
   （阶段四记录）。**待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；SLI
   文档/示例。
