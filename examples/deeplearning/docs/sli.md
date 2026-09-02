@@ -70,19 +70,29 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
 
 - **结构即 DAG**：fan-out 靠名字引用（一个 `out` 名被多个层当 `in`）；fan-in 汇合
   用多输入槽 `in2/in3/in4`（`Add`/`Sub`/`Div`/`Mul`/`MatMul` 二元、`Concat` 多输入）。
-- **op 集**：单输入 `Relu`/`Sigmoid`/`Softmax(axis)`/`GlobalAveragePool`/`Flatten(axis)`；
-  二元 `Add`/`Sub`/`Div`/`Mul`/`MatMul`；多输入 `Concat(in/in2/in3, axis)`；权重型
-  `Gemm`/`Conv`/`ConvTranspose`/`MatMul(可选 W)`；池化 `MaxPool`/`AveragePool`(kernel/
-  strides/pads)；**参数化（int64 常量）** `Reshape(shape)`、`Gather(indices,axis)`。
-  示例：`infer_tests/branch.json`（多分支 DAG）、`mlp.json`、`safe_gemm.json`、
-  `reshape.json`、`gather.json`。
-- **参数化 op（int64 内联常量）**：`shape`/`indices` 等 int64 数组直接内联在层里，
+- **op 集**：单输入 `Relu`/`Sigmoid`/`Softmax(axis)`/`LogSoftmax(axis)`/
+  `GlobalAveragePool`/`Flatten(axis)`；二元 `Add`/`Sub`/`Div`/`Mul`/`MatMul`；多输入
+  `Concat(in/in2/in3, axis)`；权重型 `Gemm`/`Conv`/`ConvTranspose`/`MatMul(可选 W)`；
+  池化 `MaxPool`/`AveragePool`(kernel/strides/pads)；**参数化（int64 常量）**
+  `Reshape(shape)`、`Gather(indices,axis)`、`Expand(shape)`、`Tile(repeats)`；
+  **属性类** `Squeeze(axes)`、`Transpose(perm)`、`ReduceSum`/`ReduceMean`/`ReduceMax`/
+  `ReduceMin(axes[,keepdims])`。示例：`infer_tests/branch.json`（多分支 DAG）、
+  `mlp.json`、`safe_gemm.json`、`reshape.json`、`gather.json`、`ops2.json`。
+- **参数化 op（int64 内联常量）**：`shape`/`indices`/`repeats` 等 int64 数组直接内联在层里，
   框架登记为内存 int64 常量（无需 ONNX 初始器）：
   ```json
   {"op":"Reshape","in":"data","out":"out","shape":[2,3]},
-  {"op":"Gather","in":"data","out":"out","indices":[0,2],"axis":1}
+  {"op":"Gather","in":"data","out":"out","indices":[0,2],"axis":1},
+  {"op":"Tile","in":"x","out":"out","repeats":[1,1,2,1]}
   ```
-  （前者把 `data[1,6]` 变 `[2,3]`；后者沿 axis 收集 `data` 的指定行/通道。）
+  （前者把 `data[1,6]` 变 `[2,3]`；中者沿 axis 收集 `data` 的指定行/通道；后者沿各维
+  按倍数复制。`Expand` 沿 size-1 维 broadcast 复制到目标 shape。）
+- **属性类 op（int 数组内联）**：`axes`/`perm` 直接内联（Reduce 族含 N/C → 全规约，
+  `[2,3]` → 空间规约 per-(n,c)）：
+  ```json
+  {"op":"Squeeze","in":"x","out":"out","axes":[1]},
+  {"op":"ReduceSum","in":"x","out":"out","axes":[2,3]}
+  ```
 - **权重源**：`W:{"dims":[…], "init":"xavier|zeros|ones|const|gauss"}`（确定性 LCG），
   或 `W:{"dims":[…], "safetensors":{"file":"….safetensors","tensor":"名"}}`（按 JSON
   张量名自动从 .safetensors 读值，替代手写装配）。`B` 可选（无 bias Gemm/Conv 支持）。

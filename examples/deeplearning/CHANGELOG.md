@@ -6,6 +6,31 @@
 
 ---
 
+## 2026-09 — A3 扩展：JSON 属性/参数 op 批量分派（Expand/Tile/Reduce 族/Squeeze/Transpose/LogSoftmax）
+
+- **int64 参数类**（沿 A3 Reshape/Gather 模式，nodeIn1 接内存 int64 常量 +
+  readI64Init 内存分支）：
+  - `Expand(shape)`：沿 size-1 维 broadcast 复制到目标 shape（inferShapes 读 nodeIn1
+    shape 常量；classifyShapes 已 markInt64Param）
+  - `Tile(repeats)`：沿各维按倍数复制（输出 = 输入维 × repeats 维，逐元素乘）
+- **属性类**（JSON int 数组内联，onnx_loader 同款 nodeInt 连续字段）：
+  - `Squeeze(axes)`：去 size-1 维（axes 可选；缺省全 size-1），数据连续拷贝
+  - `Transpose(perm)`：perm 属性（缺省反转维度）
+  - `ReduceSum/ReduceMean/ReduceMax/ReduceMin(axes[,keepdims])`：axes → AXES0-3+
+    AXES_N（含 N/C → 全规约 mode0；[2,3] → 空间规约 mode1；redType 0-3 由 op 名决定）；
+    keepdims → NodeField.KEEP
+  - `LogSoftmax(axis)`：并入 Softmax 的 axis 属性分支（LogSoftmax 须显式 axis）
+- json_model 新增 `setIntArr` helper（int 数组 → 连续 NodeField 字段 base+k）。
+- 测试 `infer_tests/json_ops2_main.myp` + `ops2.json`（**多输入 5 个** xe/xt/xr/xs/xl +
+  8 层 8 输出）：Expand ch0[[1,2,3]×2]ch1[[4,5,6]×2] / Transpose [1,3,2,4]（H/W 交换）/
+  ReduceSum axes[2,3]=[10,20] / ReduceMean axes[0,1]=[3.75] / ReduceMax=[8] /
+  ReduceMin axes[2,3]=[1,2] / Squeeze axes[1] 连续拷贝 / Tile repeats[1,1,2,1]=
+  [1..6,1..6]，全手算断言 CPU+GPU `JSON OPS2 OK`。全量回归 pass=76 fail=0。
+- **MYP 坑**：MYP 无二维动态数组（`double[][]` 不存在，`new int[2][]` 编译错）——
+  测试期望表用每输出独立 `double[]` + `cmpOut` 辅助比较。
+
+---
+
 ## 2026-09 — A3 JSON int64 参数化 op（Reshape/Gather）+ C7 SLI 端到端文档
 
 - **A3：int64 内存常量机制（参数化 op 解锁）**：此前 JSON/ONNX 权重型参数只走

@@ -694,6 +694,13 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   输出全首通道。测试 json_reshape_main（[2,6]→[3,4]）+ json_gather_main（axis=1
   indices=[0,2] 期望 [0.1*4,0.3*4]），CPU+GPU OK。测试数 75。C7：docs/sli.md
   SLI 端到端指南（import dl/ONNX/JSON/训练/checkpoint/诊断/陷阱）。
+- **A3 扩展：JSON 属性/参数 op 批量分派（完成，2026-09）**：int64 参数类
+  Expand(shape)/Tile(repeats)（nodeIn1 接内存 int64 常量，同 Reshape/Gather 模式）+
+  属性类 Squeeze(axes)/Transpose(perm)/ReduceSum/ReduceMean/ReduceMax/ReduceMin
+  (axes[,keepdims])/LogSoftmax(axis)（nodeInt 连续字段 + setIntArr helper）。
+  `infer_tests/json_ops2_main.myp`+`ops2.json`：多输入 5 个 + 8 层 8 输出全手算断言
+  CPU+GPU。测试数 76。剩余（复杂/验证难，留后续）：Slice(starts/ends/steps 多数组
+  attr 组对齐)、Pad(pads 数组)、Split 多输出、Embedding(ids 需显式值权重源)。
 - **训练专项全完成**：优化器（SGD/动量/AdamW+wd）/梯度累积/AMP 骨架/checkpoint
   （阶段四记录）。**待办**：LLM 生成接入统一接口族（llm/ 目前独立脚本）；SLI
   文档/示例。
