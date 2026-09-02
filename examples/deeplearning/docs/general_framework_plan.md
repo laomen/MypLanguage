@@ -421,7 +421,11 @@ OpKind
   2n 状态区 + UpdateOp updateSGD/updateMom/updateAdamW）此前未暴露/测试；
   `infer_tests/sli_opt_main.myp` 三优化器同数据序列收敛验证 + AdamW±wd 范数对拍，
   CPU+GPU SLI OPT OK）
-- 梯度累积和混合精度
+- 梯度累积（✅ 完成，2026-09-02：Session setGradAccumEvery(K)——runtime
+  gradAccOff_ 每权重 gAcc 缓冲 + gradAccStep_ micro 计数 + UpdateOp 累积 gAcc、
+  达 K 应用 gAcc/K×lr 并清空；`infer_tests/sli_acc_main.myp` K=1 退化逐位一致 +
+  K=4 更新节奏 + K=4 收敛，CPU SLI ACC OK。GPU 训练不累积）
+- 混合精度
 
 ### 暂不作为主线的 pass
 

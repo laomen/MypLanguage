@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-02 — 阶段四：梯度累积（Session.setGradAccumEvery，micro-batch 累积）
+
+- runtime 加梯度累积：`setGradAccumEvery(K)/gradAccumEvery()/gradAccumStep()/`
+  `gradAccOff_[]`——K>0 时每 K 次 runTrain（micro-step）才应用一次权重更新。
+  启用时遍历 Update(55) 权重在 arena 尾（optBase_ 增长）预分配 gAcc 缓冲；
+  run()/runGpu() 训练入口 micro-step 计数（gradAccStep_++）；UpdateOp.backward
+  累积 `gAcc += g`，达 K 应用 `gAcc/K × lr`（等效 batch×K 且 loss 平均）+ 清空。
+  注：GPU 训练（GpuUpdateOp）不累积（每步照常 update），梯度累积限 CPU runTrain。
+- Session 暴露 `setGradAccumEvery(k)/gradAccumEvery()/gradAccumStep()`。
+- 新增 `infer_tests/sli_acc_main.myp` 三重验证：A) K=1 vs 不累积同一序列 loss
+  逐位 maxdiff=0（退化正确）；B) K=4 更新节奏——micro 1..3 后 W1 权重不变
+  （只累积），第 4 micro 才应用变化；C) K=4 收敛——100 micro（25 应用）loss
+  2.62→显著降。CPU+GPU（runTrain）均 `SLI ACC OK`。测试数 66→67。
+
+---
+
 ## 2026-09-02 — 阶段九 SLI：优化器暴露 + 收敛验证（SGD/动量/AdamW + weight decay）
 
 - `Session` 补 `setOptimizer(m)/optimizer()`（0=SGD 默认，1=动量，2=AdamW）与
