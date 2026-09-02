@@ -94,6 +94,7 @@ class GraphCompiler {
                 if (code == OpCode.BWD_SUB() || code == OpCode.BWD_MUL() || code == OpCode.BWD_DIV()) bwdLike = 1;
                 if (code == OpCode.BWD_RESHAPE() || code == OpCode.BWD_TRANSPOSE()) bwdLike = 1;
                 if (code == OpCode.BWD_EXPAND() || code == OpCode.BWD_TILE()) bwdLike = 1;
+                if (code == OpCode.BWD_REDUCE()) bwdLike = 1;
                 if (a < 0 || (out < 0 && bwdLike == 0)) {
                     if (Console.getEnv("MYP_GR_DBG") == "1") {
                         Console.writeString("buildRuntime wire fail type=" + graph.nodeTypeAt(ni) + " in0=" + graph.nodeInAt(ni, 0) + "(" + Fmt.i(a) + ") out=" + graph.compilerEffectiveOut(ni) + "(" + Fmt.i(out) + ")");
@@ -206,6 +207,20 @@ class GraphCompiler {
                     if (os >= 0) { od0 = graph.compilerShapeDim(os, 0); od1 = graph.compilerShapeDim(os, 1); od2 = graph.compilerShapeDim(os, 2); od3 = graph.compilerShapeDim(os, 3); }
                     if (code == OpCode.BWD_EXPAND()) rt.addBwdExpand(dy, dx, id0, id1, id2, id3, od0, od1, od2, od3);
                     else rt.addBwdTile(dy, dx, id0, id1, id2, id3, od0, od1, od2, od3);
+                } else if (code == OpCode.BWD_REDUCE()) {
+                    // B：ReduceSum/Mean 反向（dy 广播回 dx；mode/redType 在 buildReverseGraph 复制）
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    int mode = graph.compilerReduceMode(ni);
+                    int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
+                    int N = 1, C = 1, S = 1;
+                    if (is >= 0) {
+                        N = graph.compilerShapeDim(is, 0); C = graph.compilerShapeDim(is, 1);
+                        S = graph.compilerShapeDim(is, 2) * graph.compilerShapeDim(is, 3);
+                        if (graph.compilerShapeR5(is) == 1) S = graph.compilerShapeDim(is, 2) * graph.compilerShapeDim(is, 3) * graph.compilerShapeDim(is, 4);
+                    }
+                    int total = N * C * S;
+                    rt.addBwdReduce(dy, dx, mode, N, C, S, total, graph.compilerNRedType(ni));
                 } else if (code == OpCode.BWD_CONV()) {
                     int dy = tensorId(graph.nodeInAt(ni, 0));
                     int x = tensorId(graph.nodeInAt(ni, 1));

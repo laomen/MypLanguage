@@ -1048,7 +1048,17 @@ class ReduceMeanOp {
             InferOps.reduceMean(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd),
                                 rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i));
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // B：BwdReduce（opKind 97）：dy 广播回 dx（mode0 全规约 /total、mode1 /S）
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int dx = rt.opBAt(i);
+                if (dx < 0) return;
+                InferOps.bwdReduce(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(dx),
+                                   rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i),
+                                   rt.opP4At(i), rt.opP5At(i));
+            }
+        }
 }
 
 // ---- sub（opKind 31 前向）----
@@ -2312,7 +2322,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(27, new SliceOp(), 0);                rt.registerFwd(27, new GpuSliceOp(), 1);
     rt.registerFwd(28, new Resize2dOp(), 0);             rt.registerFwd(28, new GpuResize2dOp(), 1);
     rt.registerFwd(29, new SplitOp(), 0);                rt.registerFwd(29, new GpuSplitOp(), 1);
-    rt.registerFwd(30, new ReduceMeanOp(), 0);           rt.registerFwd(30, new GpuReduceMeanOp(), 1);
+    rt.registerFwdBwd(30, 97, new ReduceMeanOp(), 0);    rt.registerFwd(30, new GpuReduceMeanOp(), 1);
     rt.registerFwdBwd(31, 90, new SubOp(), 0);             rt.registerFwdBwd(31, 90, new GpuSubOp(), 1);
     rt.registerFwdBwd(32, 92, new DivOp(), 0);             rt.registerFwdBwd(32, 92, new GpuDivOp(), 1);
     rt.registerFwdBwd(33, 91, new MulOp(), 0);             rt.registerFwdBwd(33, 91, new GpuMulOp(), 1);

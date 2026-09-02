@@ -1,0 +1,63 @@
+// bwd_reduce_main.myp — B：ReduceSum/ReduceMean 反向（broadcast 回 x）数值对拍。
+// x[1,2,2,2]（N=1,C=2,S=4,total=8）。mode1 空间 per-(n,c)：dy[n*C+c] → 该段 4 元素
+//   （sum 复制；mean /S=4）；mode0 全规约：dy 标量 → 每元素（mean /total=8）。
+//   组1 ReduceSum mode1 dy=[10,20] → dx=[10,10,10,10,20,20,20,20]
+//   组2 ReduceMean mode1 dy=[4,8] → dx=[1,1,1,1,2,2,2,2]
+//   组3 ReduceSum mode0 dy=[5] → dx=[5 x8]
+//   组4 ReduceMean mode0 dy=[3] → dx=[0.375 x8]
+// 全部 PASS → BWD REDUCE OK。
+import env;
+import fmt;
+import "../infer/runtime.myp";
+
+class BwdReduceApp {
+    action:
+        double absd(double v) { if (v < 0.0) return 0.0 - v; return v; }
+        @constructor BwdReduceApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(1024);
+            rt.setTrain(1);
+            // 组1/2：dy 2 元素（mode1 输出 [N,C,1,1]=2）；组3/4：dy 1 元素（mode0）
+            int dx1 = rt.addTensor(8, 1); int dy1 = rt.addTensor(2, 1);
+            int dx2 = rt.addTensor(8, 1); int dy2 = rt.addTensor(2, 1);
+            int dx3 = rt.addTensor(8, 1); int dy3 = rt.addTensor(1, 1);
+            int dx4 = rt.addTensor(8, 1); int dy4 = rt.addTensor(1, 1);
+            rt.setFlat(dy1, 0, 10.0); rt.setFlat(dy1, 1, 20.0);
+            rt.setFlat(dy2, 0, 4.0); rt.setFlat(dy2, 1, 8.0);
+            rt.setFlat(dy3, 0, 5.0);
+            rt.setFlat(dy4, 0, 3.0);
+            rt.addBwdReduce(dy1, dx1, 1, 1, 2, 4, 8, 1);   // sum mode1
+            rt.addBwdReduce(dy2, dx2, 1, 1, 2, 4, 8, 0);   // mean mode1
+            rt.addBwdReduce(dy3, dx3, 0, 1, 2, 4, 8, 1);   // sum mode0
+            rt.addBwdReduce(dy4, dx4, 0, 1, 2, 4, 8, 0);   // mean mode0
+            rt.run();
+            int bad = 0;
+            // 组1：dx=[10 x4, 20 x4]
+            int i = 0;
+            while (i < 8) {
+                double e = (i < 4) ? 10.0 : 20.0;
+                if (absd(rt.getFlat(dx1, i) - e) > 1.0e-3) bad = bad + 1;
+                i = i + 1;
+            }
+            // 组2：dx=[1 x4, 2 x4]
+            i = 0;
+            while (i < 8) {
+                double e = (i < 4) ? 1.0 : 2.0;
+                if (absd(rt.getFlat(dx2, i) - e) > 1.0e-3) bad = bad + 1;
+                i = i + 1;
+            }
+            // 组3：dx=5 x8
+            i = 0;
+            while (i < 8) { if (absd(rt.getFlat(dx3, i) - 5.0) > 1.0e-3) bad = bad + 1; i = i + 1; }
+            // 组4：dx=0.375 x8
+            i = 0;
+            while (i < 8) { if (absd(rt.getFlat(dx4, i) - 0.375) > 1.0e-3) bad = bad + 1; i = i + 1; }
+            Console.writeString("bwd reduce bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            if (bad == 0) Console.writeLine("BWD REDUCE OK");
+            else Console.writeLine("BWD REDUCE MISMATCH");
+        }
+}
+
+int main() { BwdReduceApp app = new BwdReduceApp(); return 0; }

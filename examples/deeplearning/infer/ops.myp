@@ -2816,6 +2816,30 @@ class InferOps {
             }
         }
 
+        // BwdReduceSum/BwdReduceMean（B）：归约反向 = 把梯度广播回 x。
+        // mode0（全规约）：dy 标量 → 每 x 元素（mean /total）；
+        // mode1（空间 per-(n,c)）：dy[n*C+c] → 该 (n,c) 空间段（mean /S）。
+        // redType：0=mean（除法）、1=sum（复制）；max/min（2/3）需 argmax 掩码未实现。
+        void bwdReduce(float[] arena, int dyOff, int dxOff,
+                       int mode, int N, int C, int S, int total, int redType) {
+            int i = 0;
+            if (mode == 0) {
+                double dv = double(arena[dyOff + 0]);
+                if (redType == 0) dv = dv / double(total);
+                while (i < total) { arena[dxOff + i] = float(dv); i = i + 1; }
+            } else {
+                double div = 1.0;
+                if (redType == 0) div = double(S);
+                while (i < total) {
+                    int c = (i / S) % C;
+                    int n = i / (C * S);
+                    double v = double(arena[dyOff + n * C + c]) / div;
+                    arena[dxOff + i] = float(v);
+                    i = i + 1;
+                }
+            }
+        }
+
         // LogSoftmax（G5）：沿 axis 的稳定 log-softmax。张量视作 [outer, axisDim, inner]
         // （行优先）；对每 (outer,inner) 组：m=max、lse=m+log(Σexp(x-m))、y=x-lse。
         void logSoftmax(float[] arena, int inOff, int outOff, int outer, int axisDim, int inner) {

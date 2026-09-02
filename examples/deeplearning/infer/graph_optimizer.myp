@@ -905,6 +905,22 @@ class GraphOptimizer {
                             if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
                                 graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费（须 endNode 后）
                             }
+                        } else if (t == "ReduceMean" || t == "ReduceSum") {
+                            // B：ReduceSum/Mean 反向（广播回 x）。mode0 全规约 dy 标量
+                            // broadcast（mean /total）；mode1 空间 per-(n,c) broadcast（mean
+                            // /S）。ReduceMax/Min 需 argmax 掩码未实现 → 跳过（梯度 0）。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdReduce");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                            graph.compilerSetNRedMode(bd, graph.compilerReduceMode(ni));
+                            graph.compilerSetNRedType(bd, graph.compilerNRedType(ni));
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费（须 endNode 后）
+                            }
                         } else if (t == "Add") {
                             int bd = graph.nodeCount();
                             graph.beginNode();

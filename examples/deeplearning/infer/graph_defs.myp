@@ -216,6 +216,7 @@ class OpCode {
         int BWD_TRANSPOSE() { return 88; }
         int BWD_EXPAND() { return 89; }      // B2：Expand/Tile 反向（广播 scatter-add，CPU-only 训练）
         int BWD_TILE() { return 90; }
+        int BWD_REDUCE() { return 91; }      // B：ReduceSum/ReduceMean 反向（broadcast 回 x）
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -290,6 +291,7 @@ class OpCode {
             if (t == "BwdTranspose") return OpCode.BWD_TRANSPOSE();
             if (t == "BwdExpand") return OpCode.BWD_EXPAND();
             if (t == "BwdTile") return OpCode.BWD_TILE();
+            if (t == "BwdReduce") return OpCode.BWD_REDUCE();
             return OpCode.UNKNOWN();
         }
         // 节点保护 trait：非 0 表示受 DCE 保护。1=stateful（就地改权重/累加），
@@ -301,6 +303,7 @@ class OpCode {
             if (code == OpCode.BWD_SUB() || code == OpCode.BWD_MUL() || code == OpCode.BWD_DIV()) return 2;
             if (code == OpCode.BWD_RESHAPE() || code == OpCode.BWD_TRANSPOSE()) return 2;
             if (code == OpCode.BWD_EXPAND() || code == OpCode.BWD_TILE()) return 2;
+            if (code == OpCode.BWD_REDUCE()) return 2;
             return 0;
         }
 }

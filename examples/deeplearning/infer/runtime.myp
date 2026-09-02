@@ -310,6 +310,15 @@ class InferenceRuntime {
             opP4_[id] = od0; opP5_[id] = od1; opP6_[id] = od2; opP7_[id] = od3;
             opCount_ = opCount_ + 1;
         }
+        // B：ReduceSum/Mean 反向（opKind 97）：梯度广播回 x。
+        // opA=dy, opB=dx, opP0=mode, opP1=N, opP2=C, opP3=S, opP4=total, opP5=redType。
+        void addBwdReduce(int dyT, int dxT, int mode, int N, int C, int S, int total, int redType) {
+            int id = opCount_;
+            opKind_[id] = 97;
+            opA_[id] = dyT; opB_[id] = dxT;
+            opP0_[id] = mode; opP1_[id] = N; opP2_[id] = C; opP3_[id] = S; opP4_[id] = total; opP5_[id] = redType;
+            opCount_ = opCount_ + 1;
+        }
         // Softmax+CE 合并：输入 logits + 标签(one-hot)，输出 dlogits + loss
         void addSoftmaxCE(int logitT, int labelT, int dlogitT, int lossT) {
             int id = opCount_;
