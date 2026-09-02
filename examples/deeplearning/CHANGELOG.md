@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-09 — B2 训练反向补：Expand/Tile（广播 scatter-add）
+
+- **背景**：B1 后 loss 路径仍缺 Expand/Tile（广播/平铺复制）反向。广播/平铺是
+  多对一映射 → 反向须 **scatter-add**（dx 清零 + 逐 y 累加到源）。
+  - **关键洞察**：expand 与 tile 的前向源坐标规则统一——`c_k = id_k==1 ? 0 :
+    y_k % id_k`（expand 时 id_k==od_k>1 故 % 等价直接映射；tile 时任意倍数）→
+    共用一个 `bwdBroadcastCopy` scatter kernel（先清零 dx 再遍历 y 累加）
+  - graph_defs OpCode `BWD_EXPAND(89)/BWD_TILE(90)` + opCode map + opTraits(2)；
+    runtime `addBwdExpand/addBwdTile`（opKind 95/96，A=dy B=dx P0-3=id P4-7=od）；
+    ops_iface ExpandOp/TileOp.backward（trainMode guard + dx<0 return）+
+    registerFwdBwd(74→95)/(76→96)（GPU 前向保留，训练反向 CPU-only）
+  - graph_compiler buildRuntime BWD_EXPAND/TILE：id=nodeIn1(x) shape、od=nodeIn0
+    (dy=前向输出 grad) shape；buildReverseGraph Expand/Tile 分支 + dx 图输入 guard
+- 验证 `infer_tests/bwd_bc_main.myp` runtime 数值对拍：Expand x[1,2,1,3]→y[1,2,2,3]
+  dy=0..11 → **dx=[3,5,7,15,17,19]**；Tile x[1,1,2,3]→y[1,1,4,3] →
+  **dx=[6,8,10,12,14,16]**（手算精确，kernel 清零验证）。CPU 全 PASS BWD BC OK。
+  全量回归 pass=78 fail=0。
+- **剩余 B2（记录，后续）**：Gather（scatter；axis 重复 indices 需累加）、Reduce 族
+  （广播回 x：mean /S、sum 复制、max/min 需 argmax 掩码）、Slice/Pad（切割 scatter，
+  Slice 反向需 attr 数组 + Pad 反向去边）。
+
+---
+
 ## 2026-09 — B1 训练反向补：Reshape/Flatten/Squeeze/Transpose（纯数据重排反向）
 
 - **背景**：buildReverseGraph 此前只覆盖 Gemm/MatMul/Conv/Relu/Sigmoid/SoftmaxCE/

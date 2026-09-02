@@ -701,6 +701,13 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   `infer_tests/json_ops2_main.myp`+`ops2.json`：多输入 5 个 + 8 层 8 输出全手算断言
   CPU+GPU。测试数 76。剩余（复杂/验证难，留后续）：Slice(starts/ends/steps 多数组
   attr 组对齐)、Pad(pads 数组)、Split 多输出、Embedding(ids 需显式值权重源)。
+- **B2 训练反向补：Expand/Tile（完成，2026-09）**：广播/平铺反向 scatter-add。
+  前向源坐标规则统一（`c_k=id_k==1?0:y_k%id_k`）→ 共用 bwdBroadcastCopy scatter
+  kernel（清零 + 累加）。OpCode 89/90 + runtime opKind 95/96 + ExpandOp/TileOp
+  backward + registerFwdBwd(74→95)/(76→96) + buildReverseGraph 分支。bwd_bc_main
+  数值对拍 dx=[3,5,7,15,17,19]/[6,8,10,12,14,16] 精确。测试数 78。
+  **剩余**：Gather（scatter，重复 idx 累加）、Reduce 族（mean /S、sum 复制、
+  max/min argmax 掩码）、Slice/Pad（切割 scatter）。
 - **B1 训练反向补：Reshape/Flatten/Squeeze/Transpose（完成，2026-09）**：
   buildReverseGraph 加纯数据重排反向——Reshape/Flatten/Squeeze 产 BwdReshape
   （copyFlat，前向即连续拷贝）；Transpose 产 BwdTranspose（逆排列搬回，perm 属性
