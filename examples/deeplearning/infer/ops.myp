@@ -2602,6 +2602,40 @@ class InferOps {
                 i = i + 1;
             }
         }
+        // BwdTranspose（B 新增）：dx = 把 dy（前向输出布局 od=perm(id)）按逆映射搬回 x 布局。
+        // transpose 是元素双射 → dx[i] = dy[transpose 中 x[i] 的位置]（无需累加）。
+        // id0..3 = x（dx）dims；dy dims od 由 perm(id) 内部推导。
+        void bwdTranspose(float[] arena, int dyOff, int dxOff,
+                          int id0, int id1, int id2, int id3,
+                          int p0, int p1, int p2, int p3, int pc) {
+            int perm0 = p0, perm1 = p1, perm2 = p2, perm3 = p3;
+            if (pc == 0) { perm0 = 3; perm1 = 2; perm2 = 1; perm3 = 0; }
+            else if (pc == 1) { perm1 = 1; perm2 = 2; perm3 = 3; }
+            else if (pc == 2) { perm2 = 2; perm3 = 3; }
+            else if (pc == 3) { perm3 = 3; }
+            int od0 = (perm0 == 0) ? id0 : ((perm0 == 1) ? id1 : ((perm0 == 2) ? id2 : id3));
+            int od1 = (perm1 == 0) ? id0 : ((perm1 == 1) ? id1 : ((perm1 == 2) ? id2 : id3));
+            int od2 = (perm2 == 0) ? id0 : ((perm2 == 1) ? id1 : ((perm2 == 2) ? id2 : id3));
+            int od3 = (perm3 == 0) ? id0 : ((perm3 == 1) ? id1 : ((perm3 == 2) ? id2 : id3));
+            int total = id0 * id1 * id2 * id3;
+            int i = 0;
+            while (i < total) {
+                int i3 = i % id3;
+                int t = i / id3;
+                int i2 = t % id2;
+                t = t / id2;
+                int i1 = t % id1;
+                int i0 = t / id1;
+                // dy 坐标 = (i_{perm0}, i_{perm1}, i_{perm2}, i_{perm3})
+                int j0 = (perm0 == 0) ? i0 : ((perm0 == 1) ? i1 : ((perm0 == 2) ? i2 : i3));
+                int j1 = (perm1 == 0) ? i0 : ((perm1 == 1) ? i1 : ((perm1 == 2) ? i2 : i3));
+                int j2 = (perm2 == 0) ? i0 : ((perm2 == 1) ? i1 : ((perm2 == 2) ? i2 : i3));
+                int j3 = (perm3 == 0) ? i0 : ((perm3 == 1) ? i1 : ((perm3 == 2) ? i2 : i3));
+                int dyFlat = ((j0 * od1 + j1) * od2 + j2) * od3 + j3;
+                arena[dxOff + i] = arena[dyOff + dyFlat];
+                i = i + 1;
+            }
+        }
         // Slice：沿任意轴切片（支持负 step 反向）
         // id0..3 = 输入 4D 维；od0..3 = 输出 4D 维；每轴 (ax, st, sp) = 轴索引/调整后 start/step
         void sliceOp(float[] arena, int offIn, int offOut,

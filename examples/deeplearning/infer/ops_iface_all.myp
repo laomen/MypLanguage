@@ -713,7 +713,15 @@ class ReshapeOp {
             int xa = rt.opAAt(i); int yd = rt.opBAt(i);
             InferOps.copyFlat(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa));
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // B：BwdReshape（opKind 93）：dy → dx 连续拷贝（reshape 不重排内存）
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int dx = rt.opBAt(i);
+                if (dx < 0) return;   // 图输入 Reshape：dx 槽空
+                InferOps.copyFlat(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(dx), rt.tensorRows(dy) * rt.tensorCols(dy));
+            }
+        }
 }
 
 // ---- concat（opKind 25 前向）----
@@ -744,7 +752,18 @@ class TransposeOp {
             int id0 = rt.opP5At(i), id1 = rt.opP6At(i), id2 = rt.opP7At(i), id3 = rt.opP8At(i);
             InferOps.transpose(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), id0, id1, id2, id3, p0, p1, p2, p3, pc);
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // B：BwdTranspose（opKind 94）：dx = 把 dy 按逆排列搬回 x 布局
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int dx = rt.opBAt(i);
+                if (dx < 0) return;
+                int p0 = rt.opP0At(i), p1 = rt.opP1At(i), p2 = rt.opP2At(i), p3 = rt.opP3At(i);
+                int pc = rt.opP4At(i);
+                int id0 = rt.opP5At(i), id1 = rt.opP6At(i), id2 = rt.opP7At(i), id3 = rt.opP8At(i);
+                InferOps.bwdTranspose(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(dx), id0, id1, id2, id3, p0, p1, p2, p3, pc);
+            }
+        }
 }
 
 // ---- slice（opKind 27 前向）----
@@ -2267,9 +2286,9 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(21, new SiluOp(), 0);                 rt.registerFwd(21, new GpuSiluOp(), 1);
     rt.registerFwd(22, new HardSwishOp(), 0);            rt.registerFwd(22, new GpuHardSwishOp(), 1);
     rt.registerFwd(23, new ClipOp(), 0);                 rt.registerFwd(23, new GpuClipOp(), 1);
-    rt.registerFwd(24, new ReshapeOp(), 0);              rt.registerFwd(24, new GpuReshapeOp(), 1);
+    rt.registerFwdBwd(24, 93, new ReshapeOp(), 0);        rt.registerFwd(24, new GpuReshapeOp(), 1);
     rt.registerFwd(25, new ConcatOp(), 0);               rt.registerFwd(25, new GpuConcatOp(), 1);
-    rt.registerFwd(26, new TransposeOp(), 0);            rt.registerFwd(26, new GpuTransposeOp(), 1);
+    rt.registerFwdBwd(26, 94, new TransposeOp(), 0);     rt.registerFwd(26, new GpuTransposeOp(), 1);
     rt.registerFwd(27, new SliceOp(), 0);                rt.registerFwd(27, new GpuSliceOp(), 1);
     rt.registerFwd(28, new Resize2dOp(), 0);             rt.registerFwd(28, new GpuResize2dOp(), 1);
     rt.registerFwd(29, new SplitOp(), 0);                rt.registerFwd(29, new GpuSplitOp(), 1);

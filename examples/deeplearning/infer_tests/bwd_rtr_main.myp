@@ -1,0 +1,67 @@
+// bwd_rtr_main.myp — B：Reshape/Transpose 反向 kernel 数值对拍（直接 runtime API）。
+// Reshape：x[3,2]=1..6 → addReshape → y[2,3]（copyFlat 不重排）；dy=10..15 →
+//   addBwdReshape(dy, dx) → dx 应逐位 = dy（reshape 反向 = 连续拷贝）。
+// Transpose：x[1,1,2,2]=[1,2,3,4] perm[0,1,3,2]（换 H/W）→ y=[1,3,2,4]；
+//   dy(对 y)=[10,20,30,40] → addBwdTranspose(dy, dx, perm, id=[1,1,2,2])
+//   → dx(对 x) 期望 [10,30,20,40]（x1=1→y0 梯度10、x2=2→y2 梯度30、…）。
+// 一次 run 全算（含前向对照）。全 PASS → BWD RTR OK。
+import env;
+import fmt;
+import "../infer/runtime.myp";
+
+class BwdRtrApp {
+    action:
+        double absd(double v) { if (v < 0.0) return 0.0 - v; return v; }
+        @constructor BwdRtrApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(1024);
+            rt.setTrain(1);
+            // ---- Reshape：x[3,2]→y[2,3]（6 元素连续拷贝）----
+            int xR = rt.addTensor(3, 2);
+            int yR = rt.addTensor(2, 3);
+            int dxR = rt.addTensor(3, 2);
+            int dyR = rt.addTensor(2, 3);
+            int i = 0;
+            while (i < 6) { rt.setFlat(xR, i, double(i + 1)); i = i + 1; }
+            i = 0;
+            while (i < 6) { rt.setFlat(dyR, i, double(i + 10)); i = i + 1; }
+            rt.addReshape(xR, yR);
+            rt.addBwdReshape(dyR, dxR);
+            // ---- Transpose：x[1,1,2,2] perm[0,1,3,2]（H/W 交换）----
+            int xT = rt.addTensor(4, 1);
+            int yT = rt.addTensor(4, 1);
+            int dxT = rt.addTensor(4, 1);
+            int dyT = rt.addTensor(4, 1);
+            // x = [1,2,3,4]（h0=[1,2] h1=[3,4]）；transpose H/W → y = [1,3,2,4]
+            rt.setFlat(xT, 0, 1.0); rt.setFlat(xT, 1, 2.0); rt.setFlat(xT, 2, 3.0); rt.setFlat(xT, 3, 4.0);
+            // dy（对 y）= [10,20,30,40]
+            rt.setFlat(dyT, 0, 10.0); rt.setFlat(dyT, 1, 20.0); rt.setFlat(dyT, 2, 30.0); rt.setFlat(dyT, 3, 40.0);
+            rt.addTranspose(xT, yT, 0, 1, 3, 2, 4, 1, 1, 2, 2);
+            rt.addBwdTranspose(dyT, dxT, 0, 1, 3, 2, 4, 1, 1, 2, 2);
+            rt.run();
+            int bad = 0;
+            // Reshape：fwd y == x；bwd dx == dy
+            i = 0;
+            while (i < 6) {
+                if (absd(rt.getFlat(yR, i) - double(i + 1)) > 1.0e-3) bad = bad + 1;
+                if (absd(rt.getFlat(dxR, i) - double(i + 10)) > 1.0e-3) bad = bad + 1;
+                i = i + 1;
+            }
+            // Transpose：fwd y = [1,3,2,4]；bwd dx = [10,30,20,40]
+            if (absd(rt.getFlat(yT, 0) - 1.0) > 1.0e-3) bad = bad + 1;
+            if (absd(rt.getFlat(yT, 1) - 3.0) > 1.0e-3) bad = bad + 1;
+            if (absd(rt.getFlat(yT, 2) - 2.0) > 1.0e-3) bad = bad + 1;
+            if (absd(rt.getFlat(yT, 3) - 4.0) > 1.0e-3) bad = bad + 1;
+            if (absd(rt.getFlat(dxT, 0) - 10.0) > 1.0e-3) bad = bad + 1;
+            if (absd(rt.getFlat(dxT, 1) - 30.0) > 1.0e-3) bad = bad + 1;
+            if (absd(rt.getFlat(dxT, 2) - 20.0) > 1.0e-3) bad = bad + 1;
+            if (absd(rt.getFlat(dxT, 3) - 40.0) > 1.0e-3) bad = bad + 1;
+            Console.writeString("bwd reshape/transpose bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            if (bad == 0) Console.writeLine("BWD RTR OK");
+            else Console.writeLine("BWD RTR MISMATCH");
+        }
+}
+
+int main() { BwdRtrApp app = new BwdRtrApp(); return 0; }

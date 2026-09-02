@@ -272,6 +272,24 @@ class InferenceRuntime {
             opA_[id] = dyT; opB_[id] = x0T; opC_[id] = x1T; opD_[id] = dx0T; opP0_[id] = dx1T;
             opCount_ = opCount_ + 1;
         }
+        // B：Reshape 反向（opKind 93）：dy 连续拷回 dx（reshape 不重排内存）。
+        void addBwdReshape(int dyT, int dxT) {
+            int id = opCount_;
+            opKind_[id] = 93;
+            opA_[id] = dyT; opB_[id] = dxT;
+            opCount_ = opCount_ + 1;
+        }
+        // B：Transpose 反向（opKind 94）：dx = 逆排列搬回 x 布局。
+        // opP0-3=perm, opP4=pc, opP5-8=x(id) dims。
+        void addBwdTranspose(int dyT, int dxT, int p0, int p1, int p2, int p3, int pc,
+                             int id0, int id1, int id2, int id3) {
+            int id = opCount_;
+            opKind_[id] = 94;
+            opA_[id] = dyT; opB_[id] = dxT;
+            opP0_[id] = p0; opP1_[id] = p1; opP2_[id] = p2; opP3_[id] = p3; opP4_[id] = pc;
+            opP5_[id] = id0; opP6_[id] = id1; opP7_[id] = id2; opP8_[id] = id3;
+            opCount_ = opCount_ + 1;
+        }
         // Softmax+CE 合并：输入 logits + 标签(one-hot)，输出 dlogits + loss
         void addSoftmaxCE(int logitT, int labelT, int dlogitT, int lossT) {
             int id = opCount_;

@@ -92,6 +92,7 @@ class GraphCompiler {
                 int bwdLike = 0;
                 if (code >= OpCode.BWD_DENSE() && code <= OpCode.BWD_SOFTMAX()) bwdLike = 1;
                 if (code == OpCode.BWD_SUB() || code == OpCode.BWD_MUL() || code == OpCode.BWD_DIV()) bwdLike = 1;
+                if (code == OpCode.BWD_RESHAPE() || code == OpCode.BWD_TRANSPOSE()) bwdLike = 1;
                 if (a < 0 || (out < 0 && bwdLike == 0)) {
                     if (Console.getEnv("MYP_GR_DBG") == "1") {
                         Console.writeString("buildRuntime wire fail type=" + graph.nodeTypeAt(ni) + " in0=" + graph.nodeInAt(ni, 0) + "(" + Fmt.i(a) + ") out=" + graph.compilerEffectiveOut(ni) + "(" + Fmt.i(out) + ")");
@@ -176,6 +177,21 @@ class GraphCompiler {
                     if (code == OpCode.BWD_SUB()) rt.addBwdSub(dy, x0, x1, dx0, dx1);
                     else if (code == OpCode.BWD_MUL()) rt.addBwdMul(dy, x0, x1, dx0, dx1);
                     else rt.addBwdDiv(dy, x0, x1, dx0, dx1);
+                } else if (code == OpCode.BWD_RESHAPE()) {
+                    // B：Reshape 反向（dy → dx 连续拷贝；dx 可空 = 图输入 Reshape）
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    rt.addBwdReshape(dy, dx);
+                } else if (code == OpCode.BWD_TRANSPOSE()) {
+                    // B：Transpose 反向（逆排列搬回 x 布局；x dims 从 nodeIn1 shape）
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    int p0 = graph.compilerAttr(ni, NodeField.PERM0()), p1 = graph.compilerAttr(ni, NodeField.PERM1()), p2 = graph.compilerAttr(ni, NodeField.PERM2()), p3 = graph.compilerAttr(ni, NodeField.PERM3());
+                    int pc = graph.compilerAttr(ni, NodeField.PERM_N());
+                    int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
+                    int id0 = 1, id1 = 1, id2 = 1, id3 = 1;
+                    if (is >= 0) { id0 = graph.compilerShapeDim(is, 0); id1 = graph.compilerShapeDim(is, 1); id2 = graph.compilerShapeDim(is, 2); id3 = graph.compilerShapeDim(is, 3); }
+                    rt.addBwdTranspose(dy, dx, p0, p1, p2, p3, pc, id0, id1, id2, id3);
                 } else if (code == OpCode.BWD_CONV()) {
                     int dy = tensorId(graph.nodeInAt(ni, 0));
                     int x = tensorId(graph.nodeInAt(ni, 1));

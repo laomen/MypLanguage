@@ -867,6 +867,30 @@ class GraphOptimizer {
                             graph.nodeIn(bd, 1, y);              // 用前向输出 y
                             graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
                             graph.endNode();
+                        } else if (t == "Reshape" || t == "Flatten" || t == "Squeeze" || t == "Transpose") {
+                            // B：Reshape/Flatten/Squeeze/Transpose 反向（纯数据重排，无参）。
+                            // Reshape/Flatten/Squeeze 在框架是连续拷贝（copyFlat）→ 反向同
+                            // copy（BwdReshape）；Transpose 需逆排列（BwdTranspose）。
+                            // BwdReshape/BwdTranspose(dy, x) → dx。dx 仅当 x 是节点输出才产
+                            // （图输入被多节点共享时同名 grad 冲突，同 BwdDense guard）。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            if (t == "Transpose") graph.nodeType(bd, "BwdTranspose");
+                            else graph.nodeType(bd, "BwdReshape");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                            if (t == "Transpose") {
+                                graph.compilerAttrSet(bd, NodeField.PERM0(), graph.compilerAttr(ni, NodeField.PERM0()));
+                                graph.compilerAttrSet(bd, NodeField.PERM1(), graph.compilerAttr(ni, NodeField.PERM1()));
+                                graph.compilerAttrSet(bd, NodeField.PERM2(), graph.compilerAttr(ni, NodeField.PERM2()));
+                                graph.compilerAttrSet(bd, NodeField.PERM3(), graph.compilerAttr(ni, NodeField.PERM3()));
+                                graph.compilerAttrSet(bd, NodeField.PERM_N(), graph.compilerAttr(ni, NodeField.PERM_N()));
+                            }
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费（须 endNode 后）
+                            }
                         } else if (t == "Add") {
                             int bd = graph.nodeCount();
                             graph.beginNode();
