@@ -89,6 +89,8 @@ class OnnxLoader {
 
         // 名称 → 张量 id（找不到返回 -1）—— 委托 Graph
         int tensorId(string name) { return g_.tensorId(name); }
+        // 阶段九 dump：runtime tensor id → 张量名（GraphCompiler lower 映射）
+        string tensorName(int tid) { return g_.tensorName(tid); }
         // G2：暴露 Graph 组合根（调试/探针）
         Graph graph() { return g_; }
         void setLayoutNHWC(int v) { doNHWC_ = v; }

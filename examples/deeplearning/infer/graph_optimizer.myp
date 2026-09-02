@@ -11,6 +11,7 @@ interface IGraphOptimizeHost {
     int runTopoSort();
     int runPlanMemory();
     int lowerRuntime(InferenceRuntime rt);
+    int verifyRuntimeWiring(InferenceRuntime rt);
     int buildReverseGraphForOptimizer();
     void setTrainingModeForOptimizer(int mode);
     void enableNoReuseForOptimizer();
@@ -319,6 +320,11 @@ class GraphOptimizer {
             // 阶段八：拓扑顺序验证——planOrder 中 producer 必须先于所有消费者（无逆边）。
             if (Console.getEnv("MYP_IR_VERIFY") == "1" && graph.compilerVerifyTopo() == 0) {
                 Console.writeLine("DBG fail verifyTopo");
+                return 0;
+            }
+            // 阶段八：形状完整性验证——inferShapes 后所有活节点输入/有效输出 shape 已建立。
+            if (Console.getEnv("MYP_IR_VERIFY") == "1" && graph.compilerVerifyShapes() == 0) {
+                Console.writeLine("DBG fail verifyShapes");
                 return 0;
             }
             return 1;
@@ -2072,6 +2078,8 @@ int foldShapeChains(Graph graph) {
             if (peak <= 0) { Console.writeLine("DBG fail planMemory"); return 0; }
             rt.resizeArena(peak);
             if (host.lowerRuntime(rt) == 0) { Console.writeLine("DBG fail buildRuntime"); return 0; }
+            // 阶段八：Runtime wiring 验证——op/tensor 表与 IR 一致（无悬空引用/漏注册）。
+            if (Console.getEnv("MYP_IR_VERIFY") == "1" && host.verifyRuntimeWiring(rt) == 0) { Console.writeLine("DBG fail verifyRuntimeWiring"); return 0; }
             if (Console.getEnv("MYP_RSZ_DBG") == "1") host.dumpResizeSizesForOptimizer();
             return 1;
         }
@@ -2086,6 +2094,8 @@ int foldShapeChains(Graph graph) {
             if (peak <= 0) { Console.writeLine("DBG fail planMemory"); return 0; }
             rt.resizeArena(peak);
             if (host.lowerRuntime(rt) == 0) { Console.writeLine("DBG fail buildRuntime"); return 0; }
+            // 阶段八：Runtime wiring 验证——op/tensor 表与 IR 一致（含训练反向/更新节点）。
+            if (Console.getEnv("MYP_IR_VERIFY") == "1" && host.verifyRuntimeWiring(rt) == 0) { Console.writeLine("DBG fail verifyRuntimeWiring"); return 0; }
             return 1;
         }
 }

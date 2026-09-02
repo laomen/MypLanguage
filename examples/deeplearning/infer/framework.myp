@@ -1,0 +1,299 @@
+// framework.myp — 统一 Standard Library Interface（SLI）facade。
+//
+// 阶段九目标：用户程序不再手动 import pb/runtime/onnx_loader 并拼装样板，只需：
+//   import "../infer/framework.myp";
+//   Session s = new Session();
+//   s.load(path);            // 自动建 runtime + 跑优化管线
+//   s.setInput("data", buf, n);   // 或 setFlat(tid, i, v)
+//   s.runAuto();             // MYP_GPU=1 → GPU，否则 CPU
+//   double[] out = s.getOutput("output");
+//   if (s.runError() != 0) ...  // 统一错误码
+//
+// Session 只做组合转发，不改内部实现：load→OnnxLoader，run→runRuntime/
+// runGpuRuntime，错误/统计复用阶段七的 phase/loadError/compileError/runError。
+
+import env;
+import fmt;
+import "./pb.myp";
+import "./runtime.myp";
+import "./graph_defs.myp";
+import "./graph.myp";
+import "./onnx_loader.myp";
+
+class Session {
+    action:
+        @constructor Session() {
+            rt_ = new InferenceRuntime();
+            loader_ = new OnnxLoader();
+            rt_.init(2048);
+        }
+
+        // ---- 加载与编译（三阶段封装）----
+        int load(string path) { return loader_.load(path, rt_); }
+        int loadTrain(string path) { return loader_.loadTrain(path, rt_); }
+        int loadMmap(string path) { return loader_.loadMmap(path, rt_); }
+        int loadTrainMmap(string path) { return loader_.loadTrainMmap(path, rt_); }
+        void setInputShape(string name, int d0, int d1, int d2, int d3, int d4, int rank5) { loader_.setInputShape(name, d0, d1, d2, d3, d4, rank5); }
+
+        // ---- 执行（后端选择）----
+        int run() { return loader_.runRuntime(rt_); }
+        int runGpu() { return loader_.runGpuRuntime(rt_); }
+        int runAuto() { if (Console.getEnv("MYP_GPU") == "1") return loader_.runGpuRuntime(rt_); return loader_.runRuntime(rt_); }
+
+        // ---- 统一错误码与统计（阶段七）----
+        int phase() { return loader_.phase(); }
+        int loadError() { return loader_.loadError(); }
+        int compileError() { return loader_.compileError(); }
+        int runError() { return loader_.runError(); }
+        int compileMs() { return loader_.compileMs(); }
+        int lastRunMs() { return loader_.lastRunMs(); }
+        int lastRunOps() { return loader_.lastRunOps(); }
+        int opCount() { return rt_.opCount(); }
+        int irVersion() { return loader_.irVersion(); }
+        int opsetVersion() { return loader_.opsetVersion(); }
+        int opsetSupported() { return loader_.opsetSupported(); }
+
+        // ---- 张量访问（隐藏 arena 细节）----
+        int tensorId(string name) { return loader_.tensorId(name); }
+        // 张量元素数（按 IR shape 表；CNN 张量 runtime 2D 投影 tRows 可能为 0，勿用 rt.tensorSize）
+        int tensorSize(string name) { return loader_.shapeElementCount(name); }
+        int tensorRows(int tid) { return rt_.tensorRows(tid); }
+        int tensorCols(int tid) { return rt_.tensorCols(tid); }
+        int inputCount() { return loader_.graphInputCount(); }
+        string inputName(int i) { return loader_.graphInputName(i); }
+        int outputCount() { return loader_.graphOutputCount(); }
+        string outputName(int i) { return loader_.graphOutputName(i); }
+
+        void setFlat(int tid, int i, double v) { rt_.setFlat(tid, i, v); }
+        double getFlat(int tid, int i) { return rt_.getFlat(tid, i); }
+
+        // 按名写入输入张量（前 n 个元素；n 超界则截断到张量容量）
+        void setInput(string name, double[] buf, int n) {
+            int tid = loader_.tensorId(name);
+            if (tid < 0) return;
+            int cap = loader_.shapeElementCount(name);
+            int i = 0;
+            while (i < n && i < cap) { rt_.setFlat(tid, i, buf[i]); i = i + 1; }
+        }
+
+        // 读取输出张量为 double[]（长度 = 张量元素数）
+        double[] getOutput(string name) {
+            int tid = loader_.tensorId(name);
+            double[] out = new double[0];
+            if (tid < 0) return out;
+            int n = loader_.shapeElementCount(name);
+            out = new double[n];
+            int i = 0;
+            while (i < n) { out[i] = rt_.getFlat(tid, i); i = i + 1; }
+            return out;
+        }
+
+        // ---- 便利：从 .f32 文件读输入（小端 4 字节 IEEE-754）----
+        int readF32File(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return 0;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                out[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            return i;
+        }
+
+        int loadInputFromFile(string name, string f32path) {
+            int tid = loader_.tensorId(name);
+            if (tid < 0) return 0;
+            int n = loader_.shapeElementCount(name);
+            double[] buf = new double[n];
+            int got = readF32File(f32path, buf, n);
+            if (got < n) return 0;
+            setInput(name, buf, n);
+            return 1;
+        }
+
+        // ---- 网络结构 dump（load 后调用）：图输入/输出 + 每个活节点 op/输入/属性/有效输出 ----
+        void dumpGraph() {
+            Graph g = loader_.graph();
+            Console.writeString("graph: nodes=" + Fmt.i(g.nodeCount()));
+            Console.writeString(" inputs=" + Fmt.i(g.graphInputCount()));
+            Console.writeString(" outputs=" + Fmt.i(g.graphOutputCount()));
+            Console.writeString(" weights=" + Fmt.i(g.weightCount()));
+            Console.writeString(" tensors=" + Fmt.i(g.compilerShapeCount()));
+            Console.writeString(" runtimeOps=" + Fmt.i(rt_.opCount()));
+            Console.writeLine("");
+            int i = 0;
+            while (i < g.graphInputCount()) { Console.writeString("  IN " + g.graphInputName(i)); Console.writeLine(""); i = i + 1; }
+            i = 0;
+            while (i < g.graphOutputCount()) { Console.writeString("  OUT " + g.graphOutputName(i)); Console.writeLine(""); i = i + 1; }
+            i = 0;
+            while (i < g.nodeCount()) {
+                string t = g.nodeTypeAt(i);
+                if (t == "") { i = i + 1; continue; }
+                Console.writeString("  n" + Fmt.i(i) + " [" + t + "]");
+                int s = 0;
+                while (s < 5) {
+                    string in = g.nodeInAt(i, s);
+                    if (in != "") { Console.writeString(" in" + Fmt.i(s) + "=" + in); }
+                    s = s + 1;
+                }
+                dumpNodeAttrs(g, i, t);
+                Console.writeString(" -> " + g.compilerEffectiveOut(i));
+                Console.writeLine("");
+                i = i + 1;
+            }
+        }
+
+        // 打印节点关键属性（按 op 类型分派：Conv/Pool 几何、Gemm transB、BN eps、Resize scale、Reduce axes 等）
+        void dumpNodeAttrs(Graph g, int node, string t) {
+            if (t == "Conv" || t == "Conv3D" || t == "ConvTranspose" || t == "MaxPool" || t == "AveragePool" ||
+                t == "MaxPool3D" || t == "AveragePool3D") {
+                Console.writeString(" k=" + Fmt.i(g.attrInt(node, NodeField.KH())) + "x" + Fmt.i(g.attrInt(node, NodeField.KW())));
+                Console.writeString(" s=" + Fmt.i(g.attrInt(node, NodeField.SH())) + "x" + Fmt.i(g.attrInt(node, NodeField.SW())));
+                Console.writeString(" p=" + Fmt.i(g.attrInt(node, NodeField.PT())) + "/" + Fmt.i(g.attrInt(node, NodeField.PL())) + "/" + Fmt.i(g.attrInt(node, NodeField.PB())) + "/" + Fmt.i(g.attrInt(node, NodeField.PR())));
+                if (t == "Conv" || t == "Conv3D" || t == "ConvTranspose") {
+                    Console.writeString(" g=" + Fmt.i(g.attrInt(node, NodeField.GROUP())));
+                    Console.writeString(" d=" + Fmt.i(g.attrInt(node, NodeField.DH())) + "x" + Fmt.i(g.attrInt(node, NodeField.DW())));
+                }
+            } else if (t == "Gemm" || t == "MatMul") {
+                Console.writeString(" transB=" + Fmt.i(g.attrInt(node, NodeField.TRANSB())));
+            } else if (t == "BatchNormalization") {
+                Console.writeString(" eps=" + Fmt.f(g.attrFloat(node, NodeField.EPS_INT()), 0, 4));
+            } else if (t == "LeakyRelu") {
+                Console.writeString(" alpha=" + Fmt.f(g.attrFloat(node, NodeField.ALPHA_INT()), 0, 4));
+            } else if (t == "Resize" || t == "Upsample") {
+                Console.writeString(" mode=" + Fmt.i(g.attrInt(node, NodeField.MODE())) + " scale=[" + Fmt.f(g.attrFloat(node, NodeField.UPSH()), 0, 4) + "," + Fmt.f(g.attrFloat(node, NodeField.UPSW()), 0, 4) + "]");
+            } else if (t == "ReduceMean" || t == "ReduceSum" || t == "ReduceMax" || t == "ReduceMin") {
+                Console.writeString(" axes=[" + Fmt.i(g.attrInt(node, NodeField.AXES0())) + "," + Fmt.i(g.attrInt(node, NodeField.AXES1())) + "," + Fmt.i(g.attrInt(node, NodeField.AXES2())) + "," + Fmt.i(g.attrInt(node, NodeField.AXES3())) + "] keep=" + Fmt.i(g.attrInt(node, NodeField.KEEP())));
+            } else if (t == "Split") {
+                Console.writeString(" axis=" + Fmt.i(g.attrInt(node, NodeField.AXIS())) + " n=" + Fmt.i(g.attrInt(node, NodeField.SPLIT_N())));
+            } else if (t == "Slice") {
+                Console.writeString(" n=" + Fmt.i(g.compilerAttrSliceCount(node)));
+            } else if (t == "Pad") {
+                Console.writeString(" mode=" + Fmt.i(g.attrInt(node, NodeField.PADMODE())));
+            } else if (t == "Softmax" || t == "LogSoftmax" || t == "Concat" || t == "Squeeze") {
+                Console.writeString(" axis=" + Fmt.i(g.attrInt(node, NodeField.AXIS())));
+            } else if (t == "Dropout") {
+                Console.writeString(" mode=" + Fmt.i(g.attrInt(node, NodeField.MODE())));
+            }
+        }
+
+        // ---- 优化后 IR dump：节点表 + 张量表（shape/dtype/role/kind/layout/dead）+ planOrder + runtime op 完整展开 ----
+        void dumpIR() {
+            Graph g = loader_.graph();
+            Console.writeLine("=== IR (optimized) nodes ===");
+            int i = 0;
+            while (i < g.nodeCount()) {
+                string t = g.nodeTypeAt(i);
+                if (t == "") { i = i + 1; continue; }
+                Console.writeString("  n" + Fmt.i(i) + " [" + t + "]");
+                int s = 0;
+                while (s < 5) {
+                    string in = g.nodeInAt(i, s);
+                    if (in != "") { Console.writeString(" in" + Fmt.i(s) + "=" + in); }
+                    s = s + 1;
+                }
+                dumpNodeAttrs(g, i, t);
+                Console.writeString(" -> " + g.compilerEffectiveOut(i));
+                Console.writeLine("");
+                i = i + 1;
+            }
+            Console.writeLine("=== IR (optimized) tensors ===");
+            int si = 0;
+            while (si < g.compilerShapeCount()) {
+                string nm = g.compilerShapeName(si);
+                if (nm == "") { si = si + 1; continue; }
+                Console.writeString("  t" + Fmt.i(si) + " " + nm + " dims=[");
+                Console.writeString(Fmt.i(g.compilerShapeDim(si, 0)) + ",");
+                Console.writeString(Fmt.i(g.compilerShapeDim(si, 1)) + ",");
+                Console.writeString(Fmt.i(g.compilerShapeDim(si, 2)) + ",");
+                Console.writeString(Fmt.i(g.compilerShapeDim(si, 3)));
+                if (g.compilerShapeR5(si) == 1) Console.writeString("," + Fmt.i(g.compilerShapeDim(si, 4)) + "] r5");
+                else Console.writeString("]");
+                Console.writeString(" " + kindName(g.compilerShapeKind(si)));
+                Console.writeString(" " + dtypeName(g.valueDTypeId(si)));
+                Console.writeString(" " + roleName(g.valueRoleId(si)));
+                if (g.compilerShapeNhwc(si) == 1) Console.writeString(" NHWC");
+                if (g.compilerShapeDead(si) == 1) Console.writeString(" DEAD");
+                Console.writeLine("");
+                si = si + 1;
+            }
+            Console.writeString("  planOrder: ");
+            int o = 0;
+            while (o < g.compilerPlanOrderCount()) {
+                int ni = g.compilerPlanOrder(o);
+                Console.writeString(Fmt.i(ni) + "(" + g.nodeTypeAt(ni) + ") ");
+                o = o + 1;
+            }
+            Console.writeLine("");
+            Console.writeLine("=== runtime ops ===");
+            int oi = 0;
+            while (oi < rt_.opCount()) {
+                int kk = rt_.opKindDebug(oi);
+                Console.writeString("  op" + Fmt.i(oi) + " kind=" + Fmt.i(kk) + " " + rt_.opKindName(kk));
+                Console.writeString(" A=" + tensorStr(rt_.opATDebug(oi)));
+                Console.writeString(" B=" + tensorStr(rt_.opBTDebug(oi)));
+                int c = rt_.opCDebug(oi);
+                if (c >= 0) Console.writeString(" C=" + tensorStr(c));
+                int dd = rt_.opDDebug(oi);
+                if (dd >= 0) Console.writeString(" D=" + tensorStr(dd));
+                Console.writeString(" P=[" + Fmt.i(rt_.opP0At(oi)) + "," + Fmt.i(rt_.opP1At(oi)) + "," + Fmt.i(rt_.opP2At(oi)) + "," + Fmt.i(rt_.opP3At(oi)) + "," + Fmt.i(rt_.opP4At(oi)) + "," + Fmt.i(rt_.opP5At(oi)) + "," + Fmt.i(rt_.opP6At(oi)) + "," + Fmt.i(rt_.opP7At(oi)) + "]");
+                if (rt_.opReluAt(oi) == 1) Console.writeString(" relu");
+                Console.writeLine("");
+                oi = oi + 1;
+            }
+        }
+
+        // ---- 内存规划 dump：每个非 dead 张量的 arena 偏移/元素数/producer/lastUse + 峰值 ----
+        void dumpMem() {
+            Graph g = loader_.graph();
+            Console.writeLine("=== memory plan ===");
+            int peak = 0;
+            int si = 0;
+            while (si < g.compilerShapeCount()) {
+                string nm = g.compilerShapeName(si);
+                if (nm == "" || g.compilerShapeDead(si) == 1) { si = si + 1; continue; }
+                int off = g.compilerPlanOff(si);
+                int sz = g.shapeElementCount(nm);
+                Console.writeString("  t" + Fmt.i(si) + " " + nm);
+                Console.writeString(" off=" + Fmt.i(off) + " elems=" + Fmt.i(sz));
+                Console.writeString(" prod=" + Fmt.i(g.compilerPlanProducer(si)) + " lastUse=" + Fmt.i(g.compilerPlanLastUse(si)));
+                if (off + sz > peak) peak = off + sz;
+                Console.writeLine("");
+                si = si + 1;
+            }
+            Console.writeString("  peak(elements)=" + Fmt.i(peak) + "  runtimeArena=" + Fmt.i(rt_.tensorOff(rt_.tensorCountDebug() - 1) + rt_.tensorSize(rt_.tensorCountDebug() - 1)));
+            Console.writeLine("");
+        }
+
+        // runtime tensor id → "name[d0xd1xd2xd3]"（空名显示 tid）
+        string tensorStr(int tid) {
+            if (tid < 0) return "-";
+            string nm = loader_.tensorName(tid);
+            if (nm == "") nm = "t" + Fmt.i(tid);
+            return nm + "[" + Fmt.i(rt_.tensorRows(tid)) + "x" + Fmt.i(rt_.tensorCols(tid)) + "]";
+        }
+
+        string kindName(int k) {
+            if (k == 0) return "FC_ACT"; if (k == 1) return "CNN_ACT"; if (k == 2) return "FC_W";
+            if (k == 3) return "FC_B"; if (k == 4) return "CNN_W"; if (k == 5) return "CNN_B";
+            if (k == 6) return "FC_C"; if (k == 7) return "FC_G"; return "kind" + Fmt.i(k);
+        }
+        string dtypeName(int dt) {
+            if (dt == 1) return "f32"; if (dt == 7) return "i64"; if (dt == 2) return "u8"; if (dt == 3) return "i8";
+            if (dt == 10) return "f16"; if (dt == 16) return "bf16"; if (dt == 11) return "f64"; return "dt" + Fmt.i(dt);
+        }
+        string roleName(int r) {
+            if (r == 1) return "DATA"; if (r == 2) return "SHAPE"; if (r == 3) return "WEIGHT";
+            if (r == 4) return "PARAM"; if (r == 5) return "GIN"; if (r == 6) return "GOUT"; return "role" + Fmt.i(r);
+        }
+    property:
+        InferenceRuntime rt_;
+        OnnxLoader loader_;
+}

@@ -1,0 +1,91 @@
+// sli_main.myp — 阶段九：统一 Standard Library Interface（SLI）端到端测试。
+// 用 Session facade（import 单模块）验证：
+//   1) deadweight 模型：load → loadInputFromFile → runAuto → getOutput vs ORT 参考
+//      （数值对拍，验证 SLI 端到端正确性）
+//   2) 真实 ResNet18：load 编译成功（phase=3、ops>0）——SLI 支持真实大模型
+// CPU（无 MYP_GPU）与 GPU（MYP_GPU=1）都应 SLI ALL OK。
+import env;
+import fmt;
+import "../infer/framework.myp";
+
+class SliApp {
+    action:
+        @constructor SliApp() {
+            // ---- 1. deadweight：SLI 全流程 + 数值 vs ORT ----
+            Session s = new Session();
+            int ok = s.load("./deeplearning/data/onnx/deadweight_test.onnx");
+            Console.writeString("dw load ok="); Console.writeLong(ok);
+            Console.writeString(" phase="); Console.writeLong(s.phase());
+            Console.writeString(" loadErr="); Console.writeLong(s.loadError());
+            Console.writeString(" compileErr="); Console.writeLong(s.compileError());
+            Console.writeString(" ops="); Console.writeLong(s.opCount());
+            Console.writeLine("");
+
+            int got = s.loadInputFromFile("x", "./deeplearning/data/onnx/deadweight_in.f32");
+            Console.writeString("dw input read="); Console.writeLong(got);
+            Console.writeString(" inSize="); Console.writeLong(s.tensorSize("x"));
+            Console.writeLine("");
+
+            int rk = s.runAuto();
+            Console.writeString("dw run ok="); Console.writeLong(rk);
+            Console.writeString(" runErr="); Console.writeLong(s.runError());
+            Console.writeString(" runOps="); Console.writeLong(s.lastRunOps());
+            Console.writeLine("");
+
+            double[] out = s.getOutput("y");
+            int nOut = s.tensorSize("y");
+            int okC = checkOut(out, nOut, "./deeplearning/data/onnx/deadweight_test_ort.bin");
+            Console.writeString("dw vs ORT ok="); Console.writeLong(okC);
+            Console.writeLine("");
+
+            // ---- 3. dump 命令：网络结构 + 优化后 IR ----
+            Console.writeLine("--- dumpGraph ---");
+            s.dumpGraph();
+            Console.writeLine("--- dumpIR ---");
+            s.dumpIR();
+
+            // ---- 2. ResNet18：真实大模型编译（数值回归另有跟踪，此处只验编译）----
+            Session r = new Session();
+            int rok = r.load("./deeplearning/data/onnx/resnet18_v1_7.onnx");
+            Console.writeString("r18 load ok="); Console.writeLong(rok);
+            Console.writeString(" phase="); Console.writeLong(r.phase());
+            Console.writeString(" ops="); Console.writeLong(r.opCount());
+            Console.writeString(" inSize="); Console.writeLong(r.tensorSize("data"));
+            Console.writeLine("");
+
+            if (ok == 1 && s.phase() == 3 && s.loadError() == 0 && s.compileError() == 0 &&
+                got == 1 && rk == 1 && s.runError() == 0 && okC == 1 &&
+                rok == 1 && r.phase() == 3 && r.opCount() > 0) {
+                Console.writeLine("SLI ALL OK");
+            } else {
+                Console.writeLine("SLI MISMATCH");
+            }
+        }
+
+        // 对比输出 vs ORT 参考（.bin f32 小端），max diff 阈值 1e-4
+        int checkOut(double[] out, int n, string path) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return 0;
+            double maxD = 0.0;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                double rv = F32.toDouble(bits);
+                double dv = out[i] - rv;
+                if (dv < 0.0) dv = 0.0 - dv;
+                if (dv > maxD) maxD = dv;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString("  vs ORT max diff: "); Console.writeFloat(maxD); Console.writeLine("");
+            if (maxD <= 1.0e-4) return 1;
+            return 0;
+        }
+}
+
+int main() { SliApp app = new SliApp(); return 0; }
