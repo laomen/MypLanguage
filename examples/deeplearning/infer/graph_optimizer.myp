@@ -241,9 +241,17 @@ class GraphOptimizer {
             int[] indeg = new int[512];
             // P0：所有既有 mutation pass 已完成，此处统一重建 def-use，再消费 O(1) producer 索引。
             graph.compilerRebuildDefUse();
-            if (Console.getEnv("MYP_IR_VERIFY") == "1" && graph.compilerVerifyIR() == 0) {
-                Console.writeLine("DBG fail verifyIR");
-                return 0;
+            if (Console.getEnv("MYP_IR_VERIFY") == "1") {
+                // 阶段八：拓扑排序前统一 IR 完整性验证——use edge / producer 一致性 /
+                // 输入形状。任一损坏即中止（尽早暴露坏 pass）。
+                if (graph.compilerVerifyIR() == 0) {
+                    Console.writeLine("DBG fail verifyIR");
+                    return 0;
+                }
+                if (graph.compilerVerifyDefUse() == 0) {
+                    Console.writeLine("DBG fail verifyDefUse");
+                    return 0;
+                }
             }
             int i = 0;
             while (i < graph.nodeCount()) {
@@ -308,6 +316,11 @@ class GraphOptimizer {
             }
             graph.compilerAnalysisSetValidOr(IRAnalysis.TOPO());
             graph.compilerAnalysisSetTopoGeneration(graph.compilerAnalysisGeneration());
+            // 阶段八：拓扑顺序验证——planOrder 中 producer 必须先于所有消费者（无逆边）。
+            if (Console.getEnv("MYP_IR_VERIFY") == "1" && graph.compilerVerifyTopo() == 0) {
+                Console.writeLine("DBG fail verifyTopo");
+                return 0;
+            }
             return 1;
         }
 
@@ -2031,7 +2044,7 @@ int foldShapeChains(Graph graph) {
             return 1;
         }
 
-                int runPipeline(IGraphOptimizeHost host) {
+        int runPipeline(IGraphOptimizeHost host) {
             if (Console.getEnv("MYP_NO_REUSE") == "1") host.enableNoReuseForOptimizer();
             host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：先折叠输入形状已知的 Resize sizes 链
             host.runIRPass(IRPassKind.FOLD_CONSTS());

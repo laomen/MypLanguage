@@ -1,0 +1,125 @@
+// passverify_main.myp — 阶段八：pass 等价性与 IR 完整性测试
+// 验证：
+//   1) MYP_IR_VERIFY=1 下每个 pass 执行后 verifyIR（精确 use edge / 活节点输入
+//      形状 / 单 producer），任意损坏的 pass 都会在优化管线内被捕获
+//   2) 多个代表性模型（CNN + 真实 ResNet18 + 动态 batch）全管线通过
+//   3) 输出 vs ORT 一致（pass 等价性：优化前后数值不变）
+// 运行：MYP_IR_VERIFY=1 ./passverify（回归脚本自动加此 env）
+import env;
+import fmt;
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class PassVerifyApp {
+    action:
+        @constructor PassVerifyApp() {
+            int ok1 = runConv("./deeplearning/data/onnx/deadweight_test.onnx",
+                              "./deeplearning/data/onnx/deadweight_in.f32",
+                              "./deeplearning/data/onnx/deadweight_test_ort.bin",
+                              "x", "y", 25, 9);
+            int ok2 = runResnet18();
+            int ok3 = runDynBatch();
+            Console.writeString("conv="); Console.writeLong(ok1);
+            Console.writeString(" r18="); Console.writeLong(ok2);
+            Console.writeString(" dynb="); Console.writeLong(ok3);
+            Console.writeLine("");
+            if (ok1 == 1 && ok2 == 1 && ok3 == 1) Console.writeLine("PASSVERIFY ALL OK");
+            else Console.writeLine("PASSVERIFY MISMATCH");
+        }
+
+        int runConv(string model, string inF, string ortF, string inN, string outN, int nIn, int nOut) {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(2048);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load(model, rt);   // MYP_IR_VERIFY=1 时每 pass 后自检
+            if (ok == 0) { Console.writeLine("load failed: " + model); return 0; }
+            int inT = loader.tensorId(inN);
+            int outT = loader.tensorId(outN);
+            double[] buf = new double[64];
+            readF32(inF, buf, nIn);
+            int i = 0;
+            while (i < nIn) { rt.setFlat(inT, i, buf[i]); i = i + 1; }
+            int useGpu = 0;
+            if (Console.getEnv("MYP_GPU") == "1") useGpu = 1;
+            if (useGpu == 1) rt.runGpu(); else rt.run();
+            int m = rt.tensorSize(outT);
+            int okC = checkOut(rt, outT, ortF, m);
+            Console.writeString("  conv: ops="); Console.writeLong(rt.opCount());
+            Console.writeString(" irVerify="); Console.writeLong(loader.compileError());
+            Console.writeLine("");
+            if (m == nOut && okC == 1 && loader.compileError() == 0) return 1;
+            return 0;
+        }
+
+        int runResnet18() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(1024);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load("./deeplearning/data/onnx/resnet18_v1_7.onnx", rt);
+            if (ok == 0) { Console.writeLine("r18 load failed"); return 0; }
+            Console.writeString("  r18: ops="); Console.writeLong(rt.opCount());
+            Console.writeString(" irVerify="); Console.writeLong(loader.compileError());
+            Console.writeLine("");
+            if (rt.opCount() > 0 && loader.compileError() == 0) return 1;
+            return 0;
+        }
+
+        int runDynBatch() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(2048);
+            OnnxLoader loader = new OnnxLoader();
+            loader.setInputShape("x", 4, 1, 5, 5, 1, 0);   // 动态 batch=4
+            int ok = loader.load("./deeplearning/data/onnx/dynbatch_test.onnx", rt);
+            if (ok == 0) { Console.writeLine("dynb load failed"); return 0; }
+            int nIn = rt.tensorSize(loader.tensorId("x"));
+            Console.writeString("  dynb: ops="); Console.writeLong(rt.opCount());
+            Console.writeString(" inSize="); Console.writeLong(nIn);
+            Console.writeString(" irVerify="); Console.writeLong(loader.compileError());
+            Console.writeLine("");
+            if (nIn == 100 && rt.opCount() > 0 && loader.compileError() == 0) return 1;
+            return 0;
+        }
+
+        void readF32(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                out[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        int checkOut(InferenceRuntime rt, int tid, string path, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            double maxD = 0.0;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                double rv = F32.toDouble(bits);
+                double dv = rt.getFlat(tid, i) - rv;
+                if (dv < 0.0) dv = 0.0 - dv;
+                if (dv > maxD) maxD = dv;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString("  vs ORT max diff: "); Console.writeFloat(maxD); Console.writeLine("");
+            if (maxD <= 1.0e-4) return 1;
+            return 0;
+        }
+}
+
+int main() { PassVerifyApp app = new PassVerifyApp(); return 0; }

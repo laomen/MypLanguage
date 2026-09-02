@@ -336,6 +336,67 @@ class Graph {
             }
             return bad == 0 ? 1 : 0;
         }
+        // 阶段八：DefUse 一致性验证——每个活节点输出的 value 的 duProducer 恰为该节点；
+        // 每条 use edge 的 (node,slot) 与节点实际输入槽一致（重扫验证索引）。
+        int verifyDefUse() {
+            if (analysis_.duValid() == 0) rebuildDefUse();
+            int bad = 0;
+            int node = 0;
+            while (node < nodes_.count()) {
+                if (nodeAlive(node) == 1) {
+                    int slot = 0;
+                    while (slot < 4) {
+                        int value = nodeOutputValue(node, slot);   // 与 rebuildDefUse 同口径
+                        if (value >= 0 && value < shapes_.count()) {
+                            int prod = valueProducer(value);
+                            if (prod != node) {
+                                if (Console.getEnv("MYP_IR_VERIFY") == "1") { Console.writeString("DEFUSE node=" + Fmt.i(node) + " slot=" + Fmt.i(slot) + " val=" + Fmt.i(value) + " prod=" + Fmt.i(prod)); Console.writeLine(""); }
+                                bad = 1;
+                            }
+                        }
+                        slot = slot + 1;
+                    }
+                }
+                node = node + 1;
+            }
+            return bad == 0 ? 1 : 0;
+        }
+        // 阶段八：拓扑顺序验证——planOrder 中 producer 节点的位置必须先于所有消费它的
+        // 活节点（planOrder 由 topoSort 生成，此处校验无逆边）。
+        int verifyTopo() {
+            if (analysis_.planOrderCount() == 0) return 1;   // 未规划则跳过
+            int bad = 0;
+            // 构造 node → 执行序（planOrder 是执行序列：planOrder[i] = 第 i 个执行的节点）
+            int[] orderPos = new int[512];
+            int i = 0;
+            while (i < analysis_.planOrderCount()) {
+                int node = analysis_.planOrder(i);
+                if (node >= 0 && node < 512) orderPos[node] = i;
+                i = i + 1;
+            }
+            int node = 0;
+            while (node < nodes_.count()) {
+                if (nodeAlive(node) == 1) {
+                    int slot = 0;
+                    while (slot < 5) {
+                        int value = nodeInputValue(node, slot);
+                        if (value >= 0 && value < shapes_.count()) {
+                            int prod = valueProducer(value);
+                            if (prod >= 0 && prod < 512 && prod != node) {
+                                // 数据依赖：producer 必须比 consumer 先执行
+                                if (orderPos[prod] > orderPos[node]) {
+                                    if (Console.getEnv("MYP_IR_VERIFY") == "1") { Console.writeString("TOPO node=" + Fmt.i(node) + " in=" + nodeInAt(node, slot) + " prod=" + Fmt.i(prod) + " prodPos=" + Fmt.i(orderPos[prod]) + " > " + Fmt.i(orderPos[node])); Console.writeLine(""); }
+                                    bad = 1;
+                                }
+                            }
+                        }
+                        slot = slot + 1;
+                    }
+                }
+                node = node + 1;
+            }
+            return bad == 0 ? 1 : 0;
+        }
         int shapeRank5(string name) { int s = shapeIdx(name); if (s < 0) return 0; return shapes_.r5(s); }
         int valueRank(int value) { if (value < 0 || value >= shapes_.count()) return 0; return shapes_.r5(value) == 1 ? 5 : 4; }
         int valueDim(int value, int axis) {
@@ -1069,6 +1130,8 @@ class Graph {
         int compilerAnalysisGeneration() { return analysis_.analysisGeneration(); }
         void compilerRebuildDefUse() { rebuildDefUse(); }
         int compilerVerifyIR() { return verifyIR(); }
+        int compilerVerifyDefUse() { return verifyDefUse(); }
+        int compilerVerifyTopo() { return verifyTopo(); }
         int compilerPlanProducer(int v) { return planner_.planProducer(v); }
         void compilerSetPlanProducer(int v, int p) { planner_.setPlanProducer(v, p); }
         int compilerPlanLastUse(int v) { return planner_.planLastUse(v); }
