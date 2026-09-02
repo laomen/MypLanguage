@@ -143,6 +143,12 @@ class JsonModelLoader {
                 } else if (op == "Reshape" && j.type(lp + ".shape") != -1) {
                     // A3：int64 shape 参数（内存 int64 常量，readI64Init 内存分支读）
                     if (regI64Arr(j, lp + ".shape", out + "_shape") == 0) return 0;
+                } else if (op == "Expand" && j.type(lp + ".shape") != -1) {
+                    // A3 扩展：int64 shape 参数（同 Reshape 模式）
+                    if (regI64Arr(j, lp + ".shape", out + "_shape") == 0) return 0;
+                } else if (op == "Tile" && j.type(lp + ".repeats") != -1) {
+                    // A3 扩展：int64 repeats 参数
+                    if (regI64Arr(j, lp + ".repeats", out + "_rep") == 0) return 0;
                 } else if (op == "Gather" && j.type(lp + ".indices") != -1) {
                     // A3：int64 indices 参数
                     if (regI64Arr(j, lp + ".indices", out + "_idx") == 0) return 0;
@@ -184,7 +190,7 @@ class JsonModelLoader {
                     if (in3 != "") g_.nodeIn(ni, 2, in3);
                     if (in4 != "") g_.nodeIn(ni, 3, in4);
                     g_.nodeInt(ni, NodeField.AXIS(), gint(j, lp + ".axis", 1));
-                } else if (op == "Softmax") {
+                } else if (op == "Softmax" || op == "LogSoftmax") {
                     g_.nodeInt(ni, NodeField.AXIS(), gint(j, lp + ".axis", 1));
                 } else if (op == "Flatten") {
                     // axis 属性（框架固定按 axis=1 语义拍平剩余维）
@@ -199,6 +205,22 @@ class JsonModelLoader {
                 } else if (op == "MaxPool" || op == "AveragePool") {
                     // 池化：kernel/strides/pads（补 V1 缺口）
                     setKernelAttrs(j, lp, ni);
+                } else if (op == "Expand") {
+                    // A3 扩展：broadcast 复制到目标 shape（int64 shape 常量，nodeIn1）
+                    if (j.type(lp + ".shape") != -1) g_.nodeIn(ni, 1, out + "_shape");
+                } else if (op == "Tile") {
+                    // A3 扩展：沿各维按倍数复制（int64 repeats 常量，nodeIn1）
+                    if (j.type(lp + ".repeats") != -1) g_.nodeIn(ni, 1, out + "_rep");
+                } else if (op == "ReduceSum" || op == "ReduceMean" || op == "ReduceMax" || op == "ReduceMin") {
+                    // A3 扩展：归约（axes 属性 int 数组 AXES0-3+AXES_N；keepdims 可选）
+                    setIntArr(j, lp, "axes", NodeField.AXES0(), NodeField.AXES_N(), ni);
+                    if (j.type(lp + ".keepdims") != -1) g_.nodeInt(ni, NodeField.KEEP(), gint(j, lp + ".keepdims", 1));
+                } else if (op == "Squeeze") {
+                    // A3 扩展：去 size-1 维（axes 属性可选；缺省 → 全 size-1）
+                    setIntArr(j, lp, "axes", NodeField.AXES0(), NodeField.AXES_N(), ni);
+                } else if (op == "Transpose") {
+                    // A3 扩展：perm 属性（缺省 → 反转维度）
+                    setIntArr(j, lp, "perm", NodeField.PERM0(), NodeField.PERM_N(), ni);
                 }
                 // Sigmoid/Relu/GlobalAveragePool 单输入无附加属性
                 g_.nodeOut(ni, out);
@@ -216,6 +238,16 @@ class JsonModelLoader {
                 o = o + 1;
             }
             return 1;
+        }
+
+        // 设置节点 int 数组属性（AXES0-3/AXES_N、PERM0-3/PERM_N 等连续字段 base+k）
+        void setIntArr(Json j, string lp, string key, int base, int cntField, int ni) {
+            if (j.type(lp + "." + key) == -1) return;
+            int n = j.arrayLen(lp + "." + key);
+            if (n > 4) n = 4;
+            g_.nodeInt(ni, cntField, n);
+            int k = 0;
+            while (k < n) { g_.nodeInt(ni, base + k, gdim(j, lp + "." + key, k)); k = k + 1; }
         }
 
         // Conv/MaxPool/AveragePool kernel/strides/pads 属性（ONNX pads 序 [top,left,bottom,right]）

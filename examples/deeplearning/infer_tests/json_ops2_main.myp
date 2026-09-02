@@ -1,0 +1,84 @@
+// json_ops2_main.myp — A3 扩展：JSON 参数化/属性 op（Expand/Tile int64 常量 +
+// Reduce 族/Squeeze/Transpose 属性）。多输入 5 个，8 层 8 输出全手算断言。
+//   xe[1,2,1,3]=1..6 → Expand[1,2,2,3] → e：ch0=[[1,2,3],[1,2,3]] ch1=[[4,5,6],[4,5,6]]
+//   xt[1,1,2,2]=[1,2,3,4] → Transpose perm[0,1,3,2] → t=[1,3,2,4]（H/W 交换）
+//   xr[1,2,2,2]=[1,2,3,4,2,4,6,8]
+//     ReduceSum axes[2,3] → r=[10,20]；ReduceMean axes[0,1] → rm=[3.75]
+//     ReduceMax axes[0,1] → rx=[8]；ReduceMin axes[2,3] → rn=[1,2]
+//   xs[1,1,2,4]=1..8 → Squeeze axes[1] → s=1..8（连续拷贝，shape [1,2,4,1]）
+//   xl[1,1,2,3]=1..6 → Tile repeats[1,1,2,1] → l=[1,2,3,4,5,6,1,2,3,4,5,6]
+import env;
+import fmt;
+import dl;
+class JsonOps2App {
+    action:
+        // 填 double[] 输入：以 base 起递增值 1,2,...
+        void fillSeq(double[] x, int n, double base) {
+            int i = 0;
+            while (i < n) { x[i] = base + double(i); i = i + 1; }
+        }
+        void fillXr(double[] x) {
+            // ch0=[1,2,3,4] ch1=[2,4,6,8]
+            x[0] = 1.0; x[1] = 2.0; x[2] = 3.0; x[3] = 4.0;
+            x[4] = 2.0; x[5] = 4.0; x[6] = 6.0; x[7] = 8.0;
+        }
+        // 逐输出断言：长度 + 容差比较（更新 badp[0]）
+        void cmpOut(Session s, string nm, int wantN, double[] exp, int[] badp) {
+            double[] o = s.getOutput(nm);
+            int n = s.tensorSize(nm);
+            if (n != wantN) { badp[0] = badp[0] + 1; Console.writeString(nm + " size " + Fmt.i(n) + " != " + Fmt.i(wantN)); Console.writeLine(""); return; }
+            int k = 0;
+            while (k < n) { double d = o[k] - exp[k]; if (d < 0.0) d = 0.0 - d; if (d > 1.0e-3) badp[0] = badp[0] + 1; k = k + 1; }
+            Console.writeString(nm + " n=" + Fmt.i(n) + " bad=" + Fmt.i(badp[0])); Console.writeLine("");
+        }
+        @constructor JsonOps2App() {
+            Session s = new Session();
+            int ok = s.loadJson("./deeplearning/infer_tests/ops2.json");
+            if (ok == 0) { Console.writeLine("JSON OPS2 SKIP (no load)"); return; }
+            double[] xe = new double[6]; fillSeq(xe, 6, 1.0);
+            double[] xt = new double[4]; fillSeq(xt, 4, 1.0);
+            double[] xr = new double[8]; fillXr(xr);
+            double[] xs = new double[8]; fillSeq(xs, 8, 1.0);
+            double[] xl = new double[6]; fillSeq(xl, 6, 1.0);
+            s.setInput("xe", xe, 6);
+            s.setInput("xt", xt, 4);
+            s.setInput("xr", xr, 8);
+            s.setInput("xs", xs, 8);
+            s.setInput("xl", xl, 6);
+            int rk = s.runAuto();
+            // 期望（MYP 无二维动态数组 → 每输出独立 double[]）
+            // e = ch0[[1,2,3]x2] ch1[[4,5,6]x2]
+            double[] eE = new double[12];
+            eE[0]=1.0; eE[1]=2.0; eE[2]=3.0; eE[3]=1.0; eE[4]=2.0; eE[5]=3.0;
+            eE[6]=4.0; eE[7]=5.0; eE[8]=6.0; eE[9]=4.0; eE[10]=5.0; eE[11]=6.0;
+            double[] tE = new double[4];
+            tE[0]=1.0; tE[1]=3.0; tE[2]=2.0; tE[3]=4.0;
+            double[] rE = new double[2];
+            rE[0]=10.0; rE[1]=20.0;
+            double[] rmE = new double[1];
+            rmE[0]=3.75;
+            double[] rxE = new double[1];
+            rxE[0]=8.0;
+            double[] rnE = new double[2];
+            rnE[0]=1.0; rnE[1]=2.0;
+            double[] sE = new double[8];
+            int i = 0;
+            while (i < 8) { sE[i] = 1.0 + double(i); i = i + 1; }
+            double[] lE = new double[12];
+            i = 0;
+            while (i < 6) { lE[i] = 1.0 + double(i); lE[6+i] = 1.0 + double(i); i = i + 1; }
+            int[] badbox = new int[1];
+            badbox[0] = 0;
+            cmpOut(s, "e", 12, eE, badbox);
+            cmpOut(s, "t", 4, tE, badbox);
+            cmpOut(s, "r", 2, rE, badbox);
+            cmpOut(s, "rm", 1, rmE, badbox);
+            cmpOut(s, "rx", 1, rxE, badbox);
+            cmpOut(s, "rn", 2, rnE, badbox);
+            cmpOut(s, "s", 8, sE, badbox);
+            cmpOut(s, "l", 12, lE, badbox);
+            if (ok==1 && rk==1 && badbox[0]==0) Console.writeLine("JSON OPS2 OK");
+            else Console.writeLine("JSON OPS2 MISMATCH");
+        }
+}
+int main() { JsonOps2App a = new JsonOps2App(); return 0; }
