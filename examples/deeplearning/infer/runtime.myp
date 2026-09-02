@@ -1339,6 +1339,140 @@ class InferenceRuntime {
         int gpuH2DUploads() { return h2dUploads_; }
         int gpuH2DDownloads() { return h2dDownloads_; }
 
+        // ==================== 阶段七：计划缓存（dumpPlan/loadPlan） ====================
+        // 把 buildRuntime 之后的执行计划（op 表 + tensor 表 + Slice 参数 + arena 权重）
+        // 序列化到磁盘；重复加载同一模型时 loadPlan 直接恢复，跳过 ONNX 解析 + 优化
+        // pass + buildRuntime（大模型加载从 ~秒级降到毫秒级）。
+        // 二进制格式（小端）：
+        //   magic[4]="MYPP" version:int32 tensorCount:int32 opCount:int32 arenaTop:int32
+        //   每张量：rows cols N C D H W off（7×int32）
+        //   每 op：kind A B C D P0..P8 X0..X3 Relu Cval（19×int32）
+        //   每 op：sCnt sAx0..3 sSt0..3 sSp0..3 sOd0..3 sId0..3（1+20 int32）
+        //   arena：arenaTop 个 float（权重/常量已写入）
+        int dumpPlan(string path) {
+            int fd = __myp_io_fopen(path, "wb");
+            if (fd < 0) return 0;
+            // ONNX 路径用 addTensorPlanned*（内存规划，不 bump arenaTop_），故权重区
+            // 边界 = max(arenaTop_, 各张量 off+size)。为简单可靠，dump 整个 arena 数据区
+            // （arenaCap_ - statsSize() 前的规划容量 = 规划峰值，权重/常量全在其中）。
+            int dataLen = arenaCap_ - statsSize();
+            if (dataLen < arenaTop_) dataLen = arenaTop_;
+            __myp_io_write_byte(80); __myp_io_write_byte(89); __myp_io_write_byte(80); __myp_io_write_byte(80);   // "MYPP"
+            writeI32(1);   // version
+            writeI32(tensorCount_);
+            writeI32(opCount_);
+            writeI32(dataLen);
+            int t = 0;
+            while (t < tensorCount_) {
+                writeI32(tRows_[t]); writeI32(tCols_[t]); writeI32(tN_[t]); writeI32(tC_[t]);
+                writeI32(tD_[t]); writeI32(tH_[t]); writeI32(tW_[t]); writeI32(tOff_[t]);
+                t = t + 1;
+            }
+            int i = 0;
+            while (i < opCount_) {
+                writeI32(opKind_[i]);
+                writeI32(opA_[i]); writeI32(opB_[i]); writeI32(opC_[i]); writeI32(opD_[i]);
+                writeI32(opP0_[i]); writeI32(opP1_[i]); writeI32(opP2_[i]); writeI32(opP3_[i]);
+                writeI32(opP4_[i]); writeI32(opP5_[i]); writeI32(opP6_[i]); writeI32(opP7_[i]); writeI32(opP8_[i]);
+                writeI32(opX_[i * 4 + 0]); writeI32(opX_[i * 4 + 1]); writeI32(opX_[i * 4 + 2]); writeI32(opX_[i * 4 + 3]);
+                writeI32(opRelu_[i]); writeI32(pCval_[i]);
+                writeI32(sCnt_[i]);
+                writeI32(sAx_[i * 4 + 0]); writeI32(sAx_[i * 4 + 1]); writeI32(sAx_[i * 4 + 2]); writeI32(sAx_[i * 4 + 3]);
+                writeI32(sSt_[i * 4 + 0]); writeI32(sSt_[i * 4 + 1]); writeI32(sSt_[i * 4 + 2]); writeI32(sSt_[i * 4 + 3]);
+                writeI32(sSp_[i * 4 + 0]); writeI32(sSp_[i * 4 + 1]); writeI32(sSp_[i * 4 + 2]); writeI32(sSp_[i * 4 + 3]);
+                writeI32(sOd_[i * 4 + 0]); writeI32(sOd_[i * 4 + 1]); writeI32(sOd_[i * 4 + 2]); writeI32(sOd_[i * 4 + 3]);
+                writeI32(sId_[i * 4 + 0]); writeI32(sId_[i * 4 + 1]); writeI32(sId_[i * 4 + 2]); writeI32(sId_[i * 4 + 3]);
+                i = i + 1;
+            }
+            // arena 权重区（buildRuntime 后 writeWeight 已写入；序列化 dataLen 前全部）
+            int a = 0;
+            while (a < dataLen) {
+                int bits = floatToBits(arena[a]);
+                writeI32(bits);
+                a = a + 1;
+            }
+            __myp_io_fclose();
+            return 1;
+        }
+
+        // 从计划文件恢复执行计划（跳过 ONNX 解析+优化+buildRuntime）。
+        // 返回 1=成功。恢复后 run()/runGpu() 直接可用（权重在 arena 已就位）。
+        int loadPlan(string path) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return 0;
+            int m0 = readByte(); int m1 = readByte(); int m2 = readByte(); int m3 = readByte();
+            if (m0 != 80 || m1 != 89 || m2 != 80 || m3 != 80) { __myp_io_fclose(); return 0; }
+            int version = readI32();
+            if (version != 1) { __myp_io_fclose(); return 0; }
+            int tn = readI32();
+            int on = readI32();
+            int dataLen = readI32();
+            arenaTop_ = 0;
+            tensorCount_ = 0;
+            opCount_ = 0;
+            gpuPersist_ = 0;
+            gpuSyncN_ = 0;
+            int t = 0;
+            while (t < tn) {
+                tRows_[t] = readI32(); tCols_[t] = readI32(); tN_[t] = readI32(); tC_[t] = readI32();
+                tD_[t] = readI32(); tH_[t] = readI32(); tW_[t] = readI32(); tOff_[t] = readI32();
+                t = t + 1;
+            }
+            tensorCount_ = tn;
+            int i = 0;
+            while (i < on) {
+                opKind_[i] = readI32();
+                opA_[i] = readI32(); opB_[i] = readI32(); opC_[i] = readI32(); opD_[i] = readI32();
+                opP0_[i] = readI32(); opP1_[i] = readI32(); opP2_[i] = readI32(); opP3_[i] = readI32();
+                opP4_[i] = readI32(); opP5_[i] = readI32(); opP6_[i] = readI32(); opP7_[i] = readI32(); opP8_[i] = readI32();
+                opX_[i * 4 + 0] = readI32(); opX_[i * 4 + 1] = readI32(); opX_[i * 4 + 2] = readI32(); opX_[i * 4 + 3] = readI32();
+                opRelu_[i] = readI32(); pCval_[i] = readI32();
+                sCnt_[i] = readI32();
+                sAx_[i * 4 + 0] = readI32(); sAx_[i * 4 + 1] = readI32(); sAx_[i * 4 + 2] = readI32(); sAx_[i * 4 + 3] = readI32();
+                sSt_[i * 4 + 0] = readI32(); sSt_[i * 4 + 1] = readI32(); sSt_[i * 4 + 2] = readI32(); sSt_[i * 4 + 3] = readI32();
+                sSp_[i * 4 + 0] = readI32(); sSp_[i * 4 + 1] = readI32(); sSp_[i * 4 + 2] = readI32(); sSp_[i * 4 + 3] = readI32();
+                sOd_[i * 4 + 0] = readI32(); sOd_[i * 4 + 1] = readI32(); sOd_[i * 4 + 2] = readI32(); sOd_[i * 4 + 3] = readI32();
+                sId_[i * 4 + 0] = readI32(); sId_[i * 4 + 1] = readI32(); sId_[i * 4 + 2] = readI32(); sId_[i * 4 + 3] = readI32();
+                i = i + 1;
+            }
+            opCount_ = on;
+            // 重建 arena（容量 = dataLen + stats 尾部）并恢复权重区
+            resizeArena(dataLen);
+            int a = 0;
+            while (a < dataLen) {
+                int bits = readI32();
+                arena[a] = float(bitsToFloat(bits));
+                a = a + 1;
+            }
+            arenaTop_ = dataLen;
+            __myp_io_fclose();
+            return 1;
+        }
+
+        // ---- 计划缓存内部小工具 ----
+        void writeI32(int v) {
+            __myp_io_write_byte(v & 255);
+            __myp_io_write_byte((v >> 8) & 255);
+            __myp_io_write_byte((v >> 16) & 255);
+            __myp_io_write_byte((v >> 24) & 255);
+        }
+        int readByte() {
+            int b = __myp_io_read_byte();
+            if (b < 0) return 0;
+            return b;
+        }
+        int readI32() {
+            int b0 = readByte(); int b1 = readByte(); int b2 = readByte(); int b3 = readByte();
+            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+        }
+        int floatToBits(double v) {
+            int bits = F32.toBits(v);
+            return bits;
+        }
+        double bitsToFloat(int bits) {
+            return F32.toDouble(bits);
+        }
+
         // GPU 执行：M3 设备驻留。
         // 整块 arena 一次 H2D 到设备（GpuBufferF），各算子 resident(a=dev) 直接
         // 操作设备内存（零逐算子传输），最后一次 D2H 取回。
