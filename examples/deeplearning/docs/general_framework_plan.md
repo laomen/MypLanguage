@@ -538,13 +538,75 @@ verifyRuntimeWiring（由 buildRuntime 失败即中止 + opCount>0 检查覆盖�
 
 阶段八进度（2026-09-02）：
 - **新增 verifyDefUse + verifyTopo**，挂接 topoSort 前后（MYP_IR_VERIFY=1）。
+- **新增 verifyShapes + verifyRuntimeWiring**（2026-09-02 收尾）。verifyShapes 在
+  topoSort 后检查每活节点输入不得引用死张量、有效输出必有已建立 shape 且非 dead；
+  verifyRuntimeWiring 在 buildRuntime 后检查 runtime op>=1、每个非 dead 张量都被
+  注册、活节点引用的非 dead 输入无悬空、runtime tensorCount >= IR 非 dead 张量数。
+  至此阶段八五个校验项（verifyIR/verifyDefUse/verifyTopo/verifyShapes/
+  verifyRuntimeWiring）全部显式化，MYP_IR_VERIFY=1 下任一损坏即中止。
+  **误报豁免**：形状/参数张量（role SHAPE/PARAM 或 dtype INT64）标 dead 合法
+  （Resize roi/scales、Gather indices、Slice starts 从 file_ 直读）；readI64Init
+  临时 f32 索引张量使 tensorCount 可 > IR 非 dead 数（计数用 >=）。
 - **新增 pass 等价性测试** `infer_tests/passverify_main.myp`（Conv + 真实 ResNet18
-  + 动态 batch 三模型在 MYP_IR_VERIFY=1 下全管线通过，输出 vs ORT 一致）。
-- 四层测试现状：IR 单元（inferShapes/verifyIR 失败即中止）、CPU/GPU 对拍（58 测试
+  + 动态 batch 三模型在 MYP_IR_VERIFY=1 下全管线通过，输出 vs ORT 一致；grad_check
+  训练路径 + 真实 ResNet50 336.658 同步验证）。
+- 四层测试现状：IR 单元（inferShapes/verifyIR 失败即中止）、CPU/GPU 对拍（60 测试
   全 CPU+GPU）、pass 等价（passverify + 输出 vs ORT）、真实 ONNX/ORT（ResNet18/50、
   3D U-Net、LLM 等）。
+- **新发现既有 bug（待追查）**：ResNet18 推理 sum=1331.47 vs ORT 0.101261
+  （ResNet50 336.658 正常）；r18/passverify 只验编译不断言数值，未捕获。
 
 新增回归模型必须放入 `infer_tests/`，正向语言特性测试放入 `tests/@test/`，bug 复现放入 `tests/bugs/`。
+
+## 10.5 阶段九：统一 Standard Library Interface（SLI）
+
+### 目标
+
+框架目前没有统一的对外 API 层：每个用户程序要手动 `import` 内部模块（`pb.myp`/
+`runtime.myp`/`onnx_loader.myp`）并手动拼装 `OnnxLoader`+`InferenceRuntime` 样板；
+`train/`、`llm/`、`diffusion/` 更是各自独立脚本，接口互不通用。阶段九收敛出
+一个稳定的、文档化的对外标准库接口，让上层 .myp 程序只依赖它。
+
+### 建设内容
+
+```text
+dl.framework（单一入口模块，如 infer/framework.myp）
+├── Session      # load(path) → 自动建 runtime + 跑优化管线；setInput/getOutput
+├── load/compile/run 三阶段封装（复用阶段七 phase/loadError/compileError/runError）
+├── run() / runGpu() 后端选择（复用阶段七 runRuntime/runGpuRuntime）
+├── tensor 读写（setFlat/getTensor，隐藏 arena 细节）
+├── 统一错误与统计（phase、错误码、compileMs/lastRunMs/lastRunOps）
+└── train/llm 可选接入：把训练 Session（grad_check/训练循环）与 LLM 生成
+    收敛到同一接口族，逐步替换各独立入口脚本的样板
+```
+
+### 验收标准
+
+- 用户程序从「手动 import 5 个模块 + 20 行样板」降为「import dl + 3 行」：
+  `Session s = dl.load(path); s.run(); out = s.getOutput(y);`
+- 现有 `OnnxLoader`/`InferenceRuntime` 内部 API 不变，facade 只做组合转发。
+- 推理（ResNet18/50、3D U-Net）经 SLI 与直接调用输出一致（sum 336.658 保持）。
+- `infer_tests/` 新增一个 `sli_main.myp` 端到端回归（CPU+GPU）。
+
+### 当前进度（2026-09-02）
+
+- **已完成：`infer/framework.myp` 的 `Session` facade**。单一入口：load/loadTrain/
+  loadMmap（三阶段封装）、setInput(name,buf,n)/loadInputFromFile(name,f32)、
+  run/runGpu/runAuto（MYP_GPU=1 自动 GPU）、getOutput(name)、统一错误码与统计
+  （phase/loadError/compileError/runError/compileMs/lastRunMs/lastRunOps）、
+  输入/输出名枚举（inputName/outputName）。只做组合转发，不改内部 API。
+- **教训**：MYP 类成员必须在 class 尾部 `property:` 区声明（action: 前声明报
+  "cannot access member of non-class type 'void'"）；张量长度用
+  `loader_.shapeElementCount(name)`（rt.tensorSize 对 CNN 张量返回 0 的既有怪癖）。
+- **测试** `infer_tests/sli_main.myp`：deadweight vs ORT max diff 2.4e-7（数值对拍）
+  + 真实 ResNet18 编译成功（phase=3 ops=34）——SLI ALL OK，CPU+GPU。
+- **dump 命令**：`dumpGraph()`（节点 + 按 op 类型的关键属性：Conv/Pool k·s·p·g·d、
+  Gemm transB、BN eps、Resize scale、Reduce axes 等）+ `dumpIR()`（IR 节点/张量
+  [dims/kind/dtype/role/NHWC/r5/DEAD] + planOrder[带节点类型] + runtime op 完整展开
+  [opKind 名 + A/B/C/D 张量名·维度 + P 参数 + relu]）。Graph/OnnxLoader 加
+  `tensorName(tid)` bridge。ResNet18 dump 直观呈现 69→34 融合、BN 折叠、残差 Add。
+- **待办**：train/llm 接入统一接口族（训练 Session、LLM 生成收敛到同一接口）；
+  `import dl` 单模块入口命名；SLI 文档/示例。
 
 ## 11. 推荐执行顺序
 
@@ -557,6 +619,7 @@ G5  常量去重、死权重裁剪、形状值传播
 G6  Conv 1x1 + backend kernel selection
 G7  cuBLAS/cuDNN、异步执行、多后端能力查询
 G8  动态 shape specialization、量化、控制流和 KV cache
+G9  统一 Standard Library Interface（阶段九，独立于八之前的编号顺序）
 ```
 
 ## 12. 阶段完成定义

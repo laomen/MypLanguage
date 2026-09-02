@@ -6,6 +6,55 @@
 
 ---
 
+## 2026-09-02 — 阶段九：统一 Standard Library Interface（SLI）facade 起步
+
+- 新增 `infer/framework.myp`：`Session` 单一入口类——用户程序从「手动 import
+  pb/runtime/onnx_loader + 20 行样板」降为「import framework + Session」：
+  `load/loadTrain/loadMmap`（三阶段封装）→ `setInput(name,buf,n)` /
+  `loadInputFromFile(name,f32)` → `run()/runGpu()/runAuto()`（MYP_GPU=1 自动 GPU）→
+  `getOutput(name)`；统一错误码与统计（phase/loadError/compileError/runError/
+  compileMs/lastRunMs/lastRunOps）与输入/输出名枚举（inputName/outputName）。
+- **教训 1（MYP 类成员）**：成员必须在 class 尾部 `property:` 区声明，写在
+  `action:` 前会报 "cannot access member of non-class type 'void'"。
+- **教训 2（tensorSize 怪癖）**：`rt.tensorSize(tid)` 对 CNN 张量返回 0——resnet18
+  `data` 的 `tRows_=d0*d1` 中 `d1` 被记为 0（`shapeElementCount` 动态 0 按 1 处理
+  故正确）。Session 用 `loader_.shapeElementCount(name)` 计算张量长度，勿用
+  `rt.tensorSize`。
+- 测试 `infer_tests/sli_main.myp`：deadweight vs ORT max diff 2.4e-7（数值对拍）
+  + 真实 ResNet18 编译成功（phase=3 ops=34）——SLI ALL OK，CPU+GPU。
+- **dump 命令**：`Session.dumpGraph()`（图输入/输出 + 每活节点 op/输入/关键属性——
+  Conv/Pool 的 k/s/p/g/d、Gemm transB、BN eps、Resize scale、Reduce axes、Split/
+  Pad/Softmax axis 等按 op 类型分派）+ `Session.dumpIR()`（IR 节点表 + 张量表
+  [dims/kind/dtype/role/NHWC/r5/DEAD] + planOrder[带节点类型] + runtime op 完整
+  展开[opKind 名 + A/B/C/D 张量名及运行时 2D 维度 + P0..P7 参数 + relu 标记]）。
+  Graph/OnnxLoader 加 `tensorName(tid)` bridge（runtime tid → 张量名）。ResNet18
+  dump：69 原始节点 → 34 runtime 算子，BN 参数 DEAD、`#bnb` 折叠权重、Conv+残差
+  Add、GAP+Flatten 融合在 dump 中一目了然。
+- **新发现既有 bug（待追查）**：ResNet18 推理输出 sum=1331.47 vs ORT 0.101261
+  （ResNet50 336.658 保持正常）——r18 数值回归，passverify/r18 只验证编译不断言
+  数值，故未被回归捕获。SLI 测试对 r18 只验编译。
+
+---
+
+## 2026-09-02 — 阶段八：IR 完整性 verifier 收尾（verifyShapes/verifyRuntimeWiring）
+
+- `Graph` 新增 `verifyShapes`（topoSort 后）：每个活节点输入不得引用已死的**数据**
+  张量、有效输出必有已建立 shape 且非 dead；`verifyRuntimeWiring`（buildRuntime 后）：
+  runtime op>=1、每个非 dead 张量都被注册、活节点引用的非 dead 输入无悬空、
+  tensorCount>=IR 非 dead 张量数。挂接 `MYP_IR_VERIFY=1`（topoSort + optimize/
+  optimizeTrain）。
+- **教训 1（verifyShapes 误报）**：Resize `roi/scales`、Gather `indices`、Slice
+  `starts` 等形状/参数初始器被 `markParamDead`/`markInt64Param` 标 dead 是合法的
+  （从 file_ 直读，不占 runtime 张量）——verifyShapes 对输入 dead 检查须按
+  role（SHAPE/PARAM）或 dtype（INT64）豁免，否则 10 个测试误报 fail。
+- **教训 2（verifyRuntimeWiring 误报）**：Gather/Squeeze 的 `readI64Init` 会用
+  `rt.addTensor` 建 int64→float 临时索引张量（不在 IR shape 表）——tensorCount
+  计数检查用 `>=` 而非 `==`。
+- 阶段八五个校验项（verifyIR/verifyDefUse/verifyTopo/verifyShapes/
+  verifyRuntimeWiring）全部显式化；regression 59/59。
+
+---
+
 ## 2026-09-02 — 阶段八：IR 完整性 verifier（verifyDefUse/verifyTopo）+ pass 等价性测试
 
 - `Graph` 新增 `verifyDefUse`（每个活节点输出 value 的 duProducer 恰为该节点——
