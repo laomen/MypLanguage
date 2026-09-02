@@ -6,6 +6,30 @@
 
 ---
 
+## 2026-09 — B 训练反向补：ReduceSum/ReduceMean（broadcast 回 x）
+
+- **背景**：B1/B2 后 loss 路径仍缺归约类（ReduceSum/ReduceMean）反向。归约反向 =
+  **梯度广播回 x**（与 B2 的 scatter 相反方向）。
+  - ops.myp `bwdReduce` kernel：mode0 全规约 → dy 标量广播到每 x 元素（mean
+    /total）；mode1 空间 per-(n,c) → dy[n*C+c] 广播到该 (n,c) 空间段（mean /S）；
+    redType 0=mean(除法)/1=sum(复制)。**ReduceMax/Min（2/3）需 argmax 掩码未实现**
+    → buildReverseGraph 跳过（梯度 0 语义，同 Resize 2D）
+  - graph_defs OpCode `BWD_REDUCE(91)` + opCode map + opTraits(2)；runtime
+    `addBwdReduce`（opKind 97，A=dy B=dx P0=mode P1=N P2=C P3=S P4=total P5=redType）
+  - **mode/redType 存 graph 的 `nRedMode_`/`nRedType_` 数组（按 node index）非
+    NodeField attr** → buildReverseGraph 用 `compilerSetNRedMode/Type` 复制到 bwd
+    节点；graph_compiler 用 `compilerReduceMode`/`compilerNRedType` 读回
+  - graph_compiler BWD_REDUCE wiring（N/C/S 从 nodeIn1/x shape、total=N*C*S）；
+    ReduceMeanOp.backward + registerFwdBwd(30→97)（GPU 前向保留）
+- 验证 `infer_tests/bwd_reduce_main.myp` runtime 数值对拍（x[1,2,2,2] N=1,C=2,S=4）：
+  ReduceSum mode1 dy=[10,20] → dx=[10×4,20×4]；ReduceMean mode1 dy=[4,8] →
+  dx=[1×4,2×4]；ReduceSum mode0 dy=[5] → dx=[5×8]；ReduceMean mode0 dy=[3] →
+  dx=[0.375×8]。CPU 全 PASS BWD REDUCE OK。全量回归 pass=79 fail=0。
+- **剩余（记录，后续）**：ReduceMax/Min（argmax 掩码）、Gather（scatter，重复
+  indices 需累加）、Slice/Pad（切割 scatter，Slice 反向需 attr 数组）。
+
+---
+
 ## 2026-09 — B2 训练反向补：Expand/Tile（广播 scatter-add）
 
 - **背景**：B1 后 loss 路径仍缺 Expand/Tile（广播/平铺复制）反向。广播/平铺是

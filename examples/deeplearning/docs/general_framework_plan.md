@@ -708,6 +708,13 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   数值对拍 dx=[3,5,7,15,17,19]/[6,8,10,12,14,16] 精确。测试数 78。
   **剩余**：Gather（scatter，重复 idx 累加）、Reduce 族（mean /S、sum 复制、
   max/min argmax 掩码）、Slice/Pad（切割 scatter）。
+- **B 训练反向补：ReduceSum/ReduceMean（完成，2026-09）**：归约反向 broadcast 回 x
+  （mode0 全规约 dy 标量 broadcast mean/total；mode1 per-(n,c) broadcast mean/S；
+  max/min 需 argmax 未做→跳过）。OpCode 91 + runtime opKind 97 + bwdReduce kernel
+  + ReduceMeanOp.backward + registerFwdBwd(30→97) + buildReverseGraph 分支
+  （mode/redType 经 compilerSetNRedMode/Type 复制——存 graph nRedMode_/nRedType_
+  per-node 数组）。bwd_reduce_main 四组 dx 手算精确。测试数 79。剩余：
+  ReduceMax/Min（argmax）、Gather（scatter）、Slice/Pad。
 - **B1 训练反向补：Reshape/Flatten/Squeeze/Transpose（完成，2026-09）**：
   buildReverseGraph 加纯数据重排反向——Reshape/Flatten/Squeeze 产 BwdReshape
   （copyFlat，前向即连续拷贝）；Transpose 产 BwdTranspose（逆排列搬回，perm 属性
