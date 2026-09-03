@@ -113,14 +113,16 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   `BatchNormalization`(scale/bias/mean/var + epsilon)/`InstanceNormalization`
   (scale/bias + epsilon)/**`LayerNorm`(gamma/beta) / `RmsNorm`(gamma) / `GELU`**
   （图归一化/激活，复用 LLM kernel；多接 Gemm 输出，tensor 按 [特征行, 样本列] 布局，
-  gamma/beta [D=D 特征]）；**参数化（int64 常量）**
+  gamma/beta [D=D 特征]）/**`GroupNorm`(gamma/beta [C], groups, epsilon)**（逐通道组
+  归一化；NCHW [N,C,H,W]，组=g 覆盖每 (n,g) 的 cpg·H·W；SD1.5 norm_num_groups）；**参数化（int64 常量）**
   `Reshape(shape)`、`Gather(indices,axis)`、`Expand(shape)`、`Tile(repeats)`、
   `Slice(starts,ends[,axes][,steps])`、`Pad(pads[,mode])`（pads 8 值
   [N,C,H,W] begin+end）；
   **属性类** `Squeeze(axes)`、`Transpose(perm)`、`ReduceSum`/`ReduceMean`/`ReduceMax`/
   `ReduceMin(axes[,keepdims])`；**索引类（行/特征轴 1D flat，单样本=整行 logits）**
   `ArgMax`/`ArgMin`（单输出标量索引）、`TopK(k, outs:[values,indices])`（前 k 大，
-  输出 float 编码索引——对应 CE 标签/LLM 采样）。示例：`infer_tests/branch.json`
+  输出 float 编码索引——对应 CE 标签/LLM 采样）、`OneHot(depth)`（idx float 逐元素
+  → 行优先 one-hot [nIdx,depth]）。示例：`infer_tests/branch.json`
   （多分支 DAG）、`mlp.json`、`safe_gemm.json`、`reshape.json`、`gather.json`、
   `ops2.json`、`argmax.json`（ArgMax/ArgMin/TopK）。
 - **参数化 op（int64 内联常量）**：`shape`/`indices`/`repeats` 等 int64 数组直接内联在层里，

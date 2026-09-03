@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-09-03 — GroupNorm + OneHot 图算子（审计行 1 收尾 + 索引族起步）
+
+全量回归 pass=111→**113** fail=0（P2-4 条目见下）。
+
+### P5：GroupNorm 图算子 + JSON（逐通道组归一化，CPU+GPU）
+- 审计「LayerNorm/RMSNorm/GroupNorm」行最后一块（diffusion 只有私有 kernel 非图算子）。
+  kernel = SD1.5 norm_num_groups 语义 + N 通用：每 (n,g) 组 mean/var over cpg*H*W；
+  gamma/beta [C]，gOff/bOff<0 guard。CPU InferOps + GPU（K1 grid=N*groups 算
+  mean/rstd→stats 暂存；K2 thread-per-element 应用），opKind 84。
+- graph：OpCode GROUPNORM(112) + mapOpType + inferShapes copyShape + classifyShapes
+  gamma/beta markFCBias（同 InstanceNormalization）+ graph_compiler wiring
+  （groups=GROUP()、eps=EPS_INT；N/C/H/W 由运行时张量自带）+ JSON（gamma/beta [C]
+  预注册、groups/epsilon）。
+- 测试 groupnorm.json：x[1,2,2,2] 双输出覆盖 cpg=1（groups=2 每通道组）与 cpg>1
+  （groups=1 全样本组）——手算 tol1e-3 CPU+GPU OK。
+
+### P6a：OneHot 图算子 + JSON（逐元素索引 → 行优先 one-hot，CPU+GPU）
+- 索引族（GatherElements/ScatterND/OneHot/Range）起步。kernel idx float[nIdx] →
+  out[nIdx*depth] 行优先（每输入元素一行），idx 越界 clamp；CPU + GPU thread-per-output，
+  opKind 85。graph OpCode ONEHOT(113) + inferShapes（输出 [depth,M]；FC runtime
+  rows=M cols=depth）+ JSON depth。测试 onehot.json x[1,3]=[0,1,2] depth=3 → 单位阵
+  展平 CPU+GPU OK。
+- 该行另三留待：GatherElements/ScatterND（数据高级索引）、Range（无输入生成器，
+  与 runtime 单/多输入 op 模型不适配——JSON 生成序列可先手写循环）。
+
+---
+
 ## 2026-09-03 — 算子缺口优先级 2-4：Tanh / MSE·BCE loss / ArgMax·TopK
 
 按「算子缺口审计」优先级收口（P1 LayerNorm/RMSNorm/GELU 见下条；全量回归
