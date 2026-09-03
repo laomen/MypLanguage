@@ -6,6 +6,43 @@
 
 ---
 
+## 2026-09-03 — P9b/P9c 高级索引 GPU 反向 + 2D FC 索引 + BN NHWC 反向（A 组收口）
+
+全量回归 pass=130→**135** fail=0。
+
+### P9b：GatherElements / ScatterND GPU 反向（A 组第 1/2 项 GPU 一半）
+- 直连 runtime 的 bwd 此前仅 registerBwd(..,0)（CPU）。新增 GpuBwdGatherElementsOp /
+  GpuBwdScatterNDOp（registerBwd(111/112,1)）→ `rt.runGpu()` 走 bwdGpu。
+- GPU arena 无 float 原子 → GE 反向放弃「thread-per-out + 原子 scatter-add」，改
+  **thread-per-dx-slot**：每 dx 槽串行扫全部 out 求 s(i)（decode q/pp/ax/outer +
+  越界 clamp），命中则累加 dy → dx[s] 确定且**重复 idx 安全**（O(dataTotal×outTotal)）。
+- ScatterND GPU 反向两核：① dx=dy 拷贝（thread-per-total）；② thread-per-(q×block)：
+  前缀 R/=dj 还原写位置 → 零 dx 写位（幂等）+ du（unique-prefix 图输入）精确 gather dy。
+- 测试 gpu_bwd_gather_elements_main / gpu_bwd_scatter_nd_main（CPU 数值对拍改 runGpu()，
+  MYP_GPU=1 实 GPU 执行，bad=0）。
+
+### 2D FC 索引支持（A 组第 2 项）
+- 探针确认：**自然布局 2D 已正确**（x[[1..6]] 行 + ix[[2,0,1],[0,2,1]] axis=1 →
+  [3,1,2,4,6,5]）——2D 图输入消费 GE/ScatterND 归 CNN_ACT → 自然 plan，数据与索引均
+  自然序无需 axis 平移。固化为回归 json_gather_elements_2d_main + json_scatter_nd_2d_main
+  （k=2 全秩单元素 scatter o=[1,50,3,4,5,60]；MYP_GPU=1 双路径护栏）。
+- 已知边界（文档化，不实现）：**FC/Gemm 产物 2D 转置布局**（存 [N,M]ᵀ）喂 GE 时数据
+  转置 vs 索引自然 = 布局错配矿场；真实模型需要时须 classifyShapes/axis 平移改造。
+
+### P9c：BN NHWC 反向（A 组第 3 项；IN 未纳入 NHWC 布局表，故仅 BN）
+- 框架 NHWC 布局仅覆盖 BN/Conv/Pool/Pad/Add/Relu/GAP；IN 不在表内 → 「IN NHWC 反向」
+  落实为 BN NHWC 反向：bwdBatchnormNHWC（ops.myp，opKind 18 fwd 的 NHWC 变体反向，
+  NHWC flat = sp*C+c，sp∈[0,N*S)）。
+- runtime addBwdBatchNormNHWC（opKind **117**，无新 OpCode，复用 BWD_BATCH_NORM 121）：
+  槽位镜像 addBwdBatchNorm（opA=dy,opB=x,opC=dx,opD=s；P0..P4=b/m/v/ds/db；
+  P5=epsBits,P6=hasEps；N/C/S in opX0-2）。
+- BwdBatchNormNhwcOp registerBwd(117,0)；graph_compiler BWD_BATCH_NORM 分支读取 fwd BN
+  节点的 compilerAttrNhwc → fwdNhwc==1 走 NHWC 变体。
+- 测试 bwd_bn_nhwc_main：x NHWC [1,2,2,2] flat=[0,4,1,5,2,6,3,7]、scale=[1,3]、
+  var=[1,4] → dx=[1,3,3,6,5,9,7,12]、ds=[34,60]、db=[16,20] 全手算 PASS。
+
+---
+
 ## 2026-09-03 — P9 4D/batch MatMul 训练反向（BwdBatchMatmul）
 
 全量回归 pass=128→**130** fail=0（P8 余「MatMul/BatchMatMul 训练反向」收口；CPU-only 训练）。

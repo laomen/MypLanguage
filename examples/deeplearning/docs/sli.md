@@ -136,7 +136,13 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   （多分支 DAG）、`mlp.json`、`safe_gemm.json`、`reshape.json`、`gather.json`、
   `ops2.json`、`argmax.json`（ArgMax/ArgMin/TopK）、`gather_elements.json`、
   `scatter_nd.json`（P8 数据高级索引）、`gather_elem_train.json`/`scatter_nd_train.json`
-  （P8b 反向梯度训练：Conv→索引→MSE 收敛）。
+  （P8b 反向梯度训练：Conv→索引→MSE 收敛）。两索引 op 的 **GPU 反向**已接通（P9b：GE
+  反向 thread-per-dx-slot 扫描累加、无 float 原子、重复 idx 确定；ScatterND 反向 dx=dy 拷贝
+  + 后置零 + du gather；`gpu_bwd_gather_elements_main`/`gpu_bwd_scatter_nd_main`）；
+  **自然 2D**（2D 图输入喂 GE/ScatterND）已验证并固化 `json_gather_elements_2d` /
+  `json_scatter_nd_2d`（FC/Gemm 转置产物 2D 属布局错配边界）。**BN NHWC 反向**（P9c，
+  opKind 117，复用 BWD_BATCH_NORM）：NHWC flat=sp*C+c，graph_compiler 按 fwd 节点
+  compilerAttrNhwc 路由，`bwd_bn_nhwc_main` 手算对拍（IN 未入 NHWC 布局表，故仅 BN）。
 - **参数化 op（int64 内联常量）**：`shape`/`indices`/`repeats` 等 int64 数组直接内联在层里，
   框架登记为内存 int64 常量（无需 ONNX 初始器）：
   ```json
