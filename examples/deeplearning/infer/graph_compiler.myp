@@ -486,6 +486,17 @@ class GraphCompiler {
                     int b = tensorId(graph.nodeInAt(ni, 2));
                     rt.addConvTranspose(a, w, b, out, graph.compilerAttr(ni, NodeField.SH()), graph.compilerAttr(ni, NodeField.SW()), graph.compilerAttr(ni, NodeField.PT()), graph.compilerAttr(ni, NodeField.PB()), graph.compilerAttr(ni, NodeField.PL()), graph.compilerAttr(ni, NodeField.PR()),
                                         graph.compilerAttr(ni, NodeField.OPH()), graph.compilerAttr(ni, NodeField.OPW()), graph.compilerAttr(ni, NodeField.GROUP()));
+                } else if (code == OpCode.CONVTRANSPOSE3D()) {
+                    // 3D 转置卷积（opKind 86）：w=[Cin,Cout,kd,kh,kw]；strides/pads 3D
+                    int w = tensorId(graph.nodeInAt(ni, 1));
+                    int b = tensorId(graph.nodeInAt(ni, 2));
+                    int sd = graph.compilerAttr(ni, NodeField.SD3()); if (sd <= 0) sd = 1;
+                    int sh_ = graph.compilerAttr(ni, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = graph.compilerAttr(ni, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    rt.addConvTranspose3D(a, w, b, out, sd, sh_, sw_,
+                        graph.compilerAttr(ni, NodeField.PDT()), graph.compilerAttr(ni, NodeField.PDB()),
+                        graph.compilerAttr(ni, NodeField.PT()), graph.compilerAttr(ni, NodeField.PB()),
+                        graph.compilerAttr(ni, NodeField.PL()), graph.compilerAttr(ni, NodeField.PR()));
                 } else if (code == OpCode.SPLIT()) {
                     int inS = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
                     int d0 = 1, d1 = 1, d2 = 1, d3 = 1;

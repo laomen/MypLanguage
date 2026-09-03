@@ -593,6 +593,10 @@ class GraphOptimizer {
                     // F8：权重 [Cin,Cout,kh,kw] 直接拷贝（wRole_=2 无需转置）
                     markCNNWeight(graph, graph.nodeInAt(i, 1));
                     markCNNBias(graph, graph.nodeInAt(i, 2));
+                } else if (t == "ConvTranspose3D") {
+                    // P7：3D 转置卷积权重 [Cin,Cout,kd,kh,kw]（直接拷贝，同 Conv3D）
+                    markCNNWeight(graph, graph.nodeInAt(i, 1));
+                    markCNNBias(graph, graph.nodeInAt(i, 2));
                 } else if (t == "Concat" || t == "Transpose" || t == "Reshape") {
                     // F8：4D 通用常量输入 → CNN 激活登记 + 直接拷贝（Concat 的非常量输入/常量）
                     markGeneric4DConst(graph, graph.nodeInAt(i, 0));
@@ -1436,6 +1440,21 @@ int inferShapes(Graph graph) {
                     int yH = (H - 1) * sh_ - graph.compilerAttr(i, NodeField.PT()) - graph.compilerAttr(i, NodeField.PB()) + kh + graph.compilerAttr(i, NodeField.OPH());
                     int yW = (W - 1) * sw_ - graph.compilerAttr(i, NodeField.PL()) - graph.compilerAttr(i, NodeField.PR()) + kw + graph.compilerAttr(i, NodeField.OPW());
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), N, Cout, yH, yW);
+                } else if (t == "ConvTranspose3D") {
+                    // P7：3D 转置卷积（group=1 无膨胀；权重 [Cin,Cout,kd,kh,kw]，outPad 并入形状）
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (graph.compilerValueExists(graph.nodeInAt(i, 1)) == 0) return 0;
+                    int N = graph.compilerShapeDim(a, 0);
+                    int xD = graph.compilerShapeDim(a, 2); int xH = graph.compilerShapeDim(a, 3); int xW = graph.compilerShapeDim(a, 4);
+                    int Cout = graph.compilerShapeDim(w, 1);
+                    int kd = graph.compilerShapeDim(w, 2); int kh = graph.compilerShapeDim(w, 3); int kw = graph.compilerShapeDim(w, 4);
+                    int sd = graph.compilerAttr(i, NodeField.SD3()); if (sd <= 0) sd = 1;
+                    int sh_ = graph.compilerAttr(i, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = graph.compilerAttr(i, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    int yD = (xD - 1) * sd - graph.compilerAttr(i, NodeField.PDT()) - graph.compilerAttr(i, NodeField.PDB()) + kd;
+                    int yH = (xH - 1) * sh_ - graph.compilerAttr(i, NodeField.PT()) - graph.compilerAttr(i, NodeField.PB()) + kh;
+                    int yW = (xW - 1) * sw_ - graph.compilerAttr(i, NodeField.PL()) - graph.compilerAttr(i, NodeField.PR()) + kw;
+                    graph.addShapeD5(graph.compilerNodeOutput(i, 0), N, Cout, yD, yH, yW);
                 } else if (t == "Conv") {
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     int w = graph.compilerShapeIdx(graph.nodeInAt(i, 1)); if (graph.compilerValueExists(graph.nodeInAt(i, 1)) == 0) return 0;

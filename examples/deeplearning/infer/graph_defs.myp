@@ -240,6 +240,7 @@ class OpCode {
         int TOPK() { return 111; }
         int GROUPNORM() { return 112; }      // 图归一化：GroupNorm（opKind 84；groups=GROUP()、eps=EPS_INT）
         int ONEHOT() { return 113; }         // 索引：OneHot（opKind 85；depth=SPLIT0() 复用节点槽）
+        int CONVTRANSPOSE3D() { return 114; }  // 3D 转置卷积（opKind 86；CPU fwd，group=1）
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -337,6 +338,7 @@ class OpCode {
             if (t == "TopK") return OpCode.TOPK();
             if (t == "GroupNorm") return OpCode.GROUPNORM();
             if (t == "OneHot") return OpCode.ONEHOT();
+            if (t == "ConvTranspose3D") return OpCode.CONVTRANSPOSE3D();
             return OpCode.UNKNOWN();
         }
         // 节点保护 trait：非 0 表示受 DCE 保护。1=stateful（就地改权重/累加），

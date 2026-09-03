@@ -1687,6 +1687,79 @@ class InferOps {
             }
         }
 
+        // ConvTranspose3D：x[N,Cin,xD,xH,xW] → y[N,Cout,yD,yH,yW]（3D 转置卷积，group=1
+        // 无膨胀；权重 [Cin,Cout,kd,kh,kw] 直接拷贝）。y 尺寸含 outPad（由 inferShapes 定，
+        // 尾行无输入贡献 = bias）。pdt/pt/pl 为 begin pad（决定哪些输出位有贡献）。
+        void convTranspose3d(
+            float[] arena,
+            int xOff, int xN, int xC, int xD, int xH, int xW,
+            int wOff, int bOff,
+            int yOff, int yC, int yD, int yH, int yW,
+            int kd, int kh, int kw, int sd, int sh, int sw,
+            int pdt, int pt, int pl
+        ) {
+            int n = 0;
+            while (n < xN) {
+                int oc = 0;
+                while (oc < yC) {
+                    int od = 0;
+                    while (od < yD) {
+                        int oy = 0;
+                        while (oy < yH) {
+                            int ox = 0;
+                            while (ox < yW) {
+                                float sum = 0.0f;
+                                if (bOff >= 0) sum = arena[bOff + oc];
+                                int ic = 0;
+                                while (ic < xC) {
+                                    int kz = 0;
+                                    while (kz < kd) {
+                                        int dnum = od + pdt - kz;
+                                        if (dnum >= 0 && dnum % sd == 0) {
+                                            int iz = dnum / sd;
+                                            if (iz >= 0 && iz < xD) {
+                                                int ky = 0;
+                                                while (ky < kh) {
+                                                    int hnum = oy + pt - ky;
+                                                    if (hnum >= 0 && hnum % sh == 0) {
+                                                        int iy = hnum / sh;
+                                                        if (iy >= 0 && iy < xH) {
+                                                            int kx = 0;
+                                                            while (kx < kw) {
+                                                                int wnum = ox + pl - kx;
+                                                                if (wnum >= 0 && wnum % sw == 0) {
+                                                                    int iw = wnum / sw;
+                                                                    if (iw >= 0 && iw < xW) {
+                                                                        float xv = arena[xOff + n * xC * xD * xH * xW + ic * xD * xH * xW + iz * xH * xW + iy * xW + iw];
+                                                                        float wv = arena[wOff + (((ic * yC + oc) * kd + kz) * kh + ky) * kw + kx];
+                                                                        sum = sum + xv * wv;
+                                                                    }
+                                                                }
+                                                                kx = kx + 1;
+                                                            }
+                                                        }
+                                                    }
+                                                    ky = ky + 1;
+                                                }
+                                            }
+                                        }
+                                        kz = kz + 1;
+                                    }
+                                    ic = ic + 1;
+                                }
+                                arena[yOff + n * yC * yD * yH * yW + oc * yD * yH * yW + od * yH * yW + oy * yW + ox] = sum;
+                                ox = ox + 1;
+                            }
+                            oy = oy + 1;
+                        }
+                        od = od + 1;
+                    }
+                    oc = oc + 1;
+                }
+                n = n + 1;
+            }
+        }
+
         // Conv3D：x[N,Cin,D,H,W] → y[N,Cout,yD,yH,yW]（3D 扩展，权重 [Cout,Cin,kd,kh,kw]）
         // 参数：pdt/pdb/pt/pb/pl/pr = 6 个 pad（d/w/h 各 begin/end），dd/dh/dw = 膨胀。
         void conv3d(

@@ -832,6 +832,21 @@ class InferenceRuntime {
             opP8_[id] = group;
             opCount_ = opCount_ + 1;
         }
+        // ConvTranspose3D（opKind 86，CPU fwd，group=1 无膨胀）：in=opA, w=opB([Cin,Cout,
+        // kd,kh,kw]), b=opC(可空), out=opD；strides sd/sh/sw=opP0-2，pads pdt/pdb/pt/pb/pl/pr=opP3-8
+        void addConvTranspose3D(int inTid, int wTid, int bTid, int outTid,
+                                int sd, int sh, int sw,
+                                int pdt, int pdb, int pt, int pb, int pl, int pr) {
+            int id = opCount_;
+            opKind_[id] = 86;
+            opA_[id] = inTid;
+            opB_[id] = wTid;
+            opC_[id] = bTid;
+            opD_[id] = outTid;
+            opP0_[id] = sd; opP1_[id] = sh; opP2_[id] = sw;
+            opP3_[id] = pdt; opP4_[id] = pdb; opP5_[id] = pt; opP6_[id] = pb; opP7_[id] = pl; opP8_[id] = pr;
+            opCount_ = opCount_ + 1;
+        }
 
         // ---- G5：Conv 1x1 专用（opKind 83）----
         // kh==kw==1 && stride==1 && 无 padding && dil==1 && group==1 的普通卷积——
