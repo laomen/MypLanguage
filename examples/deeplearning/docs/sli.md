@@ -68,9 +68,41 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   ]}
 ```
 
-- **结构即 DAG**：fan-out 靠名字引用（一个 `out` 名被多个层当 `in`）；fan-in 汇合
-  用多输入槽 `in2/in3/in4`（`Add`/`Sub`/`Div`/`Mul`/`MatMul` 二元、`Concat` 多输入）。
-- **op 集**：单输入 `Relu`/`Sigmoid`/`Softmax(axis)`/`LogSoftmax(axis)`/
+- **连线（边）= 张量名（隐式命名图，无显式 edge 数组）**：每个 `layers[]` 元素是
+  一个节点。节点用 `out:"名"` 定义**边起点**，消费者层用 `in:"名"` 引用即连成
+  有向边——名字是唯一"导线"：
+  ```json
+  { "op":"Gemm","in":"data","out":"h" },      // data ──Gemm──▶ h
+  { "op":"Relu","in":"h","out":"h"  },        // h    ──Relu──▶ h（原地改值）
+  { "op":"Gemm","in":"h","out":"logits" }     // h    ──Gemm──▶ logits
+  ```
+  即 mlp 全链：`data→Gemm→h→Relu→h→Gemm→logits→Softmax→prob`。
+  - **fan-out（一线接多下游）**：多个层把同一 `out` 名当 `in`（SwiGLU 的 `gate`/
+    `up` 都 `in:"h"`），该张量自动分叉给多个消费者；
+  - **fan-in（多线汇合）**：一层要接多个上游用 `in2/in3/in4` 槽
+    （`Mul in:"gact" in2:"up"`；`Add`/`Sub`/`Div`/`Mul`/`MatMul` 二元、`Concat`
+    多输入、`Where` 三输入）；
+  - 不允许把两个不同生产者写成同一 `out` 名（名字冲突=重定义）。
+- **选用 / 更换激活函数**：激活是普通单输入层——把 `op` 名换成目标激活即可
+  （`Relu`→`SiLU`/`LeakyRelu`/`ReLU6`/`HardSwish`/`Sigmoid`…），`in`/`out` 名字照旧接前层输出：
+  ```json
+  { "op":"Gemm","in":"h","out":"h1","transB":1,
+    "W":{"dims":[64,784],"init":"xavier"},"B":{"dims":[64],"init":"zeros"}},
+  { "op":"SiLU","in":"h1","out":"a" },    // 原 Relu → 换 SiLU
+  { "op":"Gemm","in":"a","out":"logits","transB":1,
+    "W":{"dims":[10,64],"init":"xavier"},"B":{"dims":[10],"init":"zeros"}}
+  ```
+  `LeakyRelu` alpha 默认 0.01（ONNX 源可带 alpha 属性）。融合写法 `Conv`/`Add` 后的
+  Relu 推理会单内核融合（自动）；训练图自动拆成独立 Relu 反向（见 §4）。
+  **SwiGLU/GLU 型门控**用 fan-out 双 Gemm + `SiLU` + `Mul` 组合（非独立算子）：
+  ```json
+  { "op":"Gemm","in":"h","out":"gate","transB":1,"W":{"dims":[FF,HD],"init":"xavier"},...},
+  { "op":"Gemm","in":"h","out":"up",  "transB":1,"W":{"dims":[FF,HD],"init":"xavier"},...},
+  { "op":"SiLU","in":"gate","out":"gact" },
+  { "op":"Mul", "in":"gact","out":"m","in2":"up" }
+  ```
+- **op 集**：单输入**激活** `Relu`/`Sigmoid`/`ReLU6`(注意 `LU6` 大写)/`LeakyRelu`/
+  `SiLU`(=Swish β=1)/`HardSwish`/`Clip`(min/max 需初始器)/`Softmax(axis)`/`LogSoftmax(axis)`/
   `GlobalAveragePool`/`Flatten(axis)`；二元 `Add`/`Sub`/`Div`/`Mul`/`MatMul`；多输入
   多输入 `Concat(in/in2/in3, axis)`；三输入 `Where(in/in2/in3)`；单输入 `Sqrt`/`Dropout`
   （推理恒等）；权重型 `Gemm`/`Conv`/`ConvTranspose`/`MatMul(可选 W)`；
@@ -128,7 +160,12 @@ while (step < N) {
 - **label 是 one-hot**（softmaxCE 依赖 label>0.5），非标量。
 - **每次 run 前重建输入**：训练 arena 复用会覆盖输入区。
 - **可训结构**：链式 + fan-in 汇合（`Add`/`Sub`/`Mul`/`Concat` 在 loss 路径）均可训
-  降（回归 `json_train_submul_main`：sub/mul/add 三网 200 步 loss 显著降）。**CNN 也
+  降（回归 `json_train_submul_main`：sub/mul/add 三网 200 步 loss 显著降）。**激活反向**
+  全覆盖：`Relu`/`Sigmoid` 早已支持；`ReLU6`/`LeakyRelu`/`SiLU`/`HardSwish`/
+  `LogSoftmax`/`Clip` 亦已接通（CPU-only 训练，`bwd_activ_main` 数值对拍；`SiLU`+
+  `Mul` SwiGLU 可训——`swiglu.json`/`json_swiglu_train_main` 200 步 loss 1.09→0.004；
+  激活链 `activ_chain.json`/`json_activ_chain_train_main` LeakyRelu→ReLU6→HardSwish
+  300 步 loss 0.97→0.64）。**CNN 也**
   可训**（`cnn_train.json`/`json_cnn_train_main`：Conv→Relu→MaxPool→Flatten→FC→
   Softmax，200 步 loss 1.01→0.14；`gap_cnn.json`/`json_gap_cnn_train_main`：
   Conv→Relu→GlobalAveragePool→FC，200 步 loss 1.06→0.90；`avgpool_cnn.json`/

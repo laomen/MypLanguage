@@ -6,6 +6,56 @@
 
 ---
 
+## 2026-09-03 — 训练融合断链修复（CNN grad-check）+ 激活反向全覆盖 + 2D U-Net
+
+### 修复：训练图结构融合断链 → Conv 权重从不更新（隐蔽 bug）
+- 现象：CNN 训练 loss 降但 `c_W` 10 步后 maxdelta=0（FC-only 假象——BwdConv 不在
+  训练图）。根因：`runPipeline` 对训练图也跑 FUSE_CONV_RELU/FUSE_RELU/FUSE_GAP_FLATTEN；
+  `fuseSingleUseOutput` 把 producer 线性输出标 dead + 有效输出改 fusedOut，而
+  `buildReverseGraph` 反向遍历按 `compilerNodeOutput(ni,0)`（已 dead 的原输出名）判
+  `grad(y)` 存在 → 融合 Conv 被跳过 → 无 BwdConv/无 Update。
+- 修复：训练图跳过结构融合（保留独立 Relu/Flatten 节点使反向逐节点回传）。
+  IGraphOptimizeHost 新增 `shouldFuseConvReluForOptimizer/shouldFuseReluForOptimizer/
+  shouldFuseGapFlattenForOptimizer`（`trainingMode_==0?1:0`，同既有
+  shouldFuseConvAddForOptimizer）；推理图仍融合（单内核加速）。FUSE_BN/FOLD_RELU 保留
+  （代数等价/当前无 BN 训练模型）。验证：`c_W grad -1→21`、10 步 delta 0→0.086。
+- **D 组数值 grad-check 固化**：`grad_cnn.json`（线性 CNN Conv→Flatten→Gemm→Softmax，
+  无 relu/pool 全光滑）+ `json_cnn_gradcheck_main.myp`：lr=0 runTrain 反向写 grad 张量
+  vs ±ε 有限差分逐元素对拍 239 权重（c_W/c_b/logits_W 216/logits_b）worstRel=0.123
+  bad=0 → CNN GRAD OK（BwdConv dw/db + BwdReshape + BwdDense + CE 端到端精确）。
+  教训：含 Relu（dead-zone）/MaxPool（argmax 突变）的网有限差分不可靠（ε 无关误差）；
+  grad-check 须用无激活/无 argmax 的完全光滑网做权威对拍。
+
+### 激活反向全覆盖（ReLU6/LeakyRelu/SiLU/HardSwish/LogSoftmax/Clip，CPU-only 训练）
+- 此前仅 Relu/Sigmoid 有反向；补齐其余激活使 SwiGLU 等可端到端训练。全链路仿
+  BwdSigmoid：OpCode BWD_RELU6(96)/BWD_LEAKY_RELU(97)/BWD_SILU(98)/BWD_HARDSWISH(99)/
+  BWD_LOG_SOFTMAX(100)/BWD_CLIP(101) + opCode map + opTraits=2；ops.myp kernel
+  （均需 fwd 输入 x 判导数：relu6 in(0,6)；leaky x>0?1:α；silu σ(x)(1+x(1-σ))；
+  hardswish 三段；logsoftmax dx_i=dy_i-σ_i·Σdy；clip in[lo,hi]）；runtime addBwd*
+  opKind 102-107；CPU 激活类 backward + registerFwdBwd（GPU 前向保留，训练反向
+  CPU-only）；buildReverseGraph 分支 + graph_compiler wiring + bwdLike 豁免。
+- **JSON op 名规范化**：`"Relu6"`（JSON 常见写法）≠ 框架规范 `"ReLU6"`（各 pass 按
+  nodeTypeAt 原串比较）→ UNKNOWN + inferShapes fail。修：json_model 节点构建前
+  `if(op=="Relu6") op="ReLU6"`。
+- 测试：`bwd_activ_main.myp`（6 kernel dy·g(x) 手算对拍 bad=0）；`swiglu.json`+
+  `json_swiglu_train_main`（fan-out 双 Gemm + SiLU + Mul SwiGLU，200 步 loss
+  1.088→0.004）；`activ_chain.json`+`json_activ_chain_train_main`（LeakyRelu→ReLU6→
+  HardSwish 链 300 步 loss 0.973→0.637）。Clip/LogSoftmax 训练主干罕见：kernel 直测 +
+  同 register 机制（不强求训练 json）。
+
+### JSON 2D U-Net + 文档双语化
+- `unet2d.json`+`json_unet2d_main.myp`：2D U-Net（data[1,1,64,64]→编码 Conv3x3+
+  MaxPool×2→瓶颈64→解码 ConvTranspose(2x)+Concat 跳跃 a3/a1→Conv1x1→Sigmoid），
+  CPU+GPU `MYP_IR_VERIFY=1` JSON UNET2D OK。要点：3x3 Conv 必须 `pads:[1,1,1,1]`
+  保尺寸否则跳跃 Concat 尺寸不匹配（初版输出 24²）；解码上采样用 ConvTranspose
+  (k2,s2) 恰抵消 MaxPool 2×。
+- `infer/README.md` 中英混杂 → **README.md（纯中文版）+ README_EN.md（新建英文完整
+  版，英文历史迁入）**；`docs/sli.md` 补「连线=张量名」「选用/更换激活函数（含
+  SwiGLU 组合）」「op 集补激活全族」「训练激活反向全覆盖」。
+- 回归 pass=92→**97** fail=0。
+
+---
+
 ## 2026-09 — B 组训练反向（ReduceMax/Min argmax + Pad constant）+ C 组 JSON（Where/Sqrt/Dropout）
 
 - **B：ReduceMax/Min 反向（argmax 掩码，BwdReduceMM）**：归约 max/min 反向需把每组
