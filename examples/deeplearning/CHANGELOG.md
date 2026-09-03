@@ -6,7 +6,27 @@
 
 ---
 
-## 2026-09-03 — 训练融合断链修复（CNN grad-check）+ 激活反向全覆盖 + 2D U-Net
+## 2026-09-03 — JSON 算子覆盖扩展（3D/归一/Clip/Resize）
+
+- **JSON 补齐算子分派**（json_model.myp；ONNX/图级本已支持，只缺 JSON 接线）：
+  `Conv3D`（5D W + B + 3D kernel/strides/pads[6]/dilations/group）、`MaxPool3D`/
+  `AveragePool3D`（3D 几何 + count_include_pad）、`Resize`/`Upsample`（int64 sizes
+  → nodeIn3，2D [1,1,outH,outW] / 3D [1,1,outD,outH,outW]）、`BatchNormalization`
+  （[C] scale/bias/mean/var + eps）、`InstanceNormalization`（[C] scale/bias +
+  eps）、`Clip`（内联 min/max → 内存 f32 标量常量）、`LeakyRelu` alpha 内联。
+  权重预注册加 Conv3D/BN/IN；新增 `setKernel3DAttrs`（pads 6 值 3D 映射）+
+  `regF32Scalar`（f32 标量常量）+ import pb（F32.toBits eps/alpha 位型）。
+- 测试（全 CPU+GPU + MYP_IR_VERIFY）：`json_c3d`（Conv3D→Relu→MaxPool3D→
+  Flatten→Gemm→Softmax 3D 推理全链）、`json_bn`（y=[2.0,3.125] 手算）、`json_in`
+  （总体方差手算对拍）、`json_clip`（[0,0.5,1,1] 手算）、`json_resize`（nearest
+  sizes 语义断言）。回归 pass=97→**102** fail=0。
+- **发现 🟥**：3D CNN 训练反向端到端不稳（lr=1e-4 亦震荡）——BwdConv3D/
+  BwdMaxPool3D/3D Update 待修（3D 训练图从未端到端固化；勿 loadJsonTrain 3D）。
+  3D 推理不受影响。
+- 仍留：Split 多输出（JSON out 单名结构限制）、Pad constant_value（graph_compiler
+  未接）、ConvTranspose3D（无独立 3D deconv runtime）。
+
+---
 
 ### 修复：训练图结构融合断链 → Conv 权重从不更新（隐蔽 bug）
 - 现象：CNN 训练 loss 降但 `c_W` 10 步后 maxdelta=0（FC-only 假象——BwdConv 不在

@@ -102,11 +102,15 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   { "op":"Mul", "in":"gact","out":"m","in2":"up" }
   ```
 - **op 集**：单输入**激活** `Relu`/`Sigmoid`/`ReLU6`(注意 `LU6` 大写)/`LeakyRelu`/
-  `SiLU`(=Swish β=1)/`HardSwish`/`Clip`(min/max 需初始器)/`Softmax(axis)`/`LogSoftmax(axis)`/
+  `SiLU`(=Swish β=1)/`HardSwish`/`Clip`(内联 `min`/`max` 边界)/`Softmax(axis)`/`LogSoftmax(axis)`/
   `GlobalAveragePool`/`Flatten(axis)`；二元 `Add`/`Sub`/`Div`/`Mul`/`MatMul`；多输入
   多输入 `Concat(in/in2/in3, axis)`；三输入 `Where(in/in2/in3)`；单输入 `Sqrt`/`Dropout`
   （推理恒等）；权重型 `Gemm`/`Conv`/`ConvTranspose`/`MatMul(可选 W)`；
-  池化 `MaxPool`/`AveragePool`(kernel/strides/pads)；**参数化（int64 常量）**
+  池化 `MaxPool`/`AveragePool`(kernel/strides/pads)；**3D** `Conv3D`(W 5D
+  [Cout,Cin,kd,kh,kw] + kernel/strides/pads6)/`MaxPool3D`/`AveragePool3D`/`Resize`
+  (sizes [1,1,(outD,)outH,outW])——3D JSON 输入/权重用 5 维 dims；**归一化**
+  `BatchNormalization`(scale/bias/mean/var + epsilon)/`InstanceNormalization`
+  (scale/bias + epsilon)；**参数化（int64 常量）**
   `Reshape(shape)`、`Gather(indices,axis)`、`Expand(shape)`、`Tile(repeats)`、
   `Slice(starts,ends[,axes][,steps])`、`Pad(pads[,mode])`（pads 8 值
   [N,C,H,W] begin+end）；
