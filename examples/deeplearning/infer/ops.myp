@@ -245,6 +245,7 @@ class InferOps {
 
         // 阶段5：LayerNorm（GPT-2）。xOff:[D,S]（行=特征，列=token），gamma/beta:[D]，yOff:[D,S]。
         // y[d,s] = (x[d,s]-mean_s)/sqrt(var_s+eps)*gamma[d]+beta[d]（mean/var 按特征维、每 token）。
+        // gOff/bOff 可为 -1（无 gamma=1 / 无 beta=0，图 LayerNorm 无 beta 时防越界）。
         void layerNorm(float[] arena, int xOff, int gOff, int bOff, int yOff, int D, int S, double eps) {
             int s = 0;
             while (s < S) {
@@ -262,8 +263,12 @@ class InferOps {
                 double rstd = 1.0 / Math.sqrt(vsum / double(D) + eps);
                 d = 0;
                 while (d < D) {
+                    double gv = 1.0;
+                    double bv = 0.0;
+                    if (gOff >= 0) gv = double(arena[gOff + d]);
+                    if (bOff >= 0) bv = double(arena[bOff + d]);
                     double v = (double(arena[xOff + d * S + s]) - mean) * rstd;
-                    arena[yOff + d * S + s] = float(v * double(arena[gOff + d]) + double(arena[bOff + d]));
+                    arena[yOff + d * S + s] = float(v * gv + bv);
                     d = d + 1;
                 }
                 s = s + 1;

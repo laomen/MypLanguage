@@ -150,6 +150,22 @@ class GraphCompiler {
                     rt.addSigmoid(a, out);
                 } else if (code == OpCode.SOFTMAX()) {
                     rt.addSoftmax(a, out);
+                } else if (code == OpCode.LAYER_NORM() || code == OpCode.RMS_NORM()) {
+                    // 图归一化：复用 LLM kernel（opKind 64/61）。D/S 传 0 → Op 运行时自省
+                    // tensor rows/cols（[D 特征, S 样本] 布局，归一特征行）。gamma=nodeIn1，
+                    // LayerNorm beta=nodeIn2（可空 → b=-1，kernel bOff guard）。eps attr。
+                    int g = tensorId(graph.nodeInAt(ni, 1));
+                    double eps = graph.attrFloat(ni, NodeField.EPS_INT());
+                    if (graph.compilerAttr(ni, NodeField.HAS_EPS()) != 1) eps = 1.0e-5;
+                    if (code == OpCode.RMS_NORM()) {
+                        rt.addRmsNorm(a, g, out, 0, 0, eps);
+                    } else {
+                        int b = tensorId(graph.nodeInAt(ni, 2));
+                        rt.addLayerNorm(a, g, b, out, 0, 0, eps);
+                    }
+                } else if (code == OpCode.GELU()) {
+                    // GELU（精确 erf 近似；n 传 0 → Op 自省 rows*cols）
+                    rt.addGelu(a, out, 0);
                 } else if (code == OpCode.BWD_DENSE()) {
                     int dy = tensorId(graph.nodeInAt(ni, 0));
                     int x = tensorId(graph.nodeInAt(ni, 1));

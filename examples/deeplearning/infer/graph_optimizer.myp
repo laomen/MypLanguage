@@ -1561,7 +1561,8 @@ int inferShapes(Graph graph) {
                     }
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), od0, od1, od2, od3);
                 } else if (t == "Relu" || t == "Sigmoid" || t == "Softmax" || t == "LogSoftmax" || t == "BatchNormalization"
-                           || t == "ReLU6" || t == "LeakyRelu" || t == "SiLU" || t == "HardSwish" || t == "Clip" || t == "Dropout") {
+                           || t == "ReLU6" || t == "LeakyRelu" || t == "SiLU" || t == "HardSwish" || t == "Clip" || t == "Dropout"
+                           || t == "LayerNorm" || t == "RmsNorm" || t == "GELU") {
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     graph.copyShape(graph.compilerNodeOutput(i, 0), a);
                 } else if (t == "Embedding") {

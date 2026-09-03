@@ -1937,13 +1937,15 @@ class DiceLossOp {
         }
 }
 
-// ---- rmsNorm（opKind 61 前向，CPU-only）----
+// ---- rmsNorm（opKind 61 前向；LLM 手写传显式 D/S；图算子传 0 → 自省 tensor rows/cols）----
 class RmsNormOp {
     interface class IOp;
     action:
         void forward(InferenceRuntime rt, int i) {
             int in = rt.opAAt(i); int g = rt.opBAt(i); int out = rt.opCAt(i);
-            InferOps.rmsNorm(rt.arenaRef(), rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(out), rt.opP0At(i), rt.opP1At(i), F32.toDouble(rt.opP2At(i)));
+            int D = rt.opP0At(i); if (D <= 0) D = rt.tensorRows(in);
+            int S = rt.opP1At(i); if (S <= 0) S = rt.tensorCols(in);
+            InferOps.rmsNorm(rt.arenaRef(), rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(out), D, S, F32.toDouble(rt.opP2At(i)));
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -1971,24 +1973,27 @@ class GatherRowsOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
-// ---- layerNorm（opKind 64 前向，CPU-only）----
+// ---- layerNorm（opKind 64 前向；LLM 手写传显式 D/S；图算子传 0 → 自省 tensor rows/cols）----
 class LayerNormOp {
     interface class IOp;
     action:
         void forward(InferenceRuntime rt, int i) {
             int in = rt.opAAt(i); int g = rt.opBAt(i); int b = rt.opCAt(i); int out = rt.opDAt(i);
-            InferOps.layerNorm(rt.arenaRef(), rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(b), rt.tensorOff(out), rt.opP0At(i), rt.opP1At(i), F32.toDouble(rt.opP2At(i)));
+            int D = rt.opP0At(i); if (D <= 0) D = rt.tensorRows(in);
+            int S = rt.opP1At(i); if (S <= 0) S = rt.tensorCols(in);
+            InferOps.layerNorm(rt.arenaRef(), rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(b), rt.tensorOff(out), D, S, F32.toDouble(rt.opP2At(i)));
         }
         void backward(InferenceRuntime rt, int i) { }
 }
 
-// ---- gelu（opKind 65 前向，CPU-only）----
+// ---- gelu（opKind 65 前向；图算子 n 传 0 → 自省 rows*cols）----
 class GeluOp {
     interface class IOp;
     action:
         void forward(InferenceRuntime rt, int i) {
             int in = rt.opAAt(i); int out = rt.opBAt(i);
-            InferOps.gelu(rt.arenaRef(), rt.tensorOff(in), rt.tensorOff(out), rt.opP0At(i));
+            int n = rt.opP0At(i); if (n <= 0) n = rt.tensorRows(in) * rt.tensorCols(in);
+            InferOps.gelu(rt.arenaRef(), rt.tensorOff(in), rt.tensorOff(out), n);
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -2026,7 +2031,8 @@ class GpuRmsNormOp {
     action:
         void forward(InferenceRuntime rt, int i) {
             int in = rt.opAAt(i); int g = rt.opBAt(i); int out = rt.opCAt(i);
-            int D = rt.opP0At(i); int S = rt.opP1At(i);
+            int D = rt.opP0At(i); if (D <= 0) D = rt.tensorRows(in);
+            int S = rt.opP1At(i); if (S <= 0) S = rt.tensorCols(in);
             GpuInferOps.rmsnorm(rt.arenaRef(), D * S, rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(out),
                                 D, S, F32.toDouble(rt.opP2At(i)), rt.devRef(), rt.statsOffRef());
         }
@@ -2065,7 +2071,8 @@ class GpuLayerNormOp {
     action:
         void forward(InferenceRuntime rt, int i) {
             int in = rt.opAAt(i); int g = rt.opBAt(i); int b = rt.opCAt(i); int out = rt.opDAt(i);
-            int D = rt.opP0At(i); int S = rt.opP1At(i);
+            int D = rt.opP0At(i); if (D <= 0) D = rt.tensorRows(in);
+            int S = rt.opP1At(i); if (S <= 0) S = rt.tensorCols(in);
             GpuInferOps.layernorm(rt.arenaRef(), D * S, rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(b), rt.tensorOff(out),
                                   D, S, F32.toDouble(rt.opP2At(i)), rt.devRef(), rt.statsOffRef());
         }
@@ -2078,7 +2085,8 @@ class GpuGeluOp {
     action:
         void forward(InferenceRuntime rt, int i) {
             int in = rt.opAAt(i); int out = rt.opBAt(i);
-            GpuInferOps.gelu(rt.arenaRef(), rt.opP0At(i), rt.tensorOff(in), rt.tensorOff(out), rt.devRef());
+            int n = rt.opP0At(i); if (n <= 0) n = rt.tensorRows(in) * rt.tensorCols(in);
+            GpuInferOps.gelu(rt.arenaRef(), n, rt.tensorOff(in), rt.tensorOff(out), rt.devRef());
         }
         void backward(InferenceRuntime rt, int i) { }
 }

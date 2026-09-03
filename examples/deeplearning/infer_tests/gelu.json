@@ -1,0 +1,7 @@
+{ "name":"geluj",
+  "inputs":[{"name":"x","dims":[1,5]}],
+  "outputs":["y"],
+  "layers":[
+    { "op":"GELU","in":"x","out":"y"}
+  ]
+}
