@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09 — GAP 反向（复用 BwdReduce mode1 mean）+ CNN 训练覆盖 GlobalAveragePool
+
+- **背景**：CNN 训练固化（上条）用 MaxPool 避过 GAP——GAP（per-(n,c) 空间均值）
+  无独立反向。GAP 反向 = **复用 BwdReduce mode1 mean**（前向均值 → 反向 dy[n*C+c]
+  广播回 H*W 段 /S），零新 kernel。
+- buildReverseGraph 加 `t=="GlobalAveragePool"` → BwdReduce 节点
+  （`compilerSetNRedMode(bd,1)`+`SetNRedType(bd,0)`；graph_compiler BWD_REDUCE 已
+  通用读回，N/C/S/total 从 x(nodeIn1) shape 推）。
+- 测试 `infer_tests/json_gap_cnn_train_main.myp` + `gap_cnn.json`：Conv(2ch 3x3)
+  →Relu→GAP([1,2,6,6]→[1,2,1,1])→Flatten[1,2]→Gemm→logits[1,3]→Softmax，200 步
+  SGD loss **1.055→0.901** 降（MYP_IR_VERIFY=1）。全量回归 pass=86 fail=0。
+- **数据可学性教训**：GAP 丢空间位置——class 只差块位置（内容全 1）时 GAP 特征
+  无区分，loss 反升趋 ln3（**非 bug**，数学合理）；class 须内容可区分（块像素
+  =cl+1）。训练回归输入设计须先确认结构理论上可学。
+- **后续**：AvgPool2D 反向（池化族最后缺口）；多层真实 CNN demo。
+
+---
+
 ## 2026-09 — JSON CNN 分类训练端到端固化（重要发现：CNN 训练反向全链本就可用）
 
 - **背景**：此前所有 JSON 训练回归都是 FC/加性网（softmaxCE 2D logits 的误解——

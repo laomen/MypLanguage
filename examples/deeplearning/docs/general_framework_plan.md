@@ -721,6 +721,10 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   （mode/redType 经 compilerSetNRedMode/Type 复制——存 graph nRedMode_/nRedType_
   per-node 数组）。bwd_reduce_main 四组 dx 手算精确。测试数 79。剩余：
   ReduceMax/Min（argmax）、Gather（scatter）、Slice/Pad。
+- **GAP 反向 + CNN 覆盖 GlobalAveragePool（完成，2026-09）**：GAP 反向复用 BwdReduce
+  mode1 mean（buildReverseGraph GAP→BwdReduce mode1/mean）。gap_cnn.json
+  Conv→Relu→GAP→Flatten→Gemm→Softmax 200 步 loss 1.055→0.901。测试数 86。教训：
+  GAP 丢位置 → class 须内容可区分。后续：AvgPool2D 反向。
 - **JSON CNN 分类训练固化（完成，2026-09）**：重要发现——CNN 训练反向全链（BwdConv/
   BwdMaxPool2D/BwdRelu/BwdFlatten/BwdDense）本就可用，此前只有 FC 训练回归。
   cnn_train.json Conv(2ch)→Relu→MaxPool→Flatten→Gemm→Softmax：200 步 SGD loss
