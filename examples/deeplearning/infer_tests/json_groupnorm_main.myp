@@ -1,0 +1,49 @@
+// json_groupnorm_main.myp — C：JSON GroupNorm（图算子 P5，逐通道组归一化）。
+// x[1,2,2,2] NCHW：c0=[1,3,5,7]、c1=[2,4,6,8]。两输出覆盖 cpg=1 与 cpg>1 路径：
+//   y = groups=2（每通道一组，组=C/H*W=4 元素），gamma=[2,2]、beta=[1,0]、eps=0
+//     c0: mean=4 var=5 → (x-4)·2/√5+1 = [-1.68328,0.10557,1.89443,3.68328]
+//     c1: mean=5 var=5 → (x-5)·2/√5+0 = [-2.68328,-0.89443,0.89443,2.68328]
+//   z = groups=1（全样本组 = 8 元素），gamma=[1,2]、beta=0、eps=0
+//     overall mean=4.5 var=5.25 rstd=1/√5.25=0.436436
+//     c0: (x-4.5)·0.4364  = [-1.52753,-0.65465,0.21822,1.09109]
+//     c1: (x-4.5)·0.4364·2= [-2.18218,-0.43644,1.30931,3.05483]
+// CPU+GPU JSON GROUPNORM OK（手算 6 位，tol 1e-3）。
+import env;
+import fmt;
+import dl;
+class JsonGroupNormApp {
+    action:
+        int checkAll(Session s, int bad) {
+            double[] y = s.getOutput("y");
+            double[] z = s.getOutput("z");
+            double[] ey = new double[8];
+            ey[0]=-1.68328; ey[1]=0.10557; ey[2]=1.89443; ey[3]=3.68328;
+            ey[4]=-2.68328; ey[5]=-0.89443; ey[6]=0.89443; ey[7]=2.68328;
+            double[] ez = new double[8];
+            ez[0]=-1.52753; ez[1]=-0.65465; ez[2]=0.21822; ez[3]=1.09109;
+            ez[4]=-2.18218; ez[5]=-0.43644; ez[6]=1.30931; ez[7]=3.05483;
+            int i = 0;
+            while (i < 8) { double d = y[i]-ey[i]; if (d<0.0) d=0.0-d; if (d>1.0e-3) bad=bad+1; d = z[i]-ez[i]; if (d<0.0) d=0.0-d; if (d>1.0e-3) bad=bad+1; i = i + 1; }
+            return bad;
+        }
+        @constructor JsonGroupNormApp() {
+            Session s = new Session();
+            int ok = s.loadJson("./deeplearning/infer_tests/groupnorm.json");
+            if (ok == 0) { Console.writeLine("JSON GROUPNORM SKIP (no load)"); return; }
+            double[] x = new double[8];
+            x[0]=1.0; x[1]=3.0; x[2]=5.0; x[3]=7.0;   // c0
+            x[4]=2.0; x[5]=4.0; x[6]=6.0; x[7]=8.0;   // c1
+            s.setInput("x", x, 8);
+            int rk = s.runAuto();
+            int bad = checkAll(s, 0);
+            double[] y = s.getOutput("y");
+            Console.writeString("run="); Console.writeLong(rk);
+            Console.writeString(" bad="); Console.writeLong(bad);
+            Console.writeString(" y0="); Console.writeFloat(y[0]);
+            Console.writeString(" y7="); Console.writeFloat(y[7]);
+            Console.writeLine("");
+            if (ok==1 && rk==1 && bad==0) Console.writeLine("JSON GROUPNORM OK");
+            else Console.writeLine("JSON GROUPNORM FAIL");
+        }
+}
+int main() { JsonGroupNormApp a = new JsonGroupNormApp(); return 0; }

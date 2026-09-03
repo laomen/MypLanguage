@@ -3326,6 +3326,59 @@ class GpuInferOps {
                 }
             }
         }
+        // GroupNorm（GPU）：x:[N*C,H*W]（NCHW 行优先），gamma/beta:[C]。K1 grid=N*groups
+        // 每线程一 (n,g) 算 mean/rstd→stOff[n*groups+g]；K2 thread-per-element 应用。
+        void groupnorm(float[] a, int work, int xOff, int gOff, int bOff, int yOff,
+                       int N, int C, int H, int W, int groups, double eps, long dev, int stOff) {
+            int cpg = C / groups;
+            if (cpg < 1) cpg = 1;
+            int hw = H * W;
+            long ng = long(N) * long(groups);
+            @gpu for (long gi = 0L; gi < ng; gi = gi + 1L) resident(a = dev) {
+                if (gi < ng) {
+                    int nn = int(gi / long(groups));
+                    int g = int(gi % long(groups));
+                    int nch = cpg * hw;
+                    double sum = 0.0;
+                    int c = 0;
+                    while (c < cpg) {
+                        int p = 0;
+                        while (p < hw) { sum = sum + double(a[xOff + (nn * C + g * cpg + c) * hw + p]); p = p + 1; }
+                        c = c + 1;
+                    }
+                    double mean = sum / double(nch);
+                    double ss = 0.0;
+                    c = 0;
+                    while (c < cpg) {
+                        int p = 0;
+                        while (p < hw) {
+                            double dv = double(a[xOff + (nn * C + g * cpg + c) * hw + p]) - mean;
+                            ss = ss + dv * dv;
+                            p = p + 1;
+                        }
+                        c = c + 1;
+                    }
+                    a[stOff + int(gi) * 2] = float(mean);
+                    a[stOff + int(gi) * 2 + 1] = float(1.0 / Math.sqrt(ss / double(nch) + eps));
+                }
+            }
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int row = int(p / long(hw));   // [0, N*C)
+                    int pp = int(p % long(hw));
+                    int nn = row / C;
+                    int cc = row % C;
+                    int g = cc / cpg;
+                    float mean = a[stOff + (nn * groups + g) * 2];
+                    float iv = a[stOff + (nn * groups + g) * 2 + 1];
+                    float gv = 1.0f;
+                    float bv = 0.0f;
+                    if (gOff >= 0) gv = a[gOff + cc];
+                    if (bOff >= 0) bv = a[bOff + cc];
+                    a[yOff + p] = (a[xOff + p] - mean) * iv * gv + bv;
+                }
+            }
+        }
         // GELU（通用，element-wise，2026-08-21）：y = 0.5*x*(1+erf(x/√2))。
         // 内联 Abramowitz-Stegun 7.1.26 erf 近似（与 ops.myp InferOps.gelu 同实现，误差<1.5e-7）。
         void gelu(float[] a, int work, int inOff, int outOff, long dev) {

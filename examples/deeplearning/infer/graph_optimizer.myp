@@ -626,6 +626,11 @@ class GraphOptimizer {
                     // F8：scale/bias [C] 常量 → FC_B 登记（addTensorPlanned2(d0,1)）
                     markFCBias(graph, graph.nodeInAt(i, 1));
                     markFCBias(graph, graph.nodeInAt(i, 2));
+                } else if (t == "GroupNorm") {
+                    // P5：gamma/beta [C] 逐通道常量 → FC_B 登记（同 InstanceNormalization；
+                    // kernel 按本地通道 c∈[0,C) 索引 a[gOff+c]）
+                    markFCBias(graph, graph.nodeInAt(i, 1));
+                    markFCBias(graph, graph.nodeInAt(i, 2));
                 } else if (t == "Pad") {
                     // F8：pads（int64）与 constant_value（f32）参数不登记为 f32 激活张量
                     markInt64Param(graph, graph.nodeInAt(i, 1));
@@ -1607,7 +1612,7 @@ int inferShapes(Graph graph) {
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), od0, od1, od2, od3);
                 } else if (t == "Relu" || t == "Sigmoid" || t == "Softmax" || t == "LogSoftmax" || t == "BatchNormalization"
                            || t == "ReLU6" || t == "LeakyRelu" || t == "SiLU" || t == "HardSwish" || t == "Clip" || t == "Dropout"
-                           || t == "LayerNorm" || t == "RmsNorm" || t == "GELU" || t == "Tanh") {
+                           || t == "LayerNorm" || t == "RmsNorm" || t == "GELU" || t == "Tanh" || t == "GroupNorm") {
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     graph.copyShape(graph.compilerNodeOutput(i, 0), a);
                 } else if (t == "Embedding") {

@@ -175,6 +175,14 @@ class GraphCompiler {
                         int b = tensorId(graph.nodeInAt(ni, 2));
                         rt.addLayerNorm(a, g, b, out, 0, 0, eps);
                     }
+                } else if (code == OpCode.GROUPNORM()) {
+                    // GroupNorm（opKind 84）：gamma=nodeIn1、beta=nodeIn2（可空 → b=-1）；
+                    // groups=GROUP() attr；eps attr。N/C/H/W 运行时张量自带（tensorN/C/H/W）。
+                    int g = tensorId(graph.nodeInAt(ni, 1));
+                    int b = tensorId(graph.nodeInAt(ni, 2));
+                    double eps = graph.attrFloat(ni, NodeField.EPS_INT());
+                    if (graph.compilerAttr(ni, NodeField.HAS_EPS()) != 1) eps = 1.0e-5;
+                    rt.addGroupNorm(a, g, b, out, graph.compilerAttr(ni, NodeField.GROUP()), eps);
                 } else if (code == OpCode.GELU()) {
                     // GELU（精确 erf 近似；n 传 0 → Op 自省 rows*cols）
                     rt.addGelu(a, out, 0);

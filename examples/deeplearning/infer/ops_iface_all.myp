@@ -2138,6 +2138,19 @@ class GeluOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
+// ---- groupNorm（opKind 84 前向；N/C/H/W 由张量自带，groups/eps=opP0/opP1）----
+class GroupNormOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int in = rt.opAAt(i); int g = rt.opBAt(i); int b = rt.opCAt(i); int out = rt.opDAt(i);
+            InferOps.groupNorm(rt.arenaRef(), rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(b), rt.tensorOff(out),
+                               rt.tensorN(in), rt.tensorC(in), rt.tensorH(in), rt.tensorW(in),
+                               rt.opP0At(i), F32.toDouble(rt.opP1At(i)));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- rope（opKind 66 前向，CPU-only）----
 class RopeOp {
     interface class IOp;
@@ -2215,6 +2228,19 @@ class GpuLayerNormOp {
             int S = rt.opP1At(i); if (S <= 0) S = rt.tensorCols(in);
             GpuInferOps.layernorm(rt.arenaRef(), D * S, rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(b), rt.tensorOff(out),
                                   D, S, F32.toDouble(rt.opP2At(i)), rt.devRef(), rt.statsOffRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- groupNorm（GPU，stOff 用 arena 尾部 stats 暂存）----
+class GpuGroupNormOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int in = rt.opAAt(i); int g = rt.opBAt(i); int b = rt.opCAt(i); int out = rt.opDAt(i);
+            int N = rt.tensorN(in); int C = rt.tensorC(in); int H = rt.tensorH(in); int W = rt.tensorW(in);
+            GpuInferOps.groupnorm(rt.arenaRef(), N * C * H * W, rt.tensorOff(in), rt.tensorOff(g), rt.tensorOff(b), rt.tensorOff(out),
+                                  N, C, H, W, rt.opP0At(i), F32.toDouble(rt.opP1At(i)), rt.devRef(), rt.statsOffRef());
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -2556,6 +2582,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(47, new ArgmaxOp(), 0);               rt.registerFwd(47, new GpuArgmaxOp(), 1);
     rt.registerFwd(48, new ArgminOp(), 0);               rt.registerFwd(48, new GpuArgminOp(), 1);
     rt.registerFwd(49, new TopkOp(), 0);                 rt.registerFwd(49, new GpuTopkOp(), 1);
+    rt.registerFwd(84, new GroupNormOp(), 0);            rt.registerFwd(84, new GpuGroupNormOp(), 1);
     rt.registerFwdBwd(5, 53, new AddOp(), 0);            rt.registerFwdBwd(5, 53, new GpuAddOp(), 1);
     rt.registerFwd(6, new MatmulOp(), 0);                rt.registerFwd(6, new GpuMatmulOp(), 1);
     rt.registerFwdBwd(7, 56, new ConvOp(), 0);           rt.registerFwdBwd(7, 56, new GpuConvOp(), 1);

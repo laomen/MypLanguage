@@ -286,6 +286,61 @@ class InferOps {
             }
         }
 
+        // 图归一化：GroupNorm。xOff:[N*C,H*W]（NCHW 行优先；行=通道），gamma/beta:[C]，
+        // yOff 同 x。组 g 覆盖通道 [g*cpg,(g+1)*cpg)，mean/var 在该 (n,g) 的
+        // cpg*H*W 元素上统计（SD1.5 norm_num_groups=32 语义，N 通用）。
+        // gOff/bOff 可为 -1（无 gamma=1 / 无 beta=0）。groups 须整除 C。
+        void groupNorm(float[] arena, int xOff, int gOff, int bOff, int yOff,
+                       int N, int C, int H, int W, int groups, double eps) {
+            int cpg = C / groups;
+            if (cpg < 1) cpg = 1;
+            int hw = H * W;
+            int n = 0;
+            while (n < N) {
+                int g = 0;
+                while (g < groups) {
+                    int nch = cpg * hw;
+                    double mean = 0.0;
+                    int c = 0;
+                    while (c < cpg) {
+                        int p = 0;
+                        while (p < hw) { mean = mean + double(arena[xOff + (n * C + g * cpg + c) * hw + p]); p = p + 1; }
+                        c = c + 1;
+                    }
+                    mean = mean / double(nch);
+                    double vsum = 0.0;
+                    c = 0;
+                    while (c < cpg) {
+                        int p = 0;
+                        while (p < hw) {
+                            double v = double(arena[xOff + (n * C + g * cpg + c) * hw + p]) - mean;
+                            vsum = vsum + v * v;
+                            p = p + 1;
+                        }
+                        c = c + 1;
+                    }
+                    double rstd = 1.0 / Math.sqrt(vsum / double(nch) + eps);
+                    c = 0;
+                    while (c < cpg) {
+                        int cc = n * C + g * cpg + c;
+                        double gv = 1.0;
+                        double bv = 0.0;
+                        if (gOff >= 0) gv = double(arena[gOff + (g * cpg + c)]);
+                        if (bOff >= 0) bv = double(arena[bOff + (g * cpg + c)]);
+                        int p = 0;
+                        while (p < hw) {
+                            double v = (double(arena[xOff + cc * hw + p]) - mean) * rstd;
+                            arena[yOff + cc * hw + p] = float(v * gv + bv);
+                            p = p + 1;
+                        }
+                        c = c + 1;
+                    }
+                    g = g + 1;
+                }
+                n = n + 1;
+            }
+        }
+
         // 阶段5：GELU（GPT-2 精确版）：0.5*x*(1+erf(x/√2))。MYP Math 无 erf，内联 Abramowitz-Stegun 7.1.26 近似（误差 <1.5e-7）。
         void gelu(float[] arena, int inOff, int outOff, int n) {
             int i = 0;

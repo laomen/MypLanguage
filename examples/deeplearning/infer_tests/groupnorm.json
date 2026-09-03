@@ -1,0 +1,11 @@
+{ "name":"jgn",
+  "inputs":[{"name":"x","dims":[1,2,2,2]}],
+  "outputs":["y","z"],
+  "layers":[
+    { "op":"GroupNorm","in":"x","out":"y","groups":2,"epsilon":0.0,
+      "gamma":{"dims":[2],"values":[2.0,2.0]},
+      "beta":{"dims":[2],"values":[1.0,0.0]}},
+    { "op":"GroupNorm","in":"x","out":"z","groups":1,"epsilon":0.0,
+      "gamma":{"dims":[2],"values":[1.0,2.0]},
+      "beta":{"dims":[2],"values":[0.0,0.0]}}
+  ]}

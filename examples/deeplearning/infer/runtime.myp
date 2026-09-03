@@ -707,6 +707,16 @@ class InferenceRuntime {
             opP0_[id] = k;
             opCount_ = opCount_ + 1;
         }
+        // GroupNorm（opKind 84）：in=opA, gamma=opB, beta=opC, out=opD；groups=opP0,
+        // eps=opP1(位型)。N/C/H/W 由运行时张量自带（tensorN/C/H/W）。
+        void addGroupNorm(int inT, int gT, int bT, int outT, int groups, double eps) {
+            int id = opCount_;
+            opKind_[id] = 84;
+            opA_[id] = inT; opB_[id] = gT; opC_[id] = bT; opD_[id] = outT;
+            opP0_[id] = groups;
+            opP1_[id] = F32.toBits(eps);
+            opCount_ = opCount_ + 1;
+        }
 
         void addAdd(int aTid, int bTid, int outputTid, int doRelu,
                     int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw) {
