@@ -82,7 +82,7 @@ bash examples/deeplearning/infer_tests/run_all.sh    # → == pass=135 fail=0 ==
 ```
 
 **Related docs** (`deeplearning/docs/`):
-- [`design.md`](../docs/design.md) — architecture (runtime / opKind / pass pipeline / extending)
+- [`design_EN.md`](../docs/design_EN.md) — architecture (runtime / opKind / pass pipeline / extending)
 - [`usage.md`](../docs/usage.md) — usage (build-run / env vars / regression / cross-validation)
 - [`sli.md`](../docs/sli.md) — the SLI quickstart (Session API, JSON syntax, training, traps)
 - [`gpu_paradigm.md`](../docs/gpu_paradigm.md) — GPU paradigm library + roadmap (M1-M4 / G1-G4)

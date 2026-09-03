@@ -18,6 +18,9 @@
   断）、`docs/usage.md` / `docs/sli.md`（用户指南）、`CHANGELOG.md` 与各子目录 README。
 - 上述文档的**落地内容**以本 changelog 为服务器可见记录；`diffusion/README.md` 对本地计划
   文档的指向已注明「不随仓库推送」。
+- `docs/design.md` 全量更新至 2026-09-03 架构（模块化 Graph IR SoA 拆分 + 双前端 ONNX/JSON
+  + Session 训练/GPU 反向 + 接口化算子注册表 + 扩展流程），新增英文全译 `docs/design_EN.md`
+  （infer/README_EN.md 文档链已指向英文版）。
 
 ---
 
