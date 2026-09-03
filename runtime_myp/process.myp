@@ -9,6 +9,11 @@
 //   - is_running：kill(pid, 0) == 0
 //   - spawn：双 fork → 中间子退出、孙进程 setsid + execve(/bin/sh -c cmd)
 //     （execve 非常变参，argv 手动构造 char* 数组；envp 取 libc environ 继承）
+//
+// 注意（2026-09-04，mypagent 交互 chat 崩 __longjmp 根因）：libc `popen`
+//  内部用 clone3(CLONE_VM|CLONE_VFORK)——子进程共享父进程地址空间/栈，
+//  在 exec 前会把父栈上的 MYP 异常 handler jmp_buf 覆盖掉，之后长跳转崩。
+//  故 output 改用「fork()(COW 拷贝，不共享栈) + pipe + dup2 + execve」自实现。
 
 ffi int myp_strlen(string s);
 ffi string myp_alloc(long size);
@@ -22,6 +27,10 @@ ffi int getpid();
 ffi int getppid();
 ffi int kill(int pid, int sig);
 ffi int fork();
+ffi int pipe(long fds);
+ffi int dup2(int oldfd, int newfd);
+ffi long read(int fd, long buf, long count);
+ffi int close(int fd);
 ffi int setsid();
 ffi int execve(string path, long argv, long envp);
 ffi int waitpid(int pid, long status, int options);
@@ -42,17 +51,40 @@ int myp_process_run(string cmd) {
     return 1;   // 被信号终止等
 }
 
-// C: char* myp_process_output(const char* cmd) —— popen 抓 stdout
+// C: char* myp_process_output(const char* cmd) —— 抓 stdout；fork+pipe 自实现（不用 popen）
 string myp_process_output(string cmd) {
     if (myp_strlen(cmd) == 0) return procEmpty();
-    long fp = popen(cmd, "r");
-    if (fp == 0) return procEmpty();
+    long fds = myp_arena_alloc(8);
+    if (pipe(fds) != 0) return procEmpty();
+    int rd = __myp_mem_load_i32(fds);
+    int wr = __myp_mem_load_i32(fds + 4);
+    // envp 在 fork 前解析（子进程 post-fork 避免调用 dlsym/非 async-signal-safe 操作）
+    long envp = __myp_mem_load_i64(__myp_fn_addr("environ"));
+    int pid = fork();
+    if (pid < 0) { close(rd); close(wr); return procEmpty(); }
+    if (pid == 0) {
+        // 子进程：stdout/stderr → 管道写端（fork() 为 COW 拷贝，不与父进程共享栈，
+        // 不会覆盖父进程栈上的 MYP 异常 handler jmp_buf；区别于 popen 的 vfork）
+        dup2(wr, 1);
+        dup2(wr, 2);
+        close(rd);
+        close(wr);
+        // execve 非常变参：手动构造 argv = ["sh","-c",cmd,NULL]
+        long argv = myp_arena_alloc(32);
+        __myp_mem_store_i64(argv, __myp_str_ptr("sh"));
+        __myp_mem_store_i64(argv + 8, __myp_str_ptr("-c"));
+        __myp_mem_store_i64(argv + 16, __myp_str_ptr(cmd));
+        __myp_mem_store_i64(argv + 24, 0);
+        execve("/bin/sh", argv, envp);
+        _exit(127);
+    }
+    close(wr);
     int cap = 4096;
     int len = 0;
     string buf = myp_alloc(cap);
     string tmp = myp_alloc(4096);
     while (true) {
-        long n = fread(__myp_str_ptr(tmp), 1, 4095, fp);
+        long n = read(rd, __myp_str_ptr(tmp), 4095);
         if (n <= 0) break;
         int in = int(n);
         if (len + in > cap - 1) {
@@ -66,7 +98,8 @@ string myp_process_output(string cmd) {
         __myp_memcpy(__myp_str_ptr(buf) + len, __myp_str_ptr(tmp), in);
         len = len + in;
     }
-    pclose(fp);
+    close(rd);
+    waitpid(pid, 0, 0);   // 回收子进程
     // 精确长度计数字符串：myp_alloc(len+1) → 头 len = len（同 C myp_alloc）
     string r = myp_alloc(len + 1);
     if (len > 0) __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(buf), len);
