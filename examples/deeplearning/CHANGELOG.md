@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-09-03 — P8c BN/IN scale·bias 训练梯度
+
+全量回归 pass=124→**128** fail=0（P8「BN/IN scale·bias 训练梯度」收口；CPU-only 训练）。
+
+### BwdBatchNorm（opKind 114，OpCode 121；固定 mean/var 的推理 BN 反向）
+- 语义：y=(x-mean)·scale·rstd+bias（rstd=1/sqrt(var+eps)）→ **dx=dy·scale·rstd**、
+  dscale[c]=Σdy·(x-mean)·rstd、dbias[c]=Σdy（对给定 mean/var 精确，无 batch 重估）。
+- kernel CPU `InferOps.bwdBatchnorm`（段布局 (n,c)=seg 单循环；ds/db 先清零逐 seg 累加、
+  c=seg%C）N/C/S 存 opX0-2；BwdBatchnormOp registerBwd(114,0)。
+- graph：OpCode/mapOpType/opTraits + buildReverseGraph（BatchNormalization→BwdBatchNorm；
+  节点仅带 dy——**节点输入槽限 0..4，fwd BN 已用满 5 槽**，不能再带 scale/bias/mean/var，
+  graph_compiler 由 dy 名反查 fwd BN 节点取参数张量）+ 复制 eps。
+- 测试 bwd_bn_main（x[1,2,2,2] scale=[1,3] var=[1,4] 手算 dx/ds/db）；bn_train.json
+  x→BN→MSE（目标 2·x0/0.3·x1，须学 scale0≈2/scale1≈0.3）lr=0.005×1500 步 l0≈61→lf≈1e-4。
+
+### BwdInstanceNorm（opKind 115，OpCode 122；per-(n,c) 归一化反向）
+- 语义：重算每段 mean/var → xhat=(x-mean)·rstd；标准公式（段内 md=mean(dy)、
+  mdx=mean(dy·xhat)）：**dx=rstd·scale·(dy-md-xhat·mdx)**、dscale[c]=Σdy·xhat、dbias[c]=Σdy。
+- kernel CPU `InferOps.bwdInstancenorm`（三趟：统计/xhat 累加 md·mdx/dx）；N/C/S opP5-7；
+  BwdInstanceNormOp registerBwd(115,0)。
+- graph 同 BN（节点带 dy,x,scale,bias——4 槽足够）；测试 bwd_in_main **有限差分梯度对拍**
+  （dx/ds/db vs (L(p+h)-L(p-h))/2h，全部 <2e-2）；in_train.json x→IN→MSE（目标=2·xhat，
+  须学 scale≈2）lr=0.05×800 步收敛 lf 极低。
+- 坑：MSE 大数值目标下 BN scale 梯度大（dscale≈Σ dy·x），lr 0.05 会 NaN 发散（同 GE 教训）；
+  用 0.005。BN/IN 训练图跳过 IN+Relu 融合（optimizeTrain 不跑 FUSE_RELU），反向按非融合。
+- 注：Update 自动生成（step5）只认 weight role 0..3 + 梯度为节点输出——BN/IN scale/bias 默认
+  role 0 即可被 Update；mean/var 无梯度不更新。
+
+---
+
 ## 2026-09-03 — RoPE 图算子（LLM 位置编码，opKind 113，OpCode 120）
 
 全量回归 pass=123→**124** fail=0（P8「RoPE 图算子」收口；前向推理 LLM 算子族，同 RmsNorm/LayerNorm）。

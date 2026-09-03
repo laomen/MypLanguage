@@ -112,7 +112,9 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   (sizes [1,1,(outD,)outH,outW])/`ConvTranspose3D`(W 5D [Cin,Cout,kd,kh,kw] + strides/
   pads6；3D 转置卷积，U-Net 解码上采样)——3D JSON 输入/权重用 5 维 dims；**归一化**
   `BatchNormalization`(scale/bias/mean/var + epsilon)/`InstanceNormalization`
-  (scale/bias + epsilon)/**`LayerNorm`(gamma/beta) / `RmsNorm`(gamma) / `GELU`**
+  (scale/bias + epsilon)（二者均含 **scale·bias 训练梯度 P8c**：BN 固定 mean/var 反向
+  dx=dy·scale·rstd、IN per-(n,c) 重估统计反向；scale/bias 自动入 Update，见
+  bn_train.json/in_train.json）/**`LayerNorm`(gamma/beta) / `RmsNorm`(gamma) / `GELU`**
   （图归一化/激活，复用 LLM kernel；多接 Gemm 输出，tensor 按 [特征行, 样本列] 布局，
   gamma/beta [D=D 特征]）/**`GroupNorm`(gamma/beta [C], groups, epsilon)**（逐通道组
   归一化；NCHW [N,C,H,W]，组=g 覆盖每 (n,g) 的 cpg·H·W；SD1.5 norm_num_groups）；**LLM 位置编码**
