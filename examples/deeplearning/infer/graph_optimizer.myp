@@ -1043,6 +1043,41 @@ class GraphOptimizer {
                             if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
                                 graph.replaceResult(bd, 0, "");   // 图输入 data：dx 无上游消费（须 endNode 后）
                             }
+                        } else if (t == "GatherElements") {
+                            // P8b：GatherElements 反向（dy scatter-add 回 data 梯度 dx）。
+                            // indices=nodeIn2（float 索引张量，运行时直接引用）；data=nodeIn1
+                            // （shape 参考，供 axis/inner/dim 现算）。复制 axis 属性。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdGatherElements");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.AXIS(), graph.compilerAttr(ni, NodeField.AXIS()));
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");   // 图输入 data：dx 无上游消费（须 endNode 后）
+                            }
+                        } else if (t == "ScatterND") {
+                            // P8b：ScatterND 反向：dx=dy 非写位置（写位置清零）、du=写位置
+                            // gather dy。indices=nodeIn1、updates=nodeIn2。dx 仅当 data 是节点
+                            // 输出、du 仅当 updates 是节点输出才产出（图输入梯度无上游消费）。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdScatterND");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 1));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 2));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 2)));
+                            graph.endNode();
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");   // 图输入 data：dx 无上游消费
+                            }
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 2)) == 0) {
+                                graph.replaceResult(bd, 1, "");   // 图输入 updates：du 无上游消费
+                            }
                         } else if (t == "Pad") {
                             // B：Pad(constant) 反向 = 去边取中心（dx = dy 中心区）。
                             // 仅 constant（reflect/edge 需镜像累加，跳过=梯度 0）。

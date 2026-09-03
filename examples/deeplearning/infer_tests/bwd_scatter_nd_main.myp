@@ -1,0 +1,70 @@
+// bwd_scatter_nd_main.myp — P8b：ScatterND 反向数值对拍。CPU-only（直连 runtime）。
+// data[1,3,2,2] 12 元素；out=copy(data)+scatter → dx=dy 除写位置清零、du=写位置 gather。
+//   组1 k=2（通道整块，q=1）：idx=[[0,1]] → 写 pos 4..7；dy=1..12
+//     dx=[1,2,3,4, 0,0,0,0, 9,10,11,12]；du=[5,6,7,8]。
+//   组2 k=4（全秩单元素，q=2）：idx2=[[0,0,1,1],[0,2,0,0]] → 写 pos3、pos8；
+//     dy=1..12 → dx=[1,2,3,0, 5,6,7,8, 0,10,11,12]；du2=[4,9]。
+// 全部 PASS → BWD SCATTER_ND OK。
+import env;
+import fmt;
+import "../infer/runtime.myp";
+
+class BwdScatterNdApp {
+    action:
+        double absd(double v) { if (v < 0.0) return 0.0 - v; return v; }
+        @constructor BwdScatterNdApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(2048);
+            rt.setTrain(1);
+            // 组1：k=2 q=1（通道 1 整块 scatter）
+            int dx1 = rt.addTensor4(1, 3, 2, 2);
+            int dy1 = rt.addTensor4(1, 3, 2, 2);
+            int du1 = rt.addTensor(4, 1);
+            int i1 = rt.addTensor(2, 1);
+            rt.setFlat(i1, 0, 0.0); rt.setFlat(i1, 1, 1.0);
+            int k = 0;
+            while (k < 12) { rt.setFlat(dy1, k, double(k + 1)); k = k + 1; }   // 1..12
+            rt.addBwdScatterND(dy1, i1, dx1, du1, 1, 2, 1, 3, 2, 2, 1);
+            // 组2：k=4 q=2（单元素 scatter）
+            int dx2 = rt.addTensor4(1, 3, 2, 2);
+            int dy2 = rt.addTensor4(1, 3, 2, 2);
+            int du2 = rt.addTensor(2, 1);
+            int i2 = rt.addTensor(8, 1);
+            int[] iv = new int[8];
+            iv[0]=0; iv[1]=0; iv[2]=1; iv[3]=1;
+            iv[4]=0; iv[5]=2; iv[6]=0; iv[7]=0;
+            k = 0;
+            while (k < 8) { rt.setFlat(i2, k, double(iv[k])); k = k + 1; }
+            k = 0;
+            while (k < 12) { rt.setFlat(dy2, k, double(k + 1)); k = k + 1; }   // 1..12
+            rt.addBwdScatterND(dy2, i2, dx2, du2, 2, 4, 1, 3, 2, 2, 1);
+            rt.run();
+            int bad = 0;
+            double[] edx1 = new double[12];
+            edx1[0]=1.0; edx1[1]=2.0; edx1[2]=3.0; edx1[3]=4.0;
+            edx1[4]=0.0; edx1[5]=0.0; edx1[6]=0.0; edx1[7]=0.0;
+            edx1[8]=9.0; edx1[9]=10.0; edx1[10]=11.0; edx1[11]=12.0;
+            int i = 0;
+            while (i < 12) { if (absd(rt.getFlat(dx1, i) - edx1[i]) > 1.0e-3) bad = bad + 1; i = i + 1; }
+            double[] edu1 = new double[4];
+            edu1[0]=5.0; edu1[1]=6.0; edu1[2]=7.0; edu1[3]=8.0;
+            i = 0;
+            while (i < 4) { if (absd(rt.getFlat(du1, i) - edu1[i]) > 1.0e-3) bad = bad + 1; i = i + 1; }
+            double[] edx2 = new double[12];
+            edx2[0]=1.0; edx2[1]=2.0; edx2[2]=3.0; edx2[3]=0.0;
+            edx2[4]=5.0; edx2[5]=6.0; edx2[6]=7.0; edx2[7]=8.0;
+            edx2[8]=0.0; edx2[9]=10.0; edx2[10]=11.0; edx2[11]=12.0;
+            i = 0;
+            while (i < 12) { if (absd(rt.getFlat(dx2, i) - edx2[i]) > 1.0e-3) bad = bad + 1; i = i + 1; }
+            double[] edu2 = new double[2];
+            edu2[0]=4.0; edu2[1]=9.0;
+            i = 0;
+            while (i < 2) { if (absd(rt.getFlat(du2, i) - edu2[i]) > 1.0e-3) bad = bad + 1; i = i + 1; }
+            Console.writeString("bwd scatter_nd bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            if (bad == 0) Console.writeLine("BWD SCATTER_ND OK");
+            else Console.writeLine("BWD SCATTER_ND MISMATCH");
+        }
+}
+int main() { BwdScatterNdApp app = new BwdScatterNdApp(); return 0; }

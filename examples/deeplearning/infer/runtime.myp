@@ -761,6 +761,29 @@ class InferenceRuntime {
             opP5_[id] = q; opP6_[id] = k;
             opCount_ = opCount_ + 1;
         }
+        // BwdGatherElements（opKind 111，CPU-only 训练）：dy=opA（out/indices 布局）、
+        // idx=opB（float 索引张量）、dx=opC（data 布局，先清零再 scatter-add）。
+        // 参数同前向：axis=opP0、inner=opP1、dataAxisDim=opP2、outAxisDim=opP3。
+        void addBwdGatherElements(int dyT, int iT, int dxT, int axis, int inner,
+                                  int dataAxis, int outAxis) {
+            int id = opCount_;
+            opKind_[id] = 111;
+            opA_[id] = dyT; opB_[id] = iT; opC_[id] = dxT;
+            opP0_[id] = axis; opP1_[id] = inner; opP2_[id] = dataAxis; opP3_[id] = outAxis;
+            opCount_ = opCount_ + 1;
+        }
+        // BwdScatterND（opKind 112，CPU-only 训练）：dy=opA（data/out 布局）、idx=opB、
+        // dx=opC（data 梯度，写位置清零其余=dy）、du=opD（updates 梯度=写位置 gather dy；
+        // 可为 -1）。data 5 维=opP0-4、q=opP5、k=opP6（同前向）。
+        void addBwdScatterND(int dyT, int iT, int dxT, int duT, int q, int k,
+                             int d0, int d1, int d2, int d3, int d4) {
+            int id = opCount_;
+            opKind_[id] = 112;
+            opA_[id] = dyT; opB_[id] = iT; opC_[id] = dxT; opD_[id] = duT;
+            opP0_[id] = d0; opP1_[id] = d1; opP2_[id] = d2; opP3_[id] = d3; opP4_[id] = d4;
+            opP5_[id] = q; opP6_[id] = k;
+            opCount_ = opCount_ + 1;
+        }
 
         void addAdd(int aTid, int bTid, int outputTid, int doRelu,
                     int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw) {

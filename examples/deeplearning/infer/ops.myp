@@ -1012,6 +1012,75 @@ class InferOps {
             }
         }
 
+        // P8b：BwdGatherElements（CPU-only 训练）。out[i] 来自 data 源位置 s(i)
+        // （同前向 idx clamp）→ dx[s] 累加 dy[i]。先清零 dx（data 布局）。
+        void bwdGatherElements(float[] arena, int dyOff, int iOff, int dxOff,
+                               int outTotal, int dataTotal,
+                               int inner, int dataAxisDim, int outAxisDim) {
+            int i = 0;
+            while (i < dataTotal) { arena[dxOff + i] = float(0.0); i = i + 1; }
+            i = 0;
+            while (i < outTotal) {
+                int q = i % inner;
+                int p = i / inner;
+                int ax = p % outAxisDim;
+                int outer = p / outAxisDim;
+                int ix = int(double(arena[iOff + i]));
+                if (ix < 0) ix = ix + dataAxisDim;
+                if (ix < 0) ix = 0;
+                if (ix >= dataAxisDim) ix = dataAxisDim - 1;
+                arena[dxOff + (outer * dataAxisDim + ix) * inner + q] =
+                    arena[dxOff + (outer * dataAxisDim + ix) * inner + q] + arena[dyOff + i];
+                i = i + 1;
+            }
+        }
+
+        // P8b：BwdScatterND（CPU-only 训练）。out=copy(data) 再 scatter：被某更新行
+        // 写入的位置 d out/d data=0 → dx 该处清零、其余=dy（先整块 dx=dy）；du = 写位置
+        // 的 dy gather（唯一前缀时精确；重复前缀累加——典型使用唯一）。duOff<0 跳过。
+        void bwdScatterND(float[] arena, int dyOff, int iOff, int dxOff, int duOff,
+                          int q, int k, int d0, int d1, int d2, int d3, int d4) {
+            int total = d0 * d1 * d2 * d3 * d4;
+            int i = 0;
+            while (i < total) { arena[dxOff + i] = arena[dyOff + i]; i = i + 1; }
+            int block = total;
+            int jb = 0;
+            while (jb < k) {
+                int dbj = (jb == 0) ? d0 : ((jb == 1) ? d1 : ((jb == 2) ? d2 : ((jb == 3) ? d3 : d4)));
+                block = block / dbj;
+                jb = jb + 1;
+            }
+            if (duOff >= 0) {
+                i = 0;
+                while (i < q * block) { arena[duOff + i] = float(0.0); i = i + 1; }
+            }
+            int u = 0;
+            while (u < q) {
+                int base = 0;
+                int R = total;
+                int j = 0;
+                while (j < k) {
+                    int dj = (j == 0) ? d0 : ((j == 1) ? d1 : ((j == 2) ? d2 : ((j == 3) ? d3 : d4)));
+                    R = R / dj;
+                    int cj = int(double(arena[iOff + u * k + j]));
+                    if (cj < 0) cj = cj + dj;
+                    if (cj < 0) cj = 0;
+                    if (cj >= dj) cj = dj - 1;
+                    base = base + cj * R;
+                    j = j + 1;
+                }
+                int e = 0;
+                while (e < R) {
+                    arena[dxOff + base + e] = float(0.0);
+                    if (duOff >= 0) {
+                        arena[duOff + u * R + e] = arena[duOff + u * R + e] + arena[dyOff + base + e];
+                    }
+                    e = e + 1;
+                }
+                u = u + 1;
+            }
+        }
+
         // ---- 训练：卷积/池化反向（阶段3，CPU）----
 
         // 反向：y = conv(x, w)；给定 dY[N,yC,yH,yW]

@@ -2676,6 +2676,44 @@ class BwdPadOp {
         }
 }
 
+// ---- BwdGatherElements（opKind 111，P8b；dy scatter-add 回 data 梯度，CPU-only）----
+class BwdGatherElementsOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int it = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                InferOps.bwdGatherElements(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(it), rt.tensorOff(dx),
+                                           rt.tensorRows(dy) * rt.tensorCols(dy),
+                                           rt.tensorRows(dx) * rt.tensorCols(dx),
+                                           rt.opP1At(i), rt.opP2At(i), rt.opP3At(i));
+            }
+        }
+}
+
+// ---- BwdScatterND（opKind 112，P8b；dx=dy 非写位置 / du=写位置 gather dy，CPU-only）----
+class BwdScatterNDOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int it = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                int du = rt.opDAt(i);
+                if (dx < 0) return;
+                InferOps.bwdScatterND(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(it), rt.tensorOff(dx),
+                                      rt.tensorOff(du), rt.opP5At(i), rt.opP6At(i),
+                                      rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i));
+            }
+        }
+}
+
 // ---- concat 反向（opKind 72；5D U-Net 跳跃连接，CPU）----
 // 反向图生成独立 BwdConcat 节点（dy → dx0/dx1/dx2），前向 ConcatOp(25) 的
 // backward 保持空（concat 前向节点不承载反向）。
@@ -2758,6 +2796,8 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwdBwd(30, 97, new ReduceMeanOp(), 0);    rt.registerFwd(30, new GpuReduceMeanOp(), 1);
     rt.registerBwd(100, new BwdReduceMMOp(), 0);
     rt.registerBwd(101, new BwdPadOp(), 0);
+    rt.registerBwd(111, new BwdGatherElementsOp(), 0);   // P8b：GatherElements 反向（CPU-only）
+    rt.registerBwd(112, new BwdScatterNDOp(), 0);        // P8b：ScatterND 反向（CPU-only）
     rt.registerFwdBwd(31, 90, new SubOp(), 0);             rt.registerFwdBwd(31, 90, new GpuSubOp(), 1);
     rt.registerFwdBwd(32, 92, new DivOp(), 0);             rt.registerFwdBwd(32, 92, new GpuDivOp(), 1);
     rt.registerFwdBwd(33, 91, new MulOp(), 0);             rt.registerFwdBwd(33, 91, new GpuMulOp(), 1);

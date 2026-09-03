@@ -244,6 +244,8 @@ class OpCode {
         int BWD_CONVTRANSPOSE3D() { return 115; }  // 3D 转置卷积反向（opKind 87）
         int GATHER_ELEMENTS() { return 116; }  // 数据高级索引：GatherElements（opKind 88，逐元素按 indices 沿 axis gather）
         int SCATTER_ND() { return 117; }       // 数据高级索引：ScatterND（opKind 89，按 indices 前缀写 updates 进 data 副本）
+        int BWD_GATHER_ELEMENTS() { return 118; }  // GatherElements 反向（opKind 111）：dy 沿 idx scatter-add 回 data 梯度
+        int BWD_SCATTER_ND() { return 119; }       // ScatterND 反向（opKind 112）：dx=dy 非写位置 / du=gather dy（写位置）
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -345,6 +347,8 @@ class OpCode {
             if (t == "BwdConvTranspose3D") return OpCode.BWD_CONVTRANSPOSE3D();
             if (t == "GatherElements") return OpCode.GATHER_ELEMENTS();
             if (t == "ScatterND") return OpCode.SCATTER_ND();
+            if (t == "BwdGatherElements") return OpCode.BWD_GATHER_ELEMENTS();
+            if (t == "BwdScatterND") return OpCode.BWD_SCATTER_ND();
             return OpCode.UNKNOWN();
         }
         // 节点保护 trait：非 0 表示受 DCE 保护。1=stateful（就地改权重/累加），
@@ -365,6 +369,8 @@ class OpCode {
             if (code == OpCode.BWD_TANH()) return 2;                                  // 激活反向（Tanh）
             if (code == OpCode.MSE_LOSS() || code == OpCode.BCE_LOSS()) return 2;     // 逐元素损失（训练专用）
             if (code == OpCode.BWD_CONVTRANSPOSE3D()) return 2;                        // 3D 转置卷积反向
+            if (code == OpCode.BWD_GATHER_ELEMENTS()) return 2;                        // GatherElements 反向（训练专用）
+            if (code == OpCode.BWD_SCATTER_ND()) return 2;                             // ScatterND 反向（训练专用）
             return 0;
         }
 }
