@@ -2471,6 +2471,67 @@ class InferOps {
             }
         }
 
+        // BwdAvgPool2D（A）：avgpool 反向 = 输出梯度按窗口有效数均摊回输入（同 fwd
+        // 公式：cnt = 窗口内有效元素，cip=1 → div=kh*kw）。清零 dx + 遍历输出累加。
+        // dy 布局 [N,C,yH,yW]；dx 布局 [N,C,xH,xW]。pt(top)/pl(left) 决定窗口起点。
+        void bwdAvgPool2D(float[] arena, int dyOff, int dxOff,
+                          int xN, int xC, int xH, int xW, int yH, int yW,
+                          int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr, int cip) {
+            int total = xN * xC * xH * xW;
+            int i = 0;
+            while (i < total) { arena[dxOff + i] = float(0.0); i = i + 1; }
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    int oy = 0;
+                    while (oy < yH) {
+                        int ox = 0;
+                        while (ox < yW) {
+                            int cnt = 0;
+                            int ky = 0;
+                            while (ky < kh) {
+                                int iy = oy * sh - pt + ky;
+                                if (iy >= 0 && iy < xH) {
+                                    int kx = 0;
+                                    while (kx < kw) {
+                                        int ix = ox * sw - pl + kx;
+                                        if (ix >= 0 && ix < xW) cnt = cnt + 1;
+                                        kx = kx + 1;
+                                    }
+                                }
+                                ky = ky + 1;
+                            }
+                            int div = cnt;
+                            if (cip == 1) div = kh * kw;
+                            if (div < 1) div = 1;
+                            float dyv = arena[dyOff + n * xC * yH * yW + c * yH * yW + oy * yW + ox];
+                            float d = dyv / float(div);
+                            ky = 0;
+                            while (ky < kh) {
+                                int iy = oy * sh - pt + ky;
+                                if (iy >= 0 && iy < xH) {
+                                    int kx = 0;
+                                    while (kx < kw) {
+                                        int ix = ox * sw - pl + kx;
+                                        if (ix >= 0 && ix < xW) {
+                                            arena[dxOff + n * xC * xH * xW + c * xH * xW + iy * xW + ix] = arena[dxOff + n * xC * xH * xW + c * xH * xW + iy * xW + ix] + d;
+                                        }
+                                        kx = kx + 1;
+                                    }
+                                }
+                                ky = ky + 1;
+                            }
+                            ox = ox + 1;
+                        }
+                        oy = oy + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
         // ---- F8：张量操作（Concat / Transpose / Reshape）----
         // Reshape：连续拷贝（输入输出元素数相同、内存布局不变）
         void copyFlat(float[] arena, int inOff, int outOff, int n) {

@@ -413,6 +413,18 @@ class InferenceRuntime {
             opX_[id * 4 + 0] = pb; opX_[id * 4 + 1] = pl; opX_[id * 4 + 2] = pr; opX_[id * 4 + 3] = cip;
             opCount_ = opCount_ + 1;
         }
+        // A：AvgPool2D 反向（opKind 99）。dy=opA, x=opB, dx=opC;
+        // opP0=kh opP1=kw opP2=sh opP3=sw opP4=pt opP5=pb opP6=pl opP7=pr opP8=cip。
+        void addBwdAvgPool(int dyT, int xT, int dxT,
+                           int kh, int kw, int sh, int sw,
+                           int pt, int pb, int pl, int pr, int cip) {
+            int id = opCount_;
+            opKind_[id] = 99;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT;
+            opP0_[id] = kh; opP1_[id] = kw; opP2_[id] = sh; opP3_[id] = sw;
+            opP4_[id] = pt; opP5_[id] = pb; opP6_[id] = pl; opP7_[id] = pr; opP8_[id] = cip;
+            opCount_ = opCount_ + 1;
+        }
         // 阶段4d：ConvTranspose 反向（opKind 68）。dy=opA, x=opB, w=opC, dx=opD;
         // dw=opP0, db=opP1; sh=opP2, sw=opP3, pt=opP4, pb=opP5, pl=opP6, pr=opP7;
         // kh/kw 从 w 张量形状取（w=[Cin,Cout,kh,kw] → tH_/tW_，同前向 convTranspose）。

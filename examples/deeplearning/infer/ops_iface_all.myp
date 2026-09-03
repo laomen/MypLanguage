@@ -1194,7 +1194,20 @@ class AvgpoolOp {
                 rt.tensorOff(yd), rt.tensorH(yd), rt.tensorW(yd),
                 rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // A：BwdAvgPool（opKind 99）：dy 窗口梯度均摊回 dx（先清零）
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int x = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                InferOps.bwdAvgPool2D(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(dx),
+                                      rt.tensorN(x), rt.tensorC(x), rt.tensorH(x), rt.tensorW(x),
+                                      rt.tensorH(dy), rt.tensorW(dy),
+                                      rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i),
+                                      rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+            }
+        }
 }
 
 // ---- avgpoolNHWC（opKind 37 前向）----

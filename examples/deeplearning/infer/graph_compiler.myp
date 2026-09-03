@@ -96,6 +96,7 @@ class GraphCompiler {
                 if (code == OpCode.BWD_EXPAND() || code == OpCode.BWD_TILE()) bwdLike = 1;
                 if (code == OpCode.BWD_REDUCE()) bwdLike = 1;
                 if (code == OpCode.BWD_GATHER()) bwdLike = 1;
+                if (code == OpCode.BWD_AVGPOOL()) bwdLike = 1;
                 if (a < 0 || (out < 0 && bwdLike == 0)) {
                     if (Console.getEnv("MYP_GR_DBG") == "1") {
                         Console.writeString("buildRuntime wire fail type=" + graph.nodeTypeAt(ni) + " in0=" + graph.nodeInAt(ni, 0) + "(" + Fmt.i(a) + ") out=" + graph.compilerEffectiveOut(ni) + "(" + Fmt.i(out) + ")");
@@ -239,6 +240,17 @@ class GraphCompiler {
                     int dn = 1, dc = 1, dh = 1, dw = 1;
                     if (is >= 0) { dn = graph.compilerShapeDim(is, 0); dc = graph.compilerShapeDim(is, 1); dh = graph.compilerShapeDim(is, 2); dw = graph.compilerShapeDim(is, 3); }
                     rt.addBwdGather(dy, idxT, dx, axis, lenIdx, dn, dc, dh, dw);
+                } else if (code == OpCode.BWD_AVGPOOL()) {
+                    // A：AvgPool2D 反向（dy 窗口均摊回 dx；参数复制自 fwd 节点）
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int x = tensorId(graph.nodeInAt(ni, 1));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    rt.addBwdAvgPool(dy, x, dx,
+                        graph.compilerAttr(ni, NodeField.KH()), graph.compilerAttr(ni, NodeField.KW()),
+                        graph.compilerAttr(ni, NodeField.SH()), graph.compilerAttr(ni, NodeField.SW()),
+                        graph.compilerAttr(ni, NodeField.PT()), graph.compilerAttr(ni, NodeField.PB()),
+                        graph.compilerAttr(ni, NodeField.PL()), graph.compilerAttr(ni, NodeField.PR()),
+                        graph.compilerAttr(ni, NodeField.CIP()));
                 } else if (code == OpCode.BWD_CONV()) {
                     int dy = tensorId(graph.nodeInAt(ni, 0));
                     int x = tensorId(graph.nodeInAt(ni, 1));
