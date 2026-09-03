@@ -741,6 +741,167 @@ class GpuInferOps {
             }
         }
 
+        // ---- P10a：激活反向 GPU（CPU-only 训练 → GPU；需 fwd 输入 x 判掩码）----
+        // ReLU6'：x in (0,6) → 1，否则 0
+        void bwdRelu6(float[] a, long dev, int dyOff, int xOff, int dxOff, int n) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float x = a[xOff + i];
+                    float g = 0.0f;
+                    if (x > 0.0f && x < 6.0f) g = 1.0f;
+                    a[dxOff + i] = a[dyOff + i] * g;
+                }
+            }
+        }
+        // LeakyRelu'：x>0 → 1，否则 alpha
+        void bwdLeakyRelu(float[] a, long dev, int dyOff, int xOff, int dxOff, int n, double alpha) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float x = a[xOff + i];
+                    float g = 1.0f;
+                    if (x <= 0.0f) g = float(alpha);
+                    a[dxOff + i] = a[dyOff + i] * g;
+                }
+            }
+        }
+        // SiLU'：σ(x)·(1 + x·(1-σ(x)))，σ=1/(1+e^-x)
+        void bwdSilu(float[] a, long dev, int dyOff, int xOff, int dxOff, int n) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float x = a[xOff + i];
+                    float s = 1.0f / (1.0f + Math.exp(0.0f - x));
+                    float g = s * (1.0f + x * (1.0f - s));
+                    a[dxOff + i] = a[dyOff + i] * g;
+                }
+            }
+        }
+        // HardSwish'：x≤-3 → 0；x≥3 → 1；else (2x+3)/6
+        void bwdHardSwish(float[] a, long dev, int dyOff, int xOff, int dxOff, int n) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float x = a[xOff + i];
+                    float g = 0.0f;
+                    if (x >= 3.0f) g = 1.0f;
+                    else if (x > -3.0f) g = (2.0f * x + 3.0f) / 6.0f;
+                    a[dxOff + i] = a[dyOff + i] * g;
+                }
+            }
+        }
+        // Clip'：x in [lo,hi]（边界含）→ 1，否则 0；minOff/maxOff 标量边界（-1 不限）。
+        // 边界标量从设备 arena 读（持久化模式下宿主副本陈旧，不可在 @gpu 外读）。
+        void bwdClip(float[] a, long dev, int dyOff, int xOff, int dxOff, int n, int minOff, int maxOff) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float x = a[xOff + i];
+                    float g = 1.0f;
+                    if (minOff >= 0 && x < a[minOff + 0]) g = 0.0f;
+                    if (maxOff >= 0 && x > a[maxOff + 0]) g = 0.0f;
+                    a[dxOff + i] = a[dyOff + i] * g;
+                }
+            }
+        }
+        // LogSoftmax 反向（P10a，thread-per-(oi·ii)，串行扫 axisDim 三段同 CPU）：
+        // dx_i = dy_i - softmax(x)_i·Σ_j dy_j。
+        void bwdLogSoftmax(float[] a, long dev, int dyOff, int xOff, int dxOff, int outer, int axisDim, int inner) {
+            @gpu for (long p = 0L; p < long(outer) * long(inner); p = p + 1L) resident(a = dev) {
+                if (p < long(outer) * long(inner)) {
+                    long oi = p / long(inner);
+                    long ii = p % long(inner);
+                    float m = a[xOff + (oi * long(axisDim) + 0L) * long(inner) + ii];
+                    long k = 1L;
+                    while (k < long(axisDim)) {
+                        float v = a[xOff + (oi * long(axisDim) + k) * long(inner) + ii];
+                        if (v > m) m = v;
+                        k = k + 1L;
+                    }
+                    float sum = 0.0f;
+                    k = 0L;
+                    while (k < long(axisDim)) {
+                        float e = Math.exp(a[xOff + (oi * long(axisDim) + k) * long(inner) + ii] - m);
+                        sum = sum + e;
+                        k = k + 1L;
+                    }
+                    float lse = m + Math.log(sum);
+                    float sd = 0.0f;
+                    k = 0L;
+                    while (k < long(axisDim)) {
+                        sd = sd + a[dyOff + (oi * long(axisDim) + k) * long(inner) + ii];
+                        k = k + 1L;
+                    }
+                    k = 0L;
+                    while (k < long(axisDim)) {
+                        float xv = a[xOff + (oi * long(axisDim) + k) * long(inner) + ii];
+                        float s = Math.exp(xv - lse);
+                        a[dxOff + (oi * long(axisDim) + k) * long(inner) + ii] = a[dyOff + (oi * long(axisDim) + k) * long(inner) + ii] - s * sd;
+                        k = k + 1L;
+                    }
+                }
+            }
+        }
+
+        // ---- P10a：MSE/BCE loss GPU（dp 逐元素并行；loss 单线程归约，同 CPU 语义）----
+        void mseLossDp(float[] a, long dev, int pOff, int yOff, int dpOff, int n) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float d = a[pOff + i] - a[yOff + i];
+                    a[dpOff + i] = (2.0f * d) / float(n);
+                }
+            }
+        }
+        void mseLossSum(float[] a, long dev, int pOff, int yOff, int lossOff, int n) {
+            @gpu for (long p = 0L; p < 1L; p = p + 1L) resident(a = dev) {
+                if (p < 1L) {
+                    double sum = 0.0;
+                    long i = 0L;
+                    while (i < long(n)) {
+                        double d = double(a[pOff + i] - a[yOff + i]);
+                        sum = sum + d * d;
+                        i = i + 1L;
+                    }
+                    a[lossOff] = float(sum / double(n));
+                }
+            }
+        }
+        void bceLossDp(float[] a, long dev, int pOff, int yOff, int dpOff, int n) {
+            double eps = 1.0e-7;
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float pv = a[pOff + i];
+                    float t = a[yOff + i];
+                    float pc = pv;
+                    if (pc < float(eps)) pc = float(eps);
+                    if (pc > 1.0f - float(eps)) pc = 1.0f - float(eps);
+                    a[dpOff + i] = (0.0f - (t / pc - (1.0f - t) / (1.0f - pc))) / float(n);
+                }
+            }
+        }
+        void bceLossSum(float[] a, long dev, int pOff, int yOff, int lossOff, int n) {
+            double eps = 1.0e-7;
+            @gpu for (long p = 0L; p < 1L; p = p + 1L) resident(a = dev) {
+                if (p < 1L) {
+                    double sum = 0.0;
+                    long i = 0L;
+                    while (i < long(n)) {
+                        double pv = double(a[pOff + i]);
+                        double t = double(a[yOff + i]);
+                        double pc = pv;
+                        if (pc < eps) pc = eps;
+                        if (pc > 1.0 - eps) pc = 1.0 - eps;
+                        sum = sum - (t * Math.log(pc) + (1.0 - t) * Math.log(1.0 - pc));
+                        i = i + 1L;
+                    }
+                    a[lossOff] = float(sum / double(n));
+                }
+            }
+        }
+
         // Softmax+CE 合并：thread-per-column；dlogit = softmax - onehot；loss = -log(p[label])
         void softmaxCE(float[] a, long dev, int logitOff, int labelOff, int rows, int cols,
                        int dlogitOff, int lossOff) {

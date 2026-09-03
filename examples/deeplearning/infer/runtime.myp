@@ -1725,6 +1725,36 @@ class InferenceRuntime {
             gpuSyncN_ = gpuSyncN_ + 1;
         }
 
+        // ---- P10a：Session GPU 训练统一支持 ----
+        // GPU 训练就绪：GPU 可用 && 图内每个 opKind 都有 GPU 分派槽（fwdGpu_ 或
+        // bwdGpu_，否则 runGpu 会静默跳过该节点 → 梯度错）。训练特例：梯度累积与
+        // AMP 模拟目前 CPU-only（GPU Update 不实现累积/舍入）→ 不判就绪（回退 CPU）。
+        int gpuTrainReady() {
+            if (GpuBackend.available() != 1) return 0;
+            if (gradAccEvery_ > 0) return 0;
+            if (ampSim_ == 1) return 0;
+            int i = 0;
+            while (i < opCount_) {
+                int kk = opKind_[i];
+                if (kk < 0 || kk >= 128) return 0;
+                if (fwdGpu_[kk] == null && bwdGpu_[kk] == null) return 0;
+                i = i + 1;
+            }
+            return 1;
+        }
+        // 全量 D2H 标记：每步 runGpu 后下载全部张量（宿主读 loss/prob/任意输出都新鲜）。
+        // 上传仍增量（只 setFlat 置脏输入）；下载整块 = 正确性优先的简单方案，
+        // 只标记宿主读的张量可进一步减少 D2H（后续优化）。
+        void gpuMarkSyncAll() {
+            int t = 0;
+            while (t < tensorCount_) { markGpuSync(t); t = t + 1; }
+        }
+        // 确定性触发接口分派表注册（runTrainAuto 判定 GPU 就绪前调用，避免首步
+        // CPU/后续 GPU 的混合模式）。run()/runGpu() 内首调自动做同样的事。
+        void ensureIface() {
+            if (ifaceInit_ == 0) { ifaceInit_ = 1; registerAllIfaceOps(this); }
+        }
+
         // ============ 推理持久化（P5b，2026-09-01）============
         // 推理默认每次 runGpu 都整块 arena H2D（~100MB 权重）+ 整块 D2H（含全部权重）。
         // 推理持久化：权重一次性驻留显存，之后每次 runGpu 只增量 H2D 置脏输入 + 只

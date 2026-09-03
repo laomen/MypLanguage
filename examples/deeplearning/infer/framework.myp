@@ -78,6 +78,25 @@ class Session {
         int ampSim() { return rt_.ampSim(); }
         // 训练 run（loadTrain 建的反向图）：trainMode=1 时 Update 按 lr 更新权重
         int runTrain() { if (jsonMode_ == 1) return jsonLoader_.runRuntime(rt_); return loader_.runRuntime(rt_); }
+        // P10a：统一训练步——MYP_GPU=1 且图内全部 op 有 GPU 分派（gpuTrainReady）→
+        // 持久化 GPU 训练（首步自动 gpuPersistentStart + 全量 D2H 标记，之后每步
+        // runGpu 增量上传置脏输入）；否则回退 CPU runTrain（语义不变，绝不静默错）。
+        // 结束用 trainGpuEnd() 释放设备 arena。
+        int runTrainAuto() {
+            rt_.ensureIface();
+            if (Console.getEnv("MYP_GPU") == "1" && gpuTrain_ == 0 && rt_.gpuTrainReady() == 1) {
+                if (rt_.gpuPersistentStart() == 1) {
+                    gpuTrain_ = 1;
+                    rt_.gpuMarkSyncAll();
+                }
+            }
+            if (gpuTrain_ == 1) return runGpu();
+            return runTrain();
+        }
+        void trainGpuEnd() {
+            if (gpuTrain_ == 1) { rt_.gpuPersistentEnd(); gpuTrain_ = 0; }
+        }
+        int gpuTrainOn() { return gpuTrain_; }
         // 当前 batch loss 标量（训练图输出 "loss"）
         double loss() {
             int t = tensorId("loss");
@@ -346,6 +365,7 @@ class Session {
         OnnxLoader loader_;
         JsonModelLoader jsonLoader_;
         int jsonMode_;
+        int gpuTrain_;   // P10a：Session GPU 持久化训练已开启（runTrainAuto 首步置）
 
     action:
         // 当前加载源（onnx / json）的 Graph 组合根

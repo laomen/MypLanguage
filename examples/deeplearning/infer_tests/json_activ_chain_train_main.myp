@@ -30,7 +30,7 @@ class JsonActivChainApp {
             while (step < 300) {
                 int cl = (step * 37) % 3;
                 feedOne(t, labT, cl);
-                t.runTrain();
+                t.runTrainAuto();
                 if (step == 0) l0 = t.loss();
                 if (step == 299) l300 = t.loss();
                 step = step + 1;

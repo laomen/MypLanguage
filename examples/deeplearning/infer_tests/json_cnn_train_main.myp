@@ -34,7 +34,7 @@ class JsonCnnTrainApp {
                 i = 0;
                 while (i < 3) { t.setFlat(labT, i, 0.0); i = i + 1; }
                 t.setFlat(labT, cl, 1.0);
-                t.runTrain();
+                t.runTrainAuto();
                 if (step == 0) l0 = t.loss();
                 if (step == 199) l200 = t.loss();
                 step = step + 1;

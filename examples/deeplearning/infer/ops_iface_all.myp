@@ -1076,7 +1076,14 @@ class GpuRelu6Op {
             int work = rt.tensorRows(yd) * rt.tensorCols(yd);
             GpuInferOps.relu6(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // ReLU6'：x in (0,6) → 1 否则 0；需 fwd 输入 x
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                GpuInferOps.bwdRelu6(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx), rt.tensorRows(x) * rt.tensorCols(x));
+            }
+        }
 }
 
 // ---- leakyrelu（GPU）----
@@ -1090,7 +1097,16 @@ class GpuLeakyReluOp {
             if (rt.opP1At(i) == 1) alpha = F32.toDouble(rt.opP0At(i));
             GpuInferOps.leakyrelu(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), alpha, rt.devRef());
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // LeakyRelu'：x>0 → 1 否则 alpha
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                double alpha = 0.01;
+                if (rt.opP1At(i) == 1) alpha = F32.toDouble(rt.opP0At(i));
+                GpuInferOps.bwdLeakyRelu(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx), rt.tensorRows(x) * rt.tensorCols(x), alpha);
+            }
+        }
 }
 
 // ---- silu（GPU）----
@@ -1102,7 +1118,14 @@ class GpuSiluOp {
             int work = rt.tensorRows(yd) * rt.tensorCols(yd);
             GpuInferOps.silu(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // SiLU'：σ(x)·(1+x·(1-σ(x)))；需 fwd 输入 x 重算 σ
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                GpuInferOps.bwdSilu(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx), rt.tensorRows(x) * rt.tensorCols(x));
+            }
+        }
 }
 
 // ---- hardswish（GPU）----
@@ -1114,7 +1137,14 @@ class GpuHardSwishOp {
             int work = rt.tensorRows(yd) * rt.tensorCols(yd);
             GpuInferOps.hardswish(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // HardSwish'：x≤-3→0；x≥3→1；else (2x+3)/6
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                GpuInferOps.bwdHardSwish(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx), rt.tensorRows(x) * rt.tensorCols(x));
+            }
+        }
 }
 
 // ---- clip（GPU）----
@@ -1128,7 +1158,16 @@ class GpuClipOp {
             int maxOff = -1; if (rt.opP1At(i) >= 0) maxOff = rt.tensorOff(rt.opP1At(i));
             GpuInferOps.clip(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), minOff, maxOff, rt.devRef());
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // Clip'：x in [min,max] → 1 否则 0；dy=A x=B dx=P0，边界 C/D（同 CPU）
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opP0At(i);
+                if (dx < 0) return;
+                int minOff = -1; if (rt.opCAt(i) >= 0) minOff = rt.tensorOff(rt.opCAt(i));
+                int maxOff = -1; if (rt.opDAt(i) >= 0) maxOff = rt.tensorOff(rt.opDAt(i));
+                GpuInferOps.bwdClip(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx), rt.tensorRows(x) * rt.tensorCols(x), minOff, maxOff);
+            }
+        }
 }
 
 // ---- reshape（GPU）----
@@ -1140,7 +1179,14 @@ class GpuReshapeOp {
             int work = rt.tensorRows(yd) * rt.tensorCols(yd);
             GpuInferOps.copyFlat(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd), rt.devRef());
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // BwdReshape（93）：dy → dx 连续拷贝（reshape 不重排内存）；图输入时 dx 空
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int dx = rt.opBAt(i);
+                if (dx < 0) return;
+                GpuInferOps.copyFlat(rt.arenaRef(), rt.tensorRows(dy) * rt.tensorCols(dy), rt.tensorOff(dy), rt.tensorOff(dx), rt.devRef());
+            }
+        }
 }
 
 // ---- concat（GPU）----
@@ -1844,7 +1890,15 @@ class GpuLogSoftmaxOp {
             GpuInferOps.logSoftmax(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorOff(yd),
                                    rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.devRef());
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // dx_i = dy_i - σ_i·Σdy；需 fwd 输入 x + outer/axisDim/inner
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                GpuInferOps.bwdLogSoftmax(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx),
+                                          rt.opP1At(i), rt.opP2At(i), rt.opP3At(i));
+            }
+        }
 }
 
 // ---- embedding（opKind 80 前向；查表 out[s*D+d] = w[ids[s]*D+d]）----
@@ -2747,6 +2801,34 @@ class GpuDiceLossOp {
         }
 }
 
+// ---- mseLoss / bceLoss（GPU，opKind 109/110 训练专用，P10a）----
+class GpuMseLossOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int p = rt.opAAt(i); int y = rt.opBAt(i); int dp = rt.opCAt(i); int lo = rt.opDAt(i);
+                int n = rt.tensorRows(p) * rt.tensorCols(p);
+                GpuInferOps.mseLossDp(rt.arenaRef(), rt.devRef(), rt.tensorOff(p), rt.tensorOff(y), rt.tensorOff(dp), n);
+                GpuInferOps.mseLossSum(rt.arenaRef(), rt.devRef(), rt.tensorOff(p), rt.tensorOff(y), rt.tensorOff(lo), n);
+            }
+        }
+}
+class GpuBceLossOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int p = rt.opAAt(i); int y = rt.opBAt(i); int dp = rt.opCAt(i); int lo = rt.opDAt(i);
+                int n = rt.tensorRows(p) * rt.tensorCols(p);
+                GpuInferOps.bceLossDp(rt.arenaRef(), rt.devRef(), rt.tensorOff(p), rt.tensorOff(y), rt.tensorOff(dp), n);
+                GpuInferOps.bceLossSum(rt.arenaRef(), rt.devRef(), rt.tensorOff(p), rt.tensorOff(y), rt.tensorOff(lo), n);
+            }
+        }
+}
+
 // ---- BwdReduceMM（opKind 100，B：ReduceMax/Min 反向，argmax 掩码）----
 class BwdReduceMMOp {
     interface class IOp;
@@ -2959,6 +3041,14 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(77, new SqueezeOp(), 0);              rt.registerFwd(77, new GpuSqueezeOp(), 1);
     rt.registerFwdBwd(78, 98, new GatherOp(), 0);        rt.registerFwd(78, new GpuGatherOp(), 1);
     rt.registerFwdBwd(79, 106, new LogSoftmaxOp(), 0);   rt.registerFwd(79, new GpuLogSoftmaxOp(), 1);
+    // ---- P10a：激活/重排反向 GPU 注册（fwd GPU 早已注册，bwd 补 bwdGpu_ 槽）----
+    rt.registerBwd(93, new GpuReshapeOp(), 1);
+    rt.registerBwd(102, new GpuRelu6Op(), 1);
+    rt.registerBwd(103, new GpuLeakyReluOp(), 1);
+    rt.registerBwd(104, new GpuSiluOp(), 1);
+    rt.registerBwd(105, new GpuHardSwishOp(), 1);
+    rt.registerBwd(106, new GpuLogSoftmaxOp(), 1);
+    rt.registerBwd(107, new GpuClipOp(), 1);
     rt.registerFwd(80, new EmbeddingOp(), 0);            rt.registerFwd(80, new GpuEmbeddingOp(), 1);
     rt.registerFwd(81, new DropoutOp(), 0);              rt.registerFwd(81, new GpuDropoutOp(), 1);
     rt.registerFwd(82, new BatchMatmulOp(), 0);          rt.registerFwd(82, new GpuBatchMatmulOp(), 1);
@@ -2979,8 +3069,8 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerBwd(55, new UpdateOp(), 0);               rt.registerBwd(55, new GpuUpdateOp(), 1);
     rt.registerBwd(69, new DiceLossOp(), 0);             rt.registerBwd(69, new GpuDiceLossOp(), 1);
     rt.registerBwd(72, new BwdConcatOp(), 0);            rt.registerBwd(72, new GpuBwdConcatOp(), 1);
-    rt.registerBwd(109, new MseLossOp(), 0);             // MSE/BCE loss（CPU-only 训练）
-    rt.registerBwd(110, new BceLossOp(), 0);
+    rt.registerBwd(109, new MseLossOp(), 0);             rt.registerBwd(109, new GpuMseLossOp(), 1);
+    rt.registerBwd(110, new BceLossOp(), 0);             rt.registerBwd(110, new GpuBceLossOp(), 1);
     // LLM 算子（61-67，2026-09-01 起 CPU+GPU 全注册 → runGpu 统一分派）
     rt.registerFwd(61, new RmsNormOp(), 0);           rt.registerFwd(61, new GpuRmsNormOp(), 1);
     rt.registerFwd(62, new AttentionOp(), 0);         rt.registerFwd(62, new GpuAttentionOp(), 1);

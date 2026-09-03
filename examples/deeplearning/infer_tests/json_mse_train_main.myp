@@ -35,14 +35,14 @@ class JsonMseTrainApp {
             while (step < 500) {
                 int cl = (step * 31) % 3;
                 feedOne(t, labT, cl);
-                t.runTrain();
+                t.runTrainAuto();
                 step = step + 1;
             }
             int bad = 0;
             int cl = 0;
             while (cl < 3) {
                 feedOne(t, labT, cl);
-                t.runTrain();
+                t.runTrainAuto();
                 double l = t.loss();
                 Console.writeString("cl" + Fmt.i(cl) + " loss="); Console.writeFloat(l);
                 Console.writeLine("");
