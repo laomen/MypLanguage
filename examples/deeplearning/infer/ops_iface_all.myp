@@ -2277,6 +2277,42 @@ class GpuDiceLossOp {
         }
 }
 
+// ---- BwdReduceMM（opKind 100，B：ReduceMax/Min 反向，argmax 掩码）----
+class BwdReduceMMOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int x = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                InferOps.bwdReduceMM(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx),
+                                     rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i));
+            }
+        }
+}
+
+// ---- BwdPad（opKind 101，B：Pad constant 反向，去边取中心）----
+class BwdPadOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int x = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                InferOps.bwdPadConst(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(dx),
+                                     rt.tensorN(x), rt.tensorC(x), rt.tensorH(x), rt.tensorW(x),
+                                     rt.tensorN(dy), rt.tensorC(dy), rt.tensorH(dy), rt.tensorW(dy),
+                                     rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i));
+            }
+        }
+}
+
 // ---- concat 反向（opKind 72；5D U-Net 跳跃连接，CPU）----
 // 反向图生成独立 BwdConcat 节点（dy → dx0/dx1/dx2），前向 ConcatOp(25) 的
 // backward 保持空（concat 前向节点不承载反向）。
@@ -2348,6 +2384,8 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(28, new Resize2dOp(), 0);             rt.registerFwd(28, new GpuResize2dOp(), 1);
     rt.registerFwd(29, new SplitOp(), 0);                rt.registerFwd(29, new GpuSplitOp(), 1);
     rt.registerFwdBwd(30, 97, new ReduceMeanOp(), 0);    rt.registerFwd(30, new GpuReduceMeanOp(), 1);
+    rt.registerBwd(100, new BwdReduceMMOp(), 0);
+    rt.registerBwd(101, new BwdPadOp(), 0);
     rt.registerFwdBwd(31, 90, new SubOp(), 0);             rt.registerFwdBwd(31, 90, new GpuSubOp(), 1);
     rt.registerFwdBwd(32, 92, new DivOp(), 0);             rt.registerFwdBwd(32, 92, new GpuDivOp(), 1);
     rt.registerFwdBwd(33, 91, new MulOp(), 0);             rt.registerFwdBwd(33, 91, new GpuMulOp(), 1);

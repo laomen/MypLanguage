@@ -1,0 +1,66 @@
+// bwd_reduce_mm_main.myp — B：ReduceMax/Min 反向（argmax 掩码）数值对拍。
+// x[1,2,2,2] = [1,2,3,4, 4,3,2,1]（N=1,C=2,S=4,total=8）。
+//   mode1（per-(n,c)）：ch0 max4@pos3、ch1 max4@pos0；min ch0@0、ch1@3。
+//   组1 max mode1 dy=[5,6] → dx=[0,0,0,5, 6,0,0,0]
+//   组2 min mode1 dy=[7,8] → dx=[7,0,0,0, 0,0,0,8]
+//   mode0（全归约 1 输出）：max 并列@pos3,4 取首 pos3；min 并列@0,7 取首 pos0。
+//   组3 max mode0 dy=[9] → dx[3]=9
+//   组4 min mode0 dy=[4] → dx[0]=4
+// 其余位置 0（先清零）。全部 PASS → BWD REDUCEMM OK。
+import env;
+import fmt;
+import "../infer/runtime.myp";
+
+class BwdReduceMmApp {
+    action:
+        double absd(double v) { if (v < 0.0) return 0.0 - v; return v; }
+        @constructor BwdReduceMmApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(1024);
+            rt.setTrain(1);
+            int x = rt.addTensor4(1, 2, 2, 2);
+            // ch0 = [1,2,3,4]（pos3 max4 / pos0 min1）；ch1 = [4,3,2,1]（pos4 max4 / pos7 min1）
+            rt.setFlat(x, 0, 1.0); rt.setFlat(x, 1, 2.0); rt.setFlat(x, 2, 3.0); rt.setFlat(x, 3, 4.0);
+            rt.setFlat(x, 4, 4.0); rt.setFlat(x, 5, 3.0); rt.setFlat(x, 6, 2.0); rt.setFlat(x, 7, 1.0);
+            int dx1 = rt.addTensor4(1, 2, 2, 2); int dy1 = rt.addTensor4(1, 2, 1, 1);
+            int dx2 = rt.addTensor4(1, 2, 2, 2); int dy2 = rt.addTensor4(1, 2, 1, 1);
+            int dx3 = rt.addTensor4(1, 2, 2, 2); int dy3 = rt.addTensor4(1, 1, 1, 1);
+            int dx4 = rt.addTensor4(1, 2, 2, 2); int dy4 = rt.addTensor4(1, 1, 1, 1);
+            rt.setFlat(dy1, 0, 5.0); rt.setFlat(dy1, 1, 6.0);
+            rt.setFlat(dy2, 0, 7.0); rt.setFlat(dy2, 1, 8.0);
+            rt.setFlat(dy3, 0, 9.0);
+            rt.setFlat(dy4, 0, 4.0);
+            rt.addBwdReduceMM(dy1, x, dx1, 1, 1, 2, 4, 8, 2);   // max mode1
+            rt.addBwdReduceMM(dy2, x, dx2, 1, 1, 2, 4, 8, 3);   // min mode1
+            rt.addBwdReduceMM(dy3, x, dx3, 0, 1, 2, 4, 8, 2);   // max mode0
+            rt.addBwdReduceMM(dy4, x, dx4, 0, 1, 2, 4, 8, 3);   // min mode0
+            rt.run();
+            int bad = 0;
+            double[] e1 = new double[8]; double[] e2 = new double[8];
+            int i = 0;
+            while (i < 8) { e1[i] = 0.0; e2[i] = 0.0; i = i + 1; }
+            e1[3] = 5.0; e1[4] = 6.0;
+            e2[0] = 7.0; e2[7] = 8.0;
+            i = 0;
+            while (i < 8) {
+                if (absd(rt.getFlat(dx1, i) - e1[i]) > 1.0e-3) bad = bad + 1;
+                if (absd(rt.getFlat(dx2, i) - e2[i]) > 1.0e-3) bad = bad + 1;
+                i = i + 1;
+            }
+            i = 0;
+            while (i < 8) {
+                double m3 = (i == 3) ? 9.0 : 0.0;
+                double m4 = (i == 0) ? 4.0 : 0.0;
+                if (absd(rt.getFlat(dx3, i) - m3) > 1.0e-3) bad = bad + 1;
+                if (absd(rt.getFlat(dx4, i) - m4) > 1.0e-3) bad = bad + 1;
+                i = i + 1;
+            }
+            Console.writeString("bwd reducemm bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            if (bad == 0) Console.writeLine("BWD REDUCEMM OK");
+            else Console.writeLine("BWD REDUCEMM MISMATCH");
+        }
+}
+
+int main() { BwdReduceMmApp app = new BwdReduceMmApp(); return 0; }

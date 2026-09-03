@@ -224,6 +224,10 @@ class JsonModelLoader {
                     if (in3 != "") g_.nodeIn(ni, 2, in3);
                     if (in4 != "") g_.nodeIn(ni, 3, in4);
                     g_.nodeInt(ni, NodeField.AXIS(), gint(j, lp + ".axis", 1));
+                } else if (op == "Where") {
+                    // Where：三输入选择 out = cond>0 ? x : y（in=cond in2=x in3=y）
+                    if (in2 != "") g_.nodeIn(ni, 1, in2);
+                    if (in3 != "") g_.nodeIn(ni, 2, in3);
                 } else if (op == "Softmax" || op == "LogSoftmax") {
                     g_.nodeInt(ni, NodeField.AXIS(), gint(j, lp + ".axis", 1));
                 } else if (op == "Flatten") {

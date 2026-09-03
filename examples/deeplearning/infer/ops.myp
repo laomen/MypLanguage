@@ -2934,6 +2934,74 @@ class InferOps {
             }
         }
 
+        // BwdReduceMax/Min（B）：argmax 掩码反向。每组（mode0 全组 / mode1 per-(n,c)
+        // 空间段）重算 x 的最值位置（redType 2=max 3=min，并列取首个），把该组的 dy
+        // 赋给 dx[arg]，其余 0。需 x 值 → xOff 参数。
+        void bwdReduceMM(float[] arena, int dyOff, int xOff, int dxOff,
+                         int mode, int N, int C, int S, int total, int redType) {
+            int i = 0;
+            while (i < total) { arena[dxOff + i] = float(0.0); i = i + 1; }
+            if (mode == 0) {
+                float best = arena[xOff + 0];
+                int bi = 0;
+                i = 1;
+                while (i < total) {
+                    float v = arena[xOff + i];
+                    if (redType == 2) { if (v > best) { best = v; bi = i; } }
+                    else { if (v < best) { best = v; bi = i; } }
+                    i = i + 1;
+                }
+                arena[dxOff + bi] = arena[dyOff + 0];
+            } else {
+                int n = 0;
+                while (n < N) {
+                    int c = 0;
+                    while (c < C) {
+                        int base = (n * C + c) * S;
+                        float best = arena[xOff + base];
+                        int bi = 0;
+                        i = 1;
+                        while (i < S) {
+                            float v = arena[xOff + base + i];
+                            if (redType == 2) { if (v > best) { best = v; bi = i; } }
+                            else { if (v < best) { best = v; bi = i; } }
+                            i = i + 1;
+                        }
+                        arena[dxOff + base + bi] = arena[dyOff + n * C + c];
+                        c = c + 1;
+                    }
+                    n = n + 1;
+                }
+            }
+        }
+
+        // BwdPadConst（B）：constant pad 反向 = 取 dy 的中心区域（x 在 y 中的位置）
+        // 复制回 dx。x 每元素唯一对应 y 位置（offset 每轴 = begin）→ 直接赋值（无需
+        // 累加/清零）。reflect/edge pad 反向需边镜像累加，未实现（buildReverseGraph
+        // 仅 constant 产 BwdPad）。b0-3 = N,C,H,W 各轴 begin；y dims 从 dy tensor。
+        void bwdPadConst(float[] arena, int dyOff, int dxOff,
+                         int xN, int xC, int xH, int xW,
+                         int yN, int yC, int yH, int yW,
+                         int b0, int b1, int b2, int b3) {
+            int total = xN * xC * xH * xW;
+            int i = 0;
+            while (i < total) {
+                int x3 = i % xW;
+                int t = i / xW;
+                int x2 = t % xH;
+                t = t / xH;
+                int x1 = t % xC;
+                int x0 = t / xC;
+                int y0 = x0 + b0;
+                int y1 = x1 + b1;
+                int y2 = x2 + b2;
+                int y3 = x3 + b3;
+                int yFlat = ((y0 * yC + y1) * yH + y2) * yW + y3;
+                arena[dxOff + i] = arena[dyOff + yFlat];
+                i = i + 1;
+            }
+        }
+
         // LogSoftmax（G5）：沿 axis 的稳定 log-softmax。张量视作 [outer, axisDim, inner]
         // （行优先）；对每 (outer,inner) 组：m=max、lse=m+log(Σexp(x-m))、y=x-lse。
         void logSoftmax(float[] arena, int inOff, int outOff, int outer, int axisDim, int inner) {

@@ -921,6 +921,21 @@ class GraphOptimizer {
                             if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
                                 graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费（须 endNode 后）
                             }
+                        } else if (t == "ReduceMax" || t == "ReduceMin") {
+                            // B：ReduceMax/Min 反向（argmax 掩码）。重算 x 最值位置给 dy，
+                            // 其余 0（并列取首个）。mode/redType 复制。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdReduceMM");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                            graph.compilerSetNRedMode(bd, graph.compilerReduceMode(ni));
+                            graph.compilerSetNRedType(bd, graph.compilerNRedType(ni));
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费（须 endNode 后）
+                            }
                         } else if (t == "Gather") {
                             // B：Gather 反向（scatter-add 回 data）。indices=nodeIn2
                             // （graph_compiler readI64Init 建临时 idxT）。复制 axis 属性。
@@ -935,6 +950,30 @@ class GraphOptimizer {
                             graph.compilerAttrSet(bd, NodeField.AXIS(), graph.compilerAttr(ni, NodeField.AXIS()));
                             if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
                                 graph.replaceResult(bd, 0, "");   // 图输入 data：dx 无上游消费（须 endNode 后）
+                            }
+                        } else if (t == "Pad") {
+                            // B：Pad(constant) 反向 = 去边取中心（dx = dy 中心区）。
+                            // 仅 constant（reflect/edge 需镜像累加，跳过=梯度 0）。
+                            // begin/end 复制自 fwd 折叠的 attr 组 3/4（inferShapes Pad 填）。
+                            if (graph.compilerAttr(ni, NodeField.PADMODE()) == 0) {
+                                int bd = graph.nodeCount();
+                                graph.beginNode();
+                                graph.nodeType(bd, "BwdPad");
+                                graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                                graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                                graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                                graph.endNode();
+                                graph.compilerAttrSetIntArray(bd, 3, 0, graph.compilerAttrIntArray(ni, 3, 0));
+                                graph.compilerAttrSetIntArray(bd, 3, 1, graph.compilerAttrIntArray(ni, 3, 1));
+                                graph.compilerAttrSetIntArray(bd, 3, 2, graph.compilerAttrIntArray(ni, 3, 2));
+                                graph.compilerAttrSetIntArray(bd, 3, 3, graph.compilerAttrIntArray(ni, 3, 3));
+                                graph.compilerAttrSetIntArray(bd, 4, 0, graph.compilerAttrIntArray(ni, 4, 0));
+                                graph.compilerAttrSetIntArray(bd, 4, 1, graph.compilerAttrIntArray(ni, 4, 1));
+                                graph.compilerAttrSetIntArray(bd, 4, 2, graph.compilerAttrIntArray(ni, 4, 2));
+                                graph.compilerAttrSetIntArray(bd, 4, 3, graph.compilerAttrIntArray(ni, 4, 3));
+                                if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                    graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费（须 endNode 后）
+                                }
                             }
                         } else if (t == "Add") {
                             int bd = graph.nodeCount();

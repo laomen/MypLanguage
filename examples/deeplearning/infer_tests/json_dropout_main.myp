@@ -1,0 +1,30 @@
+// json_dropout_main.myp — C：JSON Dropout（无 ratio → 推理恒等验证，单输入默认分派）。
+// x[1,4]=[1,2,3,4] → Dropout（训练模式关闭，推理恒等）→ out=[1,2,3,4]。
+// CPU+GPU JSON DROPOUT OK。
+import env;
+import fmt;
+import dl;
+class JsonDropoutApp {
+    action:
+        @constructor JsonDropoutApp() {
+            Session s = new Session();
+            int ok = s.loadJson("./deeplearning/infer_tests/dropout.json");
+            if (ok == 0) { Console.writeLine("JSON DROPOUT SKIP (no load)"); return; }
+            double[] x = new double[4];
+            x[0]=1.0; x[1]=2.0; x[2]=3.0; x[3]=4.0;
+            s.setInput("x", x, 4);
+            int rk = s.runAuto();
+            double[] o = s.getOutput("out");
+            int n = s.tensorSize("out");
+            int bad = 0;
+            int i = 0;
+            while (i < 4) { double d = o[i]-double(i+1); if (d<0.0) d=0.0-d; if (d>1.0e-3) bad=bad+1; i = i + 1; }
+            Console.writeString("run="); Console.writeLong(rk);
+            Console.writeString(" n="); Console.writeLong(n);
+            Console.writeString(" bad="); Console.writeLong(bad);
+            Console.writeLine("");
+            if (ok==1 && rk==1 && n==4 && bad==0) Console.writeLine("JSON DROPOUT OK");
+            else Console.writeLine("JSON DROPOUT MISMATCH");
+        }
+}
+int main() { JsonDropoutApp a = new JsonDropoutApp(); return 0; }

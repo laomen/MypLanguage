@@ -319,6 +319,27 @@ class InferenceRuntime {
             opP0_[id] = mode; opP1_[id] = N; opP2_[id] = C; opP3_[id] = S; opP4_[id] = total; opP5_[id] = redType;
             opCount_ = opCount_ + 1;
         }
+        // B：ReduceMax/Min 反向（opKind 100）。A=dy B=x C=dx；
+        // P0=mode P1=N P2=C P3=S P4=total P5=redType（2=max 3=min）。
+        void addBwdReduceMM(int dyT, int xT, int dxT, int mode, int N, int C, int S, int total, int redType) {
+            int id = opCount_;
+            opKind_[id] = 100;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT;
+            opP0_[id] = mode; opP1_[id] = N; opP2_[id] = C; opP3_[id] = S; opP4_[id] = total; opP5_[id] = redType;
+            opCount_ = opCount_ + 1;
+        }
+        // B：Pad(constant) 反向（opKind 101）。A=dy B=x C=dx；
+        // opP0-3=N,C,H,W 各轴 begin；opP4-7=end（kernel 只用 begin；end 供参考）。
+        void addBwdPad(int dyT, int xT, int dxT,
+                       int b0, int b1, int b2, int b3,
+                       int e0, int e1, int e2, int e3) {
+            int id = opCount_;
+            opKind_[id] = 101;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT;
+            opP0_[id] = b0; opP1_[id] = b1; opP2_[id] = b2; opP3_[id] = b3;
+            opP4_[id] = e0; opP5_[id] = e1; opP6_[id] = e2; opP7_[id] = e3;
+            opCount_ = opCount_ + 1;
+        }
         // B：Gather 反向（opKind 98）：dy 沿 axis scatter-add 回 data 梯度 dx。
         // opA=dy, opB=idxT(临时 f32), opC=dx, opP0=axis, opP1=lenIdx, opP2-5=data dims。
         void addBwdGather(int dyT, int idxT, int dxT, int axis, int lenIdx,
