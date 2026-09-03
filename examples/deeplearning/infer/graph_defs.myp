@@ -232,6 +232,8 @@ class OpCode {
         int GELU() { return 104; }
         int TANH() { return 105; }           // 激活：Tanh（fwd CPU+GPU opKind 46；训练反向 BWD_TANH 106）
         int BWD_TANH() { return 106; }
+        int MSE_LOSS() { return 107; }       // 逐元素损失（训练专用）：MSE/BCE（opKind 109/110）
+        int BCE_LOSS() { return 108; }
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -322,6 +324,8 @@ class OpCode {
             if (t == "GELU" || t == "Gelu") return OpCode.GELU();
             if (t == "Tanh") return OpCode.TANH();
             if (t == "BwdTanh") return OpCode.BWD_TANH();
+            if (t == "MSELoss") return OpCode.MSE_LOSS();
+            if (t == "BCELoss") return OpCode.BCE_LOSS();
             return OpCode.UNKNOWN();
         }
         // 节点保护 trait：非 0 表示受 DCE 保护。1=stateful（就地改权重/累加），
@@ -340,6 +344,7 @@ class OpCode {
             if (code == OpCode.BWD_PAD()) return 2;
             if (code >= OpCode.BWD_RELU6() && code <= OpCode.BWD_CLIP()) return 2;   // 激活反向
             if (code == OpCode.BWD_TANH()) return 2;                                  // 激活反向（Tanh）
+            if (code == OpCode.MSE_LOSS() || code == OpCode.BCE_LOSS()) return 2;     // 逐元素损失（训练专用）
             return 0;
         }
 }

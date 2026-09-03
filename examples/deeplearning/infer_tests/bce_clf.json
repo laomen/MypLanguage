@@ -1,0 +1,8 @@
+{ "name":"bceclf",
+  "inputs":[{"name":"x","dims":[1,2]}],
+  "outputs":["p"],
+  "layers":[
+    { "op":"Gemm","in":"x","out":"z","transB":1,
+      "W":{"dims":[2,2],"init":"xavier"},"B":{"dims":[2],"init":"zeros"}},
+    { "op":"Sigmoid","in":"z","out":"p"}
+  ]}

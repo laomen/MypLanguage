@@ -774,6 +774,42 @@ class InferOps {
             arena[lossOff] = float(1.0 - sumLoss);
         }
 
+        // MSE 损失（逐元素 mean，训练专用）：p/y 同形状（N=rows*cols 元素，同 tensor
+        // 2D 投影）。loss = mean_i (p_i-t_i)²；dp_i = 2(p_i-t_i)/N。loss 单值写 lossOff。
+        void mseLoss(float[] arena, int pOff, int yOff, int dpOff, int lossOff, int n) {
+            double sum = 0.0;
+            int i = 0;
+            while (i < n) {
+                double p = double(arena[pOff + i]);
+                double t = double(arena[yOff + i]);
+                double d = p - t;
+                sum = sum + d * d;
+                arena[dpOff + i] = float(2.0 * d / double(n));
+                i = i + 1;
+            }
+            arena[lossOff] = float(sum / double(n));
+        }
+
+        // BCE 损失（逐元素 mean，训练专用）：p∈[0,1]（应用前须经 Sigmoid），label 同形状。
+        // loss = -mean_i [t·ln p̂ + (1-t)·ln(1-p̂)]，p̂=clamp(p, 1e-7, 1-1e-7)；
+        // dp_i = -(t/p̂ - (1-t)/(1-p̂))/N。loss 单值写 lossOff。
+        void bceLoss(float[] arena, int pOff, int yOff, int dpOff, int lossOff, int n) {
+            double eps = 1.0e-7;
+            double sum = 0.0;
+            int i = 0;
+            while (i < n) {
+                double p = double(arena[pOff + i]);
+                double t = double(arena[yOff + i]);
+                double pc = p;
+                if (pc < eps) pc = eps;
+                if (pc > 1.0 - eps) pc = 1.0 - eps;
+                sum = sum - (t * Math.log(pc) + (1.0 - t) * Math.log(1.0 - pc));
+                arena[dpOff + i] = float(0.0 - (t / pc - (1.0 - t) / (1.0 - pc)) / double(n));
+                i = i + 1;
+            }
+            arena[lossOff] = float(sum / double(n));
+        }
+
         // Softmax 反向（阶段4d）：dProb → dLogit。dlogit[i] = p[i]·(dp[i] - Σ_j p[j]·dp[j])
         // （softmax 雅可比 J_ij = p_i(δ_ij - p_j) 的转置作用于 dp）
         void bwdSoftmax(float[] arena, int probOff, int dprobOff, int dlogitOff, int rows, int cols) {

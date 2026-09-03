@@ -518,6 +518,22 @@ class InferenceRuntime {
             opP1_[id] = wMode;
             opCount_ = opCount_ + 1;
         }
+        // MSE loss（opKind 109 训练专用）。p=opA(预测), y=opB(label), dp=opC, loss=opD。
+        // 逐元素 mean：N=rows*cols（p/y 同形状）；dp=2(p-y)/N；loss 单值。
+        void addMseLoss(int pT, int yT, int dpT, int lossT) {
+            int id = opCount_;
+            opKind_[id] = 109;
+            opA_[id] = pT; opB_[id] = yT; opC_[id] = dpT; opD_[id] = lossT;
+            opCount_ = opCount_ + 1;
+        }
+        // BCE loss（opKind 110 训练专用）。p=opA(∈[0,1], 应用前须 Sigmoid), y=opB(label),
+        // dp=opC, loss=opD。逐元素 mean；dp 见 kernel。
+        void addBceLoss(int pT, int yT, int dpT, int lossT) {
+            int id = opCount_;
+            opKind_[id] = 110;
+            opA_[id] = pT; opB_[id] = yT; opC_[id] = dpT; opD_[id] = lossT;
+            opCount_ = opCount_ + 1;
+        }
         // 阶段4d：Softmax 反向（opKind 70）。dprob=opA, prob=opB, dlogit=opC
         void addBwdSoftmax(int dpT, int pT, int dlT) {
             int id = opCount_;

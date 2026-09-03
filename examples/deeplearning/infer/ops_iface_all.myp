@@ -1975,6 +1975,34 @@ class DiceLossOp {
         }
 }
 
+// ---- mseLoss（opKind 109 训练专用，CPU-only）：p/y 同形状逐元素 mean ----
+class MseLossOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int p = rt.opAAt(i); int y = rt.opBAt(i); int dp = rt.opCAt(i); int lo = rt.opDAt(i);
+                InferOps.mseLoss(rt.arenaRef(), rt.tensorOff(p), rt.tensorOff(y), rt.tensorOff(dp), rt.tensorOff(lo),
+                                 rt.tensorRows(p) * rt.tensorCols(p));
+            }
+        }
+}
+
+// ---- bceLoss（opKind 110 训练专用，CPU-only）：p∈[0,1] 逐元素 mean ----
+class BceLossOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int p = rt.opAAt(i); int y = rt.opBAt(i); int dp = rt.opCAt(i); int lo = rt.opDAt(i);
+                InferOps.bceLoss(rt.arenaRef(), rt.tensorOff(p), rt.tensorOff(y), rt.tensorOff(dp), rt.tensorOff(lo),
+                                 rt.tensorRows(p) * rt.tensorCols(p));
+            }
+        }
+}
+
 // ---- rmsNorm（opKind 61 前向；LLM 手写传显式 D/S；图算子传 0 → 自省 tensor rows/cols）----
 class RmsNormOp {
     interface class IOp;
@@ -2510,6 +2538,8 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerBwd(55, new UpdateOp(), 0);               rt.registerBwd(55, new GpuUpdateOp(), 1);
     rt.registerBwd(69, new DiceLossOp(), 0);             rt.registerBwd(69, new GpuDiceLossOp(), 1);
     rt.registerBwd(72, new BwdConcatOp(), 0);            rt.registerBwd(72, new GpuBwdConcatOp(), 1);
+    rt.registerBwd(109, new MseLossOp(), 0);             // MSE/BCE loss（CPU-only 训练）
+    rt.registerBwd(110, new BceLossOp(), 0);
     // LLM 算子（61-67，2026-09-01 起 CPU+GPU 全注册 → runGpu 统一分派）
     rt.registerFwd(61, new RmsNormOp(), 0);           rt.registerFwd(61, new GpuRmsNormOp(), 1);
     rt.registerFwd(62, new AttentionOp(), 0);         rt.registerFwd(62, new GpuAttentionOp(), 1);

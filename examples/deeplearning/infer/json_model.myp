@@ -38,6 +38,7 @@ class JsonModelLoader {
         @constructor JsonModelLoader() {
             g_ = new Graph();
             phase_ = 0; loadErr_ = 0; compileErr_ = 0; runErr_ = 0;
+            lossMode_ = 0;
             seed_ = 42;
         }
 
@@ -63,6 +64,7 @@ class JsonModelLoader {
                 return 0;
             }
             phase_ = 2;
+            if (lossMode_ != 0) g_.setLossMode(lossMode_);   // P3：MSE/BCE 逐元素损失（2/3）
             int okC = 0;
             if (train == 1) okC = g_.optimizeTrain(rt);
             else okC = g_.optimize(rt);
@@ -76,6 +78,9 @@ class JsonModelLoader {
         int loadError() { return loadErr_; }
         int compileError() { return compileErr_; }
         int runError() { return runErr_; }
+        // P3：训练损失模式 0=CE,1=Dice,2=MSE,3=BCE（loadJsonTrain 前设置）
+        void setLossMode(int v) { lossMode_ = v; }
+        int lossMode() { return lossMode_; }
         Graph graph() { return g_; }
         int tensorId(string name) { return g_.tensorId(name); }
         string tensorName(int tid) { return g_.tensorName(tid); }
@@ -556,5 +561,6 @@ class JsonModelLoader {
         int loadErr_;
         int compileErr_;
         int runErr_;
+        int lossMode_;
         int seed_;
 }

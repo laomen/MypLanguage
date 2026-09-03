@@ -437,6 +437,15 @@ class GraphCompiler {
                     int dl = tensorId(graph.compilerNodeOutput(ni, 0));
                     int lo = tensorId(graph.compilerNodeOutput(ni, 1));
                     rt.addSoftmaxCE(lg, lb, dl, lo);
+                } else if (code == OpCode.MSE_LOSS() || code == OpCode.BCE_LOSS()) {
+                    // 逐元素损失（MSE/BCE）：y=nodeIn0(预测), label=nodeIn1,
+                    // dy=nodeOut0, loss=nodeOut1。opKind 109/110（CPU-only 训练）。
+                    int p = tensorId(graph.nodeInAt(ni, 0));
+                    int y = tensorId(graph.nodeInAt(ni, 1));
+                    int dp = tensorId(graph.compilerNodeOutput(ni, 0));
+                    int lo = tensorId(graph.compilerNodeOutput(ni, 1));
+                    if (code == OpCode.MSE_LOSS()) rt.addMseLoss(p, y, dp, lo);
+                    else rt.addBceLoss(p, y, dp, lo);
                 } else if (code == OpCode.UPDATE()) {
                     int w = tensorId(graph.nodeInAt(ni, 0));
                     int g = tensorId(graph.nodeInAt(ni, 1));

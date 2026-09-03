@@ -39,6 +39,9 @@ class Session {
         // ---- JSON 声明式模型（json_model.myp，不经过 ONNX）----
         int loadJson(string path) { jsonMode_ = 1; return jsonLoader_.loadJson(path, rt_, 0); }
         int loadJsonTrain(string path) { jsonMode_ = 1; return jsonLoader_.loadJson(path, rt_, 1); }
+        // ---- 训练损失模式：0=SoftmaxCE（默认），1=Dice，2=MSE（回归），3=BCE（二值掩码）----
+        // 须在 loadTrain/loadJsonTrain 之前设置；两条 loader 同时设（只用其一）
+        void setLossMode(int v) { loader_.setLossMode(v); jsonLoader_.setLossMode(v); }
         void setInputShape(string name, int d0, int d1, int d2, int d3, int d4, int rank5) { loader_.setInputShape(name, d0, d1, d2, d3, d4, rank5); }
 
         // ---- 执行（后端选择）----

@@ -744,25 +744,41 @@ class GraphOptimizer {
         }
 
         int buildReverseGraph(Graph graph) {
-            // 1) 定位「输出是图输出的 Softmax」节点 → logits = 其输入
+            int lossMode = graph.compilerLossMode();
+            // elemLoss = 逐元素损失（MSE/BCE）：模型输出本身是预测张量（回归/分割掩码，
+            // 无需 Softmax 分类头）；CE/Dice 仍需「图输出的 Softmax」。lossMode：0=CE,
+            // 1=Dice（Softmax/分割），2=MSE（回归），3=BCE（Sigmoid 二值掩码）。
+            int elemLoss = 0;
+            if (lossMode == 2 || lossMode == 3) elemLoss = 1;
+            // 1) 定位损失直接作用的前向输出张量（下统一以 logits 变量承载）
             int smNode = -1;
-            int i = 0;
-            while (i < graph.nodeCount()) {
-                if (graph.nodeOp(i) == OpCode.SOFTMAX() && graph.compilerIsGraphOutput(graph.compilerNodeOutput(i, 0)) == 1) { smNode = i; i = graph.nodeCount(); }
-                i = i + 1;
+            string logits;
+            if (elemLoss == 1) {
+                // MSE/BCE：图输出（第 0 个）本身是预测 y（label 同形状，非 one-hot）
+                if (graph.graphOutputCount() <= 0) {
+                    Console.writeLine("buildReverseGraph: no graph output");
+                    return 0;
+                }
+                logits = graph.graphOutputName(0);
+            } else {
+                int i = 0;
+                while (i < graph.nodeCount()) {
+                    if (graph.nodeOp(i) == OpCode.SOFTMAX() && graph.compilerIsGraphOutput(graph.compilerNodeOutput(i, 0)) == 1) { smNode = i; i = graph.nodeCount(); }
+                    i = i + 1;
+                }
+                if (smNode < 0) {
+                    Console.writeLine("buildReverseGraph: no Softmax graph output");
+                    return 0;
+                }
+                logits = graph.nodeInAt(smNode, 0);
             }
-            if (smNode < 0) {
-                Console.writeLine("buildReverseGraph: no Softmax graph output");
-                return 0;
-            }
-            string logits = graph.nodeInAt(smNode, 0);
             int ls = graph.compilerShapeIdx(logits);
             if (graph.compilerValueExists(logits) == 0) return 0;
 
-            // 2) label / loss / dlogits 张量（label 由训练循环灌 one-hot）
-            // 注意：label 必须与 logits 同秩且同 shape kind——5D 分割 logits
-            // [N,C,D,H,W] 走 addShapeD5，否则漏深度维（同 Flatten 5D BUG：4D
-            // 注册丢 shD4 → label 越界/覆盖）；shape kind 直接镜像 logits（否则
+            // 2) label / loss / dlogits 张量（CE/Dice：label 灌 one-hot；MSE/BCE：label
+            // 同预测形状灌实数目标/掩码）。注意：label 必须与 logits 同秩且同 shape kind
+            // ——5D 分割 logits [N,C,D,H,W] 走 addShapeD5，否则漏深度维（同 Flatten 5D
+            // BUG：4D 注册丢 shD4 → label 越界/覆盖）；shape kind 直接镜像 logits（否则
             // FC_ACT 分支在 buildRuntime 里优先于 5D 分支 → label 被注册成 [C,1]）。
             if (graph.compilerShapeR5(ls) == 1)
                 graph.addShapeD5("label", graph.compilerShapeDim(ls, 0), graph.compilerShapeDim(ls, 1), graph.compilerShapeDim(ls, 2), graph.compilerShapeDim(ls, 3), graph.compilerShapeDim(ls, 4));
@@ -773,9 +789,22 @@ class GraphOptimizer {
             graph.compilerSetShapeKind("loss", Kind.FC_ACT());
             graph.compilerEnsureGrad(logits);
 
-            // 3) loss 节点：CE（SoftmaxCE(logits,label)→(dlogits,loss)）或
-            //    Dice（DiceLoss(prob,label)→(dprob,loss) + BwdSoftmax(dprob,prob)→dlogits）
-            if (graph.compilerLossMode() == 1) {
+            // 3) loss 节点：逐元素（MSELoss/BCELoss(y,label)→(dy,loss)）或 CE
+            //    （SoftmaxCE(logits,label)→(dlogits,loss)）或 Dice（DiceLoss(prob,label)
+            //    →(dprob,loss) + BwdSoftmax(dprob,prob)→dlogits）
+            if (elemLoss == 1) {
+                string lnm;
+                if (lossMode == 2) lnm = "MSELoss";
+                else lnm = "BCELoss";
+                int nid = graph.nodeCount();
+                graph.beginNode();
+                graph.nodeType(nid, lnm);
+                graph.nodeIn(nid, 0, logits);
+                graph.nodeIn(nid, 1, "label");
+                graph.nodeOut(nid, graph.compilerGradName(logits));
+                graph.nodeOut(nid, "loss");
+                graph.endNode();
+            } else if (graph.compilerLossMode() == 1) {
                 // prob = Softmax 输出（图输出）；其梯度 dprob 由 DiceLoss 产出，
                 // 经 BwdSoftmax 链式回传到 logits 梯度 dlogits。
                 string prob = graph.compilerNodeOutput(smNode, 0);
