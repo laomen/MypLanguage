@@ -343,11 +343,19 @@ class GpuAddOp {
             int aa = rt.opAAt(i);
             int bb = rt.opBAt(i);
             int oc = rt.opCAt(i);
+            // 输出 4D dims = a/b dims 逐维 max（同 CPU AddOp 修复）。不能读
+            // tensorN/C/H/W(oc)：FC 2D 输出这些为 0 → GPU add kernel 同尺寸快路径
+            // 失败 → 4D fallback → 0 维解码出首元素和 → 输出全等（fan-in 汇合
+            // Add 网 GPU 不收敛的 P10b 根因之一）。
+            int om0 = rt.opP0At(i); if (rt.opP4At(i) > om0) om0 = rt.opP4At(i);
+            int om1 = rt.opP1At(i); if (rt.opP5At(i) > om1) om1 = rt.opP5At(i);
+            int om2 = rt.opP2At(i); if (rt.opP6At(i) > om2) om2 = rt.opP6At(i);
+            int om3 = rt.opP3At(i); if (rt.opP7At(i) > om3) om3 = rt.opP7At(i);
             GpuInferOps.add(rt.arenaRef(), rt.tensorRows(oc) * rt.tensorCols(oc),
                             rt.tensorOff(aa), rt.tensorOff(bb), rt.tensorOff(oc), rt.tensorRows(bb) * rt.tensorCols(bb), rt.opReluAt(i),
                             rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i),
                             rt.opP4At(i), rt.opP5At(i), rt.opP6At(i), rt.opP7At(i),
-                            rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc), rt.devRef());
+                            om0, om1, om2, om3, rt.devRef());
         }
         void backward(InferenceRuntime rt, int i) {
             if (rt.trainMode() == 1) {
@@ -1616,7 +1624,13 @@ class GpuSubOp {
                             rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0),
                             rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc), rt.devRef());
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // da = dy；db = -dy（同尺寸线性）
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int da = rt.opDAt(i); int db = rt.opP0At(i);
+                GpuInferOps.bwdSub(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(da), rt.tensorOff(db), rt.tensorRows(dy) * rt.tensorCols(dy));
+            }
+        }
 }
 
 // ---- div（GPU）----
@@ -1631,7 +1645,14 @@ class GpuDivOp {
                             rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0),
                             rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc), rt.devRef());
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // da = dy/b；db = -dy·a/(b·b)
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x0 = rt.opBAt(i); int x1 = rt.opCAt(i); int da = rt.opDAt(i); int db = rt.opP0At(i);
+                GpuInferOps.bwdDiv(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x0), rt.tensorOff(x1),
+                                   rt.tensorOff(da), rt.tensorOff(db), rt.tensorRows(dy) * rt.tensorCols(dy));
+            }
+        }
 }
 
 // ---- mul（GPU）----
@@ -1646,7 +1667,14 @@ class GpuMulOp {
                             rt.opP6At(i), rt.opP7At(i), rt.opP8At(i), rt.opXAt(i, 0),
                             rt.tensorN(oc), rt.tensorC(oc), rt.tensorH(oc), rt.tensorW(oc), rt.devRef());
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // da = dy·b；db = dy·a（同尺寸线性）
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x0 = rt.opBAt(i); int x1 = rt.opCAt(i); int da = rt.opDAt(i); int db = rt.opP0At(i);
+                GpuInferOps.bwdMul(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(x0), rt.tensorOff(x1),
+                                   rt.tensorOff(da), rt.tensorOff(db), rt.tensorRows(dy) * rt.tensorCols(dy));
+            }
+        }
 }
 
 // ---- sqrt（GPU）----

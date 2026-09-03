@@ -687,17 +687,25 @@ class GpuInferOps {
                     a[dwOff + o * long(inDim) + i] = s;
                 }
             }
-            @gpu for (long p = 0L; p < long(inDim) * long(batch); p = p + 1L) resident(a = dev) {
-                if (p < long(inDim) * long(batch)) {
-                    long i = p / long(batch);
-                    long k = p % long(batch);
-                    float s = 0.0f;
-                    long o = 0L;
-                    while (o < long(outDim)) { s = s + a[dyOff + o * long(batch) + k] * a[wOff + o * long(inDim) + i]; o = o + 1L; }
-                    a[dxOff + i * long(batch) + k] = s;
+            // dX[i,b] = Σo dY[o,b]·W[o,i]（图输入 x 的 dx 不产出 → dxOff=-1 → 跳过，
+            // 与 CPU bwdDense 一致——否则写 a[-1+i] 越界并覆盖 arena[0]=x 缓冲）
+            if (dxOff >= 0) {
+                @gpu for (long p = 0L; p < long(inDim) * long(batch); p = p + 1L) resident(a = dev) {
+                    if (p < long(inDim) * long(batch)) {
+                        long i = p / long(batch);
+                        long k = p % long(batch);
+                        float s = 0.0f;
+                        long o = 0L;
+                        while (o < long(outDim)) { s = s + a[dyOff + o * long(batch) + k] * a[wOff + o * long(inDim) + i]; o = o + 1L; }
+                        a[dxOff + i * long(batch) + k] = s;
+                    }
                 }
             }
         }
+
+        // 注：bwdDense 的 dX 写必须 dxOff>=0 才执行（同 CPU）。图输入 x 的 dx 被清
+        // 空 → dx tid=-1 → tensorOff(-1)=-1 → 无 guard 会写 a[-1+i]（越界 + 覆盖
+        // arena[0] = x 缓冲）——fan-in 多 Gemm 共享 x 时尤甚（P10b 根因）。
 
         void bwdRelu(float[] a, long dev, int dyOff, int xOff, int dxOff, int n) {
             @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
@@ -735,8 +743,44 @@ class GpuInferOps {
                 if (p < long(n)) {
                     long i = p;
                     float d = a[dyOff + i];
-                    a[daOff + i] = d;
-                    a[dbOff + i] = d;
+                    if (daOff >= 0) a[daOff + i] = d;
+                    if (dbOff >= 0) a[dbOff + i] = d;
+                }
+            }
+        }
+
+        // ---- P10b：Sub/Mul/Div 反向 GPU（此前 GPU 类 backward 为空 → fan-in
+        // 汇合 Sub/Mul/Div 网 GPU 训练无梯度）。da/db 可为 -1（操作数是图输入时
+        // dx 被清）→ guard 跳过。
+        void bwdSub(float[] a, long dev, int dyOff, int daOff, int dbOff, int n) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float d = a[dyOff + i];
+                    if (daOff >= 0) a[daOff + i] = d;
+                    if (dbOff >= 0) a[dbOff + i] = 0.0f - d;
+                }
+            }
+        }
+        void bwdMul(float[] a, long dev, int dyOff, int x0Off, int x1Off, int daOff, int dbOff, int n) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float d = a[dyOff + i];
+                    if (daOff >= 0) a[daOff + i] = d * a[x1Off + i];
+                    if (dbOff >= 0) a[dbOff + i] = d * a[x0Off + i];
+                }
+            }
+        }
+        void bwdDiv(float[] a, long dev, int dyOff, int x0Off, int x1Off, int daOff, int dbOff, int n) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float d = a[dyOff + i];
+                    float x0 = a[x0Off + i];
+                    float x1 = a[x1Off + i];
+                    if (daOff >= 0) a[daOff + i] = d / x1;
+                    if (dbOff >= 0) a[dbOff + i] = 0.0f - d * x0 / (x1 * x1);
                 }
             }
         }

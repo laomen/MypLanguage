@@ -31,7 +31,7 @@ class JsonSwigluTrainApp {
             while (step < 200) {
                 int cl = (step * 37) % 3;   // 轮转 3 类
                 feedOne(t, labT, cl);
-                t.runTrain();
+                t.runTrainAuto();
                 if (step == 0) l0 = t.loss();
                 if (step == 199) l200 = t.loss();
                 step = step + 1;
