@@ -3469,7 +3469,7 @@ MYPLanguage/
 │                        #   stress/（协程/并发压力测试，run_stress.sh）
 ├── examples/            # 完整示例（hello/fib/ad/BNCT/sdl/tui）
 ├── BNCTDoseEngine/      # BNCT 蒙特卡洛引擎（纯 MYP + HDF5 截面）
-├── deeplearning/        # MLP + MNIST 训练/推理
+├── (mypdeeplearning)   # 深度学习框架 → 独立仓 https://gitee.com/tomatosoft_0/mypdeeplearning
 ├── vscode-myp/          # VS Code 扩展（语法高亮 + LSP + DAP）
 ├── docs/                # design/grammar/manual/manual_en/coro/exceptions/...
 ├── build/               # 构建产物：mypc, myp, myp_fmt2, myp_viz2, myp_self, myp_self2, myp_debug, myp_lsp, myp_viz, myp_fmt

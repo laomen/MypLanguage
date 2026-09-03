@@ -61,3 +61,6 @@ tests_mix.myp
 
 # Windows 交叉编译验证产物
 build-win-runtime/
+
+# deeplearning 框架已独立为 mypdeeplearning 仓库（2026-09-03）；本地残留 data 目录整目录忽略
+/examples/deeplearning/

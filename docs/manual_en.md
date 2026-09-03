@@ -3616,7 +3616,7 @@ MYPLanguage/
 │                        #   stress/ (coroutine/concurrency stress, run_stress.sh)
 ├── examples/            # complete examples (hello/fib/ad/BNCT/sdl/tui)
 ├── BNCTDoseEngine/      # BNCT Monte-Carlo engine (pure MYP + HDF5 cross-sections)
-├── deeplearning/        # MLP + MNIST training/inference
+├── (mypdeeplearning)   # deep-learning framework → standalone repo https://gitee.com/tomatosoft_0/mypdeeplearning
 ├── vscode-myp/          # VS Code extension (syntax highlight + LSP + DAP)
 ├── docs/                # design/grammar/manual/manual_en/coro/exceptions/
 │   └── ...              #   operators/metaprogramming/constructor/...

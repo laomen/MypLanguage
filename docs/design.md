@@ -2065,7 +2065,7 @@ maxThreads/warpSize）、`Device`、`DevMath`（设备端数学 = `Math` 泛型�
 | `GpuGraph`/`GpuGraphExec` | CUDA Graph 捕获/回放（captureBegin/captureEnd/launch） |
 | `GpuByoc`/`GpuLib` | BYOC 自编译 kernel（`load(ptx, name)` + `launch(kctx, grid, block, args…)`）、cuBLAS 封装 |
 
-> 详见 `deeplearning/docs/gpu_paradigm.md`（分层与用户指南）、**§8.8**（`@parallel for`
+> 详见 mypdeeplearning 独立仓 `docs/gpu_paradigm.md`（https://gitee.com/tomatosoft_0/mypdeeplearning）、**§8.8**（`@parallel for`
 > 对照）、§12.5（自举 GPU 收口）。
 
 ### 10.17 UI — ui / sdl
@@ -2443,10 +2443,7 @@ MYPLanguage/
 │   ├── transport / physics / material / nuclide / mesh / tally
 │   ├── xs_loader / hdf5_bridge.c / cross_section_db.myp
 │   └── ...
-├── deeplearning/
-│   ├── infer/                 # 通用 ONNX 推理框架（G1-G4 图优化 + BN/激活 + GPU）
-│   │   └── tools/             # onnxruntime 交叉校验 / 预处理脚本
-│   └── data/                  # MNIST IDX / ONNX 模型 / ImageNet 输入
+├── (mypdeeplearning)          # 深度学习推理/训练框架 → 独立仓 https://gitee.com/tomatosoft_0/mypdeeplearning
 ├── vscode-myp/                # VS Code 扩展（语法高亮 + LSP + DAP 调试）
 ├── docs/                      # 设计文档（design/grammar/manual/manual_en/coro/
 │   └── ...                    #   exceptions/operators/metaprogramming/constructor/
@@ -2557,7 +2554,7 @@ Runtime  → print/println + 基本运行时
 - ✅ XOR 神经网络（2→2→1 推理）
 - ✅ 多层感知器训练（784→64→10 MNIST 97% 准确率）
 - ✅ BNCT 剂量引擎（`BNCTDoseEngine/`，事件驱动 + `@parallel for` + HDF5 截面）
-- ✅ ONNX 推理框架（`deeplearning/infer/`，G1–G4 图优化 + BN/激活 + GPU）
+- ✅ ONNX 推理框架（原 `deeplearning/infer/`，已迁出 → mypdeeplearning 独立仓）
 - ✅ 编译器自举（`tools/selfhost/` → `myp_self` 重建编译器，不动点字节全同）
 - ✅ 多线程并行计数
 - ✅ 多线程独立定时器

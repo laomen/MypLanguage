@@ -240,7 +240,7 @@ MYPLanguage/
 ├── include/mylang/   # Headers
 ├── stdlib/           # Standard library (.myp, 42 modules)
 ├── tools/            # Self-hosted toolchain (pm package manager / fmt formatter / viz visualizer / selfhost compiler / codegen, in MYP)
-├── examples/         # Examples (incl. BNCTDoseEngine dose engine, deeplearning framework)
+├── examples/         # Examples (incl. BNCTDoseEngine dose engine; deep-learning framework moved → mypdeeplearning)
 ├── mypview/          # General UI framework (zero MOS deps, declarative UIX + MVVM)
 ├── MOS/              # MYP native OS (kernel/services/apps, x86 Linux)
 ├── vscode-myp/       # VS Code extension

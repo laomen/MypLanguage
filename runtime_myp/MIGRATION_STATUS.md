@@ -314,7 +314,7 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 - **cublas 2 未影**（myp_cublas_available/sgemm）：厂商库 hook，保留 C 或经
   `__myp_indirect` 绑 cuBLAS（future）。
 - **⚠️**：CUDA TLS（接触上下文的入口显式 `cuCtxSetCurrent`）。改动记
-  `examples/deeplearning/CHANGELOG.md`（独立分项目）。
+  mypdeeplearning 独立仓 CHANGELOG（https://gitee.com/tomatosoft_0/mypdeeplearning）（独立分项目）。
 
 ### 包 H：bridge 层（122）
 - **json**(14) / **net**(14) / **uds**(18) / **process**(12) / **sdl**(40) /
@@ -522,7 +522,7 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 
 - `infer/runtime.myp` `addAdd` 升级 4 参（Add+Relu 融合）后，json_tool 旧 loader
   少传 doRelu → 7 入口编译失败。修 `model_loader.myp` 传 `doRelu=0`（纯 Add）。
-  记录于 `examples/deeplearning/CHANGELOG.md`（deeplearning 分项目变更独立记）。
+  记录于 mypdeeplearning 独立仓 CHANGELOG（https://gitee.com/tomatosoft_0/mypdeeplearning）（deeplearning 分项目变更独立记）。
 
 ### 6.5 io 优化（v3.15.75，file_io 90→39ms）
 
