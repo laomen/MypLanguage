@@ -2454,6 +2454,23 @@ class InferOps {
             }
         }
 
+        // GAP 3D：5D x[N,C,D,H,W]（per-(n,c) 段 = D*H*W 连续行优先）→ per-(n,c) 全空间均值。
+        void gapoolD(float[] arena, int xOff, int xN, int xC, int xD, int xH, int xW, int yOff) {
+            int per = xD * xH * xW;
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    float sum = 0.0f;
+                    int i = 0;
+                    while (i < per) { sum = sum + arena[xOff + (n * xC + c) * per + i]; i = i + 1; }
+                    arena[yOff + n * xC + c] = sum / float(per);
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
         // Flatten：数据已连续，按 flat 拷贝
         void flatten(float[] arena, int inOff, int outOff, int n) {
             int i = 0;

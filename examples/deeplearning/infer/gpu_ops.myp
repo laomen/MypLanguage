@@ -2535,6 +2535,22 @@ class GpuInferOps {
             }
         }
 
+        // GAP 3D：thread-per-(n,c)，均值 over D*H*W 连续段
+        void gapoolD(float[] a, int work,
+                     int xOff, int xN, int xC, int xD, int xH, int xW, int yOff, long dev) {
+            int per = xD * xH * xW;
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long c = p % xC;
+                    long nn = p / xC;
+                    float sum = 0.0f;
+                    int i = 0;
+                    while (i < per) { sum = sum + a[xOff + nn * xC * per + c * per + i]; i = i + 1; }
+                    a[yOff + p] = sum / float(per);
+                }
+            }
+        }
+
         // Flatten：数据连续，直接拷贝
         void flatten(float[] a, int work, int inOff, int outOff, long dev) {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {

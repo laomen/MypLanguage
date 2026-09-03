@@ -471,13 +471,17 @@ class MaxpoolOp {
         }
 }
 
-// ---- gapool（opKind 9 前向）----
+// ---- gapool（opKind 9 前向；5D 输入走 gapoolD = GAP3D）----
 class GapoolOp {
     interface class IOp;
     action:
         void forward(InferenceRuntime rt, int i) {
             int xa = rt.opAAt(i); int yd = rt.opBAt(i);
-            InferOps.gapool(rt.arenaRef(), rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd));
+            if (rt.tensorD(xa) > 1) {
+                InferOps.gapoolD(rt.arenaRef(), rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorD(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd));
+            } else {
+                InferOps.gapool(rt.arenaRef(), rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd));
+            }
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -617,14 +621,18 @@ class GpuMaxpoolOp {
         }
 }
 
-// ---- gapool（GPU）----
+// ---- gapool（GPU；5D 输入走 gapoolD = GAP3D）----
 class GpuGapoolOp {
     interface class IOp;
     action:
         void forward(InferenceRuntime rt, int i) {
             int xa = rt.opAAt(i); int yd = rt.opBAt(i);
             int work = rt.tensorRows(yd) * rt.tensorCols(yd);
-            GpuInferOps.gapool(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd), rt.devRef());
+            if (rt.tensorD(xa) > 1) {
+                GpuInferOps.gapoolD(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorD(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd), rt.devRef());
+            } else {
+                GpuInferOps.gapool(rt.arenaRef(), work, rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorH(xa), rt.tensorW(xa), rt.tensorOff(yd), rt.devRef());
+            }
         }
         void backward(InferenceRuntime rt, int i) { }
 }

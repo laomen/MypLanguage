@@ -1,0 +1,36 @@
+// json_gap3d_main.myp — C：JSON GlobalAveragePool on 5D = GlobalAveragePool3D
+// （图算子 P7，gapoolD kernel：per-(n,c) 全空间 D*H*W 均值）。
+// x[1,2,2,2,2] NCDHW：c0=1..8 mean 4.5；c1=10..80 mean 45 → y=[4.5,45]。
+// CPU+GPU JSON GAP3D OK。
+import env;
+import fmt;
+import dl;
+class JsonGap3dApp {
+    action:
+        @constructor JsonGap3dApp() {
+            Session s = new Session();
+            int ok = s.loadJson("./deeplearning/infer_tests/gap3d.json");
+            if (ok == 0) { Console.writeLine("JSON GAP3D SKIP (no load)"); return; }
+            double[] x = new double[16];
+            int i = 0;
+            while (i < 8) { x[i] = double(i + 1); i = i + 1; }        // c0 = 1..8
+            i = 0;
+            while (i < 8) { x[8 + i] = double((i + 1) * 10); i = i + 1; }  // c1 = 10..80
+            s.setInput("x", x, 16);
+            int rk = s.runAuto();
+            double[] o = s.getOutput("y");
+            int n = s.tensorSize("y");
+            int bad = 0;
+            double d = o[0]-4.5; if (d<0.0) d=0.0-d; if (d>1.0e-3) bad=bad+1;
+            d = o[1]-45.0; if (d<0.0) d=0.0-d; if (d>1.0e-3) bad=bad+1;
+            Console.writeString("run="); Console.writeLong(rk);
+            Console.writeString(" n="); Console.writeLong(n);
+            Console.writeString(" y0="); Console.writeFloat(o[0]);
+            Console.writeString(" y1="); Console.writeFloat(o[1]);
+            Console.writeString(" bad="); Console.writeLong(bad);
+            Console.writeLine("");
+            if (ok==1 && rk==1 && n==2 && bad==0) Console.writeLine("JSON GAP3D OK");
+            else Console.writeLine("JSON GAP3D FAIL");
+        }
+}
+int main() { JsonGap3dApp a = new JsonGap3dApp(); return 0; }

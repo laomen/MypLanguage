@@ -1,0 +1,6 @@
+{ "name":"jgap3d",
+  "inputs":[{"name":"x","dims":[1,2,2,2,2]}],
+  "outputs":["y"],
+  "layers":[
+    { "op":"GlobalAveragePool","in":"x","out":"y"}
+  ]}
