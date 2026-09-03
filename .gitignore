@@ -63,5 +63,19 @@ deeplearning/docs/infer_dx.md
 deeplearning/infer_tests/seg_liver_main.myp
 **/deeplearning/infer_tests/seg_liver_main.myp
 
+# deeplearning 专项设计/计划/评估文档（不再追踪，本地留存；权威 design.md / gpu_paradigm.md 仍追踪）
+deeplearning/docs/general_framework_plan.md
+**/deeplearning/docs/general_framework_plan.md
+deeplearning/docs/ir_layer.md
+**/deeplearning/docs/ir_layer.md
+deeplearning/docs/3d_extension.md
+**/deeplearning/docs/3d_extension.md
+deeplearning/docs/3d_impl.md
+**/deeplearning/docs/3d_impl.md
+deeplearning/docs/diffusion_plan.md
+**/deeplearning/docs/diffusion_plan.md
+deeplearning/diffusion/diffusion_plan.md
+**/deeplearning/diffusion/diffusion_plan.md
+
 # Windows 交叉编译验证产物
 build-win-runtime/

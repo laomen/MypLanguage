@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-03 — 文档整理（非代码）：专项设计/计划/评估文档移出 git 追踪
+
+对齐主仓「本地设计文档不追踪」约定（权威 `design.md` / `gpu_paradigm.md` 与用户
+文档仍追踪、服务器可见）。移出追踪（`git rm --cached`，本地留存，`docs/` 原位）：
+- `docs/general_framework_plan.md`（通用框架计划）、`docs/ir_layer.md`（优化 IR 层设计）、
+  `docs/3d_extension.md`（3D 可行性评估）、`docs/3d_impl.md`（3D 实现总结）、
+  `docs/diffusion_plan.md` + `diffusion/diffusion_plan.md`（扩散路线图，两处重复，本地留存待合并）。
+- 根 `.gitignore` 增忽略规则（含 `**/deeplearning/...` 兜底）；`infer_dx.md` 早已忽略。
+- 保留追踪：`docs/design.md` / `docs/gpu_paradigm.md`（权威设计+GPU 路线图，usage/README 引用不
+  断）、`docs/usage.md` / `docs/sli.md`（用户指南）、`CHANGELOG.md` 与各子目录 README。
+- 上述文档的**落地内容**以本 changelog 为服务器可见记录；`diffusion/README.md` 对本地计划
+  文档的指向已注明「不随仓库推送」。
+
+---
+
 ## 2026-09-03 — P10b GPU 训练收敛修复（fan-in）+ 剩余 GPU 反向（BN/IN/BN-NHWC/batch-MatMul/Reduce/Transpose/Expand/Tile/Gather/ReduceMM/Pad）
 
 全量回归 pass=135 fail=0（测试数不变；新增 3 个训练 main 转 GPU：json_bn/json_in/

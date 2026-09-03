@@ -93,7 +93,7 @@ cd examples
 
 ## 调试经验（关键 bug 清单）
 
-见 `diffusion_plan.md` 与 repo memory `diffusion-project.md`。核心教训：
+见本地设计文档 `diffusion_plan.md`（专项路线图，**不随仓库推送**）与 repo memory `diffusion-project.md`；落地记录见 `../CHANGELOG.md`。核心教训：
 1. **bases.bin 必须是逻辑块级偏移**（UNet 47 / VAE 22）——块函数返回子块列表，勿用 `*` 展开成张量。
 2. **SD1.5 attention 是 8 头**（dh=ch/8），不是 40 头×8 维；scale=1/sqrt(dh)。
 3. 抽取布局必须**含 norm2**（attn1↔attn2 间 LayerNorm），否则块后半错位。
