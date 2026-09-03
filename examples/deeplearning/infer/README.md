@@ -14,7 +14,10 @@ Python / onnxruntime。
 CNN（Conv/Conv3D/1x1/Pool/GAP/BN/IN/LayerNorm/Resize/Pad…）、FC（Gemm/MatMul/BatchMatMul/
 cuBLAS）、张量变换（Transpose/Slice/Concat/Split/Reshape/Expand/Where/Tile/Squeeze/Gather/Reduce 族/LogSoftmax/Softmax/CE…）、**索引/数据高级索引**（ArgMax/ArgMin/TopK/OneHot/**GatherElements/ScatterND**，含 P8b 反向梯度训练）、3D（Conv3D/Pool3D/Pad3D/Resize3D/ConvTranspose3D）、**激活全族**
 （Relu/Sigmoid/ReLU6/LeakyRelu/SiLU/HardSwish/Clip/Softmax/LogSoftmax）、LLM（RmsNorm/LayerNorm/
-GELU/**Rope** 位置编码）、训练反向算子（含 **BN/IN scale·bias 梯度** 与 **4D/batch MatMul 反向**）、Dropout 推理/训练语义。真实模型：**ResNet18/ResNet50**
+GELU/**Rope** 位置编码）、训练反向算子（含 **BN/IN scale·bias 梯度** 与 **4D/batch MatMul 反向**）、Dropout 推理/训练语义。
+**Session GPU 训练统一（P10a）**：`Session.runTrainAuto()`（MYP_GPU=1 且图内全部 op 有 GPU
+分派 → 持久化 GPU 训练步，否则自动 CPU 回退）+ 激活/损失/重排 GPU 反向补缺
+（ReLU6/LeakyRelu/SiLU/HardSwish/Clip/LogSoftmax/Reshape bwd + MSE/BCE loss）。真实模型：**ResNet18/ResNet50**
 （vs ORT 数值一致）、**3D U-Net**
 （coarse/fine）、动态 batch、多输入/多输出/可选输入、FP16/BF16 权重、量化前全精度。
 

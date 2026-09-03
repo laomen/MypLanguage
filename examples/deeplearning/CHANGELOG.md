@@ -6,6 +6,51 @@
 
 ---
 
+## 2026-09-03 — P10a Session GPU 训练统一 + 激活/损失/重排 GPU 反向（A 组「Session 级 GPU 训练」第一部分）
+
+全量回归 pass=135 fail=0（测试数不变；7 个单链训练 main 改 `runTrainAuto`，在
+MYP_GPU=1 回归下实际跑 GPU 训练）。
+
+### Session 层 GPU 训练统一（runTrainAuto）
+- 背景：`Session.runTrain` 恒走 CPU `runRuntime`；GPU 训练此前只在直连 runtime 的专用
+  main 手写 `gpuPersistentStart+markGpuSync+runGpu`。本次把训练步统一进 Session。
+- runtime：`gpuTrainReady()`——图内每个 opKind 都要有 GPU 分派槽（`fwdGpu_`/`bwdGpu_`，
+  否则 runGpu 会**静默跳过该节点 → 梯度错**；梯度累积/AMP 模拟仍 CPU-only → 不算就绪）；
+  `gpuMarkSyncAll()`（每步 runGpu 后全量 D2H，宿主读 loss/prob/任意输出均新鲜；上传仍
+  增量 = 只 setFlat 置脏输入）；`ensureIface()`（判定前确定性注册接口分派表，避免首步
+  CPU/后续 GPU 的混合模式）。
+- `Session.runTrainAuto()`：MYP_GPU=1 && `gpuTrainReady` → 首步 `gpuPersistentStart` +
+  全量 D2H 标记，此后每步 `runGpu`（增量 H2D）；否则回退 `runTrain`（CPU，语义不变）。
+  `trainGpuEnd()` 释放设备 arena；`gpuTrainOn()` 查询。
+- 7 个单链训练 main 改 `runTrainAuto`：json_mse/bce/tanh/activ_chain/cnn/gather_elem/
+  scatter_nd_train——MYP_GPU=1 回归下实际跑 GPU 训练，loss 收敛判据同 CPU（bad=0）。
+
+### GPU 反向补缺（bwd kinds 首批，thread-per-element）
+- gpu_ops.myp 新核：`bwdRelu6`/`bwdLeakyRelu`/`bwdSilu`/`bwdHardSwish`/`bwdClip`
+  （Clip 边界标量从**设备 arena** 读——持久化下宿主副本陈旧，不可在 @gpu 外读）+ 
+  `bwdLogSoftmax`（thread-per-(outer·inner)，串行扫 axisDim 三段同 CPU）+
+  `mseLossDp/Sum` + `bceLossDp/Sum`（dp 逐元素并行 + loss 单线程归约）。
+- ops_iface_all.myp：GpuRelu6/LeakyRelu/Silu/HardSwish/Clip/LogSoftmax/ReshapeOp 补
+  `backward()` + `registerBwd(k,1)`（102/103/104/105/106/107/93）；新增 `GpuMseLossOp`/
+  `GpuBceLossOp` registerBwd(109/110,1)。
+- 验证：单链 SiLU 探针 GPU loss 轨迹与 CPU **逐位一致** → bwdSilu 正确；激活链（
+  ReLU6/LeakyRelu/HardSwish）与 MSE/BCE loss GPU 端到端收敛。
+
+### 发现并记录（P10b / 后续）
+- **fan-in（多分支）GPU 训练 bug**：同一输入 x 被多个并行 Gemm 消费的网（train_sub/mul/
+  add、swiglu）在 runGpu 下不收敛（Add/Mul 网 loss 恒初始、Sub 网震荡）而 CPU 正常——该
+  bug 先于 P10a 即存在（此前无 Session GPU 训练路径可达；bwdSilu 已单独证正确）。根因疑
+  在共享梯度/planMemory 缓冲或 runGpu 分叉执行序，需专项调试。相关 main 维持 runTrain(CPU)。
+- 其余 CPU-only bwd GPU 化留 P10b：BN/IN(114/115)/BN-NHWC(117)/batch-MatMul(116)/
+  Reduce 族(97/100)/Transpose(94)/Expand·Tile·Gather(95/96/98)/Pad(101)——`gpuTrainReady`
+  自动使含这些的网回退 CPU（json_bn/in/avgpool/gap/c3d/convt3d/batch_matmul 等保持 CPU）。
+- 梯度累积、AMP 模拟 GPU 化（GpuUpdate 未实现累积/舍入）→ `gpuTrainReady` 显式排除。
+- 顺带发现（非本次引入）：json_gap_cnn_train 在 HEAD 即 CPU loss 不降（打印 MISMATCH），
+  而 run_all 判据不含 "MISMATCH" → 被误计 pass；batch_matmul_train 亦偶发 FAIL（拟合阈值
+  边界）。均为既有测试健壮性缺口，另列。
+
+---
+
 ## 2026-09-03 — 缺口收口 triage：Range / Slice / Split 反向（低 ROI，记录在案，不实现）
 
 「还有什么要做」survey 剩余缺口按 ROI 分流；此项判定**低 ROI → 记录在案不实现**

@@ -197,6 +197,14 @@ while (step < N) {
   Softmax 分类头，模型输出本身即预测张量（回归 `mse_reg.json`/`json_mse_train_main`
   500 步 loss→0；二值 `bce_clf.json`/`json_bce_train_main` 600 步→floor 0.325）。
 - **每次 run 前重建输入**：训练 arena 复用会覆盖输入区。
+- **Session GPU 训练统一（P10a）**：`runTrainAuto()` 训练步——MYP_GPU=1 且
+  `gpuTrainReady()`（图内全部 opKind 有 GPU 分派槽；梯度累积/AMP 模拟除外）→ 首步
+  `gpuPersistentStart` + 每步 `runGpu`（增量上传置脏输入 + 全量 D2H），否则回退 CPU
+  `runTrain`（绝不静默错）。结束 `trainGpuEnd()`。GPU 反向已补：ReLU6/LeakyRelu/SiLU/
+  HardSwish/Clip/LogSoftmax/Reshape bwd + MSE/BCE loss。**已知 GPU 局限（P10b）**：
+  fan-in（同输入多分支）训练网 GPU 不收敛（Sub/Mul/Add 汇合、swiglu；CPU 正常）——
+  相关 main 仍 CPU；BN/IN/BN-NHWC/batch-MatMul/Reduce/Transpose/Expand/Tile/Gather/Pad
+  的 bwd 仍 CPU-only（`gpuTrainReady` 自动回退）。
 - **可训结构**：链式 + fan-in 汇合（`Add`/`Sub`/`Mul`/`Concat` 在 loss 路径）均可训
   降（回归 `json_train_submul_main`：sub/mul/add 三网 200 步 loss 显著降）。**激活反向**
   全覆盖：`Relu`/`Sigmoid`/`Tanh` 早已支持；`ReLU6`/`LeakyRelu`/`SiLU`/`HardSwish`/
