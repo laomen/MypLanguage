@@ -123,9 +123,13 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   `ReduceMin(axes[,keepdims])`；**索引类（行/特征轴 1D flat，单样本=整行 logits）**
   `ArgMax`/`ArgMin`（单输出标量索引）、`TopK(k, outs:[values,indices])`（前 k 大，
   输出 float 编码索引——对应 CE 标签/LLM 采样）、`OneHot(depth)`（idx float 逐元素
-  → 行优先 one-hot [nIdx,depth]）。示例：`infer_tests/branch.json`
+  → 行优先 one-hot [nIdx,depth]）；**数据高级索引（P8）** `GatherElements(in,in2:idx,
+  axis)`（data/indices 同形逐元素 gather，out shape=indices；axis 0..rank-1，索引 float
+  张量运行时 setInput）、`ScatterND(in,in2:idx[q,k],in3:upd)`（data 副本 + indices 前缀
+  scatter；k ≤ data 秩，块长=data[k:]，upd=[q]+data[k:]）。示例：`infer_tests/branch.json`
   （多分支 DAG）、`mlp.json`、`safe_gemm.json`、`reshape.json`、`gather.json`、
-  `ops2.json`、`argmax.json`（ArgMax/ArgMin/TopK）。
+  `ops2.json`、`argmax.json`（ArgMax/ArgMin/TopK）、`gather_elements.json`、
+  `scatter_nd.json`（P8 数据高级索引）。
 - **参数化 op（int64 内联常量）**：`shape`/`indices`/`repeats` 等 int64 数组直接内联在层里，
   框架登记为内存 int64 常量（无需 ONNX 初始器）：
   ```json

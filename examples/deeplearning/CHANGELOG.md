@@ -6,6 +6,40 @@
 
 ---
 
+## 2026-09-03 — P8 数据高级索引：GatherElements + ScatterND 图算子
+
+全量回归 pass=117→**119** fail=0（索引族 OneHot 行收口；Range 见下）。
+
+### GatherElements（逐元素 gather，opKind 88）
+- 语义：data 与 indices **同形**（axis 维 data 可更长），out shape=indices；
+  out[i] = data[coord(i) 沿 axis 换成 idx[i]]（float 编码索引，负索引 +dim、越界 clamp）。
+- kernel：不整 5D 解码——inner=axis 后各维乘积 → 线性 i 解 q=i%inner、p=i/inner、
+  ax=p%outAxis、outer=p/outAxis；data 偏移=(outer·dataAxisDim+srcIdx)·inner+q。
+  CPU `InferOps.gatherElements` + GPU `GpuInferOps.gatherElements`（thread-per-out）。
+- graph：OpCode GATHER_ELEMENTS(116) + mapOpType + inferShapes（out=copyShape(indices)）
+  + consumerKindOf CNN 分支（data/indices 走自然 NCHW 布局）+ graph_compiler wiring
+  （axis 负归一化按 data 秩；inner/dataAxis/outAxis 由 data/indices shape 现算，无需新槽）
+  + JSON（in= data、in2=indices、axis 属性）。测试 gather_elements.json：x[1,2,1,4]
+  c0=[10..13]/c1=[20..23] 双 op 覆盖 axis=3（W 逐元素 gather）与 axis=1（C gather），
+  手算 [10,13,11,12,22,21,20,23] / [10,21,12,23,20,11,22,13] CPU+GPU OK。
+
+### ScatterND（前缀 scatter，opKind 89）
+- 语义：out = data 副本；indices [q,k]（k ≤ data 秩）每行 prefix 定址块
+  base（row-major 前缀步长=后续维乘积，迭代 R/=d_j），块长 block=data[k:]，
+  updates [q,block] 行主写入 out[base+e]（重复前缀后写者胜）。
+- kernel：CPU `InferOps.scatterND`（先整块 copy data 再逐行 scatter）；GPU 先 copy
+  kernel、block 主机侧预计算、thread-per-(row,block-elem)（唯一前缀常用）。
+- graph：OpCode SCATTER_ND(117) + inferShapes（out=copyShape(data)）+ consumerKindOf
+  CNN（indices [q,k]/updates 自然布局）+ graph_compiler wiring（q,k 取 indices shape、
+  data 5 维尾部补 1）+ JSON（in=data、in2=indices、in3=updates）。测试 scatter_nd.json：
+  d[1,3,2,2]=1..12，op1 idx=[[0,1]] q1/k2 整块替换通道1 → 通道2/3 原样，op2 idx2=
+  [[0,0,1,1],[0,2,0,0]] q2/k4 全秩单元素 scatter（pos3→60、pos8→70）CPU+GPU OK。
+- 说明：两 op 走**自然 NCHW/NCDHW 布局**（4D/5D 数据，与 OneHot/ArgMax 同属前向推理
+  索引族；indices float 运行时 setInput）。2D FC（行/列转置布局）与反向梯度留待后续。
+- Range（无输入生成器）与 runtime 单/多输入 op 模型不适配，仍记留待。
+
+---
+
 ## 2026-09-03 — GlobalAveragePool3D（5D 感知 gapoolD kernel）
 
 - 根因：GAPoolOp 只读 tensorH/tensorW（忽略 tensorD）→ 5D 输入只对 D=0 片 H*W 求
