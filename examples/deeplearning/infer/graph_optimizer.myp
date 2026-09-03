@@ -1001,6 +1001,23 @@ class GraphOptimizer {
                             if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
                                 graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费（须 endNode 后）
                             }
+                        } else if (t == "AveragePool") {
+                            // A：AvgPool2D 反向（dy 窗口均摊回 dx）；复制池化参数 + cip
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdAvgPool");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.KH(), graph.compilerAttr(ni, NodeField.KH())); graph.compilerAttrSet(bd, NodeField.KW(), graph.compilerAttr(ni, NodeField.KW()));
+                            graph.compilerAttrSet(bd, NodeField.SH(), graph.compilerAttr(ni, NodeField.SH())); graph.compilerAttrSet(bd, NodeField.SW(), graph.compilerAttr(ni, NodeField.SW()));
+                            graph.compilerAttrSet(bd, NodeField.PT(), graph.compilerAttr(ni, NodeField.PT())); graph.compilerAttrSet(bd, NodeField.PB(), graph.compilerAttr(ni, NodeField.PB()));
+                            graph.compilerAttrSet(bd, NodeField.PL(), graph.compilerAttr(ni, NodeField.PL())); graph.compilerAttrSet(bd, NodeField.PR(), graph.compilerAttr(ni, NodeField.PR()));
+                            graph.compilerAttrSet(bd, NodeField.CIP(), graph.compilerAttr(ni, NodeField.CIP()));
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费（须 endNode 后）
+                            }
                         } else if (t == "ConvTranspose") {
                             // 阶段4d：BwdConvTranspose(dy, x, w) → (dx, dw, db)；复制转置卷积参数
                             int bd = graph.nodeCount();
