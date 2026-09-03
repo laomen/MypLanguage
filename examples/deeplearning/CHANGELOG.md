@@ -6,7 +6,23 @@
 
 ---
 
-## 2026-09-03 — 3D UNet JSON + Split 多输出 + 并行回归
+## 2026-09-03 — LayerNorm/RmsNorm/GELU 图算子 + JSON（归一化/激活补全）
+
+- **图算子接入（kernel/Op/CPU+GPU/register/runtime 均现成——LLM 手写 opKind 61/64/65
+  只缺图接线）**：graph_defs OpCode LAYER_NORM(102)/RMS_NORM(103)/GELU(104) +
+  mapOpType（LayerNorm/LayerNormalization、RmsNorm、GELU/Gelu）；inferShapes
+  copyShape；graph_compiler wiring（D/S/n 传 0 → Op forward 运行时自省
+  tensorRows/Cols——tensor 布局与 kernel [D 特征行, S 样本列] 天然一致）；eps attr。
+- 归一化 kernel（layerNorm）加 gOff/bOff < 0 guard（无 gamma/beta 防越界）。
+- JSON 分派：LayerNorm（gamma/beta [D] + epsilon）、RmsNorm（gamma [D] + epsilon）、
+  GELU（单输入自动）。测试 json_norm_main（单样本 x[1,3] 手算：LN [-1.2247,0,
+  3.674]、RMSN [0.4629,0.9258,1.3887]、GELU [-0.0455,-0.1587,0,0.8413,1.9545]）
+  CPU+GPU JSON NORM OK。回归 pass=105→**106** fail=0。
+- 布局注：JSON 2D 张量按框架 [特征行, 样本列]（dims=[样本,特征] 但数据特征主）——
+  图归一化多接 Gemm 输出（布局自洽）；多样本直喂输入须特征主 flat（测试用单样本
+  免歧义）。
+
+---
 
 - **JSON 3D U-Net 端到端跑通**：`unet3d.json`+`json_unet3d_main`（data[1,1,8,32,32]
   → Conv3D pad1 保尺寸 + MaxPool3D×2 → Resize(sizes 2x 上采样) + Concat(5D) 跳跃 ×2

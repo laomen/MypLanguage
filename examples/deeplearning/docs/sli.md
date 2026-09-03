@@ -110,7 +110,9 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   [Cout,Cin,kd,kh,kw] + kernel/strides/pads6)/`MaxPool3D`/`AveragePool3D`/`Resize`
   (sizes [1,1,(outD,)outH,outW])——3D JSON 输入/权重用 5 维 dims；**归一化**
   `BatchNormalization`(scale/bias/mean/var + epsilon)/`InstanceNormalization`
-  (scale/bias + epsilon)；**参数化（int64 常量）**
+  (scale/bias + epsilon)/**`LayerNorm`(gamma/beta) / `RmsNorm`(gamma) / `GELU`**
+  （图归一化/激活，复用 LLM kernel；多接 Gemm 输出，tensor 按 [特征行, 样本列] 布局，
+  gamma/beta [D=D 特征]）；**参数化（int64 常量）**
   `Reshape(shape)`、`Gather(indices,axis)`、`Expand(shape)`、`Tile(repeats)`、
   `Slice(starts,ends[,axes][,steps])`、`Pad(pads[,mode])`（pads 8 值
   [N,C,H,W] begin+end）；
