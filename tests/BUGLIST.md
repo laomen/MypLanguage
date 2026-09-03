@@ -37,7 +37,21 @@
 | BUG-029 | 🟩 | 类字段直接转 interface（`View v = <类字段>`）→ 坏胖指针（vtable 丢失）→ 段错误/内存损坏（codegen 只从 var_class_map_ 解析类名，字段查不到 → null vtable） | 回归 `tests/bugs/iface_field_conversion.myp`（裸名+this 形态，2 断言） |
 | BUG-030 | 🟩 | mapping 事件在目标类构造器内触发 → 派发到未注册的自身实例（`__myp_inst_X` 构造后写入）→ 段错误 139 | 回归 `tests/bugs/mapping_ctor_self.myp`（ctor 内 2 次派发，1 断言） |
 | BUG-031 | 🟩 | 跨线程多 @thread 目标事件无限重投（mapping handler 注册 instance=NULL → routed 副本在目标线程跑**所有**同 event 的 NULL-instance handler → 互相 route 乒乓） | 回归 `tests/bugs/cross_thread_multi_target.myp`（A/B 各收 1 次，2 断言） |
-| BUG-032 | 🟩 | `this` 作为值（实参/赋值/返回，如 `Holder.set(this)`）被传 alloca **地址**而非实例值——`set` 把 &栈槽 存进属性，`get()` 当实例读 → 字段错位（49152 / this=0x100000000 → strcmp 段错误）；无 event 类时栈布局碰巧 0 未暴露，含 event 类必现 | 复现 `tests/bugs/b032_event_class_inst_store.myp`（@test 断言 get count==0，已绿）；C++ `generateThisExpr` 修复（load this 值）+ selfhost 本就正确（loadThis 已 load） || BUG-033 | 🟩 | **数组元素 → interface**（`View v = arr[i]`，arr 为**类属性数组**）→ 坏胖指针（vtable 丢失）→ RootView.onTouch 遍历 `call *0x8(vtable)` 段错误 139（BUG-029 只覆盖字段+局部变量数组，类属性数组元素 SubscriptExpr 走 else 分支只存 data） | 回归 `tests/bugs/b033_iface_array_elem.myp`（类属性数组元素 + 局部数组元素，3 断言，双编译器） || BUG-022 | 🟩 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
+| BUG-032 | 🟩 | `this` 作为值（实参/赋值/返回，如 `Holder.set(this)`）被传 alloca **地址**而非实例值——`set` 把 &栈槽 存进属性，`get()` 当实例读 → 字段错位（49152 / this=0x100000000 → strcmp 段错误）；无 event 类时栈布局碰巧 0 未暴露，含 event 类必现 | 复现 `tests/bugs/b032_event_class_inst_store.myp`（@test 断言 get count==0，已绿）；C++ `generateThisExpr` 修复（load this 值）+ selfhost 本就正确（loadThis 已 load） |
+| BUG-033 | 🟩 | **数组元素 → interface**（`View v = arr[i]`，arr 为**类属性数组**）→ 坏胖指针（vtable 丢失）→ RootView.onTouch 遍历 `call *0x8(vtable)` 段错误 139（BUG-029 只覆盖字段+局部变量数组，类属性数组元素 SubscriptExpr 走 else 分支只存 data） | 回归 `tests/bugs/b033_iface_array_elem.myp`（类属性数组元素 + 局部数组元素，3 断言，双编译器） |
+| BUG-034 | 🟩 | 接口 fat pointer 构造在「函数返回 / 接口字段写 / 接口方法调用参数」三处缺失 → 段错误 | `tests/bugs/b034_iface_fat_upcast.myp` |
+| BUG-035 | 🟩 | 字符串拼接结果作为函数调用实参 → 每调用泄漏 1 个计数字符串 | `tests/bugs/b035_concat_arg_leak.myp` |
+| BUG-036 | 🟩 | selfhost 接口/字符串借用引用被当 fresh 释放 → mypview 自举运行段错误 | （待建：myp_self 编译 mypview 全集 uix_logic + /tmp 最小复现） |
+| BUG-037 | 🟩 | selfhost 接口数组元素赋值缺 fat 上转 + fresh 转移 | （待建：/tmp/utf8_min.myp） |
+| BUG-038 | 🟩 | selfhost 接口数组元素 store 借用 fat 不 retain → 对象悬垂 | （待建：/tmp/utf8_min.myp） |
+| BUG-039 | 🟩 | selfhost 词法器 UTF-8 双重编码 → 中文乱码 | （待建：`你好 len=6` / mypview 全集中文） |
+| BUG-040 | 🟩 | selfhost 接口局部变量初始化借用 fat 不 retain → draw 崩溃 | （待建：examples/player.myp SDL 120 帧） |
+| BUG-041 | 🟩 | 多文件编译对文件顺序敏感（mypc 依赖顺序 / myp_self 混合路径丢 main） | （待建：mypview 全集字母序编译 69 行） |
+| BUG-042 | 🟩 | myp_self 把内部析构/协程入口生成为 global 符号 | （待建：myp_self 编译 player/counter） |
+| BUG-043 | ⏳ | mypc 接口上转每次生成新 vtable 副本（149 vs 15 个） | （nm -S / objdump .data.rel.ro 统计 vtable 副本） |
+| BUG-044 | 🟩 | generateClassDefaultAction 漏设 current_ret_ti_ → 接口默认实现 stub 残留返回类型生成 myp_retain(i32) → LLVM verify 失败 | （待建：import mypview 包消费者编译运行） |
+| BUG-045 | 🟩 | selfhost `@parallel for` 把 float[] 参数当 i32[] 处理 → 3D Conv3D/MaxPool3D/AvgPool3D 输出全 0 | `tests/bugs/b045_parallel_float_array.myp` |
+| BUG-022 | 🟩 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
 | BUG-023 | 🟩 | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139 | 回归 `tests/@test/parallel_prop_access.myp`（静态属性数组写+读+Atomic 累加，4 断言） |
 | BUG-024 | 🟩 | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | 回归 `tests/@test/relimport_dedup.myp` |
 | BUG-025 | 🟩 | 多文件编译 `mypc a.myp b.myp` **只合并第一个文件的 imports**——合并循环漏了 imports/structs/bitfields/enums/ffis/macros/type_aliases（只合并 classes/interfaces/mappings/functions）→ 第二个文件的 `import env` 静默丢弃 → `Console` 未定义 | 回归 `tests/test_multifile.sh` |
@@ -56,6 +70,84 @@
 | BUG-055 | 🟩 | **解析器表达式/语句级递归无守卫 → 深嵌套栈溢出**（selfhost parser，v3.15.88）：`recursionDepth_` 只数 `parsePrimary`（括号 300 守卫），而**三元（`1?2:1?2:...`）、`??` 合并、右结合赋值（`a=b=c`）、一元链（`!!!!x`）、嵌套块 `{{{...}}}`、if 链（`if(1) if(1)...`）**的右嵌套递归在 parseExpr/parseAssignment/parseCoalesce/parseUnary/parseBlock/parseStatement 层（parsePrimary 之上）——不被计数 → 50000 层 SIGSEGV 栈溢出 | 负测试 `tests/negative/expr_recursion_deep.myp`（500 层三元 → `expression nested too deeply` 干净拒绝）；torture `deep/*`（48 个，编译不崩溃） |
 | BUG-056 | 🟩 | **嵌套泛型实例化 O(N³) 时间爆炸（DoS）**（selfhost sema，v3.15.89）：`Box<Box<...<int>...>>` 深度 N 时 `SymbolTable.lookup` 线性扫描（entries_ 已 N 项 × 长名比较）+ `instClassName` 递归拼名（每层 O(k²)）→ 总 O(N³)。实测 depth 800 >25s、depth 5000 不可完成；纯解析（不存在的泛型类）0.1s 平坦 → 爆炸全在 sema 实例化 | 守卫：`tryInstantiate` 顶层 `typeArgDepth` 测深，>64 单条 `generic type nested too deeply (N > 64)` 干净拒绝（合法嵌套 ≤4 层）；负测试 `tests/negative/generic_nested_deep.myp`；torture `deep/generic_*`（+8）；正向 `tests/@test/nested_generic.myp`（2/4/10 层正常编译） |
 | BUG-057 | 🟩 | **顶层函数调用结果链式成员访问回落当前类**（selfhost sema，v3.15.90）：普通顶层函数调用 `rawStep(5).get()` 只设返回 kind 不设 CallExpr 的 valueClass/resolvedClass → 成员访问回落到当前类 `class 'X' has no member 'get'`。仅带显式类型实参的泛型调用（`resultOk<int,string>(7).get()`）、类 action（`c.m().get()`）、`new` 路径设了 → 不一致。类/struct/interface 返回均受影响 | 修复：`findFuncRet` 命中且 kind 为 class/struct/interface 时用 `findFuncRetType`+`gsRetValueClass` 设 `e.setValueClass`；回归 `tests/@test/call_result_chain.myp`（6 测试/12 断言，Result/具体类/struct/interface/两层链/lambda） |
+| BUG-058 | 🟩 | 调用结果下标 `f()[i]` 元素类型丢失（BUG-057 姊妹） | `tests/@test/call_subscript_chain.myp` |
+| BUG-059 | 🟩 | 调用结果 slice 链式访问（下标/size）未解析 | `tests/@test/slice_call_chain.myp` |
+| BUG-060 | 🟩 | 表达式 try 类型检查缺失 + catch 值转换块位错 | `tests/@test/expr_try.myp` + `tests/negative/expr_try_type_mismatch.myp` |
+| BUG-061 | 🟩 | 调用结果嵌套 slice 双下标 `make2d()[i][j]` 未解析 | `tests/@test/slice_2d_chain.myp` |
+| BUG-062 | 🟩 | 泛型集合方法返回链式访问（元素/实例类型未传播） | `tests/@test/collections_chain.myp` |
+| BUG-063 | 🟩 | 调用结果成员后下标 `get().field[j]` 未解析 | `tests/@test/collections_chain.myp` |
+| BUG-064 | 🟩 | interface 转换从链式结果/struct 字段漏具体类名 → null vtable 段错误 | `tests/@test/iface_upcast_chain.myp` |
+| BUG-065 | 🟩 | interface 转换从链式结果 `.字段` 漏具体类名（BUG-064 姊妹） | `tests/@test/iface_upcast_chain.myp` |
+| BUG-066 | 🟩 | 类内未限定方法调用缺实参类型校验 → opt 崩 | `tests/negative/arg_type_mismatch.myp` |
+| BUG-067 | 🟩 | 泛型实例方法缺实参类型校验 → opt 崩 | `tests/negative/generic_arg_type_mismatch.myp` |
+| BUG-068 | 🟩 | 接口变量方法缺实参类型校验（静默错参） | `tests/negative/iface_arg_type_mismatch.myp` |
+| BUG-069 | 🟩 | 泛型 static 调用缺实参校验 → opt 崩 | `tests/negative/generic_static_arg_mismatch.myp` |
+| BUG-070 | 🟩 | bitcast 非数字操作数/源类型不匹配漏校验 → opt 崩 | `tests/negative/bitcast_numeric.myp` |
+| BUG-071 | 🟩 | 显式转换 `int(x)` 非数字操作数漏校验 → opt 崩 | `tests/negative/convert_nonnumeric.myp` |
+| BUG-072 | 🟩 | 数组/字符串下标类型漏校验 → opt 崩 | `tests/negative/subscript_type.myp` |
+| BUG-073 | 🟩 | `new T[n]` 数组大小漏校验 → opt 崩 | `tests/negative/array_size_type.myp` |
+| BUG-074 | 🟩 | 布尔上下文漏 expectBool 校验（应拒绝却接受） | `tests/negative/bool_context.myp` |
+| BUG-075 | 🟩 | 非数组基址下标漏校验 → opt 崩 | `tests/negative/subscript_nonarray.myp` |
+| BUG-076 | 🟩 | await timeout 类型漏校验（应拒绝却接受） | `tests/negative/await_timeout_type.myp` |
+| BUG-077 | 🟩 | nonlocal 目标非外层变量漏校验 → opt 崩 | `tests/negative/nonlocal_param.myp` |
+| BUG-078 | 🟩 | void 参数漏校验 → opt 崩 | `tests/negative/void_param.myp` |
+| BUG-079 | 🟩 | bitvector 移位量漏校验 → opt 崩 | `tests/negative/bitvector_shift_type.myp` |
+| BUG-080 | 🟩 | 解构目标类型不匹配漏校验 → opt 崩 | `tests/negative/destructure_type.myp` |
+| BUG-081 | 🟩 | catch 类型漏校验（应拒绝却接受） | `tests/negative/catch_type.myp` |
+| BUG-082 | 🟩 | const 属性赋值漏校验（应拒绝却接受） | `tests/negative/const_prop_assign.myp` |
+| BUG-083 | 🟩 | `@async` 非 `@coro` 上下文调用漏校验（应拒绝却接受） | `tests/negative/async_method_outside_coro.myp` |
+| BUG-084 | 🟩 | checkedAdd/checkedMul 实参类型漏校验 → opt 崩 | `tests/negative/checked_op_type.myp` |
+| BUG-085 | 🟩 | 重复变量声明漏校验（应拒绝却接受） | `tests/negative/duplicate_var.myp` |
+| BUG-086 | 🟩 | for-in 迭代不可迭代对象漏校验 → opt 崩 | `tests/negative/forin_iterable.myp` |
+| BUG-087 | 🟩 | throw 类型/裸重抛上下文漏校验 → opt 崩 | `tests/negative/throw_type.myp` + `tests/negative/throw_rethrow_outside.myp` |
+| BUG-088 | 🟩 | non-void 函数缺 return 漏校验（应拒绝却接受） | `tests/negative/missing_return.myp` + `tests/negative/bare_return.myp` |
+| BUG-089 | 🟩 | for-in 变量类型不匹配漏校验（应拒绝却接受） | `tests/negative/forin_var_type.myp` |
+| BUG-090 | 🟩 | slice 构造/成员调用参数漏校验（应拒绝却接受） | `tests/negative/slice_type_args.myp` + `tests/negative/slice_size_args.myp` |
+| BUG-091 | 🟩 | 内建实参校验缺失 → opt 崩（parse/位操作/bytes 族） | `tests/negative/parse_type.myp` + `bitop_type.myp` + `bytesof_args.myp` |
+| BUG-092 | 🟩 | pipe 目标无 transform / lhs 类型不兼容漏校验 | `tests/negative/pipe_no_transform.myp` + `tests/negative/pipe_type_mismatch.myp` |
+| BUG-093 | 🟩 | var 推断元组 / 直接调用元组成员访问缺失 | `tests/@test/tuple_var_infer.myp` |
+| BUG-094 | 🟩 | bitfield 重复名/字段漏校验（应拒绝却接受） | `tests/negative/bitfield_dup_field.myp` + `tests/negative/bitfield_dup_name.myp` |
+| BUG-095 | 🟩 | 类内重复 action/event/function/struct 方法漏校验 → opt 崩 | `tests/negative/duplicate_action.myp` + `tests/negative/duplicate_event.myp` |
+| BUG-096 | 🟩 | 重复 interface 名漏校验（应拒绝却接受） | `tests/negative/duplicate_interface.myp` |
+| BUG-097 | 🟩 | 集合类缺 get/size 或元素是数组漏校验 → opt 崩 | `tests/negative/forin_no_get.myp` + `tests/negative/forin_array_elem.myp` |
+| BUG-098 | 🟩 | `var x;` 无初始化器漏校验（应拒绝却接受） | `tests/negative/var_no_init.myp` |
+| BUG-099 | 🟩 | 嵌套解构 arity 漏校验 → opt 崩 | `tests/negative/destructure_nested_arity.myp` |
+| BUG-100 | 🟩 | 函数类型实参签名/裸函数名漏校验 → opt 崩 | `tests/negative/fntype_bare_fn.myp` + `tests/negative/fntype_var_mismatch.myp` |
+| BUG-101 | 🟩 | long→double / int↔long 构造器提升漏（拒合法代码） | `tests/@test/ctor_promotion.myp` |
+| BUG-102 | 🟩 | bitvector 比较/位运算/移位量缺同宽校验 | `tests/negative/bitvector_comp_width.myp` |
+| BUG-103 | 🟩 | 函数类型实参数量漏校验 → opt 崩 / 应拒却接受 | `tests/negative/lambda_call_argc.myp` + `tests/negative/fntype_var_call_argc.myp` |
+| BUG-104 | 🟩 | 三元分支类型不兼容漏校验 → opt 崩 | `tests/negative/ternary_branch_type.myp` |
+| BUG-105 | 🟩 | 一元 `-`/`~` 操作数类型漏校验 → opt 崩 | `tests/negative/unary_tilda_type.myp` + `tests/negative/unary_minus_type.myp` |
+| BUG-106 | 🟩 | 重复形参名漏校验 → opt 崩 | `tests/negative/dup_param_name.myp` + `tests/negative/dup_param_action.myp` |
+| BUG-107 | 🟩 | `@gpu` reduce/scan 声明式校验漏 → opt 崩 | `tests/negative/gpu_reduce_init_type.myp` |
+| BUG-108 | 🟩 | `@gpu tile grid(nb)` 块数校验漏 → opt 崩 | `tests/negative/gpu_tile_grid_type.myp` |
+| BUG-109 | 🟩 | `@gpu for/tile resident` 子句校验漏 | `tests/negative/gpu_resident_dev_type.myp` |
+| BUG-110 | 🟩 | `@gpu scatter` 区间界类型漏校验 → opt 崩 | `tests/negative/gpu_scatter_bound_type.myp` |
+| BUG-111 | 🟩 | `@gpu tile shared` 须数组类型漏校验 | `tests/negative/gpu_tile_shared_nonarray.myp` |
+| BUG-112 | 🟩 | stream/resident 仅限 `@gpu for` 归属漏校验 | `tests/negative/stream_not_gpufor.myp` |
+| BUG-113 | 🟩 | `@gpu stream(s)` 参数须 GpuStream 漏校验 | `tests/negative/gpu_stream_arg_type.myp` |
+| BUG-114 | 🟩 | `@gpu tile shared` 数组名冲突 + block&lt;dim 警告 | `tests/negative/gpu_tile_shared_dup.myp` |
+| BUG-115 | 🟩 | 枚举变体数据实参数漏校验 | `tests/negative/enum_variant_argc.myp` |
+| BUG-116 | 🟩 | tuple 变量初始化类型不匹配漏校验 → opt 崩 | `tests/negative/tuple_var_type_mismatch.myp` |
+| BUG-117 | 🟩 | tuple 返回类型不匹配漏校验 → opt 崩 | `tests/negative/tuple_ret_type_mismatch.myp` |
+| BUG-118 | 🟩 | 关系比较 `< > <= >=` 左操作数类型漏校验 → opt 崩 | `tests/negative/relop_nonnumeric_lhs.myp` |
+| BUG-119 | 🟩 | 泛型实例函数实参类型不匹配漏校验 | `tests/negative/generic_fn_arg_type.myp` |
+| BUG-120 | 🟩 | lambda 直调（正确计数）自举 codegen 无法发射 → opt 崩 | `tests/negative/lambda_direct_call.myp` |
+| BUG-121 | 🟩 | `@static` 方法内使用 this → opt 崩 | `tests/negative/this_in_static.myp` |
+| BUG-122 | 🟩 | `const` 局部变量 parser 误拒（拒合法代码） | `tests/@test/const_local_var.myp` |
+| BUG-123 | 🟩 | struct `==` 比较无 `@op("==")` → opt 崩 | `tests/negative/struct_eq_no_op.myp` |
+| BUG-124 | 🟩 | 实例化接口 `new IC()` 漏校验 | `tests/negative/new_interface.myp` |
+| BUG-125 | 🟩 | match 枚举变体绑定 arity 漏校验 | `tests/negative/match_bind_arity.myp` |
+| BUG-126 | 🟩 | nonlocal 仅 lambda body 内合法漏校验 | `tests/negative/nonlocal_outside_lambda.myp` + `tests/@test/nonlocal.myp` |
+| BUG-127 | 🟩 | `this` 仅类 action 内合法漏校验 → opt 崩 | `tests/negative/this_in_top_function.myp` |
+| BUG-128 | 🟩 | 嵌套 `@parallel for` 数据竞争（内层并行化 → 串行化） | `tests/@test/parallel_nested.myp` |
+| BUG-129 | 🟩 | 带数据枚举变体裸引用漏校验 → 垃圾数据 | `tests/negative/enum_variant_bare_data.myp` |
+| BUG-130 | 🟩 | mapping 源事件/目标 action 存在性漏校验 | `tests/negative/mapping_missing_source.myp` + `tests/negative/mapping_missing_target.myp` |
+| BUG-131 | 🟩 | 事件 `fire(...)` 实参校验漏 → opt 崩/静默缺参 | `tests/negative/event_fire_arg_type.myp` + `tests/negative/event_fire_arg_count.myp` |
+| BUG-132 | 🟩 | 事件成员访问/调用漏校验 → opt 崩 | `tests/negative/event_member_call.myp` |
+| BUG-133 | 🟩 | interface←class 转换未验实现接口 → opt 崩 | `tests/negative/iface_notimpl_assign.myp` |
+| BUG-134 | 🟩 | ffi 声明 void 形参漏校验 → opt 崩 | `tests/negative/ffi_void_param.myp` |
+| BUG-135 | 🟩 | runtime_myp @parallel 线程池丢唤醒死锁（小 n 高频微并行 ~50% 挂） | `bench/freestanding/rt_pool_test.myp`（第 5 段高频小 n 防护） |
 
 ---
 
