@@ -106,6 +106,7 @@ class GraphCompiler {
                 if (code == OpCode.BWD_SCATTER_ND()) bwdLike = 1;                          // 数据高级索引反向（P8b）
                 if (code == OpCode.BWD_BATCH_NORM()) bwdLike = 1;                          // BN scale·bias 反向（P8c）
                 if (code == OpCode.BWD_INSTANCE_NORM()) bwdLike = 1;                       // IN scale·bias 反向（P8c）
+                if (code == OpCode.BWD_BATCH_MATMUL()) bwdLike = 1;                        // 4D/batch MatMul 反向（P9）
                 if (a < 0 || (out < 0 && bwdLike == 0)) {
                     if (Console.getEnv("MYP_GR_DBG") == "1") {
                         Console.writeString("buildRuntime wire fail type=" + graph.nodeTypeAt(ni) + " in0=" + graph.nodeInAt(ni, 0) + "(" + Fmt.i(a) + ") out=" + graph.compilerEffectiveOut(ni) + "(" + Fmt.i(out) + ")");
@@ -504,6 +505,29 @@ class GraphCompiler {
                     }
                     rt.addBwdInstanceNorm(dy, xT, dx, sT, bT, ds, db, N, C, S,
                                           graph.compilerAttr(ni, NodeField.EPS_INT()), graph.compilerAttr(ni, NodeField.HAS_EPS()));
+                } else if (code == OpCode.BWD_BATCH_MATMUL()) {
+                    // P9：BwdBatchMatmul（opKind 116）：dy=nodeIn0（grad out）、A=nodeIn1、
+                    // B=nodeIn2；dA=nodeOut0（A 图输入可空）、dB=nodeOut1（B 图输入可空）。
+                    // aM/aK/bN/ab0..ob1 由 A/B/dy(out) shape 现算（同前向 batch MatMul）。
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int aT = tensorId(graph.nodeInAt(ni, 1));
+                    int bT = tensorId(graph.nodeInAt(ni, 2));
+                    int da = tensorId(graph.compilerNodeOutput(ni, 0));
+                    int db = tensorId(graph.compilerNodeOutput(ni, 1));
+                    int as2 = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
+                    int bs2 = graph.compilerShapeIdx(graph.nodeInAt(ni, 2));
+                    int ds2 = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                    int aM = 1, aK = 1, bN = 1, ab0 = 1, ab1 = 1, bb0 = 1, bb1 = 1, ob0 = 1, ob1 = 1;
+                    if (as2 >= 0) {
+                        aM = graph.compilerShapeDim(as2, 2); aK = graph.compilerShapeDim(as2, 3);
+                        ab0 = graph.compilerShapeDim(as2, 0); ab1 = graph.compilerShapeDim(as2, 1);
+                    }
+                    if (bs2 >= 0) {
+                        bN = graph.compilerShapeDim(bs2, 3);
+                        bb0 = graph.compilerShapeDim(bs2, 0); bb1 = graph.compilerShapeDim(bs2, 1);
+                    }
+                    if (ds2 >= 0) { ob0 = graph.compilerShapeDim(ds2, 0); ob1 = graph.compilerShapeDim(ds2, 1); }
+                    rt.addBwdBatchMatmul(dy, aT, bT, da, db, aM, aK, bN, ab0, ab1, bb0, bb1, ob0, ob1);
                 } else if (code == OpCode.BWD_REDUCEMM()) {
                     // B：ReduceMax/Min 反向（argmax 掩码；x=nodeIn1 供重算最值位置）
                     int dy = tensorId(graph.nodeInAt(ni, 0));

@@ -885,18 +885,33 @@ class GraphOptimizer {
                                 graph.replaceResult(bd, 0, "");
                             }
                         } else if (t == "MatMul") {
-                            // 无偏置：db 输出用 0 占位（runtime 忽略）
+                            // P9：2D MatMul → BwdDense（GEMM 反向，布局匹配）；
+                            // 4D/batch MatMul → BwdBatchMatmul（dA=dO·Bᵀ / dB=Aᵀ·dO，广播累加）。
+                            // 判据同 graph_compiler MATMUL（双方 2D 视图才走 Dense 反向）。
+                            int is3 = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                            int ws3 = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
+                            int a2d = 1;
+                            if (is3 >= 0) {
+                                if (graph.compilerShapeR5(is3) == 1) a2d = 0;
+                                if (graph.compilerShapeDim(is3, 2) > 1 || graph.compilerShapeDim(is3, 3) > 1) a2d = 0;
+                            }
+                            int b2d = 1;
+                            if (ws3 >= 0) {
+                                if (graph.compilerShapeR5(ws3) == 1) b2d = 0;
+                                if (graph.compilerShapeDim(ws3, 2) > 1 || graph.compilerShapeDim(ws3, 3) > 1) b2d = 0;
+                            }
                             int bd = graph.nodeCount();
                             graph.beginNode();
-                            graph.nodeType(bd, "BwdDense");
+                            if (a2d == 0 || b2d == 0) graph.nodeType(bd, "BwdBatchMatmul");
+                            else graph.nodeType(bd, "BwdDense");
                             graph.nodeIn(bd, 0, graph.compilerGradName(y));
                             graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
                             graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
                             graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
                             graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
-                            graph.nodeOut(bd, "");
+                            graph.nodeOut(bd, "");   // BwdDense db 占位（batch 忽略）
                             if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
-                                graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费
+                                graph.replaceResult(bd, 0, "");   // 图输入 A：dA 无上游消费
                             }
                             graph.endNode();
                         } else if (t == "Relu") {

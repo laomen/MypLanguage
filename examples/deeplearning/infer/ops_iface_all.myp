@@ -1404,6 +1404,24 @@ class BwdInstanceNormOp {
         }
 }
 
+// ---- BwdBatchMatmul（opKind 116，P9；4D/batch MatMul 反向：dA=dO·Bᵀ/dB=Aᵀ·dO，广播累加）----
+class BwdBatchMatmulOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int a = rt.opBAt(i); int b = rt.opCAt(i);
+                int da = rt.opDAt(i); int db = rt.opXAt(i, 0);
+                InferOps.bwdMatmulBcast(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(a), rt.tensorOff(b),
+                                        rt.tensorOff(da), rt.tensorOff(db),
+                                        rt.opP0At(i), rt.opP1At(i), rt.opP2At(i),
+                                        rt.opP3At(i), rt.opP4At(i), rt.opP5At(i),
+                                        rt.opP6At(i), rt.opP7At(i), rt.opP8At(i));
+            }
+        }
+}
+
 // ---- avgpool（opKind 36 前向）----
 class AvgpoolOp {
     interface class IOp;
@@ -2869,6 +2887,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerBwd(112, new BwdScatterNDOp(), 0);        // P8b：ScatterND 反向（CPU-only）
     rt.registerBwd(114, new BwdBatchnormOp(), 0);        // P8c：BN scale·bias 反向（CPU-only）
     rt.registerBwd(115, new BwdInstanceNormOp(), 0);     // P8c：IN scale·bias 反向（CPU-only）
+    rt.registerBwd(116, new BwdBatchMatmulOp(), 0);      // P9：4D/batch MatMul 反向（CPU-only）
     rt.registerFwdBwd(31, 90, new SubOp(), 0);             rt.registerFwdBwd(31, 90, new GpuSubOp(), 1);
     rt.registerFwdBwd(32, 92, new DivOp(), 0);             rt.registerFwdBwd(32, 92, new GpuDivOp(), 1);
     rt.registerFwdBwd(33, 91, new MulOp(), 0);             rt.registerFwdBwd(33, 91, new GpuMulOp(), 1);

@@ -249,6 +249,7 @@ class OpCode {
         int ROPE() { return 120; }                 // LLM 位置编码：RoPE 图算子（opKind 113；复用 rope kernel，out 独立张量）
         int BWD_BATCH_NORM() { return 121; }       // BN 反向（opKind 114）：dx=dy·scale·rstd / dscale·dbias（CPU-only 训练）
         int BWD_INSTANCE_NORM() { return 122; }    // IN 反向（opKind 115）：per-(n,c) 归一化反向 / dscale·dbias（CPU-only 训练）
+        int BWD_BATCH_MATMUL() { return 123; }     // 4D/batch MatMul 反向（opKind 116）：dA=dO·Bᵀ / dB=Aᵀ·dO（含广播累加）
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -355,6 +356,7 @@ class OpCode {
             if (t == "Rope" || t == "RoPE" || t == "RotaryPosEmbed") return OpCode.ROPE();
             if (t == "BwdBatchNorm") return OpCode.BWD_BATCH_NORM();
             if (t == "BwdInstanceNorm") return OpCode.BWD_INSTANCE_NORM();
+            if (t == "BwdBatchMatmul") return OpCode.BWD_BATCH_MATMUL();
             return OpCode.UNKNOWN();
         }
         // 节点保护 trait：非 0 表示受 DCE 保护。1=stateful（就地改权重/累加），
@@ -379,6 +381,7 @@ class OpCode {
             if (code == OpCode.BWD_SCATTER_ND()) return 2;                             // ScatterND 反向（训练专用）
             if (code == OpCode.BWD_BATCH_NORM()) return 2;                             // BN scale·bias 反向（训练专用）
             if (code == OpCode.BWD_INSTANCE_NORM()) return 2;                          // IN scale·bias 反向（训练专用）
+            if (code == OpCode.BWD_BATCH_MATMUL()) return 2;                           // 4D/batch MatMul 反向（训练专用）
             return 0;
         }
 }

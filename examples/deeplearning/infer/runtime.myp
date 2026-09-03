@@ -835,6 +835,22 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
 
+        // BwdBatchMatmul（opKind 116，CPU-only 训练；4D/batch MatMul 反向，广播累加）。
+        // dO=opA、A=opB、B=opC、dA=opD、dB=opX0（可 -1）；aM/aK/bN/ab0..ob1 同前向在 opP0-8。
+        // dA[ab_,m,k]+=Σ dO·B、dB[bb_,k,n]+=Σ A·dO；广播维共享 → 累加（先清零一次）。
+        void addBwdBatchMatmul(int dT, int aT, int bT, int daT, int dbT,
+                               int aM, int aK, int bN,
+                               int ab0, int ab1, int bb0, int bb1, int ob0, int ob1) {
+            int id = opCount_;
+            opKind_[id] = 116;
+            opA_[id] = dT; opB_[id] = aT; opC_[id] = bT; opD_[id] = daT;
+            opX_[id * 4 + 0] = dbT;
+            opP0_[id] = aM; opP1_[id] = aK; opP2_[id] = bN;
+            opP3_[id] = ab0; opP4_[id] = ab1; opP5_[id] = bb0; opP6_[id] = bb1;
+            opP7_[id] = ob0; opP8_[id] = ob1;
+            opCount_ = opCount_ + 1;
+        }
+
         void addConv(int inTid, int wTid, int bTid, int outTid,
                      int strideH, int strideW, int padT, int padB, int padL, int padR,
                      int dilH, int dilW, int group) {

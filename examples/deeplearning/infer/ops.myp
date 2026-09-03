@@ -87,6 +87,57 @@ class InferOps {
             }
         }
 
+        // P9：BwdBatchMatMul（CPU-only 训练）。O[b0,b1]=A[b0,b1]·B[b0,b1]（batch 维广播）→
+        //   dA[ab0_,ab1_,m,k] += Σ_{b0,b1,n} dO[b0,b1,m,n]·B[bb0_,bb1_,k,n]
+        //   dB[bb0_,bb1_,k,n] += Σ_{b0,b1,m} A[ab0_,ab1_,m,k]·dO[b0,b1,m,n]
+        // 广播：ab*=1 时同一 A 被多个输出 batch 共享 → dA 累加（先清零一次）。da/db 可为 -1。
+        void bwdMatmulBcast(float[] arena, int dOff, int aOff, int bOff,
+                            int daOff, int dbOff,
+                            int aM, int aK, int bN,
+                            int ab0, int ab1, int bb0, int bb1, int ob0, int ob1) {
+            if (daOff >= 0) {
+                int t = ab0 * ab1 * aM * aK;
+                int i = 0;
+                while (i < t) { arena[daOff + i] = float(0.0); i = i + 1; }
+            }
+            if (dbOff >= 0) {
+                int t = bb0 * bb1 * aK * bN;
+                int i = 0;
+                while (i < t) { arena[dbOff + i] = float(0.0); i = i + 1; }
+            }
+            int bo0 = 0;
+            while (bo0 < ob0) {
+                int bo1 = 0;
+                while (bo1 < ob1) {
+                    int ab0_ = (ab0 == 1) ? 0 : (bo0 % ab0);
+                    int ab1_ = (ab1 == 1) ? 0 : (bo1 % ab1);
+                    int bb0_ = (bb0 == 1) ? 0 : (bo0 % bb0);
+                    int bb1_ = (bb1 == 1) ? 0 : (bo1 % bb1);
+                    int aBatch = ((ab0_ * ab1 + ab1_) * aM) * aK;
+                    int bBatch = ((bb0_ * bb1 + bb1_) * aK) * bN;
+                    int oBatch = ((bo0 * ob1 + bo1) * aM) * bN;
+                    int m = 0;
+                    while (m < aM) {
+                        int n = 0;
+                        while (n < bN) {
+                            double dyv = arena[dOff + oBatch + m * bN + n];
+                            int k = 0;
+                            while (k < aK) {
+                                double bv = arena[bOff + bBatch + k * bN + n];
+                                if (daOff >= 0) arena[daOff + aBatch + m * aK + k] = arena[daOff + aBatch + m * aK + k] + float(dyv * bv);
+                                if (dbOff >= 0) arena[dbOff + bBatch + k * bN + n] = arena[dbOff + bBatch + k * bN + n] + float(arena[aOff + aBatch + m * aK + k] * dyv);
+                                k = k + 1;
+                            }
+                            n = n + 1;
+                        }
+                        m = m + 1;
+                    }
+                    bo1 = bo1 + 1;
+                }
+                bo0 = bo0 + 1;
+            }
+        }
+
         void relu(float[] arena, int inOff, int outOff, int n) {
             int i = 0;
             while (i < n) {
