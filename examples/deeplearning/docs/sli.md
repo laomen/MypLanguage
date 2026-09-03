@@ -130,8 +130,9 @@ while (step < N) {
   降（回归 `json_train_submul_main`：sub/mul/add 三网 200 步 loss 显著降）。**CNN 也
   可训**（`cnn_train.json`/`json_cnn_train_main`：Conv→Relu→MaxPool→Flatten→FC→
   Softmax，200 步 loss 1.01→0.14；`gap_cnn.json`/`json_gap_cnn_train_main`：
-  Conv→Relu→GlobalAveragePool→FC，200 步 loss 1.06→0.90——Conv/MaxPool/GAP/Flatten
-  反向全链可用，4D 经 Flatten 回 2D 接 FC+softmaxCE）。fan-out
+  Conv→Relu→GlobalAveragePool→FC，200 步 loss 1.06→0.90；`avgpool_cnn.json`/
+  `json_avgpool_cnn_train_main`：Conv→Relu→AveragePool→FC，200 步 loss 1.04→0.43——
+  Conv/MaxPool/AvgPool/GAP/Flatten 反向全链可用，4D 经 Flatten 回 2D 接 FC+softmaxCE）。fan-out
   到多个训练反向 op 的中间层梯度累加仍在 5c(BwdConcat) 覆盖内（见 CHANGELOG）。
 - **优化器/累积/AMP**：`setGradAccumEvery(K)` micro-batch 累积；`setAmpSim(1)` fp16
   梯度舍入模拟。GPU 训练当前 CPU-only（runTrain）。
