@@ -72,7 +72,8 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   用多输入槽 `in2/in3/in4`（`Add`/`Sub`/`Div`/`Mul`/`MatMul` 二元、`Concat` 多输入）。
 - **op 集**：单输入 `Relu`/`Sigmoid`/`Softmax(axis)`/`LogSoftmax(axis)`/
   `GlobalAveragePool`/`Flatten(axis)`；二元 `Add`/`Sub`/`Div`/`Mul`/`MatMul`；多输入
-  `Concat(in/in2/in3, axis)`；权重型 `Gemm`/`Conv`/`ConvTranspose`/`MatMul(可选 W)`；
+  多输入 `Concat(in/in2/in3, axis)`；三输入 `Where(in/in2/in3)`；单输入 `Sqrt`/`Dropout`
+  （推理恒等）；权重型 `Gemm`/`Conv`/`ConvTranspose`/`MatMul(可选 W)`；
   池化 `MaxPool`/`AveragePool`(kernel/strides/pads)；**参数化（int64 常量）**
   `Reshape(shape)`、`Gather(indices,axis)`、`Expand(shape)`、`Tile(repeats)`、
   `Slice(starts,ends[,axes][,steps])`、`Pad(pads[,mode])`（pads 8 值

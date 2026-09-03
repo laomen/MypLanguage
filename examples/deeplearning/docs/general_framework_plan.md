@@ -721,6 +721,10 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   （mode/redType 经 compilerSetNRedMode/Type 复制——存 graph nRedMode_/nRedType_
   per-node 数组）。bwd_reduce_main 四组 dx 手算精确。测试数 79。剩余：
   ReduceMax/Min（argmax）、Gather（scatter）、Slice/Pad。
+- **B 组 ReduceMax/Min + Pad 反向 + C 组 Where/Sqrt/Dropout JSON（完成，2026-09）**：
+  BwdReduceMM（argmax 掩码需 x）+ BwdPad（constant 去边取中心）+ Where JSON 分派
+  （3 输入）+ Sqrt/Dropout 单输入测试固化。测试数 92。留待（低 ROI）：Slice 反向、
+  Split 多输出、BN/InstanceNorm/Resize JSON。
 - **AvgPool2D 反向接通（完成，2026-09）**：发现 buildReverseGraph AveragePool→BwdAvgPool
   分支早已存在但 opCode/runtime/register 未接（静默断）。补 OpCode 93 + runtime
   opKind 99 + bwdAvgPool2D kernel + AvgpoolOp.backward + registerFwdBwd(36→99) +

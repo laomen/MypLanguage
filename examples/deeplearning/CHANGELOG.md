@@ -6,6 +6,30 @@
 
 ---
 
+## 2026-09 — B 组训练反向（ReduceMax/Min argmax + Pad constant）+ C 组 JSON（Where/Sqrt/Dropout）
+
+- **B：ReduceMax/Min 反向（argmax 掩码，BwdReduceMM）**：归约 max/min 反向需把每组
+  dy 赋给该组 argmax 位置（其余 0）——**需 x 值重算**最值位置（mode0 全组 / mode1
+  per-(n,c) 段；并列取首个）。OpCode `BWD_REDUCEMM(94)` + runtime opKind 100
+  （A=dy B=x C=dx）+ ops `bwdReduceMM` kernel + BwdReduceMMOp + registerBwd(100) +
+  graph_compiler wiring + buildReverseGraph ReduceMax/Min 分支。
+- **B：Pad(constant) 反向（去边取中心，BwdPad）**：constant pad 的 x 每元素唯一对应
+  y 位置（offset 每轴=begin）→ dx = dy 中心区直接赋值（无需累加/清零）。reflect/edge
+  需镜像累加未实现——buildReverseGraph Pad 仅 PADMODE==0 产 BwdPad。OpCode
+  `BWD_PAD(95)` + runtime opKind 101 + ops `bwdPadConst` kernel + BwdPadOp +
+  registerBwd(101) + graph_compiler wiring + buildReverseGraph Pad 分支（begin/end
+  复制自 fwd 折叠 attr 组 3/4）。
+- **C：Where JSON 分派**（3 输入 cond?x:y：in=cond in2=x in3=y）——之前 Where 只
+  ONNX 支持；**Sqrt/Dropout 单输入无属性默认分派本就可用**（本轮测试固化；Dropout
+  无 ratio 推理恒等）。
+- 测试：`bwd_reduce_mm_main.myp`（max/min × mode0/1 四组 argmax 对拍）+ `bwd_pad_main.myp`
+  （dx=dy 中心）+ `where.json/json_where_main` + `sqrt.json/json_sqrt_main` +
+  `dropout.json/json_dropout_main`（CPU+GPU）。全量回归 pass=92 fail=0。
+- **留待（低 ROI）**：Slice 反向（多轴负步长 scatter）、Split 多输出 JSON、
+  BN/InstanceNorm/Resize JSON（JSON 少用中间 op）。
+
+---
+
 ## 2026-09 — AvgPool2D 反向接通（2D 池化训练反向全覆盖：MaxPool/AvgPool/GAP）
 
 - **背景**：2D AveragePool 无训练反向（此前 CNN 训练用 MaxPool/GAP 避过）。补全链路：
