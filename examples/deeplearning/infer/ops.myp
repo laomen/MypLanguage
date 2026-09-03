@@ -3965,6 +3965,34 @@ class InferOps {
                 seg = seg + 1;
             }
         }
+
+        // P9c：BwdBatchNormNHWC（NHWC 布局 opKind 18 的反向，CPU-only）。
+        // NHWC：元素 (n,spatial,c) flat = spatial*C + c（spatial=(n*H+h)*W+w ∈ [0,N*S)）。
+        // dx=dy·scale·rstd；dscale[c]=Σ dy·(x-mean)·rstd、dbias[c]=Σ dy（rstd=1/sqrt(var+eps)）。
+        void bwdBatchnormNHWC(float[] arena, int dyOff, int xOff, int dxOff,
+                              int sOff, int bOff, int mOff, int vOff,
+                              int dsOff, int dbOff,
+                              int N, int C, int S, double eps) {
+            if (dsOff >= 0) { int c = 0; while (c < C) { arena[dsOff + c] = float(0.0); c = c + 1; } }
+            if (dbOff >= 0) { int c = 0; while (c < C) { arena[dbOff + c] = float(0.0); c = c + 1; } }
+            int sp = 0;
+            while (sp < N * S) {
+                int c = 0;
+                while (c < C) {
+                    int idx = sp * C + c;
+                    double scale = arena[sOff + c];
+                    double mean = arena[mOff + c];
+                    double variance = arena[vOff + c];
+                    double rstd = 1.0 / Math.sqrt(variance + eps);
+                    double dyv = arena[dyOff + idx];
+                    if (dxOff >= 0) arena[dxOff + idx] = float(dyv * scale * rstd);
+                    if (dsOff >= 0) arena[dsOff + c] = arena[dsOff + c] + float(dyv * (arena[xOff + idx] - mean) * rstd);
+                    if (dbOff >= 0) arena[dbOff + c] = arena[dbOff + c] + float(dyv);
+                    c = c + 1;
+                }
+                sp = sp + 1;
+            }
+        }
         // P8c：BwdInstanceNorm（per-(n,c) 归一化反向，CPU-only 训练）。
         // 重算每段 mean/var、rstd=1/sqrt(var+eps)；xhat=(x-mean)·rstd；标准公式（段内均值
         // md=mean(dy)、mdx=mean(dy·xhat)）：

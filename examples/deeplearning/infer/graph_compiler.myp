@@ -463,6 +463,7 @@ class GraphCompiler {
                     if (Str.len(dyn) >= 2) yname = Str.substring(dyn, 0, Str.len(dyn) - 2);   // 去 "#g"
                     int xT = -1, sT = -1, bT = -1, mT = -1, vT = -1;
                     int xshape = -1;
+                    int fwdNhwc = 0;
                     int j = 0;
                     while (j < graph.nodeCount()) {
                         if (graph.nodeTypeAt(j) == "BatchNormalization" && graph.compilerNodeOutput(j, 0) == yname) {
@@ -472,6 +473,7 @@ class GraphCompiler {
                             mT = tensorId(graph.nodeInAt(j, 3));
                             vT = tensorId(graph.nodeInAt(j, 4));
                             xshape = graph.compilerShapeIdx(graph.nodeInAt(j, 0));
+                            fwdNhwc = graph.compilerAttrNhwc(j);
                             j = graph.nodeCount();
                         }
                         j = j + 1;
@@ -483,8 +485,14 @@ class GraphCompiler {
                         S = graph.compilerShapeDim(xshape, 2) * graph.compilerShapeDim(xshape, 3);
                         if (graph.compilerShapeR5(xshape) == 1) S = S * graph.compilerShapeDim(xshape, 4);
                     }
-                    rt.addBwdBatchNorm(dy, xT, dx, sT, bT, mT, vT, ds, db, N, C, S,
-                                       graph.compilerAttr(ni, NodeField.EPS_INT()), graph.compilerAttr(ni, NodeField.HAS_EPS()));
+                    if (fwdNhwc == 1) {
+                        // NHWC 布局：x 通道在最后 → N/C 与 spatial 由 shape 给，kernel NHWC 索引
+                        rt.addBwdBatchNormNHWC(dy, xT, dx, sT, bT, mT, vT, ds, db, N, C, S,
+                                               graph.compilerAttr(ni, NodeField.EPS_INT()), graph.compilerAttr(ni, NodeField.HAS_EPS()));
+                    } else {
+                        rt.addBwdBatchNorm(dy, xT, dx, sT, bT, mT, vT, ds, db, N, C, S,
+                                           graph.compilerAttr(ni, NodeField.EPS_INT()), graph.compilerAttr(ni, NodeField.HAS_EPS()));
+                    }
                 } else if (code == OpCode.BWD_INSTANCE_NORM()) {
                     // P8c：BwdInstanceNorm（opKind 115）：dy=nodeIn0、x=nodeIn1、scale=nodeIn2、
                     // bias=nodeIn3；dx=nodeOut0（可为空）、dscale=nodeOut1、dbias=nodeOut2。

@@ -1,0 +1,43 @@
+// json_scatter_nd_2d_main.myp — 自然 2D ScatterND（k=2 全秩 → 单元素 scatter）回归：
+// d=[[1,2,3],[4,5,6]]、idx=[[0,1],[1,2]]（q=2 行）、upd=[50,60] → o=[[1,50,3],[4,5,60]]
+// flat=[1,50,3,4,5,60]。数据/索引均自然序；d0..d4=(2,3,1,1,1)、k=2、block=1。
+// 探针已证 2D scatter 正确，本用例固化为回归（CPU+GPU）。
+import env;
+import fmt;
+import dl;
+class JsonScatter2dApp {
+    action:
+        @constructor JsonScatter2dApp() {
+            Session s = new Session();
+            int ok = s.loadJson("./deeplearning/infer_tests/scatter_nd_2d.json");
+            if (ok == 0) { Console.writeLine("SCATTER_ND 2D SKIP (no load)"); return; }
+            double[] d = new double[6];
+            int i = 0;
+            while (i < 6) { d[i] = double(i + 1); i = i + 1; }
+            s.setInput("d", d, 6);
+            double[] idx = new double[4];
+            idx[0]=0.0; idx[1]=1.0; idx[2]=1.0; idx[3]=2.0;
+            s.setInput("idx", idx, 4);
+            double[] upd = new double[2];
+            upd[0]=50.0; upd[1]=60.0;
+            s.setInput("upd", upd, 2);
+            int rk = s.runAuto();
+            double[] o = s.getOutput("o");
+            double[] eo = new double[6];
+            eo[0]=1.0; eo[1]=50.0; eo[2]=3.0; eo[3]=4.0; eo[4]=5.0; eo[5]=60.0;
+            int bad = 0;
+            i = 0;
+            while (i < 6) {
+                double dd = o[i]-eo[i]; if (dd<0.0) dd=0.0-dd; if (dd>1.0e-4) bad=bad+1;
+                i = i + 1;
+            }
+            Console.writeString("run="); Console.writeLong(rk);
+            Console.writeString(" bad="); Console.writeLong(bad);
+            Console.writeString(" o0="); Console.writeFloat(o[0]);
+            Console.writeString(" o5="); Console.writeFloat(o[5]);
+            Console.writeLine("");
+            if (ok==1 && rk==1 && bad==0) Console.writeLine("SCATTER_ND 2D OK");
+            else Console.writeLine("SCATTER_ND 2D MISMATCH");
+        }
+}
+int main() { JsonScatter2dApp a = new JsonScatter2dApp(); return 0; }

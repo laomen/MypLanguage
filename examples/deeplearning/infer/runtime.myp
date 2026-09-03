@@ -1524,6 +1524,20 @@ class InferenceRuntime {
             opX_[id * 4 + 0] = N; opX_[id * 4 + 1] = C; opX_[id * 4 + 2] = S;
             opCount_ = opCount_ + 1;
         }
+        // BwdBatchNormNHWC（opKind 117，CPU-only；NHWC 布局 opKind 18 反向）。
+        // 槽位同 addBwdBatchNorm（dy=opA、x=opB、dx=opC、scale=opD；P0=b、P1=m、P2=v、
+        // P3=ds、P4=db、P5=epsBits、P6=hasEps）；N=opX0、C=opX1、S=opX2（spatial=H·W）。
+        void addBwdBatchNormNHWC(int dyT, int xT, int dxT, int sT, int bT, int mT, int vT,
+                                 int dsT, int dbT, int N, int C, int S, int epsBits, int hasEps) {
+            int id = opCount_;
+            opKind_[id] = 117;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT; opD_[id] = sT;
+            opP0_[id] = bT; opP1_[id] = mT; opP2_[id] = vT;
+            opP3_[id] = dsT; opP4_[id] = dbT;
+            opP5_[id] = epsBits; opP6_[id] = hasEps;
+            opX_[id * 4 + 0] = N; opX_[id * 4 + 1] = C; opX_[id * 4 + 2] = S;
+            opCount_ = opCount_ + 1;
+        }
         // BwdInstanceNorm（opKind 115，CPU-only 训练；per-(n,c) 空间归一化反向）。
         // 重算每 (n,c) 段 mean/var → xhat=(x-mean)·rstd；标准公式：
         //   dx=rstd·scale·(dy - mean(dy) - xhat·mean(dy·xhat))（段内均值），

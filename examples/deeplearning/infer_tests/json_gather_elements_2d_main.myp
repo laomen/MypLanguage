@@ -1,0 +1,39 @@
+// json_gather_elements_2d_main.myp — 自然 2D GatherElements（axis=1）回归护栏：
+// x[[1..6]] 行=[1,2,3]/[4,5,6]、ix=[[2,0,1],[0,2,1]] → y=[[3,1,2],[4,6,5]]。
+// 输入 x 为 2D 图输入 → CNN_ACT 自然布局（数据与索引均自然序，无需 axis 平移）。
+// 探针已证自然 2D 正确，本用例固化为回归（CPU+GPU）。
+import env;
+import fmt;
+import dl;
+class JsonGe2dApp {
+    action:
+        @constructor JsonGe2dApp() {
+            Session s = new Session();
+            int ok = s.loadJson("./deeplearning/infer_tests/gather_elements_2d.json");
+            if (ok == 0) { Console.writeLine("GATHER_ELEMENTS 2D SKIP (no load)"); return; }
+            double[] x = new double[6];
+            x[0]=1.0; x[1]=2.0; x[2]=3.0; x[3]=4.0; x[4]=5.0; x[5]=6.0;
+            s.setInput("x", x, 6);
+            double[] ix = new double[6];
+            ix[0]=2.0; ix[1]=0.0; ix[2]=1.0; ix[3]=0.0; ix[4]=2.0; ix[5]=1.0;
+            s.setInput("ix", ix, 6);
+            int rk = s.runAuto();
+            double[] y = s.getOutput("y");
+            double[] ey = new double[6];
+            ey[0]=3.0; ey[1]=1.0; ey[2]=2.0; ey[3]=4.0; ey[4]=6.0; ey[5]=5.0;
+            int bad = 0;
+            int i = 0;
+            while (i < 6) {
+                double d = y[i]-ey[i]; if (d<0.0) d=0.0-d; if (d>1.0e-4) bad=bad+1;
+                i = i + 1;
+            }
+            Console.writeString("run="); Console.writeLong(rk);
+            Console.writeString(" bad="); Console.writeLong(bad);
+            Console.writeString(" y0="); Console.writeFloat(y[0]);
+            Console.writeString(" y5="); Console.writeFloat(y[5]);
+            Console.writeLine("");
+            if (ok==1 && rk==1 && bad==0) Console.writeLine("GATHER_ELEMENTS 2D OK");
+            else Console.writeLine("GATHER_ELEMENTS 2D MISMATCH");
+        }
+}
+int main() { JsonGe2dApp a = new JsonGe2dApp(); return 0; }

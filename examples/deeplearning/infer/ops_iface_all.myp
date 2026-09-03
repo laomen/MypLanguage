@@ -1386,6 +1386,26 @@ class BwdBatchnormOp {
         }
 }
 
+// ---- BwdBatchNormNHWC（opKind 117，P9c；NHWC 布局 BN 反向 / dscale·dbias）----
+class BwdBatchNormNhwcOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i); int s = rt.opDAt(i);
+                int b = rt.opP0At(i); int m = rt.opP1At(i); int v = rt.opP2At(i);
+                int ds = rt.opP3At(i); int db = rt.opP4At(i);
+                double eps = 1.0e-5;
+                if (rt.opP6At(i) == 1) eps = F32.toDouble(rt.opP5At(i));
+                InferOps.bwdBatchnormNHWC(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx),
+                                          rt.tensorOff(s), rt.tensorOff(b), rt.tensorOff(m), rt.tensorOff(v),
+                                          rt.tensorOff(ds), rt.tensorOff(db),
+                                          rt.opXAt(i, 0), rt.opXAt(i, 1), rt.opXAt(i, 2), eps);
+            }
+        }
+}
+
 // ---- BwdInstanceNorm（opKind 115，P8c；per-(n,c) 归一化反向 / dscale·dbias）----
 class BwdInstanceNormOp {
     interface class IOp;
@@ -2801,6 +2821,44 @@ class BwdScatterNDOp {
         }
 }
 
+// ---- BwdGatherElements（GPU，opKind 111 反向，P9b）：thread-per-dx-slot 扫描累加（无原子）----
+class GpuBwdGatherElementsOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int it = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                GpuInferOps.bwdGatherElements(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(it), rt.tensorOff(dx),
+                                              rt.tensorRows(dy) * rt.tensorCols(dy),
+                                              rt.tensorRows(dx) * rt.tensorCols(dx),
+                                              rt.opP1At(i), rt.opP2At(i), rt.opP3At(i));
+            }
+        }
+}
+
+// ---- BwdScatterND（GPU，opKind 112 反向，P9b）：dx=dy 拷贝 + 写位置清零 / du gather----
+class GpuBwdScatterNDOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int it = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                int du = rt.opDAt(i);
+                if (dx < 0) return;
+                GpuInferOps.bwdScatterND(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(it), rt.tensorOff(dx),
+                                         rt.tensorOff(du), rt.opP5At(i), rt.opP6At(i),
+                                         rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i));
+            }
+        }
+}
+
 // ---- concat 反向（opKind 72；5D U-Net 跳跃连接，CPU）----
 // 反向图生成独立 BwdConcat 节点（dy → dx0/dx1/dx2），前向 ConcatOp(25) 的
 // backward 保持空（concat 前向节点不承载反向）。
@@ -2885,9 +2943,12 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerBwd(101, new BwdPadOp(), 0);
     rt.registerBwd(111, new BwdGatherElementsOp(), 0);   // P8b：GatherElements 反向（CPU-only）
     rt.registerBwd(112, new BwdScatterNDOp(), 0);        // P8b：ScatterND 反向（CPU-only）
+    rt.registerBwd(111, new GpuBwdGatherElementsOp(), 1); // P9b：GatherElements 反向（GPU）
+    rt.registerBwd(112, new GpuBwdScatterNDOp(), 1);     // P9b：ScatterND 反向（GPU）
     rt.registerBwd(114, new BwdBatchnormOp(), 0);        // P8c：BN scale·bias 反向（CPU-only）
     rt.registerBwd(115, new BwdInstanceNormOp(), 0);     // P8c：IN scale·bias 反向（CPU-only）
     rt.registerBwd(116, new BwdBatchMatmulOp(), 0);      // P9：4D/batch MatMul 反向（CPU-only）
+    rt.registerBwd(117, new BwdBatchNormNhwcOp(), 0);     // P9c：BN NHWC 布局反向（CPU-only）
     rt.registerFwdBwd(31, 90, new SubOp(), 0);             rt.registerFwdBwd(31, 90, new GpuSubOp(), 1);
     rt.registerFwdBwd(32, 92, new DivOp(), 0);             rt.registerFwdBwd(32, 92, new GpuDivOp(), 1);
     rt.registerFwdBwd(33, 91, new MulOp(), 0);             rt.registerFwdBwd(33, 91, new GpuMulOp(), 1);

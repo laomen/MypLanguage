@@ -1,0 +1,64 @@
+// gpu_bwd_gather_elements_main.myp — P9b：GatherElements 反向 GPU 直连数值对拍
+// （rt.runGpu() 分派 bwdGpu；dx 无 float 原子 → thread-per-dx-slot 扫描累加，重复 idx 也确定）。
+//   组1 axis=3（W 轴，inner=1 dataAxis=4 outAxis=4）：data/out[1,2,1,4] 8 元素。
+//     idx c0=[0,0,1,1]（重复→累加）、c1=[2,3,2,3]；dy=[1..8]
+//     → dx pos0=dy0+dy1=3、pos1=dy2+dy3=7、pos6=dy4+dy6=12、pos7=dy5+dy7=14，
+//       其余 0 → [3,7,0,0, 0,0,12,14]。
+//   组2 axis=1（C 轴，inner=4 dataAxis=2 outAxis=2）：idx c0 全 1 / c1 全 0（交换通道）
+//     dy=[10,11,12,13, 20,21,22,23] → dx = 通道交换收集 → [20,21,22,23, 10,11,12,13]。
+// 全部 PASS → GPU BWD GATHER_ELEMENTS OK。
+import env;
+import fmt;
+import "../infer/runtime.myp";
+
+class BwdGatherElementsApp {
+    action:
+        double absd(double v) { if (v < 0.0) return 0.0 - v; return v; }
+        @constructor BwdGatherElementsApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(2048);
+            rt.setTrain(1);
+            // 组1：axis=3 W 轴（重复 idx → scatter-add）
+            int dx1 = rt.addTensor4(1, 2, 1, 4);
+            int dy1 = rt.addTensor4(1, 2, 1, 4);
+            int i1 = rt.addTensor(8, 1);
+            int k1 = 0;
+            int[] iv1 = new int[8];
+            iv1[0]=0; iv1[1]=0; iv1[2]=1; iv1[3]=1;
+            iv1[4]=2; iv1[5]=3; iv1[6]=2; iv1[7]=3;
+            while (k1 < 8) { rt.setFlat(i1, k1, double(iv1[k1])); rt.setFlat(dy1, k1, double(k1 + 1)); k1 = k1 + 1; }
+            rt.addBwdGatherElements(dy1, i1, dx1, 3, 1, 4, 4);
+            // 组2：axis=1 C 轴（交换通道）
+            int dx2 = rt.addTensor4(1, 2, 1, 4);
+            int dy2 = rt.addTensor4(1, 2, 1, 4);
+            int i2 = rt.addTensor(8, 1);
+            int k2 = 0;
+            int[] iv2 = new int[8];
+            iv2[0]=1; iv2[1]=1; iv2[2]=1; iv2[3]=1;
+            iv2[4]=0; iv2[5]=0; iv2[6]=0; iv2[7]=0;
+            while (k2 < 8) {
+                double vv = double(10 + k2);
+                if (k2 >= 4) vv = double(20 + (k2 - 4));
+                rt.setFlat(i2, k2, double(iv2[k2])); rt.setFlat(dy2, k2, vv); k2 = k2 + 1;
+            }
+            rt.addBwdGatherElements(dy2, i2, dx2, 1, 4, 2, 2);
+            rt.runGpu();
+            int bad = 0;
+            double[] e1 = new double[8];
+            e1[0]=3.0; e1[1]=7.0; e1[2]=0.0; e1[3]=0.0;
+            e1[4]=0.0; e1[5]=0.0; e1[6]=12.0; e1[7]=14.0;
+            int i = 0;
+            while (i < 8) { if (absd(rt.getFlat(dx1, i) - e1[i]) > 1.0e-3) bad = bad + 1; i = i + 1; }
+            double[] e2 = new double[8];
+            e2[0]=20.0; e2[1]=21.0; e2[2]=22.0; e2[3]=23.0;
+            e2[4]=10.0; e2[5]=11.0; e2[6]=12.0; e2[7]=13.0;
+            i = 0;
+            while (i < 8) { if (absd(rt.getFlat(dx2, i) - e2[i]) > 1.0e-3) bad = bad + 1; i = i + 1; }
+            Console.writeString("bwd gather_elements bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            if (bad == 0) Console.writeLine("GPU BWD GATHER_ELEMENTS OK");
+            else Console.writeLine("GPU BWD GATHER_ELEMENTS MISMATCH");
+        }
+}
+int main() { BwdGatherElementsApp app = new BwdGatherElementsApp(); return 0; }

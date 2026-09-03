@@ -1,0 +1,9 @@
+{ "name":"g2",
+  "inputs":[
+    {"name":"x","dims":[2,3]},
+    {"name":"ix","dims":[2,3]}
+  ],
+  "outputs":["y"],
+  "layers":[
+    { "op":"GatherElements","in":"x","in2":"ix","out":"y","axis":1}
+  ]}
