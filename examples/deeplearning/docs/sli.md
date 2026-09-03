@@ -161,7 +161,9 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
 - **训练**：`loadJsonTrain` 自动补 label/loss + 反向图（Gemm/MatMul/Conv/Relu/
   Sigmoid/SoftmaxCE/Add/Sub/Mul/Div/Pool/Concat + Reshape/Flatten/Squeeze/
   Transpose/Expand/Tile/ReduceSum/ReduceMean/Gather 反向——纯数据重排/广播/归约/
-  收集 op 现可出现在 loss 路径）。
+  收集 op 现可出现在 loss 路径；**4D/batch MatMul 反向 P9**：2D MatMul 走 BwdDense、
+  4D batch（广播）走 BwdBatchMatmul——`batch_matmul_train.json` Conv→batch MatMul→MSE
+  收敛验证）。
 
 ## 4. 训练
 

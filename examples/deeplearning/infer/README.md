@@ -14,7 +14,7 @@ Python / onnxruntime。
 CNN（Conv/Conv3D/1x1/Pool/GAP/BN/IN/LayerNorm/Resize/Pad…）、FC（Gemm/MatMul/BatchMatMul/
 cuBLAS）、张量变换（Transpose/Slice/Concat/Split/Reshape/Expand/Where/Tile/Squeeze/Gather/Reduce 族/LogSoftmax/Softmax/CE…）、**索引/数据高级索引**（ArgMax/ArgMin/TopK/OneHot/**GatherElements/ScatterND**，含 P8b 反向梯度训练）、3D（Conv3D/Pool3D/Pad3D/Resize3D/ConvTranspose3D）、**激活全族**
 （Relu/Sigmoid/ReLU6/LeakyRelu/SiLU/HardSwish/Clip/Softmax/LogSoftmax）、LLM（RmsNorm/LayerNorm/
-GELU/**Rope** 位置编码）、训练反向算子（含 **BN/IN scale·bias 梯度**）、Dropout 推理/训练语义。真实模型：**ResNet18/ResNet50**
+GELU/**Rope** 位置编码）、训练反向算子（含 **BN/IN scale·bias 梯度** 与 **4D/batch MatMul 反向**）、Dropout 推理/训练语义。真实模型：**ResNet18/ResNet50**
 （vs ORT 数值一致）、**3D U-Net**
 （coarse/fine）、动态 batch、多输入/多输出/可选输入、FP16/BF16 权重、量化前全精度。
 
@@ -69,7 +69,7 @@ infer/
 ├── tensor.myp / graph_node_attrs.myp / graph_nodes.myp
 ├── tools/             # make_*_onnx.py 合成模型 + ORT 参考；onnxvenv
 ../dl/dl.myp           # import dl 包入口（薄转发 framework.myp 的 Session）
-../infer_tests/        # 端到端回归（128 个 *_main.myp，见 infer_tests/README.md）
+../infer_tests/        # 端到端回归（130 个 *_main.myp，见 infer_tests/README.md）
 ../train ../llm ../diffusion   # 相邻分项目（3D 训练 / Qwen2+distilgpt2 / SD1.5）
 ```
 
@@ -80,7 +80,7 @@ infer/
 cd examples && MYP_GPU=1 MYP_IR_VERIFY=1 /tmp/app     # 数据路径相对 examples/
 # 全量回归（CPU+GPU，自动发现 infer_tests/*_main.myp）：
 # 全量回归（CPU+GPU，自动发现 infer_tests/*_main.myp；并行 编译 P4 + 运行 P6）：
-bash examples/deeplearning/infer_tests/run_all.sh    # → == pass=128 fail=0 =（~4min）
+bash examples/deeplearning/infer_tests/run_all.sh    # → == pass=130 fail=0 =（~4min）
 # 旧串行等价：bash /tmp/run_infer_tests.sh（不再建议）
 # 关键环境变量：MYP_GPU=1 GPU / MYP_IR_VERIFY=1 verifier / MYP_NO_REUSE=1 逐层对拍
 #   / MYP_PROF_CPU|GPU=1 剖析 / MYP_LAYOUT_NHWC=1 / MYP_FAST_MATH=1

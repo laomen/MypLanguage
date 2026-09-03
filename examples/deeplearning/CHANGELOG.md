@@ -6,6 +6,30 @@
 
 ---
 
+## 2026-09-03 — P9 4D/batch MatMul 训练反向（BwdBatchMatmul）
+
+全量回归 pass=128→**130** fail=0（P8 余「MatMul/BatchMatMul 训练反向」收口；CPU-only 训练）。
+
+### 缺口根因
+- 2D MatMul 反向早已经 BwdDense（GEMM 语义）接通；但 buildReverseGraph 把 **所有** MatMul
+  （含 4D/batch，fwd opKind 82 matmulBcast 广播）都映射到 BwdDense → 4D 训练梯度按 2D GEMM
+  语义算 = 错/断链。
+
+### BwdBatchMatmul（opKind 116，OpCode 123）
+- 语义：O[b0,b1]=A·B（batch 维广播）→ dA[ab_,m,k]+=Σ dO·B、dB[bb_,k,n]+=Σ A·dO；
+  **广播共享维累加**（ab0==1 的 A 被多 ob0 输出共享 → dA 累加一次清零多次）。
+- kernel CPU `InferOps.bwdMatmulBcast`（da/db 可 -1；同前向 dims aM/aK/bN/ab0..ob1 在 opP0-8，
+  dB 走 opX0——opP 已被 9 个 dims 占满）；BwdBatchMatmulOp registerBwd(116,0)。
+- graph：OpCode/mapOpType/opTraits + buildReverseGraph MatMul 分支按 a2d/b2d（同 compiler
+  判据）分流——4D/batch → BwdBatchMatmul，2D → 保持 BwdDense（只清 A 的 dx，保留权重 B 的
+  Update 路径）+ graph_compiler（dims 由 A/B/dy shape 现算）。
+- 测试 bwd_batch_matmul_main（组1 无广播手算 dA/dB；组2 A 沿 b0 广播 ob0=2 → dA 累加 [19,22]
+  验证广播归约）；batch_matmul_train.json x→Conv(1x1)→f[1,1,4,2]→batch MatMul(bb[1,1,2,3])→
+  o[1,1,4,3]→MSE（label=x@bb）——Conv 学 w0≈1，l0≈15→lf≈5e-14（若反向仍走 BwdDense/断链
+  → loss 不降）。
+
+---
+
 ## 2026-09-03 — P8c BN/IN scale·bias 训练梯度
 
 全量回归 pass=124→**128** fail=0（P8「BN/IN scale·bias 训练梯度」收口；CPU-only 训练）。
