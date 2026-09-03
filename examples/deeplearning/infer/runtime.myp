@@ -509,6 +509,17 @@ class InferenceRuntime {
             opP6_[id] = pl; opP7_[id] = pr;
             opCount_ = opCount_ + 1;
         }
+        // ConvTranspose3D 反向（opKind 87）。dy=opA, x=opB, w=opC([Cin,Cout,kd,kh,kw]), dx=opD;
+        // dw=opP0, db=opP1; sd=opP2, sh=opP3, sw=opP4, pdt=opP5, pt=opP6, pl=opP7
+        void addBwdConvTranspose3D(int dyT, int xT, int wT, int dxT, int dwT, int dbT,
+                                   int sd, int sh, int sw, int pdt, int pt, int pl) {
+            int id = opCount_;
+            opKind_[id] = 87;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = wT; opD_[id] = dxT;
+            opP0_[id] = dwT; opP1_[id] = dbT;
+            opP2_[id] = sd; opP3_[id] = sh; opP4_[id] = sw; opP5_[id] = pdt; opP6_[id] = pt; opP7_[id] = pl;
+            opCount_ = opCount_ + 1;
+        }
         // 阶段4d：Dice loss（opKind 69）。p=opA(prob), y=opB(label), dp=opC, loss=opD;
         // rows/cols 取 prob 张量 tRows_/tCols_。wMode=opP1（0=等权，1=归一化逆频率）。
         void addDiceLoss(int pT, int yT, int dpT, int lossT, int wMode) {

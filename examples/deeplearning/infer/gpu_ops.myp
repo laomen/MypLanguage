@@ -1290,6 +1290,135 @@ class GpuInferOps {
 
         // ---- CNN 3D 反向（阶段4b，GPU）：bwdConv3D / bwdMaxPool3D / bwdAvgPool3D ----
 
+        // 反向：y = convTranspose3d(x,w)。db/dW/dX 三内核（thread-per-元素全和，无原子/清零）。
+        void bwdConvTranspose3d(float[] a, long dev,
+                                int dyOff, int xOff, int xN, int xC, int xD, int xH, int xW,
+                                int wOff, int dxOff, int dwOff, int dbOff,
+                                int yC, int yD, int yH, int yW,
+                                int kd, int kh, int kw, int sd, int sh, int sw,
+                                int pdt, int pt, int pl) {
+            // db[co] = Σ dy
+            if (dbOff >= 0) {
+                @gpu for (long p = 0L; p < long(yC); p = p + 1L) resident(a = dev) {
+                    if (p < long(yC)) {
+                        float s = 0.0f;
+                        long n = 0L;
+                        while (n < long(xN)) {
+                            long od = 0L;
+                            while (od < long(yD)) {
+                                long oy = 0L;
+                                while (oy < long(yH)) {
+                                    long ox = 0L;
+                                    while (ox < long(yW)) {
+                                        s = s + a[dyOff + n * long(yC) * long(yD) * long(yH) * long(yW) + p * long(yD) * long(yH) * long(yW) + od * long(yH) * long(yW) + oy * long(yW) + ox];
+                                        ox = ox + 1L;
+                                    }
+                                    oy = oy + 1L;
+                                }
+                                od = od + 1L;
+                            }
+                            n = n + 1L;
+                        }
+                        a[dbOff + p] = s;
+                    }
+                }
+            }
+            // dW[ci,co,kz,ky,kx]（ci 步长 = yC*kd*kh*kw）
+            long wc = long(yC) * long(kd) * long(kh) * long(kw);
+            long nW = long(xC) * wc;
+            @gpu for (long p = 0L; p < nW; p = p + 1L) resident(a = dev) {
+                if (p < nW) {
+                    long ci = p / wc;
+                    long rem = p % wc;
+                    long co = rem / long(kd * kh * kw);
+                    long rem2 = rem % long(kd * kh * kw);
+                    long kz = rem2 / long(kh * kw);
+                    long ky = (rem2 % long(kh * kw)) / long(kw);
+                    long kx = rem2 % long(kw);
+                    float s = 0.0f;
+                    long n = 0L;
+                    while (n < long(xN)) {
+                        long od = 0L;
+                        while (od < long(yD)) {
+                            long dnum = od + long(pdt) - kz;
+                            if (dnum >= 0L && dnum % long(sd) == 0L) {
+                                long id = dnum / long(sd);
+                                if (id >= 0L && id < long(xD)) {
+                                    long oy = 0L;
+                                    while (oy < long(yH)) {
+                                        long hnum = oy + long(pt) - ky;
+                                        if (hnum >= 0L && hnum % long(sh) == 0L) {
+                                            long ih = hnum / long(sh);
+                                            if (ih >= 0L && ih < long(xH)) {
+                                                long ox = 0L;
+                                                while (ox < long(yW)) {
+                                                    long wnum = ox + long(pl) - kx;
+                                                    if (wnum >= 0L && wnum % long(sw) == 0L) {
+                                                        long iw = wnum / long(sw);
+                                                        if (iw >= 0L && iw < long(xW)) {
+                                                            s = s + a[dyOff + n * long(yC) * long(yD) * long(yH) * long(yW) + co * long(yD) * long(yH) * long(yW) + od * long(yH) * long(yW) + oy * long(yW) + ox]
+                                                                     * a[xOff + n * long(xC) * long(xD) * long(xH) * long(xW) + ci * long(xD) * long(xH) * long(xW) + id * long(xH) * long(xW) + ih * long(xW) + iw];
+                                                        }
+                                                    }
+                                                    ox = ox + 1L;
+                                                }
+                                            }
+                                        }
+                                        oy = oy + 1L;
+                                    }
+                                }
+                            }
+                            od = od + 1L;
+                        }
+                        n = n + 1L;
+                    }
+                    a[dwOff + p] = s;
+                }
+            }
+            // dX[n,ci,id,ih,iw]
+            @gpu for (long p = 0L; p < long(xN) * long(xC) * long(xD) * long(xH) * long(xW); p = p + 1L) resident(a = dev) {
+                if (p < long(xN) * long(xC) * long(xD) * long(xH) * long(xW)) {
+                    long xs = long(xC) * long(xD) * long(xH) * long(xW);
+                    long nn = p / xs;
+                    long rem = p % xs;
+                    long ci = rem / long(xD * xH * xW);
+                    long rem2 = rem % long(xD * xH * xW);
+                    long id = rem2 / long(xH * xW);
+                    long ih = (rem2 % long(xH * xW)) / long(xW);
+                    long iw = rem2 % long(xW);
+                    float s = 0.0f;
+                    long co = 0L;
+                    while (co < long(yC)) {
+                        long kz = 0L;
+                        while (kz < long(kd)) {
+                            long od = id * long(sd) - long(pdt) + kz;
+                            if (od >= 0L && od < long(yD)) {
+                                long ky = 0L;
+                                while (ky < long(kh)) {
+                                    long oh = ih * long(sh) - long(pt) + ky;
+                                    if (oh >= 0L && oh < long(yH)) {
+                                        long kx = 0L;
+                                        while (kx < long(kw)) {
+                                            long ow = iw * long(sw) - long(pl) + kx;
+                                            if (ow >= 0L && ow < long(yW)) {
+                                                s = s + a[wOff + (ci * long(yC) + co) * long(kd) * long(kh) * long(kw) + kz * long(kh) * long(kw) + ky * long(kw) + kx]
+                                                         * a[dyOff + nn * long(yC) * long(yD) * long(yH) * long(yW) + co * long(yD) * long(yH) * long(yW) + od * long(yH) * long(yW) + oh * long(yW) + ow];
+                                            }
+                                            kx = kx + 1L;
+                                        }
+                                    }
+                                    ky = ky + 1L;
+                                }
+                            }
+                            kz = kz + 1L;
+                        }
+                        co = co + 1L;
+                    }
+                    a[dxOff + p] = s;
+                }
+            }
+        }
+
         // 反向：y = conv3d(x,w,b)。db/dW/dX 三内核，thread-per-元素全和赋值（无原子、无需清零）。
         void bwdConv3D(float[] a, long dev,
                        int dyOff, int xOff, int xN, int xC, int xD, int xH, int xW,

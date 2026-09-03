@@ -1164,6 +1164,27 @@ class GraphOptimizer {
                             graph.compilerAttrSet(bd, NodeField.SH(), graph.compilerAttr(ni, NodeField.SH())); graph.compilerAttrSet(bd, NodeField.SW(), graph.compilerAttr(ni, NodeField.SW()));
                             graph.compilerAttrSet(bd, NodeField.PT(), graph.compilerAttr(ni, NodeField.PT())); graph.compilerAttrSet(bd, NodeField.PB(), graph.compilerAttr(ni, NodeField.PB()));
                             graph.compilerAttrSet(bd, NodeField.PL(), graph.compilerAttr(ni, NodeField.PL())); graph.compilerAttrSet(bd, NodeField.PR(), graph.compilerAttr(ni, NodeField.PR()));
+                        } else if (t == "ConvTranspose3D") {
+                            // BwdConvTranspose3D(dy, x, w) → (dx, dw, db)；复制 3D 转置卷积参数
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdConvTranspose3D");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 2)));   // 无偏置 → "" → runtime db=-1
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.SD3(), graph.compilerAttr(ni, NodeField.SD3()));
+                            graph.compilerAttrSet(bd, NodeField.SH(), graph.compilerAttr(ni, NodeField.SH()));
+                            graph.compilerAttrSet(bd, NodeField.SW(), graph.compilerAttr(ni, NodeField.SW()));
+                            graph.compilerAttrSet(bd, NodeField.PDT(), graph.compilerAttr(ni, NodeField.PDT()));
+                            graph.compilerAttrSet(bd, NodeField.PDB(), graph.compilerAttr(ni, NodeField.PDB()));
+                            graph.compilerAttrSet(bd, NodeField.PT(), graph.compilerAttr(ni, NodeField.PT()));
+                            graph.compilerAttrSet(bd, NodeField.PB(), graph.compilerAttr(ni, NodeField.PB()));
+                            graph.compilerAttrSet(bd, NodeField.PL(), graph.compilerAttr(ni, NodeField.PL()));
+                            graph.compilerAttrSet(bd, NodeField.PR(), graph.compilerAttr(ni, NodeField.PR()));
                         } else if (t == "Conv3D") {
                             // 阶段4：BwdConv3D(dy, x, w) → (dx, dw, db)；复制 3D 卷积参数
                             // （kd/kh/kw 与 group 由 w 张量形状给出；dd/dh/dw 假定 1）

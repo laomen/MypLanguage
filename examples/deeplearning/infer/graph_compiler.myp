@@ -101,6 +101,7 @@ class GraphCompiler {
                 if (code == OpCode.BWD_PAD()) bwdLike = 1;
                 if (code >= OpCode.BWD_RELU6() && code <= OpCode.BWD_CLIP()) bwdLike = 1;   // 激活反向
                 if (code == OpCode.BWD_TANH()) bwdLike = 1;                                 // 激活反向（Tanh）
+                if (code == OpCode.BWD_CONVTRANSPOSE3D()) bwdLike = 1;                      // 3D 转置卷积反向
                 if (a < 0 || (out < 0 && bwdLike == 0)) {
                     if (Console.getEnv("MYP_GR_DBG") == "1") {
                         Console.writeString("buildRuntime wire fail type=" + graph.nodeTypeAt(ni) + " in0=" + graph.nodeInAt(ni, 0) + "(" + Fmt.i(a) + ") out=" + graph.compilerEffectiveOut(ni) + "(" + Fmt.i(out) + ")");
@@ -428,6 +429,20 @@ class GraphCompiler {
                     if (graph.compilerNodeOutput(ni, 2) != "") db = tensorId(graph.compilerNodeOutput(ni, 2));
                     rt.addBwdConvTranspose(dy, x, w, dx, dw, db,
                                            graph.compilerAttr(ni, NodeField.SH()), graph.compilerAttr(ni, NodeField.SW()), graph.compilerAttr(ni, NodeField.PT()), graph.compilerAttr(ni, NodeField.PB()), graph.compilerAttr(ni, NodeField.PL()), graph.compilerAttr(ni, NodeField.PR()));
+                } else if (code == OpCode.BWD_CONVTRANSPOSE3D()) {
+                    // 3D 转置卷积反向（opKind 87）：dy/x/w → dx/dw/db；sd/sh/sw/pdt/pt/pl attrs
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int x = tensorId(graph.nodeInAt(ni, 1));
+                    int w = tensorId(graph.nodeInAt(ni, 2));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    int dw = tensorId(graph.compilerNodeOutput(ni, 1));
+                    int db = -1;
+                    if (graph.compilerNodeOutput(ni, 2) != "") db = tensorId(graph.compilerNodeOutput(ni, 2));
+                    int sd = graph.compilerAttr(ni, NodeField.SD3()); if (sd <= 0) sd = 1;
+                    int sh_ = graph.compilerAttr(ni, NodeField.SH()); if (sh_ <= 0) sh_ = 1;
+                    int sw_ = graph.compilerAttr(ni, NodeField.SW()); if (sw_ <= 0) sw_ = 1;
+                    rt.addBwdConvTranspose3D(dy, x, w, dx, dw, db, sd, sh_, sw_,
+                        graph.compilerAttr(ni, NodeField.PDT()), graph.compilerAttr(ni, NodeField.PT()), graph.compilerAttr(ni, NodeField.PL()));
                 } else if (code == OpCode.BWD_RESIZE()) {
                     int dOut = tensorId(graph.nodeInAt(ni, 0));
                     int x = tensorId(graph.nodeInAt(ni, 1));
