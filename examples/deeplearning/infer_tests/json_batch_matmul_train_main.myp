@@ -43,7 +43,7 @@ class JsonBatchMatmulTrainApp {
             double l0 = 0.0; double lf = 0.0;
             int step = 0;
             while (step < 800) {
-                t.runTrain();
+                t.runTrainAuto();
                 if (step == 0) l0 = t.loss();
                 if (step == 799) lf = t.loss();
                 step = step + 1;

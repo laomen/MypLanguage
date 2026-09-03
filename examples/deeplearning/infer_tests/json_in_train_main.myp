@@ -45,7 +45,7 @@ class JsonInTrainApp {
             double l0 = 0.0; double lf = 0.0;
             int step = 0;
             while (step < 800) {
-                t.runTrain();
+                t.runTrainAuto();
                 if (step == 0) l0 = t.loss();
                 if (step == 799) lf = t.loss();
                 step = step + 1;
@@ -60,6 +60,7 @@ class JsonInTrainApp {
             Console.writeString("l0="); Console.writeFloat(l0);
             Console.writeString(" lf="); Console.writeFloat(lf);
             Console.writeString(" fitbad="); Console.writeLong(bad);
+            Console.writeString(" gpu="); Console.writeLong(t.gpuTrainOn());
             Console.writeLine("");
             if (tok == 1 && l0 > 0.5 && lf < 0.02 * l0 && bad == 0) Console.writeLine("JSON IN TRAIN OK");
             else Console.writeLine("JSON IN TRAIN FAIL");

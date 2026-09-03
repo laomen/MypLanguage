@@ -785,6 +785,496 @@ class GpuInferOps {
             }
         }
 
+        // ---- P10b-2：归约/重排/索引/归一化类反向 GPU（此前 CPU-only → GPU）----
+        // BwdTranspose（94）：dx = 把 dy（前向输出布局 od=perm(id)）按逆映射搬回 x 布局。
+        // transpose 是元素双射 → thread-per-dx 元素 dx[p]=dy[perm(p)]（无累加/无 race）。
+        void bwdTranspose(float[] a, long dev, int dyOff, int dxOff,
+                          int id0, int id1, int id2, int id3,
+                          int p0, int p1, int p2, int p3, int pc) {
+            int perm0 = p0, perm1 = p1, perm2 = p2, perm3 = p3;
+            if (pc == 0) { perm0 = 3; perm1 = 2; perm2 = 1; perm3 = 0; }
+            else if (pc == 1) { perm1 = 1; perm2 = 2; perm3 = 3; }
+            else if (pc == 2) { perm2 = 2; perm3 = 3; }
+            else if (pc == 3) { perm3 = 3; }
+            int od0 = id3, od1 = id3, od2 = id3, od3 = id3;
+            if (perm0 == 0) od0 = id0; else if (perm0 == 1) od0 = id1; else if (perm0 == 2) od0 = id2;
+            if (perm1 == 0) od1 = id0; else if (perm1 == 1) od1 = id1; else if (perm1 == 2) od1 = id2;
+            if (perm2 == 0) od2 = id0; else if (perm2 == 1) od2 = id1; else if (perm2 == 2) od2 = id2;
+            if (perm3 == 0) od3 = id0; else if (perm3 == 1) od3 = id1; else if (perm3 == 2) od3 = id2;
+            int total = id0 * id1 * id2 * id3;
+            @gpu for (long p = 0L; p < long(total); p = p + 1L) resident(a = dev) {
+                if (p < long(total)) {
+                    int i = int(p);
+                    int i3 = i % id3;
+                    int t = i / id3;
+                    int i2 = t % id2;
+                    t = t / id2;
+                    int i1 = t % id1;
+                    int i0 = t / id1;
+                    int j0 = i3, j1 = i3, j2 = i3, j3 = i3;
+                    if (perm0 == 0) j0 = i0; else if (perm0 == 1) j0 = i1; else if (perm0 == 2) j0 = i2;
+                    if (perm1 == 0) j1 = i0; else if (perm1 == 1) j1 = i1; else if (perm1 == 2) j1 = i2;
+                    if (perm2 == 0) j2 = i0; else if (perm2 == 1) j2 = i1; else if (perm2 == 2) j2 = i2;
+                    if (perm3 == 0) j3 = i0; else if (perm3 == 1) j3 = i1; else if (perm3 == 2) j3 = i2;
+                    int dyFlat = ((j0 * od1 + j1) * od2 + j2) * od3 + j3;
+                    a[dxOff + i] = a[dyOff + dyFlat];
+                }
+            }
+        }
+
+        // BwdReduce（97）：归约反向 = dy 广播回 dx（mean/sum；mode0 全组 / mode1 per-(n,c)）。
+        // redType 0=mean（÷total/S）1=sum（复制）。每 x 元素独立读 dy → 无 race。
+        void bwdReduce(float[] a, long dev, int dyOff, int dxOff,
+                       int mode, int N, int C, int S, int total, int redType) {
+            @gpu for (long p = 0L; p < long(total); p = p + 1L) resident(a = dev) {
+                if (p < long(total)) {
+                    long i = p;
+                    double v = 0.0;
+                    if (mode == 0) {
+                        v = double(a[dyOff + 0]);
+                        if (redType == 0) v = v / double(total);
+                    } else {
+                        int c = int((i / long(S)) % long(C));
+                        int n = int(i / (long(C) * long(S)));
+                        v = double(a[dyOff + n * C + c]);
+                        if (redType == 0) v = v / double(S);
+                    }
+                    a[dxOff + int(i)] = float(v);
+                }
+            }
+        }
+
+        // BwdPadConst（101）：constant pad 反向 = 取 dy 中心区回 dx（双射，thread-per-x）。
+        void bwdPadConst(float[] a, long dev, int dyOff, int dxOff,
+                         int xN, int xC, int xH, int xW,
+                         int yN, int yC, int yH, int yW,
+                         int b0, int b1, int b2, int b3) {
+            int total = xN * xC * xH * xW;
+            @gpu for (long p = 0L; p < long(total); p = p + 1L) resident(a = dev) {
+                if (p < long(total)) {
+                    int i = int(p);
+                    int x3 = i % xW;
+                    int t = i / xW;
+                    int x2 = t % xH;
+                    t = t / xH;
+                    int x1 = t % xC;
+                    int x0 = t / xC;
+                    int yFlat = ((((x0 + b0) * yC + (x1 + b1)) * yH + (x2 + b2)) * yW) + (x3 + b3);
+                    a[dxOff + i] = a[dyOff + yFlat];
+                }
+            }
+        }
+
+        // BwdExpand/BwdTile（95/96）：广播/平铺反向 = dx[src] scatter-add（多对一）。
+        // 无 float 原子 → thread-per-dx-slot 扫全部 out 累加（同 bwdGatherElements 模式）。
+        void bwdBroadcastCopy(float[] a, long dev, int dyOff, int dxOff,
+                              int id0, int id1, int id2, int id3,
+                              int od0, int od1, int od2, int od3) {
+            int xTotal = id0 * id1 * id2 * id3;
+            int total = od0 * od1 * od2 * od3;
+            @gpu for (long p = 0L; p < long(xTotal); p = p + 1L) resident(a = dev) {
+                if (p < long(xTotal)) {
+                    int s = int(p);
+                    float acc = 0.0f;
+                    int i = 0;
+                    while (i < total) {
+                        int y3 = i % od3;
+                        int t = i / od3;
+                        int y2 = t % od2;
+                        t = t / od2;
+                        int y1 = t % od1;
+                        int y0 = t / od1;
+                        int c0 = (id0 == 1) ? 0 : (y0 % id0);
+                        int c1 = (id1 == 1) ? 0 : (y1 % id1);
+                        int c2 = (id2 == 1) ? 0 : (y2 % id2);
+                        int c3 = (id3 == 1) ? 0 : (y3 % id3);
+                        int inFlat = ((c0 * id1 + c1) * id2 + c2) * id3 + c3;
+                        if (inFlat == s) acc = acc + a[dyOff + i];
+                        i = i + 1;
+                    }
+                    a[dxOff + s] = acc;
+                }
+            }
+        }
+
+        // BwdGather（98）：沿 axis 收集反向 = dx[src] scatter-add（indices 可重复）。
+        // 无 float 原子 → thread-per-dx-slot 扫全部 out。on/oc/oh/ow = out=dy 维，
+        // dn/dc/dh/dw = data=dx 维。
+        void bwdGather(float[] a, long dev, int dyOff, int iOff, int dxOff, int work,
+                       int axis, int lenIdx, int dn, int dc, int dh, int dw,
+                       int on, int oc, int oh, int ow) {
+            int dTotal = dn * dc * dh * dw;
+            @gpu for (long p = 0L; p < long(dTotal); p = p + 1L) resident(a = dev) {
+                if (p < long(dTotal)) {
+                    int s = int(p);
+                    float acc = 0.0f;
+                    int i = 0;
+                    while (i < work) {
+                        int w3 = i % ow;
+                        int t = i / ow;
+                        int w2 = t % oh;
+                        t = t / oh;
+                        int w1 = t % oc;
+                        int w0 = t / oc;
+                        int axIdx = (axis == 0) ? w0 : ((axis == 1) ? w1 : ((axis == 2) ? w2 : w3));
+                        int dim = (axis == 0) ? dn : ((axis == 1) ? dc : ((axis == 2) ? dh : dw));
+                        int id = int(a[iOff + axIdx]);
+                        if (id < 0) id = id + dim;
+                        if (id < 0) id = 0;
+                        if (id >= dim) id = dim - 1;
+                        int dn2 = (axis == 0) ? id : w0;
+                        int dc2 = (axis == 1) ? id : w1;
+                        int dh2 = (axis == 2) ? id : w2;
+                        int dw2 = (axis == 3) ? id : w3;
+                        int dFlat = ((dn2 * dc + dc2) * dh + dh2) * dw + dw2;
+                        if (dFlat == s) acc = acc + a[dyOff + i];
+                        i = i + 1;
+                    }
+                    a[dxOff + s] = acc;
+                }
+            }
+        }
+
+        // BwdReduceMax/Min（100）：argmax 掩码反向。K0 全 dx 清零（thread-per-x）；
+        // 每组（mode0 全组单线程 / mode1 每 (n,c) 组一线程串行扫 S）找 arg → 唯一槽写 dy。
+        void bwdReduceMM(float[] a, long dev, int dyOff, int xOff, int dxOff,
+                         int mode, int N, int C, int S, int total, int redType) {
+            @gpu for (long p = 0L; p < long(total); p = p + 1L) resident(a = dev) {
+                if (p < long(total)) { a[dxOff + int(p)] = 0.0f; }
+            }
+            if (mode == 0) {
+                @gpu for (long p = 0L; p < 1L; p = p + 1L) resident(a = dev) {
+                    if (p < 1L) {
+                        float best = a[xOff + 0];
+                        int bi = 0;
+                        int i = 1;
+                        while (i < total) {
+                            float v = a[xOff + i];
+                            if (redType == 2) { if (v > best) { best = v; bi = i; } }
+                            else { if (v < best) { best = v; bi = i; } }
+                            i = i + 1;
+                        }
+                        a[dxOff + bi] = a[dyOff + 0];
+                    }
+                }
+            } else {
+                int nC = N * C;
+                @gpu for (long p = 0L; p < long(nC); p = p + 1L) resident(a = dev) {
+                    if (p < long(nC)) {
+                        int seg = int(p);
+                        int base = seg * S;
+                        float best = a[xOff + base];
+                        int bi = 0;
+                        int i = 1;
+                        while (i < S) {
+                            float v = a[xOff + base + i];
+                            if (redType == 2) { if (v > best) { best = v; bi = i; } }
+                            else { if (v < best) { best = v; bi = i; } }
+                            i = i + 1;
+                        }
+                        a[dxOff + base + bi] = a[dyOff + seg];
+                    }
+                }
+            }
+        }
+
+        // BwdBatchNorm（114）：固定 mean/var 的推理 BN 反向（NCHW 段布局 (n,c)）。
+        // dx=dy·scale·rstd；dscale[c]/dbias[c] 跨 n 累加（无原子）→ K1 thread-per-(n,c)
+        // 段（串行 S，写自有段 dx + scratch[seg] 部分和 Σdy·(x-mean)·rstd / Σdy），
+        // K2 thread-per-c 归约 Σ_n。stOff 须 ≥ N*C*2 个 float（bias 不参与反向）。
+        void bwdBatchnorm(float[] a, long dev, int dyOff, int xOff, int dxOff,
+                          int sOff, int mOff, int vOff, int dsOff, int dbOff,
+                          int N, int C, int S, double eps, int stOff) {
+            int nC = N * C;
+            @gpu for (long p = 0L; p < long(nC); p = p + 1L) resident(a = dev) {
+                if (p < long(nC)) {
+                    int seg = int(p);
+                    int c = seg % C;
+                    double scale = double(a[sOff + c]);
+                    double mean = double(a[mOff + c]);
+                    double variance = double(a[vOff + c]);
+                    double rstd = 1.0 / Math.sqrt(variance + eps);
+                    double inv = scale * rstd;
+                    double ds = 0.0;
+                    double db = 0.0;
+                    long base = long(seg) * long(S);
+                    int i = 0;
+                    while (i < S) {
+                        int idx = int(base) + i;
+                        double dyv = double(a[dyOff + idx]);
+                        double xv = double(a[xOff + idx]);
+                        ds = ds + dyv * (xv - mean) * rstd;
+                        db = db + dyv;
+                        if (dxOff >= 0) a[dxOff + idx] = float(dyv * inv);
+                        i = i + 1;
+                    }
+                    a[stOff + seg * 2] = float(ds);
+                    a[stOff + seg * 2 + 1] = float(db);
+                }
+            }
+            @gpu for (long p = 0L; p < long(C); p = p + 1L) resident(a = dev) {
+                if (p < long(C)) {
+                    int c = int(p);
+                    double ds = 0.0;
+                    double db = 0.0;
+                    int n = 0;
+                    while (n < N) {
+                        ds = ds + double(a[stOff + (n * C + c) * 2]);
+                        db = db + double(a[stOff + (n * C + c) * 2 + 1]);
+                        n = n + 1;
+                    }
+                    if (dsOff >= 0) a[dsOff + c] = float(ds);
+                    if (dbOff >= 0) a[dbOff + c] = float(db);
+                }
+            }
+        }
+
+        // BwdBatchNormNHWC（117）：NHWC 布局 BN 反向。元素 (sp,c) flat=sp*C+c；ds/db 跨
+        // 全部 sp 累加。无 float 原子 → thread-per-c（C 线程串行扫 N*S 空间，写自有通道
+        // 列 dx → 无 race、ds/db 单写者）。C 小时并行度低——正确性优先，后续可换 scratch
+        // 分块归约提并行度。
+        void bwdBatchnormNHWC(float[] a, long dev, int dyOff, int xOff, int dxOff,
+                              int sOff, int mOff, int vOff, int dsOff, int dbOff,
+                              int N, int C, int S, double eps) {
+            int nS = N * S;
+            @gpu for (long p = 0L; p < long(C); p = p + 1L) resident(a = dev) {
+                if (p < long(C)) {
+                    int c = int(p);
+                    double scale = double(a[sOff + c]);
+                    double mean = double(a[mOff + c]);
+                    double variance = double(a[vOff + c]);
+                    double rstd = 1.0 / Math.sqrt(variance + eps);
+                    double inv = scale * rstd;
+                    double ds = 0.0;
+                    double db = 0.0;
+                    int sp = 0;
+                    while (sp < nS) {
+                        int idx = sp * C + c;
+                        double dyv = double(a[dyOff + idx]);
+                        double xv = double(a[xOff + idx]);
+                        if (dxOff >= 0) a[dxOff + idx] = float(dyv * inv);
+                        ds = ds + dyv * (xv - mean) * rstd;
+                        db = db + dyv;
+                        sp = sp + 1;
+                    }
+                    if (dsOff >= 0) a[dsOff + c] = float(ds);
+                    if (dbOff >= 0) a[dbOff + c] = float(db);
+                }
+            }
+        }
+
+        // BwdInstanceNorm（115）：per-(n,c) 归一化反向（重算段 mean/var、md/mdx）。
+        // K1 thread-per-(n,c) 段：写自有段 dx + scratch[seg] 部分和（Σdy·xhat / Σdy）；
+        // K2 thread-per-c 归约 Σ_n → dscale[c]/dbias[c]。stOff ≥ N*C*2 个 float。
+        void bwdInstancenorm(float[] a, long dev, int dyOff, int xOff, int dxOff,
+                             int sOff, int dsOff, int dbOff,
+                             int N, int C, int S, double eps, int stOff) {
+            int nC = N * C;
+            @gpu for (long p = 0L; p < long(nC); p = p + 1L) resident(a = dev) {
+                if (p < long(nC)) {
+                    int seg = int(p);
+                    int c = seg % C;
+                    long base = long(seg) * long(S);
+                    double sum = 0.0;
+                    double sumSq = 0.0;
+                    int i = 0;
+                    while (i < S) {
+                        double xv = double(a[xOff + int(base) + i]);
+                        sum = sum + xv;
+                        sumSq = sumSq + xv * xv;
+                        i = i + 1;
+                    }
+                    double mean = sum / double(S);
+                    double variance = sumSq / double(S) - mean * mean;
+                    double rstd = 1.0 / Math.sqrt(variance + eps);
+                    double scale = double(a[sOff + c]);
+                    double inv = scale * rstd;
+                    double md = 0.0;
+                    double mdx = 0.0;
+                    i = 0;
+                    while (i < S) {
+                        double xhat = (double(a[xOff + int(base) + i]) - mean) * rstd;
+                        double dyv = double(a[dyOff + int(base) + i]);
+                        md = md + dyv;
+                        mdx = mdx + dyv * xhat;
+                        i = i + 1;
+                    }
+                    double meanD = md / double(S);
+                    double meanDx = mdx / double(S);
+                    i = 0;
+                    while (i < S) {
+                        double xhat = (double(a[xOff + int(base) + i]) - mean) * rstd;
+                        double dyv = double(a[dyOff + int(base) + i]);
+                        if (dxOff >= 0) a[dxOff + int(base) + i] = float(inv * (dyv - meanD - xhat * meanDx));
+                        i = i + 1;
+                    }
+                    a[stOff + seg * 2] = float(mdx);
+                    a[stOff + seg * 2 + 1] = float(md);
+                }
+            }
+            @gpu for (long p = 0L; p < long(C); p = p + 1L) resident(a = dev) {
+                if (p < long(C)) {
+                    int c = int(p);
+                    double ds = 0.0;
+                    double db = 0.0;
+                    int n = 0;
+                    while (n < N) {
+                        ds = ds + double(a[stOff + (n * C + c) * 2]);
+                        db = db + double(a[stOff + (n * C + c) * 2 + 1]);
+                        n = n + 1;
+                    }
+                    if (dsOff >= 0) a[dsOff + c] = float(ds);
+                    if (dbOff >= 0) a[dbOff + c] = float(db);
+                }
+            }
+        }
+
+        // BwdBatchMatMul（116）：4D/batch MatMul 反向 dA=dO·Bᵀ / dB=Aᵀ·dO（batch 维广播）。
+        // 无 float 原子：A/B 无广播（ob 与 ab/bb 逐维相等 → 一一对应）→ thread-per-
+        // out-batch 直接归约；有广播（同源 A/B 被多输出 batch 共享）→ thread-per-da/db
+        // 槽扫全部输出 batch 累加（同 bwdGatherElements 模式）。da/db 可为 -1（图输入）。
+        void bwdMatmulBcast(float[] a, long dev, int dyOff, int aOff, int bOff,
+                            int daOff, int dbOff,
+                            int aM, int aK, int bN,
+                            int ab0, int ab1, int bb0, int bb1, int ob0, int ob1) {
+            int aBcast = 0;
+            if (ab0 != ob0 || ab1 != ob1) aBcast = 1;
+            int bBcast = 0;
+            if (bb0 != ob0 || bb1 != ob1) bBcast = 1;
+            if (daOff >= 0) {
+                if (aBcast == 0) {
+                    long workA = long(ob0) * long(ob1) * long(aM) * long(aK);
+                    @gpu for (long p = 0L; p < workA; p = p + 1L) resident(a = dev) {
+                        if (p < workA) {
+                            int k = int(p % long(aK));
+                            int t = int(p / long(aK));
+                            int m = t % aM;
+                            t = t / aM;
+                            int bo1 = t % ob1;
+                            int bo0 = t / ob1;
+                            int ab0_ = (ab0 == 1) ? 0 : bo0;
+                            int ab1_ = (ab1 == 1) ? 0 : bo1;
+                            int bb0_ = (bb0 == 1) ? 0 : bo0;
+                            int bb1_ = (bb1 == 1) ? 0 : bo1;
+                            int aIdx = ((ab0_ * ab1 + ab1_) * aM + m) * aK + k;
+                            int bBatch = ((bb0_ * bb1 + bb1_) * aK) * bN;
+                            int oBatch = ((bo0 * ob1 + bo1) * aM) * bN;
+                            double acc = 0.0;
+                            int n = 0;
+                            while (n < bN) {
+                                acc = acc + double(a[dyOff + oBatch + m * bN + n]) * double(a[bOff + bBatch + k * bN + n]);
+                                n = n + 1;
+                            }
+                            a[daOff + aIdx] = float(acc);
+                        }
+                    }
+                } else {
+                    long workA = long(ab0) * long(ab1) * long(aM) * long(aK);
+                    @gpu for (long p = 0L; p < workA; p = p + 1L) resident(a = dev) {
+                        if (p < workA) {
+                            int k = int(p % long(aK));
+                            int t = int(p / long(aK));
+                            int m = t % aM;
+                            t = t / aM;
+                            int a1 = t % ab1;
+                            int a0 = t / ab1;
+                            double acc = 0.0;
+                            int bo0 = 0;
+                            while (bo0 < ob0) {
+                                int ab0_ = (ab0 == 1) ? 0 : (bo0 % ab0);
+                                if (ab0_ == a0) {
+                                    int bo1 = 0;
+                                    while (bo1 < ob1) {
+                                        int ab1_ = (ab1 == 1) ? 0 : (bo1 % ab1);
+                                        if (ab1_ == a1) {
+                                            int bb0_ = (bb0 == 1) ? 0 : (bo0 % bb0);
+                                            int bb1_ = (bb1 == 1) ? 0 : (bo1 % bb1);
+                                            int bBatch = ((bb0_ * bb1 + bb1_) * aK) * bN;
+                                            int oBatch = ((bo0 * ob1 + bo1) * aM) * bN;
+                                            int n = 0;
+                                            while (n < bN) {
+                                                acc = acc + double(a[dyOff + oBatch + m * bN + n]) * double(a[bOff + bBatch + k * bN + n]);
+                                                n = n + 1;
+                                            }
+                                        }
+                                        bo1 = bo1 + 1;
+                                    }
+                                }
+                                bo0 = bo0 + 1;
+                            }
+                            a[daOff + ((a0 * ab1 + a1) * aM + m) * aK + k] = float(acc);
+                        }
+                    }
+                }
+            }
+            if (dbOff >= 0) {
+                if (bBcast == 0) {
+                    long workB = long(ob0) * long(ob1) * long(aK) * long(bN);
+                    @gpu for (long p = 0L; p < workB; p = p + 1L) resident(a = dev) {
+                        if (p < workB) {
+                            int n = int(p % long(bN));
+                            int t = int(p / long(bN));
+                            int k = t % aK;
+                            t = t / aK;
+                            int bo1 = t % ob1;
+                            int bo0 = t / ob1;
+                            int ab0_ = (ab0 == 1) ? 0 : bo0;
+                            int ab1_ = (ab1 == 1) ? 0 : bo1;
+                            int bb0_ = (bb0 == 1) ? 0 : bo0;
+                            int bb1_ = (bb1 == 1) ? 0 : bo1;
+                            int bIdx = ((bb0_ * bb1 + bb1_) * aK + k) * bN + n;
+                            int aBatch = ((ab0_ * ab1 + ab1_) * aM) * aK;
+                            int oBatch = ((bo0 * ob1 + bo1) * aM) * bN;
+                            double acc = 0.0;
+                            int m = 0;
+                            while (m < aM) {
+                                acc = acc + double(a[aOff + aBatch + m * aK + k]) * double(a[dyOff + oBatch + m * bN + n]);
+                                m = m + 1;
+                            }
+                            a[dbOff + bIdx] = float(acc);
+                        }
+                    }
+                } else {
+                    long workB = long(bb0) * long(bb1) * long(aK) * long(bN);
+                    @gpu for (long p = 0L; p < workB; p = p + 1L) resident(a = dev) {
+                        if (p < workB) {
+                            int n = int(p % long(bN));
+                            int t = int(p / long(bN));
+                            int k = t % aK;
+                            t = t / aK;
+                            int b1 = t % bb1;
+                            int b0 = t / bb1;
+                            double acc = 0.0;
+                            int bo0 = 0;
+                            while (bo0 < ob0) {
+                                int bb0_ = (bb0 == 1) ? 0 : (bo0 % bb0);
+                                if (bb0_ == b0) {
+                                    int bo1 = 0;
+                                    while (bo1 < ob1) {
+                                        int bb1_ = (bb1 == 1) ? 0 : (bo1 % bb1);
+                                        if (bb1_ == b1) {
+                                            int ab0_ = (ab0 == 1) ? 0 : (bo0 % ab0);
+                                            int ab1_ = (ab1 == 1) ? 0 : (bo1 % ab1);
+                                            int aBatch = ((ab0_ * ab1 + ab1_) * aM) * aK;
+                                            int oBatch = ((bo0 * ob1 + bo1) * aM) * bN;
+                                            int m = 0;
+                                            while (m < aM) {
+                                                acc = acc + double(a[aOff + aBatch + m * aK + k]) * double(a[dyOff + oBatch + m * bN + n]);
+                                                m = m + 1;
+                                            }
+                                        }
+                                        bo1 = bo1 + 1;
+                                    }
+                                }
+                                bo0 = bo0 + 1;
+                            }
+                            a[dbOff + ((b0 * bb1 + b1) * aK + k) * bN + n] = float(acc);
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- P10a：激活反向 GPU（CPU-only 训练 → GPU；需 fwd 输入 x 判掩码）----
         // ReLU6'：x in (0,6) → 1，否则 0
         void bwdRelu6(float[] a, long dev, int dyOff, int xOff, int dxOff, int n) {
