@@ -1,0 +1,8 @@
+{ "name":"int",
+  "inputs":[{"name":"x","dims":[1,2,4,4]}],
+  "outputs":["out"],
+  "layers":[
+    { "op":"InstanceNormalization","in":"x","out":"out","epsilon":1e-5,
+      "scale":{"dims":[2],"values":[1.0,1.0]},
+      "bias":{"dims":[2],"values":[0.0,0.0]}}
+  ]}

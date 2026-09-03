@@ -3880,6 +3880,89 @@ class InferOps {
                 n = n + 1;
             }
         }
+        // P8c：BwdBatchNorm（固定 mean/var 的推理 BN 反向，CPU-only 训练）。
+        // y=(x-mean)·scale·rstd+bias（rstd=1/sqrt(var+eps)）→
+        //   dx=dy·scale·rstd、dscale[c]=Σ dy·(x-mean)·rstd、dbias[c]=Σ dy。
+        // 段布局 (n,c) → seg=n*C+c；ds/db 先清零再逐 seg 累加（通道 c=seg%C 共享）。
+        void bwdBatchnorm(float[] arena, int dyOff, int xOff, int dxOff,
+                          int sOff, int bOff, int mOff, int vOff,
+                          int dsOff, int dbOff,
+                          int N, int C, int S, double eps) {
+            if (dsOff >= 0) { int c = 0; while (c < C) { arena[dsOff + c] = float(0.0); c = c + 1; } }
+            if (dbOff >= 0) { int c = 0; while (c < C) { arena[dbOff + c] = float(0.0); c = c + 1; } }
+            int seg = 0;
+            int total = N * C;
+            while (seg < total) {
+                int c = seg % C;
+                double scale = arena[sOff + c];
+                double mean = arena[mOff + c];
+                double variance = arena[vOff + c];
+                double rstd = 1.0 / Math.sqrt(variance + eps);
+                double inv = scale * rstd;
+                double ds = 0.0; double db = 0.0;
+                int i = 0;
+                while (i < S) {
+                    int idx = seg * S + i;
+                    double dyv = arena[dyOff + idx];
+                    ds = ds + dyv * (arena[xOff + idx] - mean) * rstd;
+                    db = db + dyv;
+                    if (dxOff >= 0) arena[dxOff + idx] = float(dyv * inv);
+                    i = i + 1;
+                }
+                if (dsOff >= 0) arena[dsOff + c] = arena[dsOff + c] + float(ds);
+                if (dbOff >= 0) arena[dbOff + c] = arena[dbOff + c] + float(db);
+                seg = seg + 1;
+            }
+        }
+        // P8c：BwdInstanceNorm（per-(n,c) 归一化反向，CPU-only 训练）。
+        // 重算每段 mean/var、rstd=1/sqrt(var+eps)；xhat=(x-mean)·rstd；标准公式（段内均值
+        // md=mean(dy)、mdx=mean(dy·xhat)）：
+        //   dx=rstd·scale·(dy - md - xhat·mdx)、dscale[c]=Σ dy·xhat、dbias[c]=Σ dy。
+        void bwdInstancenorm(float[] arena, int dyOff, int xOff, int dxOff,
+                             int sOff, int bOff, int dsOff, int dbOff,
+                             int N, int C, int S, double eps) {
+            if (dsOff >= 0) { int c = 0; while (c < C) { arena[dsOff + c] = float(0.0); c = c + 1; } }
+            if (dbOff >= 0) { int c = 0; while (c < C) { arena[dbOff + c] = float(0.0); c = c + 1; } }
+            int n = 0;
+            while (n < N) {
+                int c = 0;
+                while (c < C) {
+                    int base = (n * C + c) * S;
+                    double sum = 0.0; double sumSq = 0.0;
+                    int i = 0;
+                    while (i < S) {
+                        double xv = arena[xOff + base + i];
+                        sum = sum + xv; sumSq = sumSq + xv * xv;
+                        i = i + 1;
+                    }
+                    double mean = sum / S;
+                    double variance = sumSq / S - mean * mean;
+                    double rstd = 1.0 / Math.sqrt(variance + eps);
+                    double scale = arena[sOff + c];
+                    double md = 0.0; double mdx = 0.0;
+                    i = 0;
+                    while (i < S) {
+                        double xhat = (arena[xOff + base + i] - mean) * rstd;
+                        double dyv = arena[dyOff + base + i];
+                        md = md + dyv; mdx = mdx + dyv * xhat;
+                        i = i + 1;
+                    }
+                    md = md / S; mdx = mdx / S;
+                    double inv = scale * rstd;
+                    i = 0;
+                    while (i < S) {
+                        double xhat = (arena[xOff + base + i] - mean) * rstd;
+                        double dyv = arena[dyOff + base + i];
+                        if (dxOff >= 0) arena[dxOff + base + i] = float(inv * (dyv - md - xhat * mdx));
+                        i = i + 1;
+                    }
+                    if (dsOff >= 0) arena[dsOff + c] = arena[dsOff + c] + float(mdx * S);
+                    if (dbOff >= 0) arena[dbOff + c] = arena[dbOff + c] + float(md * S);
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
         // ReduceMean：mode 0 = 全规约（输出 1 元素）；mode 1 = 空间维规约（per-(n,c)）
         // Reduce 族（G3）：mode 0 = 全规约；mode 1 = 空间维规约 per-(n,c)
         // redType：0=mean（除以元素数）,1=sum,2=max,3=min

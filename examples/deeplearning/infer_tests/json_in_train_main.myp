@@ -1,0 +1,68 @@
+// json_in_train_main.myp — P8c：JSON InstanceNormalization scale·bias 训练（MSE）端到端。
+// in_train.json：x[1,2,4,4]（图输入）→ InstanceNormalization（per-(n,c) 归一化）→ out。
+//   out_c = scale_c·xhat_c+bias_c（xhat 每通道 16 空间值归一化，仅由 x 决定）。目标 = 2·xhat
+//   （main 用 double 重算 xhat）→ IN 须学 scale≈2、bias≈0。若 BwdInstanceNorm 不给 dscale/dbias
+//   或公式错，scale/bias 不动 → loss 不降 → 抓 scale·bias 梯度路径。
+// CPU JSON IN TRAIN OK（lr=0.05 × 800 步）。
+import env;
+import fmt;
+import math;
+import dl;
+
+class JsonInTrainApp {
+    action:
+        @constructor JsonInTrainApp() {
+            Session t = new Session();
+            t.setLossMode(2);   // MSE
+            int tok = t.loadJsonTrain("./deeplearning/infer_tests/in_train.json");
+            if (tok == 0) { Console.writeLine("JSON IN TRAIN SKIP (no load)"); return; }
+            t.setLr(0.05); t.setTrainMode(1);
+            double[] bx = new double[32];
+            int p = 0;
+            while (p < 16) {
+                bx[p] = double(p + 1);                          // c0
+                bx[16 + p] = double(p * 3 % 13) + 0.25;          // c1（非单调，更具区分）
+                p = p + 1;
+            }
+            t.setInput("x", bx, 32);
+            // xhat per channel（double 参考，eps=1e-5）
+            double[] xhat = new double[32];
+            int c = 0;
+            while (c < 2) {
+                double sum = 0.0; double sumSq = 0.0;
+                p = 0;
+                while (p < 16) { double xv = bx[c * 16 + p]; sum = sum + xv; sumSq = sumSq + xv * xv; p = p + 1; }
+                double mean = sum / 16.0;
+                double variance = sumSq / 16.0 - mean * mean;
+                double rstd = 1.0 / Math.sqrt(variance + 1.0e-5);
+                p = 0;
+                while (p < 16) { xhat[c * 16 + p] = (bx[c * 16 + p] - mean) * rstd; p = p + 1; }
+                c = c + 1;
+            }
+            int labT = t.tensorId("label");
+            p = 0;
+            while (p < 32) { t.setFlat(labT, p, 2.0 * xhat[p]); p = p + 1; }
+            double l0 = 0.0; double lf = 0.0;
+            int step = 0;
+            while (step < 800) {
+                t.runTrain();
+                if (step == 0) l0 = t.loss();
+                if (step == 799) lf = t.loss();
+                step = step + 1;
+            }
+            double[] o = t.getOutput("out");
+            int bad = 0;
+            p = 0;
+            while (p < 32) {
+                double e0 = o[p] - 2.0 * xhat[p]; if (e0 < 0.0) e0 = 0.0 - e0; if (e0 > 0.05) bad = bad + 1;
+                p = p + 1;
+            }
+            Console.writeString("l0="); Console.writeFloat(l0);
+            Console.writeString(" lf="); Console.writeFloat(lf);
+            Console.writeString(" fitbad="); Console.writeLong(bad);
+            Console.writeLine("");
+            if (tok == 1 && l0 > 0.5 && lf < 0.02 * l0 && bad == 0) Console.writeLine("JSON IN TRAIN OK");
+            else Console.writeLine("JSON IN TRAIN FAIL");
+        }
+}
+int main() { JsonInTrainApp app = new JsonInTrainApp(); return 0; }

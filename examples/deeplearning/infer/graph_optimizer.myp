@@ -1078,6 +1078,45 @@ class GraphOptimizer {
                             if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 2)) == 0) {
                                 graph.replaceResult(bd, 1, "");   // 图输入 updates：du 无上游消费
                             }
+                        } else if (t == "BatchNormalization") {
+                            // P8c：BN scale·bias 反向（固定 mean/var）：dx=dy·scale·rstd /
+                            // dscale/dbias（→ 权重 Update）。节点仅携带 dy=nodeIn0（节点输入槽
+                            // 限 0..4，fwd BN 已用满 5 槽，不能再带 scale/bias/mean/var）——
+                            // graph_compiler 由 dy 名反查 fwd BN 节点取各参数张量。
+                            // 输出：dx=nodeOut0（x 图输入则清）、dscale=nodeOut1、dbias=nodeOut2。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdBatchNorm");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 2)));
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.EPS_INT(), graph.compilerAttr(ni, NodeField.EPS_INT()));
+                            graph.compilerAttrSet(bd, NodeField.HAS_EPS(), graph.compilerAttr(ni, NodeField.HAS_EPS()));
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费
+                            }
+                        } else if (t == "InstanceNormalization") {
+                            // P8c：IN scale·bias 反向（per-(n,c) 重算统计）：dx / dscale / dbias。
+                            // x=nodeIn1、scale=nodeIn2、bias=nodeIn3；dx=nodeOut0（x 图输入则清）、
+                            // dscale=nodeOut1、dbias=nodeOut2。复制 eps 属性。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdInstanceNorm");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
+                            graph.nodeIn(bd, 3, graph.nodeInAt(ni, 2));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 1)));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 2)));
+                            graph.endNode();
+                            graph.compilerAttrSet(bd, NodeField.EPS_INT(), graph.compilerAttr(ni, NodeField.EPS_INT()));
+                            graph.compilerAttrSet(bd, NodeField.HAS_EPS(), graph.compilerAttr(ni, NodeField.HAS_EPS()));
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费
+                            }
                         } else if (t == "Pad") {
                             // B：Pad(constant) 反向 = 去边取中心（dx = dy 中心区）。
                             // 仅 constant（reflect/edge 需镜像累加，跳过=梯度 0）。

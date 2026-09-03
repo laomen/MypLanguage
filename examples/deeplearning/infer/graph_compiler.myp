@@ -104,6 +104,8 @@ class GraphCompiler {
                 if (code == OpCode.BWD_CONVTRANSPOSE3D()) bwdLike = 1;                      // 3D 转置卷积反向
                 if (code == OpCode.BWD_GATHER_ELEMENTS()) bwdLike = 1;                      // 数据高级索引反向（P8b）
                 if (code == OpCode.BWD_SCATTER_ND()) bwdLike = 1;                          // 数据高级索引反向（P8b）
+                if (code == OpCode.BWD_BATCH_NORM()) bwdLike = 1;                          // BN scale·bias 反向（P8c）
+                if (code == OpCode.BWD_INSTANCE_NORM()) bwdLike = 1;                       // IN scale·bias 反向（P8c）
                 if (a < 0 || (out < 0 && bwdLike == 0)) {
                     if (Console.getEnv("MYP_GR_DBG") == "1") {
                         Console.writeString("buildRuntime wire fail type=" + graph.nodeTypeAt(ni) + " in0=" + graph.nodeInAt(ni, 0) + "(" + Fmt.i(a) + ") out=" + graph.compilerEffectiveOut(ni) + "(" + Fmt.i(out) + ")");
@@ -446,6 +448,62 @@ class GraphCompiler {
                         if (graph.compilerShapeR5(ds) == 1) d4 = graph.compilerShapeDim(ds, 4);
                     }
                     rt.addBwdScatterND(dy, it, dx, du, q, k, d0, d1, d2, d3, d4);
+                } else if (code == OpCode.BWD_BATCH_NORM()) {
+                    // P8c：BwdBatchNorm（opKind 114）：节点仅携带 dy=nodeIn0（grad y）。
+                    // 由 dy 名反查 fwd BN 节点（type=BatchNormalization 且输出 y）取 x/scale/
+                    // bias/mean/var 张量；dx=nodeOut0（可为空）、dscale=nodeOut1、dbias=nodeOut2。
+                    // N/C/S 由 x shape 现算（4D；段布局 (n,c)=seg）。
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    int ds = tensorId(graph.compilerNodeOutput(ni, 1));
+                    int db = tensorId(graph.compilerNodeOutput(ni, 2));
+                    string dyn = graph.nodeInAt(ni, 0);
+                    string yname = "";
+                    if (Str.len(dyn) >= 2) yname = Str.substring(dyn, 0, Str.len(dyn) - 2);   // 去 "#g"
+                    int xT = -1, sT = -1, bT = -1, mT = -1, vT = -1;
+                    int xshape = -1;
+                    int j = 0;
+                    while (j < graph.nodeCount()) {
+                        if (graph.nodeTypeAt(j) == "BatchNormalization" && graph.compilerNodeOutput(j, 0) == yname) {
+                            xT = tensorId(graph.nodeInAt(j, 0));
+                            sT = tensorId(graph.nodeInAt(j, 1));
+                            bT = tensorId(graph.nodeInAt(j, 2));
+                            mT = tensorId(graph.nodeInAt(j, 3));
+                            vT = tensorId(graph.nodeInAt(j, 4));
+                            xshape = graph.compilerShapeIdx(graph.nodeInAt(j, 0));
+                            j = graph.nodeCount();
+                        }
+                        j = j + 1;
+                    }
+                    if (sT < 0 || bT < 0 || mT < 0 || vT < 0) return 0;
+                    int N = 1, C = 1, S = 1;
+                    if (xshape >= 0) {
+                        N = graph.compilerShapeDim(xshape, 0); C = graph.compilerShapeDim(xshape, 1);
+                        S = graph.compilerShapeDim(xshape, 2) * graph.compilerShapeDim(xshape, 3);
+                        if (graph.compilerShapeR5(xshape) == 1) S = S * graph.compilerShapeDim(xshape, 4);
+                    }
+                    rt.addBwdBatchNorm(dy, xT, dx, sT, bT, mT, vT, ds, db, N, C, S,
+                                       graph.compilerAttr(ni, NodeField.EPS_INT()), graph.compilerAttr(ni, NodeField.HAS_EPS()));
+                } else if (code == OpCode.BWD_INSTANCE_NORM()) {
+                    // P8c：BwdInstanceNorm（opKind 115）：dy=nodeIn0、x=nodeIn1、scale=nodeIn2、
+                    // bias=nodeIn3；dx=nodeOut0（可为空）、dscale=nodeOut1、dbias=nodeOut2。
+                    // N/C/S 由 x shape 现算（R5 含深度维，同前向）。
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int xT = tensorId(graph.nodeInAt(ni, 1));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    int sT = tensorId(graph.nodeInAt(ni, 2));
+                    int bT = tensorId(graph.nodeInAt(ni, 3));
+                    int ds = tensorId(graph.compilerNodeOutput(ni, 1));
+                    int db = tensorId(graph.compilerNodeOutput(ni, 2));
+                    int is2 = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
+                    int N = 1, C = 1, S = 1;
+                    if (is2 >= 0) {
+                        N = graph.compilerShapeDim(is2, 0); C = graph.compilerShapeDim(is2, 1);
+                        S = graph.compilerShapeDim(is2, 2) * graph.compilerShapeDim(is2, 3);
+                        if (graph.compilerShapeR5(is2) == 1) S = S * graph.compilerShapeDim(is2, 4);
+                    }
+                    rt.addBwdInstanceNorm(dy, xT, dx, sT, bT, ds, db, N, C, S,
+                                          graph.compilerAttr(ni, NodeField.EPS_INT()), graph.compilerAttr(ni, NodeField.HAS_EPS()));
                 } else if (code == OpCode.BWD_REDUCEMM()) {
                     // B：ReduceMax/Min 反向（argmax 掩码；x=nodeIn1 供重算最值位置）
                     int dy = tensorId(graph.nodeInAt(ni, 0));
