@@ -2381,6 +2381,37 @@ class GpuRopeOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
+// ---- ropeGraph（opKind 113 前向推理；图算子：out 独立张量 = copy x 再原地旋转）----
+class RopeGraphOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int x = rt.opAAt(i); int cos = rt.opBAt(i); int sin = rt.opCAt(i); int out = rt.opDAt(i);
+            int D = rt.opP0At(i); if (D <= 0) D = rt.tensorRows(x);
+            int S = rt.opP1At(i); if (S <= 0) S = rt.tensorCols(x);
+            int heads = rt.opP2At(i);
+            InferOps.copyFlat(rt.arenaRef(), rt.tensorOff(x), rt.tensorOff(out), D * S);
+            InferOps.rope(rt.arenaRef(), rt.tensorOff(out), rt.tensorOff(cos), rt.tensorOff(sin), D, S, heads);
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- ropeGraph（GPU，opKind 113）----
+class GpuRopeGraphOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int x = rt.opAAt(i); int cos = rt.opBAt(i); int sin = rt.opCAt(i); int out = rt.opDAt(i);
+            int D = rt.opP0At(i); if (D <= 0) D = rt.tensorRows(x);
+            int S = rt.opP1At(i); if (S <= 0) S = rt.tensorCols(x);
+            int heads = rt.opP2At(i);
+            GpuInferOps.copyFlat(rt.arenaRef(), D * S, rt.tensorOff(x), rt.tensorOff(out), rt.devRef());
+            GpuInferOps.rope(rt.arenaRef(), heads * (D / heads / 2) * S, rt.tensorOff(out), rt.tensorOff(cos),
+                             rt.tensorOff(sin), D, S, heads, rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- attentionCached（GPU，scOff 须 [heads*len]）----
 class GpuAttentionCachedOp {
     interface class IOp;
@@ -2837,5 +2868,6 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(64, new LayerNormOp(), 0);         rt.registerFwd(64, new GpuLayerNormOp(), 1);
     rt.registerFwd(65, new GeluOp(), 0);              rt.registerFwd(65, new GpuGeluOp(), 1);
     rt.registerFwd(66, new RopeOp(), 0);              rt.registerFwd(66, new GpuRopeOp(), 1);
+    rt.registerFwd(113, new RopeGraphOp(), 0);        rt.registerFwd(113, new GpuRopeGraphOp(), 1);
     rt.registerFwd(67, new AttentionCachedOp(), 0);   rt.registerFwd(67, new GpuAttentionCachedOp(), 1);
 }

@@ -295,7 +295,13 @@ class JsonModelLoader {
                     if (j.type(lp + ".epsilon") != -1) eps = j.getDouble(lp + ".epsilon");
                     g_.nodeInt(ni, NodeField.EPS_INT(), F32.toBits(eps));
                     g_.nodeInt(ni, NodeField.HAS_EPS(), 1);
-                    if (op == "GroupNorm") g_.nodeInt(ni, NodeField.GROUP(), gint(j, lp + ".groups", 1));                } else if (op == "Clip") {
+                    if (op == "GroupNorm") g_.nodeInt(ni, NodeField.GROUP(), gint(j, lp + ".groups", 1));                } else if (op == "Rope") {
+                    // RoPE（LLM 位置编码，图算子 opKind 113）：x=in、cos=in2、sin=in3
+                    // （[dh/2,S] 位置表，运行时 setInput）；heads → GROUP() 槽（D=heads·dh）。
+                    if (in2 != "") g_.nodeIn(ni, 1, in2);
+                    if (in3 != "") g_.nodeIn(ni, 2, in3);
+                    g_.nodeInt(ni, NodeField.GROUP(), gint(j, lp + ".heads", 1));
+                } else if (op == "Clip") {
                     // Clip：min/max 内联浮点 → 内存 f32 标量常量（nodeIn1/2）；缺省边界不限
                     if (j.type(lp + ".min") != -1) { regF32Scalar(out + "_min", j.getDouble(lp + ".min")); g_.nodeIn(ni, 1, out + "_min"); }
                     if (j.type(lp + ".max") != -1) { regF32Scalar(out + "_max", j.getDouble(lp + ".max")); g_.nodeIn(ni, 2, out + "_max"); }

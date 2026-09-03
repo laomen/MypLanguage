@@ -186,6 +186,13 @@ class GraphCompiler {
                     double eps = graph.attrFloat(ni, NodeField.EPS_INT());
                     if (graph.compilerAttr(ni, NodeField.HAS_EPS()) != 1) eps = 1.0e-5;
                     rt.addGroupNorm(a, g, b, out, graph.compilerAttr(ni, NodeField.GROUP()), eps);
+                } else if (code == OpCode.ROPE()) {
+                    // RoPE 图算子（opKind 113）：x=nodeIn0、cos=nodeIn1、sin=nodeIn2（位置表），
+                    // out=nodeOut0 独立。D/S 传 0 → RopeGraphOp 自省 x rows/cols（[D 特征行,
+                    // S 位置列] row-major d*S+s）；heads=GROUP() 槽（D=heads·dh，dh/2 行表）。
+                    int cos = tensorId(graph.nodeInAt(ni, 1));
+                    int sin = tensorId(graph.nodeInAt(ni, 2));
+                    rt.addRopeGraph(a, cos, sin, out, 0, 0, graph.compilerAttr(ni, NodeField.GROUP()));
                 } else if (code == OpCode.ONEHOT()) {
                     // OneHot（opKind 85）：idx=nodeIn0（float 索引），out=nodeOut0；depth=SPLIT0()
                     rt.addOneHot(a, out, graph.compilerAttr(ni, NodeField.SPLIT0()));

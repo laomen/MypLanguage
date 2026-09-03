@@ -601,6 +601,16 @@ class InferenceRuntime {
             opP0_[id] = D; opP1_[id] = S; opP2_[id] = heads;
             opCount_ = opCount_ + 1;
         }
+        // RoPE 图算子（opKind 113）：in=opA, cos=opB, sin=opC, out=opD（独立输出——先
+        // copy x→out 再在 out 上原地旋转，不破坏 x）。D=opP0, S=opP1, heads=opP2（图路径
+        // 传 0 → Op 自省 x 的 rows/cols）。
+        void addRopeGraph(int xT, int cosT, int sinT, int outT, int D, int S, int heads) {
+            int id = opCount_;
+            opKind_[id] = 113;
+            opA_[id] = xT; opB_[id] = cosT; opC_[id] = sinT; opD_[id] = outT;
+            opP0_[id] = D; opP1_[id] = S; opP2_[id] = heads;
+            opCount_ = opCount_ + 1;
+        }
         // 阶段5：KV cache 增量注意力（opKind 67）。q=opA, kcache=opB, vcache=opC, out=opD, sc=opP0;
         // D=opP1, stride=opP2（缓存容量/行步长）, len=opP3（参与注意力列数）, heads=opP4, groups=opP5
         void addAttentionCached(int qT, int kcT, int vcT, int outT, int scT, int D, int stride, int len, int heads, int groups) {

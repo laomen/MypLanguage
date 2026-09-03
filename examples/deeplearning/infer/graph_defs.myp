@@ -246,6 +246,7 @@ class OpCode {
         int SCATTER_ND() { return 117; }       // 数据高级索引：ScatterND（opKind 89，按 indices 前缀写 updates 进 data 副本）
         int BWD_GATHER_ELEMENTS() { return 118; }  // GatherElements 反向（opKind 111）：dy 沿 idx scatter-add 回 data 梯度
         int BWD_SCATTER_ND() { return 119; }       // ScatterND 反向（opKind 112）：dx=dy 非写位置 / du=gather dy（写位置）
+        int ROPE() { return 120; }                 // LLM 位置编码：RoPE 图算子（opKind 113；复用 rope kernel，out 独立张量）
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -349,6 +350,7 @@ class OpCode {
             if (t == "ScatterND") return OpCode.SCATTER_ND();
             if (t == "BwdGatherElements") return OpCode.BWD_GATHER_ELEMENTS();
             if (t == "BwdScatterND") return OpCode.BWD_SCATTER_ND();
+            if (t == "Rope" || t == "RoPE" || t == "RotaryPosEmbed") return OpCode.ROPE();
             return OpCode.UNKNOWN();
         }
         // 节点保护 trait：非 0 表示受 DCE 保护。1=stateful（就地改权重/累加），
