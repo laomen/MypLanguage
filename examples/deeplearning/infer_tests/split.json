@@ -1,0 +1,7 @@
+{ "name":"splitj",
+  "inputs":[{"name":"x","dims":[1,9]}],
+  "outputs":["a","b","c"],
+  "layers":[
+    { "op":"Split","in":"x","axis":1,"outs":["a","b","c"]}
+  ]
+}

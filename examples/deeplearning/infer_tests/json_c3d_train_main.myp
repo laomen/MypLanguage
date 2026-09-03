@@ -1,0 +1,59 @@
+// json_c3d_train_main.myp — JSON 3D CNN 端到端训练（Conv3D/MaxPool3D JSON 分派 +
+// 3D 反向全链 BwdConv3D/BwdRelu/BwdMaxPool3D/BwdFlatten/BwdDense + CE）。
+// c3d.json：data[1,1,4,8,8]→Conv3D(2ch 3x3x3 pad1)→Relu→MaxPool3D(2x)→Flatten[1,64]
+//   →Gemm→logits[1,3]→Softmax。
+// 数据：中心 2x4x4 定位内容块（值=1+cl）。注意三类样本初始随机错配 → 各自初始 loss
+//   参差（如 cl0≈0.02 对 / cl1≈10.6 错）——判据须看**收敛后各类都降**，不能只看尾样本。
+// 判据：轮换训 300 步后，对 cl0/1/2 各测 loss 均应 < 0.5（全类学对）。
+import env;
+import fmt;
+import dl;
+
+class JsonC3dTrainApp {
+    action:
+        void feedOne(Session t, int labT, int cl) {
+            double[] bx = new double[4 * 8 * 8];
+            int i = 0;
+            while (i < 4 * 8 * 8) {
+                int d = i / (8 * 8); int r = (i / 8) % 8; int c = i % 8;
+                double v = 0.0;
+                if (d >= 1 && d < 3 && r >= 2 && r < 6 && c >= 2 && c < 6) v = 1.0 + double(cl);
+                bx[i] = v;
+                i = i + 1;
+            }
+            t.setInput("data", bx, 4 * 8 * 8);
+            i = 0;
+            while (i < 3) { t.setFlat(labT, i, 0.0); i = i + 1; }
+            t.setFlat(labT, cl, 1.0);
+        }
+        @constructor JsonC3dTrainApp() {
+            Session t = new Session();
+            int tok = t.loadJsonTrain("./deeplearning/infer_tests/c3d.json");
+            Console.writeString("load="); Console.writeLong(tok); Console.writeLine("");
+            if (tok == 0) { Console.writeLine("JSON C3D TRAIN SKIP (no load)"); return; }
+            t.setLr(0.05); t.setTrainMode(1);
+            int labT = t.tensorId("label");
+            int step = 0;
+            while (step < 300) {
+                int cl = (step * 37) % 3;
+                feedOne(t, labT, cl);
+                t.runTrain();
+                step = step + 1;
+            }
+            int bad = 0;
+            int cl = 0;
+            while (cl < 3) {
+                feedOne(t, labT, cl);
+                t.runTrain();
+                double l = t.loss();
+                Console.writeString("cl" + Fmt.i(cl) + " loss="); Console.writeFloat(l);
+                Console.writeLine("");
+                if (l > 0.5) bad = bad + 1;
+                cl = cl + 1;
+            }
+            if (tok == 1 && bad == 0) Console.writeLine("JSON C3D TRAIN OK");
+            else Console.writeLine("JSON C3D TRAIN MISMATCH");
+        }
+}
+
+int main() { JsonC3dTrainApp app = new JsonC3dTrainApp(); return 0; }

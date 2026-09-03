@@ -133,6 +133,7 @@ class JsonModelLoader {
                 string lp = "layers." + Fmt.i(ly);
                 string op = gstr(j, lp + ".op", "");
                 string out = gstr(j, lp + ".out", "");
+                string inm = gstr(j, lp + ".in", "");
                 if (op == "Gemm" || op == "Conv" || op == "Conv3D" || op == "ConvTranspose") {
                     if (registerWeight(j, lp + ".W", out + "_W") == 0) return 0;
                     if (j.type(lp + ".B") != -1) {
@@ -178,6 +179,12 @@ class JsonModelLoader {
                 } else if (op == "Pad" && j.type(lp + ".pads") != -1) {
                     // Pad：pads int64（ONNX opset11，8 值 [N,C,H,W] begin + [N,C,H,W] end）
                     if (regI64Arr(j, lp + ".pads", out + "_pads") == 0) return 0;
+                } else if (op == "Split") {
+                    // 多输出 Split：outs 数组每名一个 nodeOut（自动填空槽 + outputCount）；
+                    // split 尺寸可选（int64 → nodeIn1，opset13 语义）；缺省 inferShapes 均分
+                    if (j.type(lp + ".split") != -1) {
+                        if (regI64Arr(j, lp + ".split", inm + "_split") == 0) return 0;
+                    }
                 } else if ((op == "Resize" || op == "Upsample") && j.type(lp + ".sizes") != -1) {
                     // Resize：目标尺寸 int64 [N,C,(outD,)outH,outW]（nodeIn3 sizes 语义）
                     if (regI64Arr(j, lp + ".sizes", out + "_rsz") == 0) return 0;
@@ -192,7 +199,7 @@ class JsonModelLoader {
                 string op = gstr(j, lp + ".op", "");
                 string inm = gstr(j, lp + ".in", "");
                 string out = gstr(j, lp + ".out", "");
-                if (op == "" || out == "") { ly = ly + 1; continue; }
+                if (op == "" || (out == "" && op != "Split")) { ly = ly + 1; continue; }   // Split 无单一 out（用 outs 数组）
                 if (op != "Embedding" && inm == "") { ly = ly + 1; continue; }   // Embedding 无数据 in（W+ids 全内部）
                 string in2 = gstr(j, lp + ".in2", "");
                 string in3 = gstr(j, lp + ".in3", "");
@@ -313,9 +320,20 @@ class JsonModelLoader {
                 } else if (op == "Transpose") {
                     // A3 扩展：perm 属性（缺省 → 反转维度）
                     setIntArr(j, lp, "perm", NodeField.PERM0(), NodeField.PERM_N(), ni);
+                } else if (op == "Split") {
+                    // 多输出 Split：outs 数组每名一 nodeOut；axis + 可选 split 尺寸 nodeIn1
+                    g_.nodeInt(ni, NodeField.AXIS(), gint(j, lp + ".axis", 1));
+                    if (j.type(lp + ".split") != -1) g_.nodeIn(ni, 1, inm + "_split");
+                    int no = arrLen(j, lp + ".outs");
+                    if (no > 4) no = 4;
+                    int ko = 0;
+                    while (ko < no) {
+                        g_.nodeOut(ni, j.getString(lp + ".outs." + Fmt.i(ko)));
+                        ko = ko + 1;
+                    }
                 }
                 // Sigmoid/Relu/GlobalAveragePool 单输入无附加属性
-                g_.nodeOut(ni, out);
+                if (op != "Split") g_.nodeOut(ni, out);   // Split 已在分支内 nodeOut 多槽
                 g_.endNode();
                 ly = ly + 1;
             }
