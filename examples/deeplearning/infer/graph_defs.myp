@@ -84,6 +84,7 @@ class NodeField {
         int KK1() { return 62; }
         int KK2() { return 63; }
         int CAST_TO() { return 64; }     // P3：Cast 目标 dtype（1=float,7=int64）
+        int TOPK_K() { return 65; }      // P4：TopK 的 k（沿行/特征轴取前 k 大）
 }
 
 // IR-P1：分析缓存位。图结构或 shape 改写默认使全部分析失效；仅显式重建后才标记有效。
@@ -234,6 +235,9 @@ class OpCode {
         int BWD_TANH() { return 106; }
         int MSE_LOSS() { return 107; }       // 逐元素损失（训练专用）：MSE/BCE（opKind 109/110）
         int BCE_LOSS() { return 108; }
+        int ARGMAX() { return 109; }         // P4 推理：ArgMax/ArgMin（opKind 47/48）/TopK(49，values+indices)
+        int ARGMIN() { return 110; }
+        int TOPK() { return 111; }
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -326,6 +330,9 @@ class OpCode {
             if (t == "BwdTanh") return OpCode.BWD_TANH();
             if (t == "MSELoss") return OpCode.MSE_LOSS();
             if (t == "BCELoss") return OpCode.BCE_LOSS();
+            if (t == "ArgMax") return OpCode.ARGMAX();
+            if (t == "ArgMin") return OpCode.ARGMIN();
+            if (t == "TopK") return OpCode.TOPK();
             return OpCode.UNKNOWN();
         }
         // 节点保护 trait：非 0 表示受 DCE 保护。1=stateful（就地改权重/累加），

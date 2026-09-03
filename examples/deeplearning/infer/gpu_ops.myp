@@ -888,6 +888,72 @@ class GpuInferOps {
             }
         }
 
+        // P4：ArgMax over 1D flat（n 元素）→ out[0]=float(index)。单线程串行扫描（p<1）。
+        void argmax(float[] a, long dev, int inOff, int outOff, int n) {
+            @gpu for (long p = 0L; p < 1L; p = p + 1L) resident(a = dev) {
+                if (p < 1L) {
+                    int bi = 0;
+                    double bv = double(a[inOff + 0]);
+                    int i = 1;
+                    while (i < n) {
+                        double v = double(a[inOff + i]);
+                        if (v > bv) { bv = v; bi = i; }
+                        i = i + 1;
+                    }
+                    a[outOff] = float(double(bi));
+                }
+            }
+        }
+
+        // P4：ArgMin（同上取最小）
+        void argmin(float[] a, long dev, int inOff, int outOff, int n) {
+            @gpu for (long p = 0L; p < 1L; p = p + 1L) resident(a = dev) {
+                if (p < 1L) {
+                    int bi = 0;
+                    double bv = double(a[inOff + 0]);
+                    int i = 1;
+                    while (i < n) {
+                        double v = double(a[inOff + i]);
+                        if (v < bv) { bv = v; bi = i; }
+                        i = i + 1;
+                    }
+                    a[outOff] = float(double(bi));
+                }
+            }
+        }
+
+        // P4：TopK over 1D flat：前 k 大降序 values[0..k)@valOff、indices(float)@idxOff。
+        // 单线程串行重复选择（O(k²·n)；k 小）。并列按下标小者先。
+        void topk(float[] a, long dev, int inOff, int valOff, int idxOff, int n, int k) {
+            @gpu for (long p = 0L; p < 1L; p = p + 1L) resident(a = dev) {
+                if (p < 1L) {
+                    if (k > n) k = n;
+                    int rank = 0;
+                    while (rank < k) {
+                        int bi = -1;
+                        double bv = 0.0;
+                        int i = 0;
+                        while (i < n) {
+                            int taken = 0;
+                            int j = 0;
+                            while (j < rank) {
+                                if (double(a[idxOff + j]) == double(i)) { taken = 1; j = rank; }
+                                j = j + 1;
+                            }
+                            if (taken == 0) {
+                                double v = double(a[inOff + i]);
+                                if (bi < 0 || v > bv) { bv = v; bi = i; }
+                            }
+                            i = i + 1;
+                        }
+                        if (bi < 0) { a[idxOff + rank] = float(double(0)); a[valOff + rank] = 0.0f; }
+                        else { a[idxOff + rank] = float(double(bi)); a[valOff + rank] = float(bv); }
+                        rank = rank + 1;
+                    }
+                }
+            }
+        }
+
         // Softmax 反向（阶段4d，GPU，thread-per-column）：dlogit[i] = p[i]·(dp[i] - Σ_j p[j]·dp[j])
         void bwdSoftmax(float[] a, long dev, int probOff, int dprobOff, int dlogitOff, int rows, int cols) {
             @gpu for (long p = 0L; p < long(cols); p = p + 1L) resident(a = dev) {

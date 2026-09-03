@@ -544,7 +544,7 @@ class Graph {
             attrs_.setOutputCount(i, attrs_.outputCount(i) + 1);   // F8：Split 多输出计数
         }
         void nodeInt(int i, int code, int v) {
-            if ((code >= NodeField.TRANSB() && code <= NodeField.PDB()) || code == NodeField.CAST_TO()) attrs_.set(i, code, v);
+            if ((code >= NodeField.TRANSB() && code <= NodeField.PDB()) || code == NodeField.CAST_TO() || code == NodeField.TOPK_K()) attrs_.set(i, code, v);
             else if (code == NodeField.ST0()) attrs_.setIntArray(i, 8, 0, v);
             else if (code == NodeField.ST1()) attrs_.setIntArray(i, 8, 1, v);
             else if (code == NodeField.ST2()) attrs_.setIntArray(i, 8, 2, v);

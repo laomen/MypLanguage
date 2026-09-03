@@ -1,0 +1,44 @@
+// json_argmax_main.myp — C：JSON ArgMax/ArgMin/TopK（图算子 P4，行/特征轴 1D）。
+// x[1,5]=[0.3,0.9,-0.2,0.9,0.1]：
+//   ArgMax→1（并列取先遇）；ArgMin→2（-0.2）；TopK(k=2)→tv=[0.9,0.9] ti=[1,3]
+//   （并列按下标小者先：rank0 取 idx1，rank1 排除 idx1 取 idx3）。CPU+GPU JSON ARGMAX OK。
+// 语义注：ArgMax/ArgMin/TopK 沿输入的行（分类/特征）轴做 1D flat 归约——单样本 =
+// 整行 logits（对应 runtime argmax1d/LLM 采样/CE 标签）；输出为 float 编码索引。
+import env;
+import fmt;
+import dl;
+class JsonArgmaxApp {
+    action:
+        @constructor JsonArgmaxApp() {
+            Session s = new Session();
+            int ok = s.loadJson("./deeplearning/infer_tests/argmax.json");
+            if (ok == 0) { Console.writeLine("JSON ARGMAX SKIP (no load)"); return; }
+            double[] x = new double[5];
+            x[0]=0.3; x[1]=0.9; x[2]=-0.2; x[3]=0.9; x[4]=0.1;
+            s.setInput("x", x, 5);
+            int rk = s.runAuto();
+            double[] pr = s.getOutput("pred");
+            double[] mp = s.getOutput("minpred");
+            double[] tv = s.getOutput("tv");
+            double[] ti = s.getOutput("ti");
+            int bad = 0;
+            double d = pr[0] - 1.0; if (d<0.0) d=0.0-d; if (d>1.0e-4) bad = bad + 1;
+            d = mp[0] - 2.0; if (d<0.0) d=0.0-d; if (d>1.0e-4) bad = bad + 1;
+            d = tv[0] - 0.9; if (d<0.0) d=0.0-d; if (d>1.0e-4) bad = bad + 1;
+            d = tv[1] - 0.9; if (d<0.0) d=0.0-d; if (d>1.0e-4) bad = bad + 1;
+            d = ti[0] - 1.0; if (d<0.0) d=0.0-d; if (d>1.0e-4) bad = bad + 1;
+            d = ti[1] - 3.0; if (d<0.0) d=0.0-d; if (d>1.0e-4) bad = bad + 1;
+            Console.writeString("run="); Console.writeLong(rk);
+            Console.writeString(" pred="); Console.writeFloat(pr[0]);
+            Console.writeString(" min="); Console.writeFloat(mp[0]);
+            Console.writeString(" tv0="); Console.writeFloat(tv[0]);
+            Console.writeString(" tv1="); Console.writeFloat(tv[1]);
+            Console.writeString(" ti0="); Console.writeFloat(ti[0]);
+            Console.writeString(" ti1="); Console.writeFloat(ti[1]);
+            Console.writeString(" bad="); Console.writeLong(bad);
+            Console.writeLine("");
+            if (ok==1 && rk==1 && bad==0) Console.writeLine("JSON ARGMAX OK");
+            else Console.writeLine("JSON ARGMAX FAIL");
+        }
+}
+int main() { JsonArgmaxApp a = new JsonArgmaxApp(); return 0; }

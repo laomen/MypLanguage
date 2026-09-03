@@ -3,21 +3,22 @@ import "./graph_defs.myp";
 
 class GraphNodeAttrs {
     action:
-        @constructor GraphNodeAttrs() { values_ = new int[33280]; intArrays_ = new int[39936]; longArrays_ = new long[16384]; fusedOut_ = new string[512]; }
+        @constructor GraphNodeAttrs() { values_ = new int[33792]; intArrays_ = new int[39936]; longArrays_ = new long[16384]; fusedOut_ = new string[512]; }
 
         void resetNode(int node) {
             int key = 0;
             while (key <= NodeField.PDB()) {
-                values_[node * 65 + key] = 0;
+                values_[node * 66 + key] = 0;
                 key = key + 1;
             }
-            values_[node * 65 + NodeField.AXIS()] = -1;
-            values_[node * 65 + NodeField.SH()] = 1;
-            values_[node * 65 + NodeField.SW()] = 1;
-            values_[node * 65 + NodeField.DH()] = 1;
-            values_[node * 65 + NodeField.DW()] = 1;
-            values_[node * 65 + NodeField.GROUP()] = 1;
-            values_[node * 65 + NodeField.CAST_TO()] = 0;
+            values_[node * 66 + NodeField.AXIS()] = -1;
+            values_[node * 66 + NodeField.SH()] = 1;
+            values_[node * 66 + NodeField.SW()] = 1;
+            values_[node * 66 + NodeField.DH()] = 1;
+            values_[node * 66 + NodeField.DW()] = 1;
+            values_[node * 66 + NodeField.GROUP()] = 1;
+            values_[node * 66 + NodeField.CAST_TO()] = 0;
+            values_[node * 66 + NodeField.TOPK_K()] = 0;
             int arrayKey = 0;
             while (arrayKey < 13) {
                 int index = 0;
@@ -38,12 +39,12 @@ class GraphNodeAttrs {
 
         int get(int node, int key) {
             if (node < 0 || node >= 512 || managed(key) == 0) return 0;
-            return values_[node * 65 + key];
+            return values_[node * 66 + key];
         }
 
         void set(int node, int key, int value) {
             if (node < 0 || node >= 512 || managed(key) == 0) return;
-            values_[node * 65 + key] = value;
+            values_[node * 66 + key] = value;
         }
 
         int resizeD(int node) { return nodeValid(node) == 1 ? resizeD_[node] : 0; }
@@ -89,6 +90,7 @@ class GraphNodeAttrs {
         int managed(int key) {
             if (key >= NodeField.TRANSB() && key <= NodeField.PDB()) return 1;
             if (key == NodeField.CAST_TO()) return 1;
+            if (key == NodeField.TOPK_K()) return 1;
             return 0;
         }
 

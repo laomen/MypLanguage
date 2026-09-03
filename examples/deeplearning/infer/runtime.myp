@@ -686,6 +686,27 @@ class InferenceRuntime {
             opD_[id] = 0;
             opCount_ = opCount_ + 1;
         }
+        // ArgMax（opKind 47）/ArgMin（48）：1D flat → 单值 float(index)（分类/采样轴）
+        void addArgMax(int inT, int outT) {
+            int id = opCount_;
+            opKind_[id] = 47;
+            opA_[id] = inT; opB_[id] = outT;
+            opCount_ = opCount_ + 1;
+        }
+        void addArgMin(int inT, int outT) {
+            int id = opCount_;
+            opKind_[id] = 48;
+            opA_[id] = inT; opB_[id] = outT;
+            opCount_ = opCount_ + 1;
+        }
+        // TopK（opKind 49）：1D flat 前 k 大 → values=opB[k]、indices=opC[k]（float）；k=opP0
+        void addTopK(int inT, int valT, int idxT, int k) {
+            int id = opCount_;
+            opKind_[id] = 49;
+            opA_[id] = inT; opB_[id] = valT; opC_[id] = idxT;
+            opP0_[id] = k;
+            opCount_ = opCount_ + 1;
+        }
 
         void addAdd(int aTid, int bTid, int outputTid, int doRelu,
                     int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw) {

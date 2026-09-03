@@ -211,7 +211,7 @@ class JsonModelLoader {
                 string op = gstr(j, lp + ".op", "");
                 string inm = gstr(j, lp + ".in", "");
                 string out = gstr(j, lp + ".out", "");
-                if (op == "" || (out == "" && op != "Split")) { ly = ly + 1; continue; }   // Split 无单一 out（用 outs 数组）
+                if (op == "" || (out == "" && op != "Split" && op != "TopK")) { ly = ly + 1; continue; }   // Split/TopK 无单一 out（用 outs 数组）
                 if (op != "Embedding" && inm == "") { ly = ly + 1; continue; }   // Embedding 无数据 in（W+ids 全内部）
                 string in2 = gstr(j, lp + ".in2", "");
                 string in3 = gstr(j, lp + ".in3", "");
@@ -349,9 +349,20 @@ class JsonModelLoader {
                         g_.nodeOut(ni, j.getString(lp + ".outs." + Fmt.i(ko)));
                         ko = ko + 1;
                     }
+                } else if (op == "TopK") {
+                    // P4：沿行（分类/特征）轴 1D 取前 k 大。outs[0]=values[k]、outs[1]=indices[k]
+                    // （float 编码；JSON 层单样本 = 整行）。k 属性存 TOPK_K。
+                    g_.nodeInt(ni, NodeField.TOPK_K(), gint(j, lp + ".k", 1));
+                    int no = arrLen(j, lp + ".outs");
+                    if (no > 2) no = 2;
+                    int ko = 0;
+                    while (ko < no) {
+                        g_.nodeOut(ni, j.getString(lp + ".outs." + Fmt.i(ko)));
+                        ko = ko + 1;
+                    }
                 }
-                // Sigmoid/Relu/GlobalAveragePool 单输入无附加属性
-                if (op != "Split") g_.nodeOut(ni, out);   // Split 已在分支内 nodeOut 多槽
+                // Sigmoid/Relu/ArgMax/ArgMin/GlobalAveragePool 单输入无附加属性
+                if (op != "Split" && op != "TopK") g_.nodeOut(ni, out);   // Split/TopK 已在分支内 nodeOut 多槽
                 g_.endNode();
                 ly = ly + 1;
             }

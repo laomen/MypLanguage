@@ -671,6 +671,13 @@ class GraphOptimizer {
                     graph.compilerSetValueRole(graph.compilerNodeOutput(i, 0), TensorRole.DATA());
                     graph.compilerSetValueDType(graph.compilerNodeOutput(i, 0), graph.compilerValueDType(graph.nodeInAt(i, 0)));
                 }
+                if (t == "TopK") {   // P4：TopK nodeOut1(indices) 沿用主输入 kind（同 values）
+                    graph.compilerSetShapeKind(graph.compilerNodeOutput(i, 1), k);
+                    if (graph.compilerValueRole(graph.compilerNodeOutput(i, 1)) == TensorRole.UNKNOWN()) {
+                        graph.compilerSetValueRole(graph.compilerNodeOutput(i, 1), TensorRole.DATA());
+                        graph.compilerSetValueDType(graph.compilerNodeOutput(i, 1), graph.compilerValueDType(graph.nodeInAt(i, 0)));
+                    }
+                }
                 if (t == "Split") {   // F8：Split 所有输出沿用主输入 kind
                     graph.compilerSetShapeKind(graph.compilerNodeOutput(i, 1), k);
                     graph.compilerSetShapeKind(graph.compilerNodeOutput(i, 2), k);
@@ -1874,6 +1881,17 @@ int inferShapes(Graph graph) {
                 } else if (t == "Sqrt") {
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     graph.copyShape(graph.compilerNodeOutput(i, 0), a);
+                } else if (t == "ArgMax" || t == "ArgMin") {
+                    // P4：1D flat argmax/min → 单值索引（float 编码）[1,1,1,1]
+                    if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), 1, 1, 1, 1);
+                } else if (t == "TopK") {
+                    // P4：1D flat 前 k 大 → nodeOut0=values[k]、nodeOut1=indices[k]（float）
+                    if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    int k = graph.compilerAttr(i, NodeField.TOPK_K());
+                    if (k < 1) k = 1;
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), k, 1, 1, 1);
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 1), k, 1, 1, 1);
                 } else if (t == "ReduceMean" || t == "ReduceSum" || t == "ReduceMax" || t == "ReduceMin") {
                     // F8：mode 0 = 全规约（标量）；mode 1 = 空间维规约（per-(n,c)，秩无关）
                     // G3：Reduce 族共用 axes 归一化 + mode 判定；redType 记录（mean/sum/max/min）。

@@ -151,6 +151,15 @@ class GraphCompiler {
                     rt.addSigmoid(a, out);
                 } else if (code == OpCode.TANH()) {
                     rt.addTanh(a, out);
+                } else if (code == OpCode.ARGMAX()) {
+                    rt.addArgMax(a, out);
+                } else if (code == OpCode.ARGMIN()) {
+                    rt.addArgMin(a, out);
+                } else if (code == OpCode.TOPK()) {
+                    // TopK：1D flat 前 k 大。nodeOut0=values[k]、nodeOut1=indices[k]（float）
+                    int val = tensorId(graph.compilerNodeOutput(ni, 0));
+                    int idx = tensorId(graph.compilerNodeOutput(ni, 1));
+                    rt.addTopK(a, val, idx, graph.compilerAttr(ni, NodeField.TOPK_K()));
                 } else if (code == OpCode.SOFTMAX()) {
                     rt.addSoftmax(a, out);
                 } else if (code == OpCode.LAYER_NORM() || code == OpCode.RMS_NORM()) {

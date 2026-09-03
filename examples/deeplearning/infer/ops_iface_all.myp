@@ -102,6 +102,43 @@ class TanhOp {
         }
 }
 
+// ---- argmax（opKind 47 前向推理）：1D flat → 单值 float(index) ----
+class ArgmaxOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            InferOps.argmax(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yb), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- argmin（opKind 48 前向推理）----
+class ArgminOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            InferOps.argmin(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yb), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- topk（opKind 49 前向推理）：1D flat 前 k 大 → values=opB、indices=opC（float）----
+class TopkOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int val = rt.opBAt(i);
+            int idx = rt.opCAt(i);
+            InferOps.topk(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(val), rt.tensorOff(idx), rt.tensorRows(xa) * rt.tensorCols(xa), rt.opP0At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- add（opKind 5 前向 / 53 反向；opRelu 融合标志；统一 4D 广播）----
 class AddOp {
     interface class IOp;
@@ -235,6 +272,43 @@ class GpuTanhOp {
                 GpuInferOps.bwdTanh(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(y), rt.tensorOff(dx), rt.tensorRows(y) * rt.tensorCols(y));
             }
         }
+}
+
+// ---- argmax（GPU）----
+class GpuArgmaxOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            GpuInferOps.argmax(rt.arenaRef(), rt.devRef(), rt.tensorOff(xa), rt.tensorOff(yb), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- argmin（GPU）----
+class GpuArgminOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            GpuInferOps.argmin(rt.arenaRef(), rt.devRef(), rt.tensorOff(xa), rt.tensorOff(yb), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- topk（GPU）----
+class GpuTopkOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int val = rt.opBAt(i);
+            int idx = rt.opCAt(i);
+            GpuInferOps.topk(rt.arenaRef(), rt.devRef(), rt.tensorOff(xa), rt.tensorOff(val), rt.tensorOff(idx), rt.tensorRows(xa) * rt.tensorCols(xa), rt.opP0At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
 }
 
 // ---- add（GPU）----
@@ -2479,6 +2553,9 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwdBwd(3, 70, new SoftmaxOp(), 0);        rt.registerFwdBwd(3, 70, new GpuSoftmaxOp(), 1);
     rt.registerFwdBwd(4, 52, new SigmoidOp(), 0);        rt.registerFwdBwd(4, 52, new GpuSigmoidOp(), 1);
     rt.registerFwdBwd(46, 108, new TanhOp(), 0);         rt.registerFwdBwd(46, 108, new GpuTanhOp(), 1);
+    rt.registerFwd(47, new ArgmaxOp(), 0);               rt.registerFwd(47, new GpuArgmaxOp(), 1);
+    rt.registerFwd(48, new ArgminOp(), 0);               rt.registerFwd(48, new GpuArgminOp(), 1);
+    rt.registerFwd(49, new TopkOp(), 0);                 rt.registerFwd(49, new GpuTopkOp(), 1);
     rt.registerFwdBwd(5, 53, new AddOp(), 0);            rt.registerFwdBwd(5, 53, new GpuAddOp(), 1);
     rt.registerFwd(6, new MatmulOp(), 0);                rt.registerFwd(6, new GpuMatmulOp(), 1);
     rt.registerFwdBwd(7, 56, new ConvOp(), 0);           rt.registerFwdBwd(7, 56, new GpuConvOp(), 1);
