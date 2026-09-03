@@ -1,0 +1,92 @@
+// json_cnn_gradcheck_main.myp — D：CNN 训练梯度有限差分 grad-check（权威数值对拍）。
+// 用 grad_cnn.json（Conv→Flatten→Gemm→SoftmaxCE，线性无激活/无池化）：loss 完全
+// 光滑，有限差分绝对可信 → 逐元素证明 BwdConv（dw/db）+ BwdReshape(Flatten) +
+// BwdDense + SoftmaxCE 端到端反向精确（含 Conv 权重梯度接线——训练图不融合
+// Conv+Relu）。含 Relu/MaxPool 的真实 CNN 训降已有独立回归（json_cnn_train /
+// json_gap_cnn_train / json_avgpool_cnn_train）；激活网 grad-check 受 Relu dead-zone
+// / MaxPool argmax 非光滑影响，有限差分不可靠，故用线性网做精确对拍。
+// analytic：runTrain(lr=0)（反向写 grad 张量，Update 不应用）→ gradId(w)。
+// numeric：±ε 扰动 → runTrain(lr=0) 前向 loss → (lp-lm)/(2ε)。判据 max rel < 0.15。
+import env;
+import fmt;
+import dl;
+
+class JsonCnnGradcheckApp {
+    action:
+        double absd(double v) { if (v < 0.0) return 0.0 - v; return v; }
+        void feedOne(Session t, int labT, int cl) {
+            double[] bx = new double[64];
+            int i = 0;
+            while (i < 64) {
+                bx[i] = 0.0;
+                if (i >= cl * 16 && i < cl * 16 + 16) bx[i] = 1.0;
+                i = i + 1;
+            }
+            t.setInput("x", bx, 64);
+            i = 0;
+            while (i < 3) { t.setFlat(labT, i, 0.0); i = i + 1; }
+            t.setFlat(labT, cl, 1.0);
+        }
+        @constructor JsonCnnGradcheckApp() {
+            Session t = new Session();
+            int tok = t.loadJsonTrain("./deeplearning/infer_tests/grad_cnn.json");
+            Console.writeString("load="); Console.writeLong(tok); Console.writeLine("");
+            if (tok == 0) { Console.writeLine("CNN GRAD SKIP (no load)"); return; }
+            t.setLr(0.0); t.setTrainMode(1);   // lr=0：反向算梯度但不更新权重
+            int labT = t.tensorId("label");
+            int cl = 1;   // 固定单样本（class 1，块内容 1）
+            // ---- 权重名表（json 预注册名：out_W / out_b）----
+            string[] wn = new string[4];
+            wn[0] = "c_W"; wn[1] = "c_b"; wn[2] = "logits_W"; wn[3] = "logits_b";
+            int[] nw = new int[4];
+            nw[0] = 18; nw[1] = 2; nw[2] = 216; nw[3] = 3;
+            // ---- analytic 梯度（一次 runTrain lr=0）----
+            feedOne(t, labT, cl);
+            t.runTrain();
+            int bad = 0;
+            double worst = 0.0;
+            int wi = 0;
+            while (wi < 4) {
+                int wt = t.tensorId(wn[wi]);
+                int gt = t.gradId(wn[wi]);
+                Console.writeString("w=" + wn[wi] + " tid=" + Fmt.i(wt) + " g=" + Fmt.i(gt));
+                Console.writeLine("");
+                if (wt < 0 || gt < 0) { bad = bad + 1; wi = wi + 1; continue; }
+                int j = 0;
+                while (j < nw[wi]) {
+                    double g0 = t.getFlat(gt, j);
+                    double w0 = t.getFlat(wt, j);
+                    double eps = 1.0e-2;
+                    t.setFlat(wt, j, w0 + eps);
+                    feedOne(t, labT, cl); t.runTrain();
+                    double lp = t.loss();
+                    t.setFlat(wt, j, w0 - eps);
+                    feedOne(t, labT, cl); t.runTrain();
+                    double lm = t.loss();
+                    t.setFlat(wt, j, w0);
+                    double num = (lp - lm) / (2.0 * eps);
+                    double den = absd(g0);
+                    if (den < absd(num)) den = absd(num);
+                    if (den < 1.0e-6) den = 1.0e-6;
+                    double rd = absd(g0 - num) / den;
+                    if (rd > worst) worst = rd;
+                    if (rd > 0.15) {
+                        bad = bad + 1;
+                        Console.writeString("  BAD w=" + wn[wi] + " j=" + Fmt.i(j) + " g0="); Console.writeFloat(g0);
+                        Console.writeString(" num="); Console.writeFloat(num);
+                        Console.writeString(" w0="); Console.writeFloat(w0);
+                        Console.writeLine("");
+                    }
+                    j = j + 1;
+                }
+                wi = wi + 1;
+            }
+            Console.writeString("cnn gradcheck worstRel="); Console.writeFloat(worst);
+            Console.writeString(" bad="); Console.writeLong(bad);
+            Console.writeLine("");
+            if (tok == 1 && bad == 0) Console.writeLine("CNN GRAD OK");
+            else Console.writeLine("CNN GRAD MISMATCH");
+        }
+}
+
+int main() { JsonCnnGradcheckApp app = new JsonCnnGradcheckApp(); return 0; }

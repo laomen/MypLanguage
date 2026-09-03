@@ -183,6 +183,7 @@ class JsonModelLoader {
                 string in2 = gstr(j, lp + ".in2", "");
                 string in3 = gstr(j, lp + ".in3", "");
                 string in4 = gstr(j, lp + ".in4", "");
+                if (op == "Relu6") op = "ReLU6";   // JSON 常见小写别名 → ONNX 规范名（nodeTypeAt 原样比较）
                 int ni = g_.beginNode();
                 g_.nodeType(ni, op);
                 g_.nodeIn(ni, 0, inm);

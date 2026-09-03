@@ -1,0 +1,46 @@
+// json_activ_chain_train_main.myp — JSON 激活链训练（LeakyRelu→Relu6→HardSwish→
+// SiLU 串行，图级验证各激活反向 buildReverseGraph/wiring/register 接通）。
+// 每激活间插 Gemm：梯度须穿过全部激活 + 激活层前权重才更新（loss 显著降 =
+// BwdLeakyRelu/BwdRelu6/BwdHardSwish 全链工作；BwdSilu 已由 swiglu 训练独立验证）。
+import env;
+import fmt;
+import dl;
+
+class JsonActivChainApp {
+    action:
+        void feedOne(Session t, int labT, int cl) {
+            double[] bx = new double[4];
+            int i = 0;
+            while (i < 4) { bx[i] = 0.05; i = i + 1; }
+            bx[cl] = 2.0;
+            t.setInput("x", bx, 4);
+            i = 0;
+            while (i < 3) { t.setFlat(labT, i, 0.0); i = i + 1; }
+            t.setFlat(labT, cl, 1.0);
+        }
+        @constructor JsonActivChainApp() {
+            Session t = new Session();
+            int tok = t.loadJsonTrain("./deeplearning/infer_tests/activ_chain.json");
+            Console.writeString("load="); Console.writeLong(tok); Console.writeLine("");
+            if (tok == 0) { Console.writeLine("JSON ACTIV CHAIN SKIP"); return; }
+            t.setLr(0.05); t.setTrainMode(1);
+            int labT = t.tensorId("label");
+            double l0 = 0.0, l300 = 0.0;
+            int step = 0;
+            while (step < 300) {
+                int cl = (step * 37) % 3;
+                feedOne(t, labT, cl);
+                t.runTrain();
+                if (step == 0) l0 = t.loss();
+                if (step == 299) l300 = t.loss();
+                step = step + 1;
+            }
+            Console.writeString("loss@0="); Console.writeFloat(l0);
+            Console.writeString(" loss@300="); Console.writeFloat(l300);
+            Console.writeLine("");
+            if (tok == 1 && (l0 - l300) > 0.2) Console.writeLine("JSON ACTIV CHAIN OK");
+            else Console.writeLine("JSON ACTIV CHAIN MISMATCH");
+        }
+}
+
+int main() { JsonActivChainApp app = new JsonActivChainApp(); return 0; }

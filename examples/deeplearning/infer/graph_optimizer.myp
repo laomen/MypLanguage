@@ -16,6 +16,9 @@ interface IGraphOptimizeHost {
     void setTrainingModeForOptimizer(int mode);
     void enableNoReuseForOptimizer();
     int shouldFuseConvAddForOptimizer();
+    int shouldFuseConvReluForOptimizer();
+    int shouldFuseReluForOptimizer();
+    int shouldFuseGapFlattenForOptimizer();
     int shouldRunNHWCForOptimizer();
     void dumpResizeSizesForOptimizer();
 }
@@ -865,6 +868,41 @@ class GraphOptimizer {
                             graph.nodeType(bd, "BwdSigmoid");
                             graph.nodeIn(bd, 0, graph.compilerGradName(y));
                             graph.nodeIn(bd, 1, y);              // 用前向输出 y
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                        } else if (t == "Relu6" || t == "LeakyRelu" || t == "SiLU" || t == "HardSwish" || t == "LogSoftmax") {
+                            // 激活反向（BwdRelu6/LeakyRelu/Silu/HardSwish/LogSoftmax(dy, x) → dx）。
+                            // 各激活导数掩码需 fwd 输入 x（relu6/leaky/silu/hardswish 判区间、
+                            // logsoftmax 重算 σ）→ nodeIn1=x；LogSoftmax 复制 axis（graph_compiler
+                            // 从 x shape+axis 推 outer/axisDim/inner）。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            if (t == "Relu6") graph.nodeType(bd, "BwdRelu6");
+                            else if (t == "LeakyRelu") graph.nodeType(bd, "BwdLeakyRelu");
+                            else if (t == "SiLU") graph.nodeType(bd, "BwdSilu");
+                            else if (t == "HardSwish") graph.nodeType(bd, "BwdHardSwish");
+                            else graph.nodeType(bd, "BwdLogSoftmax");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                            if (t == "LeakyRelu") {
+                                graph.compilerAttrSet(bd, NodeField.ALPHA_INT(), graph.compilerAttr(ni, NodeField.ALPHA_INT()));
+                                graph.compilerAttrSet(bd, NodeField.HAS_ALPHA(), graph.compilerAttr(ni, NodeField.HAS_ALPHA()));
+                            }
+                            if (t == "LogSoftmax") {
+                                graph.compilerAttrSet(bd, NodeField.AXIS(), graph.compilerAttr(ni, NodeField.AXIS()));
+                            }
+                        } else if (t == "Clip") {
+                            // Clip 反向：dx = dy · 1{x in [min,max]}；边界标量张量 min/max =
+                            // fwd nodeIn1/nodeIn2 透传（图初始器，BwdClip 不为其产梯度）。
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdClip");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeIn(bd, 2, graph.nodeInAt(ni, 1));
+                            graph.nodeIn(bd, 3, graph.nodeInAt(ni, 2));
                             graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
                             graph.endNode();
                         } else if (t == "Reshape" || t == "Flatten" || t == "Squeeze" || t == "Transpose") {
@@ -2237,9 +2275,14 @@ int foldShapeChains(Graph graph) {
             host.runIRPass(IRPassKind.FOLD_SHAPES());  // P3：inferShapes 后折叠剩余链（Shape(中间)→…→Cast）
             host.runIRPass(IRPassKind.CLASSIFY());
             host.runIRPass(IRPassKind.FUSE_BN());
-            host.runIRPass(IRPassKind.FUSE_CONV_RELU());
-            host.runIRPass(IRPassKind.FUSE_RELU());
-            host.runIRPass(IRPassKind.FUSE_GAP_FLATTEN());
+            // P4-x：融合会把 producer 的线性输出标 dead、有效输出改 fusedOut——反向遍历按
+            // compilerNodeOutput(ni,0)（原输出名）判梯度存在会漏过融合 Conv（BwdConv 断链，
+            // Conv 权重永不更新）。训练图跳过结构融合（保留独立 Relu/Flatten 节点），使
+            // 反向逐节点回传；推理图仍融合（单内核加速）。FUSE_BN 折叠权重无损训练近似
+            // （当前无 BN 训练模型），暂保留。
+            if (host.shouldFuseConvReluForOptimizer() == 1) host.runIRPass(IRPassKind.FUSE_CONV_RELU());
+            if (host.shouldFuseReluForOptimizer() == 1) host.runIRPass(IRPassKind.FUSE_RELU());
+            if (host.shouldFuseGapFlattenForOptimizer() == 1) host.runIRPass(IRPassKind.FUSE_GAP_FLATTEN());
             if (host.runIRPassToFixpoint(IRPassKind.IDENTITY_FOLD(), 4) == 0) { Console.writeLine("DBG fail identityFold"); return 0; }
             if (host.runIRPassToFixpoint(IRPassKind.FOLD_RELU(), 4) == 0) { Console.writeLine("DBG fail foldRelu"); return 0; }
             // P4-2/3：Conv+残差Add 融合（仅推理；convResidual 无 backward，训练图不融合）

@@ -646,7 +646,7 @@ class BatchnormNhwcOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
-// ---- relu6（opKind 19 前向）----
+// ---- relu6（opKind 19 前向 / 102 反向）----
 class Relu6Op {
     interface class IOp;
     action:
@@ -654,10 +654,17 @@ class Relu6Op {
             int xa = rt.opAAt(i); int yd = rt.opBAt(i);
             InferOps.relu6(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa));
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // ReLU6'：x in (0,6) → 1 否则 0；需 fwd 输入 x 判掩码
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                InferOps.bwdRelu6(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx), rt.tensorRows(x) * rt.tensorCols(x));
+            }
+        }
 }
 
-// ---- leakyrelu（opKind 20 前向）----
+// ---- leakyrelu（opKind 20 前向 / 103 反向）----
 class LeakyReluOp {
     interface class IOp;
     action:
@@ -667,10 +674,19 @@ class LeakyReluOp {
             if (rt.opP1At(i) == 1) alpha = F32.toDouble(rt.opP0At(i));
             InferOps.leakyrelu(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa), alpha);
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // LeakyRelu'：x>0 → 1 否则 alpha；需 fwd 输入 x + alpha 属性
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                double alpha = 0.01;
+                if (rt.opP1At(i) == 1) alpha = F32.toDouble(rt.opP0At(i));
+                InferOps.bwdLeakyRelu(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx), rt.tensorRows(x) * rt.tensorCols(x), alpha);
+            }
+        }
 }
 
-// ---- silu（opKind 21 前向）----
+// ---- silu（opKind 21 前向 / 104 反向）----
 class SiluOp {
     interface class IOp;
     action:
@@ -678,10 +694,17 @@ class SiluOp {
             int xa = rt.opAAt(i); int yd = rt.opBAt(i);
             InferOps.silu(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa));
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // SiLU'：σ(x)·(1+x·(1-σ(x)))；需 fwd 输入 x 重算 σ
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                InferOps.bwdSilu(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx), rt.tensorRows(x) * rt.tensorCols(x));
+            }
+        }
 }
 
-// ---- hardswish（opKind 22 前向）----
+// ---- hardswish（opKind 22 前向 / 105 反向）----
 class HardSwishOp {
     interface class IOp;
     action:
@@ -689,10 +712,17 @@ class HardSwishOp {
             int xa = rt.opAAt(i); int yd = rt.opBAt(i);
             InferOps.hardswish(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa));
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // HardSwish'：x≤-3→0；x≥3→1；else (2x+3)/6；需 fwd 输入 x
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                InferOps.bwdHardSwish(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx), rt.tensorRows(x) * rt.tensorCols(x));
+            }
+        }
 }
 
-// ---- clip（opKind 23 前向）----
+// ---- clip（opKind 23 前向 / 107 反向）----
 class ClipOp {
     interface class IOp;
     action:
@@ -702,7 +732,16 @@ class ClipOp {
             int maxOff = -1; if (rt.opP1At(i) >= 0) maxOff = rt.tensorOff(rt.opP1At(i));
             InferOps.clip(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd), rt.tensorRows(xa) * rt.tensorCols(xa), minOff, maxOff);
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // Clip'：x in [min,max] → 1 否则 0；边界标量张量 C=minT D=maxT，dx=P0
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opP0At(i);
+                if (dx < 0) return;
+                int minOff = -1; if (rt.opCAt(i) >= 0) minOff = rt.tensorOff(rt.opCAt(i));
+                int maxOff = -1; if (rt.opDAt(i) >= 0) maxOff = rt.tensorOff(rt.opDAt(i));
+                InferOps.bwdClip(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx), rt.tensorRows(x) * rt.tensorCols(x), minOff, maxOff);
+            }
+        }
 }
 
 // ---- reshape（opKind 24 前向，连续拷贝）----
@@ -1505,7 +1544,7 @@ class GpuGatherOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
-// ---- logsoftmax（opKind 79 前向；沿 axis 稳定 log-softmax）----
+// ---- logsoftmax（opKind 79 前向 / 106 反向；沿 axis 稳定 log-softmax）----
 class LogSoftmaxOp {
     interface class IOp;
     action:
@@ -1514,7 +1553,15 @@ class LogSoftmaxOp {
             InferOps.logSoftmax(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yd),
                                 rt.opP1At(i), rt.opP2At(i), rt.opP3At(i));
         }
-        void backward(InferenceRuntime rt, int i) { }
+        void backward(InferenceRuntime rt, int i) {
+            // LogSoftmax 反向：dx_i = dy_i - σ_i·Σdy（σ=softmax(x)）；需 fwd 输入 x + outer/axisDim/inner
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i); int x = rt.opBAt(i); int dx = rt.opCAt(i);
+                if (dx < 0) return;
+                InferOps.bwdLogSoftmax(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(x), rt.tensorOff(dx),
+                                       rt.opP1At(i), rt.opP2At(i), rt.opP3At(i));
+            }
+        }
 }
 
 // ---- logsoftmax（GPU，opKind 79）----
@@ -2372,11 +2419,11 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(16, new GapoolNhwcOp(), 0);           rt.registerFwd(16, new GpuGapoolNhwcOp(), 1);
     rt.registerFwd(17, new BatchnormOp(), 0);            rt.registerFwd(17, new GpuBatchnormOp(), 1);
     rt.registerFwd(18, new BatchnormNhwcOp(), 0);        rt.registerFwd(18, new GpuBatchnormNhwcOp(), 1);
-    rt.registerFwd(19, new Relu6Op(), 0);                rt.registerFwd(19, new GpuRelu6Op(), 1);
-    rt.registerFwd(20, new LeakyReluOp(), 0);            rt.registerFwd(20, new GpuLeakyReluOp(), 1);
-    rt.registerFwd(21, new SiluOp(), 0);                 rt.registerFwd(21, new GpuSiluOp(), 1);
-    rt.registerFwd(22, new HardSwishOp(), 0);            rt.registerFwd(22, new GpuHardSwishOp(), 1);
-    rt.registerFwd(23, new ClipOp(), 0);                 rt.registerFwd(23, new GpuClipOp(), 1);
+    rt.registerFwdBwd(19, 102, new Relu6Op(), 0);      rt.registerFwd(19, new GpuRelu6Op(), 1);
+    rt.registerFwdBwd(20, 103, new LeakyReluOp(), 0);  rt.registerFwd(20, new GpuLeakyReluOp(), 1);
+    rt.registerFwdBwd(21, 104, new SiluOp(), 0);       rt.registerFwd(21, new GpuSiluOp(), 1);
+    rt.registerFwdBwd(22, 105, new HardSwishOp(), 0);  rt.registerFwd(22, new GpuHardSwishOp(), 1);
+    rt.registerFwdBwd(23, 107, new ClipOp(), 0);       rt.registerFwd(23, new GpuClipOp(), 1);
     rt.registerFwdBwd(24, 93, new ReshapeOp(), 0);        rt.registerFwd(24, new GpuReshapeOp(), 1);
     rt.registerFwd(25, new ConcatOp(), 0);               rt.registerFwd(25, new GpuConcatOp(), 1);
     rt.registerFwdBwd(26, 94, new TransposeOp(), 0);     rt.registerFwd(26, new GpuTransposeOp(), 1);
@@ -2395,7 +2442,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwdBwd(76, 96, new TileOp(), 0);          rt.registerFwd(76, new GpuTileOp(), 1);
     rt.registerFwd(77, new SqueezeOp(), 0);              rt.registerFwd(77, new GpuSqueezeOp(), 1);
     rt.registerFwdBwd(78, 98, new GatherOp(), 0);        rt.registerFwd(78, new GpuGatherOp(), 1);
-    rt.registerFwd(79, new LogSoftmaxOp(), 0);           rt.registerFwd(79, new GpuLogSoftmaxOp(), 1);
+    rt.registerFwdBwd(79, 106, new LogSoftmaxOp(), 0);   rt.registerFwd(79, new GpuLogSoftmaxOp(), 1);
     rt.registerFwd(80, new EmbeddingOp(), 0);            rt.registerFwd(80, new GpuEmbeddingOp(), 1);
     rt.registerFwd(81, new DropoutOp(), 0);              rt.registerFwd(81, new GpuDropoutOp(), 1);
     rt.registerFwd(82, new BatchMatmulOp(), 0);          rt.registerFwd(82, new GpuBatchMatmulOp(), 1);

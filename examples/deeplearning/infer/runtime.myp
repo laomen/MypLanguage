@@ -244,6 +244,49 @@ class InferenceRuntime {
             opA_[id] = dyT; opB_[id] = yT; opC_[id] = dxT;
             opCount_ = opCount_ + 1;
         }
+        // 激活反向（opKind 102-107；CPU-only 训练）：ReLU6/LeakyRelu/SiLU/HardSwish/
+        // LogSoftmax/Clip。均 A=dy, B=x（fwd 输入，重算导数掩码/σ），C=dx。
+        void addBwdRelu6(int dyT, int xT, int dxT) {
+            int id = opCount_;
+            opKind_[id] = 102;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT;
+            opCount_ = opCount_ + 1;
+        }
+        void addBwdLeakyRelu(int dyT, int xT, int dxT, int alphaBits, int hasAlpha) {
+            int id = opCount_;
+            opKind_[id] = 103;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT;
+            opP0_[id] = alphaBits; opP1_[id] = hasAlpha;
+            opCount_ = opCount_ + 1;
+        }
+        void addBwdSilu(int dyT, int xT, int dxT) {
+            int id = opCount_;
+            opKind_[id] = 104;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT;
+            opCount_ = opCount_ + 1;
+        }
+        void addBwdHardSwish(int dyT, int xT, int dxT) {
+            int id = opCount_;
+            opKind_[id] = 105;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT;
+            opCount_ = opCount_ + 1;
+        }
+        // LogSoftmax 反向：outer/axisDim/inner 同 fwd（opP1-3，由 graph_compiler 从 x shape+axis 算）
+        void addBwdLogSoftmax(int dyT, int xT, int dxT, int outer, int axisDim, int inner) {
+            int id = opCount_;
+            opKind_[id] = 106;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT;
+            opP1_[id] = outer; opP2_[id] = axisDim; opP3_[id] = inner;
+            opCount_ = opCount_ + 1;
+        }
+        // Clip 反向：A=dy, B=x, C=minT, D=maxT（标量张量，-1 不限），P0=dx
+        void addBwdClip(int dyT, int xT, int dxT, int minT, int maxT) {
+            int id = opCount_;
+            opKind_[id] = 107;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = minT; opD_[id] = maxT;
+            opP0_[id] = dxT;
+            opCount_ = opCount_ + 1;
+        }
         void addBwdAdd(int dyT, int daT, int dbT) {
             int id = opCount_;
             opKind_[id] = 53;

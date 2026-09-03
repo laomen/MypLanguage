@@ -221,6 +221,12 @@ class OpCode {
         int BWD_AVGPOOL() { return 93; }     // A：AvgPool2D 反向（窗口梯度均摊，CPU-only 训练）
         int BWD_REDUCEMM() { return 94; }    // B：ReduceMax/Min 反向（argmax 掩码，需 x）
         int BWD_PAD() { return 95; }         // B：Pad(constant) 反向（去边取中心）
+        int BWD_RELU6() { return 96; }       // 激活反向（CPU-only 训练）：ReLU6/LeakyRelu/SiLU/HardSwish/LogSoftmax/Clip
+        int BWD_LEAKY_RELU() { return 97; }
+        int BWD_SILU() { return 98; }
+        int BWD_HARDSWISH() { return 99; }
+        int BWD_LOG_SOFTMAX() { return 100; }
+        int BWD_CLIP() { return 101; }
         int opCode(string t) {
             if (t == "Add") return OpCode.ADD();
             if (t == "Mul") return OpCode.MUL();
@@ -300,6 +306,12 @@ class OpCode {
             if (t == "BwdAvgPool") return OpCode.BWD_AVGPOOL();
             if (t == "BwdReduceMM") return OpCode.BWD_REDUCEMM();
             if (t == "BwdPad") return OpCode.BWD_PAD();
+            if (t == "BwdRelu6") return OpCode.BWD_RELU6();
+            if (t == "BwdLeakyRelu") return OpCode.BWD_LEAKY_RELU();
+            if (t == "BwdSilu") return OpCode.BWD_SILU();
+            if (t == "BwdHardSwish") return OpCode.BWD_HARDSWISH();
+            if (t == "BwdLogSoftmax") return OpCode.BWD_LOG_SOFTMAX();
+            if (t == "BwdClip") return OpCode.BWD_CLIP();
             return OpCode.UNKNOWN();
         }
         // 节点保护 trait：非 0 表示受 DCE 保护。1=stateful（就地改权重/累加），
@@ -316,6 +328,7 @@ class OpCode {
             if (code == OpCode.BWD_AVGPOOL()) return 2;
             if (code == OpCode.BWD_REDUCEMM()) return 2;
             if (code == OpCode.BWD_PAD()) return 2;
+            if (code >= OpCode.BWD_RELU6() && code <= OpCode.BWD_CLIP()) return 2;   // 激活反向
             return 0;
         }
 }

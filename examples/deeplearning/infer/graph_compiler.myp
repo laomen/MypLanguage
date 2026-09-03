@@ -99,6 +99,7 @@ class GraphCompiler {
                 if (code == OpCode.BWD_AVGPOOL()) bwdLike = 1;
                 if (code == OpCode.BWD_REDUCEMM()) bwdLike = 1;
                 if (code == OpCode.BWD_PAD()) bwdLike = 1;
+                if (code >= OpCode.BWD_RELU6() && code <= OpCode.BWD_CLIP()) bwdLike = 1;   // 激活反向
                 if (a < 0 || (out < 0 && bwdLike == 0)) {
                     if (Console.getEnv("MYP_GR_DBG") == "1") {
                         Console.writeString("buildRuntime wire fail type=" + graph.nodeTypeAt(ni) + " in0=" + graph.nodeInAt(ni, 0) + "(" + Fmt.i(a) + ") out=" + graph.compilerEffectiveOut(ni) + "(" + Fmt.i(out) + ")");
@@ -168,6 +169,56 @@ class GraphCompiler {
                     int y = tensorId(graph.nodeInAt(ni, 1));
                     int dx = tensorId(graph.compilerNodeOutput(ni, 0));
                     rt.addBwdSigmoid(dy, y, dx);
+                } else if (code == OpCode.BWD_RELU6()) {
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int x = tensorId(graph.nodeInAt(ni, 1));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    rt.addBwdRelu6(dy, x, dx);
+                } else if (code == OpCode.BWD_LEAKY_RELU()) {
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int x = tensorId(graph.nodeInAt(ni, 1));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    rt.addBwdLeakyRelu(dy, x, dx, graph.compilerAttr(ni, NodeField.ALPHA_INT()), graph.compilerAttr(ni, NodeField.HAS_ALPHA()));
+                } else if (code == OpCode.BWD_SILU()) {
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int x = tensorId(graph.nodeInAt(ni, 1));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    rt.addBwdSilu(dy, x, dx);
+                } else if (code == OpCode.BWD_HARDSWISH()) {
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int x = tensorId(graph.nodeInAt(ni, 1));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    rt.addBwdHardSwish(dy, x, dx);
+                } else if (code == OpCode.BWD_LOG_SOFTMAX()) {
+                    // outer/axisDim/inner 从 x shape + axis 推（同 fwd LOG_SOFTMAX 分支）
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int x = tensorId(graph.nodeInAt(ni, 1));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    int axis = graph.compilerAttr(ni, NodeField.AXIS());
+                    int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
+                    if (is < 0) return 0;
+                    int rank = 4;
+                    if (graph.compilerShapeR5(is) == 1) rank = 5;
+                    int[] dd = new int[5];
+                    dd[0] = graph.compilerShapeDim(is, 0); dd[1] = graph.compilerShapeDim(is, 1); dd[2] = graph.compilerShapeDim(is, 2); dd[3] = graph.compilerShapeDim(is, 3); dd[4] = 1;
+                    if (rank == 5) dd[4] = graph.compilerShapeDim(is, 4);
+                    if (axis < 0) axis = axis + rank;
+                    if (axis < 0) axis = 0;
+                    if (axis >= rank) axis = rank - 1;
+                    int outer = 1, axisDim = 1, inner = 1;
+                    int k = 0;
+                    while (k < axis) { outer = outer * dd[k]; k = k + 1; }
+                    axisDim = dd[axis];
+                    k = axis + 1;
+                    while (k < rank) { inner = inner * dd[k]; k = k + 1; }
+                    rt.addBwdLogSoftmax(dy, x, dx, outer, axisDim, inner);
+                } else if (code == OpCode.BWD_CLIP()) {
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int x = tensorId(graph.nodeInAt(ni, 1));
+                    int minT = tensorId(graph.nodeInAt(ni, 2));
+                    int maxT = tensorId(graph.nodeInAt(ni, 3));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    rt.addBwdClip(dy, x, dx, minT, maxT);
                 } else if (code == OpCode.BWD_ADD()) {
                     int dy = tensorId(graph.nodeInAt(ni, 0));
                     int da = tensorId(graph.compilerNodeOutput(ni, 0));

@@ -1,0 +1,60 @@
+// json_unet2d_main.myp — JSON 2D U-Net 推理（编码器 Conv+MaxPool / 解码器
+// ConvTranspose 上采样 + Concat 跳跃连接，全 2D op，JSON 声明式）。
+// unet2d.json：data[1,1,64,64] → 编码(1→16→16→32→32, MaxPool×2) → 瓶颈(64)
+//   → ConvTranspose(2x up) + Concat(跳 a3/a1) → 解码 → Conv1x1 → Sigmoid prob[1,1,64,64]。
+// 断言：load/run OK；输出元素=4096 且全在 (0,1)；输出有区分（非恒 0.5）。
+// CPU+GPU 同值（MYP_IR_VERIFY=1 全 op 走接口算子）。
+import env;
+import fmt;
+import dl;
+
+class JsonUnet2dApp {
+    action:
+        @constructor JsonUnet2dApp() {
+            Session t = new Session();
+            int tok = t.loadJson("./deeplearning/infer_tests/unet2d.json");
+            Console.writeString("load="); Console.writeLong(tok); Console.writeLine("");
+            if (tok == 0) { Console.writeLine("JSON UNET2D SKIP (no load)"); return; }
+            // 合成输入：中央 24x24 亮块（其余暗）→ 分割 mask 有区分
+            double[] bx = new double[64 * 64];
+            int i = 0;
+            while (i < 64 * 64) {
+                int r = i / 64; int c = i % 64;
+                double v = 0.05;
+                if (r >= 20 && r < 44 && c >= 20 && c < 44) v = 1.0;
+                bx[i] = v;
+                i = i + 1;
+            }
+            t.setInput("data", bx, 64 * 64);
+            int rk = t.runAuto();
+            Console.writeString("run="); Console.writeLong(rk);
+            Console.writeString(" ops=" + Fmt.i(t.opCount()));
+            Console.writeLine("");
+            int ot = t.tensorId("prob");
+            int n = t.tensorSize("prob");
+            double[] out = t.getOutput("prob");
+            int bad = 0;
+            if (n != 64 * 64) bad = bad + 1;
+            double mn = 9.0, mx = 0.0, sum = 0.0;
+            i = 0;
+            while (i < n) {
+                double v = out[i];
+                if (v <= 0.0 || v >= 1.0) bad = bad + 1;
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+                sum = sum + v;
+                i = i + 1;
+            }
+            double mean = sum / double(n);
+            Console.writeString("out n=" + Fmt.i(n) + " min="); Console.writeFloat(mn);
+            Console.writeString(" max="); Console.writeFloat(mx);
+            Console.writeString(" mean="); Console.writeFloat(mean);
+            Console.writeLine("");
+            // 输出 mask 非平凡（值域跨度证明梯度/前向信息流通；随机权重 sigmoid 深链跨度较小）
+            if (mx - mn < 0.05) bad = bad + 1;
+            if (bad == 0) Console.writeLine("JSON UNET2D OK");
+            else Console.writeLine("JSON UNET2D MISMATCH");
+        }
+}
+
+int main() { JsonUnet2dApp app = new JsonUnet2dApp(); return 0; }

@@ -766,8 +766,14 @@ class Graph {
             return ok;
         }
         void setTrainingModeForOptimizer(int mode) { trainingMode_ = mode; }
+        // P4-x：训练图不跑 Conv+Relu / InstanceNorm+Relu / GAP+Flatten 融合——融合把
+        // producer 线性输出标 dead + 有效输出改 fusedOut，buildReverseGraph 反向遍历
+        // 按 compilerNodeOutput(ni,0) 判梯度存在会漏过（Conv/池化权重永不更新）。
         void enableNoReuseForOptimizer() { noReuse_ = 1; }
         int shouldFuseConvAddForOptimizer() { return trainingMode_ == 0 ? 1 : 0; }
+        int shouldFuseConvReluForOptimizer() { return trainingMode_ == 0 ? 1 : 0; }
+        int shouldFuseReluForOptimizer() { return trainingMode_ == 0 ? 1 : 0; }
+        int shouldFuseGapFlattenForOptimizer() { return trainingMode_ == 0 ? 1 : 0; }
         int shouldRunNHWCForOptimizer() { return doNHWC_; }
         void dumpResizeSizesForOptimizer() { dumpResizeSizes(); }
 

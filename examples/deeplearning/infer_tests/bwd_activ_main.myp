@@ -1,0 +1,85 @@
+// bwd_activ_main.myp — 训练激活反向数值对拍（ReLU6/LeakyRelu/SiLU/HardSwish/
+// LogSoftmax/Clip 的 Bwd kernel）。全部组：dy 与 x 手算 dx=dy·g(x)。
+//   Relu6:    x in (0,6)→1 否则 0
+//   LeakyRelu: x>0→1 否则 alpha（alpha=0.01 默认）
+//   SiLU:     σ(x)·(1+x·(1-σ(x)))，σ=sigmoid(x)
+//   HardSwish: x≤-3→0；x≥3→1；else (2x+3)/6
+//   LogSoftmax: dx_i = dy_i - σ_i·Σdy（σ=softmax(x)，张量 [outer,axisDim,inner]）
+//   Clip:     x in [lo,hi]→1 否则 0（标量边界张量）
+// 全部 PASS → BWD ACTIV OK。CPU-only 训练反向。
+import env;
+import fmt;
+import "../infer/runtime.myp";
+
+class BwdActivApp {
+    action:
+        double absd(double v) { if (v < 0.0) return 0.0 - v; return v; }
+        int checkRt(InferenceRuntime rt, int tid, double[] e, int n, int bad) {
+            int i = 0;
+            while (i < n) {
+                if (absd(rt.getFlat(tid, i) - e[i]) > 1.5e-3) bad = bad + 1;
+                i = i + 1;
+            }
+            return bad;
+        }
+        @constructor BwdActivApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(4096);
+            rt.setTrain(1);
+            int bad = 0;
+            // ---- 组1：Relu6 x=[-1,0,3,6,7] dy=[1,2,3,4,5] → dx=[0,0,3,0,0]
+            int r6x = rt.addTensor(5, 1); int r6y = rt.addTensor(5, 1); int r6d = rt.addTensor(5, 1);
+            double[] rx = new double[5]; rx[0] = -1.0; rx[1] = 0.0; rx[2] = 3.0; rx[3] = 6.0; rx[4] = 7.0;
+            int k = 0; while (k < 5) { rt.setFlat(r6x, k, rx[k]); rt.setFlat(r6y, k, double(k + 1)); k = k + 1; }
+            rt.addBwdRelu6(r6y, r6x, r6d);
+            // ---- 组2：LeakyRelu(alpha=0.01) x=[-2,0,4] dy=[1,2,3] → dx=[0.01,0.02,3]
+            int lx = rt.addTensor(3, 1); int ly = rt.addTensor(3, 1); int ld = rt.addTensor(3, 1);
+            double[] lxv = new double[3]; lxv[0] = -2.0; lxv[1] = 0.0; lxv[2] = 4.0;
+            k = 0; while (k < 3) { rt.setFlat(lx, k, lxv[k]); rt.setFlat(ly, k, double(k + 1)); k = k + 1; }
+            rt.addBwdLeakyRelu(ly, lx, ld, 0, 0);   // hasAlpha=0 → 默认 0.01
+            // ---- 组3：SiLU x=[1,-2,3] dy=10 → dx=[9.2767,-0.9078,10.881]
+            int sx = rt.addTensor(3, 1); int sy = rt.addTensor(3, 1); int sd = rt.addTensor(3, 1);
+            double[] sxv = new double[3]; sxv[0] = 1.0; sxv[1] = -2.0; sxv[2] = 3.0;
+            k = 0; while (k < 3) { rt.setFlat(sx, k, sxv[k]); rt.setFlat(sy, k, 10.0); k = k + 1; }
+            rt.addBwdSilu(sy, sx, sd);
+            // ---- 组4：HardSwish x=[-5,-2,3,4] dy=[1,2,3,4] → dx=[0,-0.3333,3,4]
+            int hx = rt.addTensor(4, 1); int hy = rt.addTensor(4, 1); int hd = rt.addTensor(4, 1);
+            double[] hxv = new double[4]; hxv[0] = -5.0; hxv[1] = -2.0; hxv[2] = 3.0; hxv[3] = 4.0;
+            k = 0; while (k < 4) { rt.setFlat(hx, k, hxv[k]); rt.setFlat(hy, k, double(k + 1)); k = k + 1; }
+            rt.addBwdHardSwish(hy, hx, hd);
+            // ---- 组5：LogSoftmax x=[1,2,3,4] dy=[1,1,1,1]（outer=1 axisDim=4 inner=1）
+            //        → dx=[0.8718,0.6514,0.0525,-1.5757]
+            int gx = rt.addTensor(4, 1); int gy = rt.addTensor(4, 1); int gd = rt.addTensor(4, 1);
+            double[] gxv = new double[4]; gxv[0] = 1.0; gxv[1] = 2.0; gxv[2] = 3.0; gxv[3] = 4.0;
+            k = 0; while (k < 4) { rt.setFlat(gx, k, gxv[k]); rt.setFlat(gy, k, 1.0); k = k + 1; }
+            rt.addBwdLogSoftmax(gy, gx, gd, 1, 4, 1);
+            // ---- 组6：Clip(min=0,max=1) x=[-1,0.5,2] dy=[1,2,3] → dx=[0,2,0]
+            int cx = rt.addTensor(3, 1); int cy = rt.addTensor(3, 1); int cd = rt.addTensor(3, 1);
+            int cmn = rt.addTensor(1, 1); int cmx = rt.addTensor(1, 1);
+            double[] cxv = new double[3]; cxv[0] = -1.0; cxv[1] = 0.5; cxv[2] = 2.0;
+            k = 0; while (k < 3) { rt.setFlat(cx, k, cxv[k]); rt.setFlat(cy, k, double(k + 1)); k = k + 1; }
+            rt.setFlat(cmn, 0, 0.0); rt.setFlat(cmx, 0, 1.0);
+            rt.addBwdClip(cy, cx, cd, cmn, cmx);
+            rt.run();
+            // 断言
+            double[] e1 = new double[5]; e1[0] = 0.0; e1[1] = 0.0; e1[2] = 3.0; e1[3] = 0.0; e1[4] = 0.0;
+            bad = checkRt(rt, r6d, e1, 5, bad);
+            double[] e2 = new double[3]; e2[0] = 0.01; e2[1] = 0.02; e2[2] = 3.0;
+            bad = checkRt(rt, ld, e2, 3, bad);
+            double[] e3 = new double[3]; e3[0] = 9.2767; e3[1] = -0.9078; e3[2] = 10.881;
+            bad = checkRt(rt, sd, e3, 3, bad);
+            double[] e4 = new double[4]; e4[0] = 0.0; e4[1] = -0.3333; e4[2] = 3.0; e4[3] = 4.0;
+            bad = checkRt(rt, hd, e4, 4, bad);
+            double[] e5 = new double[4]; e5[0] = 0.8718; e5[1] = 0.6514; e5[2] = 0.0525; e5[3] = -1.5757;
+            bad = checkRt(rt, gd, e5, 4, bad);
+            double[] e6 = new double[3]; e6[0] = 0.0; e6[1] = 2.0; e6[2] = 0.0;
+            bad = checkRt(rt, cd, e6, 3, bad);
+            Console.writeString("bwd activ bad=");
+            Console.writeLong(bad);
+            Console.writeLine("");
+            if (bad == 0) Console.writeLine("BWD ACTIV OK");
+            else Console.writeLine("BWD ACTIV MISMATCH");
+        }
+}
+
+int main() { BwdActivApp app = new BwdActivApp(); return 0; }
