@@ -986,6 +986,21 @@ class GraphOptimizer {
                             graph.compilerAttrSet(bd, NodeField.KH(), graph.compilerAttr(ni, NodeField.KH())); graph.compilerAttrSet(bd, NodeField.KW(), graph.compilerAttr(ni, NodeField.KW()));
                             graph.compilerAttrSet(bd, NodeField.SH(), graph.compilerAttr(ni, NodeField.SH())); graph.compilerAttrSet(bd, NodeField.SW(), graph.compilerAttr(ni, NodeField.SW()));
                             graph.compilerAttrSet(bd, NodeField.PT(), graph.compilerAttr(ni, NodeField.PT())); graph.compilerAttrSet(bd, NodeField.PL(), graph.compilerAttr(ni, NodeField.PL()));
+                        } else if (t == "GlobalAveragePool") {
+                            // GAP 反向 = BwdReduce mode1 mean（per-(n,c) 空间均值广播回 x；
+                            // 复用 BwdReduce kernel，N/C/S 由 graph_compiler 从 x shape 推）
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdReduce");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, graph.nodeInAt(ni, 0));
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
+                            graph.compilerSetNRedMode(bd, 1);
+                            graph.compilerSetNRedType(bd, 0);
+                            if (graph.compilerIsNodeOutput(graph.nodeInAt(ni, 0)) == 0) {
+                                graph.replaceResult(bd, 0, "");   // 图输入 x：dx 无上游消费（须 endNode 后）
+                            }
                         } else if (t == "ConvTranspose") {
                             // 阶段4d：BwdConvTranspose(dy, x, w) → (dx, dw, db)；复制转置卷积参数
                             int bd = graph.nodeCount();

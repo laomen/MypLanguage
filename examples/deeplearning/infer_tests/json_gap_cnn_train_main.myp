@@ -1,0 +1,50 @@
+// json_gap_cnn_train_main.myp — GAP 反向（BwdReduce mode1 mean 复用）端到端验证。
+// gap_cnn.json：data[1,1,8,8] → Conv(2ch 3x3)→Relu→GlobalAveragePool（per-(n,c)
+//   空间均值 [1,2,6,6]→[1,2,1,1]）→Flatten[1,2]→Gemm→logits[1,3]→Softmax。
+// GAP 反向经 BwdReduce(mode1,mean /S=36) 广播回 Conv 梯度 → BwdConv 更新权重。
+// **GAP 丢空间位置** → class 须内容可区分（class c 块像素 = c+1，非全 1）。
+// 200 步 SGD + one-hot[3] loss 应显著降。CPU JSON GAP TRAIN OK。
+import env;
+import fmt;
+import dl;
+
+class JsonGapCnnTrainApp {
+    action:
+        @constructor JsonGapCnnTrainApp() {
+            Session t = new Session();
+            int tok = t.loadJsonTrain("./deeplearning/infer_tests/gap_cnn.json");
+            Console.writeString("load="); Console.writeLong(tok);
+            Console.writeString(" ops="); Console.writeLong(t.opCount());
+            Console.writeLine("");
+            if (tok == 0) { Console.writeLine("JSON GAP TRAIN SKIP (no load)"); return; }
+            t.setLr(0.05); t.setTrainMode(1);
+            int labT = t.tensorId("label");
+            double l0 = 0.0; double l200 = 0.0;
+            int step = 0;
+            while (step < 200) {
+                int cl = (step * 5) % 3;
+                double[] bx = new double[64];
+                int i = 0;
+                while (i < 64) {
+                    bx[i] = 0.0;
+                    if (i >= cl * 16 && i < cl * 16 + 16) bx[i] = double(cl + 1);
+                    i = i + 1;
+                }
+                t.setInput("x", bx, 64);
+                i = 0;
+                while (i < 3) { t.setFlat(labT, i, 0.0); i = i + 1; }
+                t.setFlat(labT, cl, 1.0);
+                t.runTrain();
+                if (step == 0) l0 = t.loss();
+                if (step == 199) l200 = t.loss();
+                step = step + 1;
+            }
+            Console.writeString("loss@0="); Console.writeFloat(l0);
+            Console.writeString(" loss@200="); Console.writeFloat(l200);
+            Console.writeLine("");
+            if (tok == 1 && l0 > 0.5 && l200 < l0) Console.writeLine("JSON GAP TRAIN OK");
+            else Console.writeLine("JSON GAP TRAIN MISMATCH");
+        }
+}
+
+int main() { JsonGapCnnTrainApp app = new JsonGapCnnTrainApp(); return 0; }
