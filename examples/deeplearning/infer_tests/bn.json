@@ -1,0 +1,11 @@
+{ "name":"bn",
+  "inputs":[{"name":"x","dims":[1,2,1,1]}],
+  "outputs":["y"],
+  "layers":[
+    { "op":"BatchNormalization","in":"x","out":"y","epsilon":0.0,
+      "scale":{"dims":[2],"values":[2.0,3.0]},
+      "bias":{"dims":[2],"values":[1.0,-1.0]},
+      "mean":{"dims":[2],"values":[0.5,0.25]},
+      "var":{"dims":[2],"values":[1.0,4.0]}}
+  ]
+}

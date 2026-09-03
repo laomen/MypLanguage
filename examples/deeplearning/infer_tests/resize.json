@@ -1,0 +1,7 @@
+{ "name":"resize2d",
+  "inputs":[{"name":"x","dims":[1,1,2,2]}],
+  "outputs":["y"],
+  "layers":[
+    { "op":"Resize","in":"x","out":"y","sizes":[1,1,4,4],"mode":"nearest"}
+  ]
+}

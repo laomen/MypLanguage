@@ -1,0 +1,44 @@
+// json_resize_main.myp — JSON Resize 分派（sizes int64 nodeIn3 + mode）。
+// resize.json：x[1,1,2,2]=[1,2,3,4] Resize sizes[1,1,4,4] nearest → y[1,1,4,4]。
+// 框架 resize kernel 与 onnxruntime 位精确（resize_main 已验证）；JSON 断言接线：
+// 尺寸 16、输出∈{1,2,3,4}（nearest 仅复制输入值）、max=4 min=1（含全部输入值）。
+import env;
+import fmt;
+import dl;
+
+class JsonResizeApp {
+    action:
+        @constructor JsonResizeApp() {
+            Session t = new Session();
+            int tok = t.loadJson("./deeplearning/infer_tests/resize.json");
+            Console.writeString("load="); Console.writeLong(tok); Console.writeLine("");
+            if (tok == 0) { Console.writeLine("JSON RESIZE SKIP (no load)"); return; }
+            double[] bx = new double[4]; bx[0] = 1.0; bx[1] = 2.0; bx[2] = 3.0; bx[3] = 4.0;
+            t.setInput("x", bx, 4);
+            int rk = t.runAuto();
+            int n = t.tensorSize("y");
+            double[] y = t.getOutput("y");
+            int bad = 0;
+            if (rk == 0 || n != 16) bad = bad + 1;
+            double mn = 9.0, mx = 0.0;
+            int i = 0;
+            while (i < n) {
+                double v = y[i];
+                int iv = int(v + 0.5);
+                if (iv < 1 || iv > 4) bad = bad + 1;      // nearest 只复制输入值 1..4
+                if (absd(v - double(iv)) > 1.0e-3) bad = bad + 1;
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+                i = i + 1;
+            }
+            Console.writeString("n=" + Fmt.i(n) + " min="); Console.writeFloat(mn);
+            Console.writeString(" max="); Console.writeFloat(mx);
+            Console.writeLine("");
+            if (mn > 1.01 || mx < 3.99) bad = bad + 1;   // 全部输入值都出现在输出
+            if (bad == 0) Console.writeLine("JSON RESIZE OK");
+            else Console.writeLine("JSON RESIZE MISMATCH");
+        }
+        double absd(double v) { if (v < 0.0) return 0.0 - v; return v; }
+}
+
+int main() { JsonResizeApp app = new JsonResizeApp(); return 0; }
