@@ -186,7 +186,9 @@ int jsonParseString() {
             JsonTab.str_val[s] = val;
             return s;
         } else {
-            val = val + __myp_chr(c);
+            // 原始字节透传：__myp_chr(c) 会把字节当码点再 UTF-8 编码（中文双重编码），
+            // 必须用 jsonSub 从源串按字节拷贝（与快路径一致，字节保真）。
+            val = val + jsonSub(JsonCtx.src, JsonCtx.pos, JsonCtx.pos + 1);
             jsonAdvance();
         }
     }
