@@ -21,6 +21,10 @@
 - `docs/design.md` 全量更新至 2026-09-03 架构（模块化 Graph IR SoA 拆分 + 双前端 ONNX/JSON
   + Session 训练/GPU 反向 + 接口化算子注册表 + 扩展流程），新增英文全译 `docs/design_EN.md`
   （infer/README_EN.md 文档链已指向英文版）。
+- 新增**用户手册** `docs/manual.md`（中）+ `docs/manual_EN.md`（英）：端到端用户向导
+  （能力总览/环境/编译运行约定/推理·训练 5 分钟上手/ONNX+JSON 建模/Session API 速查/
+  训练进阶/回归验证/FAQ），接入 infer README 文档链；sli.md 仍为 import dl + JSON op 全集
+  参考。
 
 ---
 

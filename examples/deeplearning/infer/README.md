@@ -93,6 +93,7 @@ bash examples/deeplearning/infer_tests/run_all.sh    # → == pass=135 fail=0 =�
 ```
 
 **相关文档**（`deeplearning/docs/`）：
+- [`manual.md`](../docs/manual.md) — **用户手册**（入门 → ONNX/JSON 建模 → 训练 → 验证 → FAQ；英文 `manual_EN.md`）
 - [`design.md`](../docs/design.md) — 架构设计说明（运行时 / opKind / 图 pass 管线 / 扩展指南）
 - [`usage.md`](../docs/usage.md) — 使用说明（构建运行 / 环境变量 / 回归测试 / 交叉校验）
 - [`sli.md`](../docs/sli.md) — SLI 上手（Session API / JSON 语法·连线 / 激活选用 / 训练 / 陷阱）
