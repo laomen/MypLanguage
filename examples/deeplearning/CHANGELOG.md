@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-09-03 — GlobalAveragePool3D（5D 感知 gapoolD kernel）
+
+- 根因：GAPoolOp 只读 tensorH/tensorW（忽略 tensorD）→ 5D 输入只对 D=0 片 H*W 求
+  均值（探针 [4.5,45] 得 [2.5,6.5]）。
+- 新增 gapoolD（CPU + GPU thread-per-(n,c)）：per-(n,c) 连续段 = D*H*W 全空间均值；
+  GapoolOp/GpuGapoolOp 分支 tensorD>1 → gapoolD（4D 路径字节不变）。
+- 测试 gap3d.json（x[1,2,2,2,2] c0=1..8/c1=10..80 → [4.5,45]）CPU+GPU。
+  全量回归 pass=116→**117** fail=0。
+
+---
+
 ## 2026-09-03 — ConvTranspose3D 图算子 + JSON（3D 转置卷积 fwd，CPU）
 
 - kernel：转置卷积 gather 公式（od+pdt-k ≡0 mod sd → id=(od+pdt-k)/sd 界内），
