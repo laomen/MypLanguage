@@ -13,9 +13,10 @@
 - graph：OpCode CONVTRANSPOSE3D(114) + mapOpType + inferShapes(addShapeD5) +
   classifyShapes 权重 CNN_W/CNN_B + graph_compiler wiring（opKind 86，CPU）。
 - JSON：W 5D 预注册 + ConvTranspose3D 分派（setKernel3DAttrs 3D）。
-- 测试 convt3d.json（x[1,1,2,1,1]=[1,3] W=[2,5] stride1 → [2,11,15] 手算）CPU OK。
+- 测试 convt3d.json（x[1,1,2,1,1]=[1,3] W=[2,5] stride1 → [2,11,15] 手算）+ convt3d_s2.json
+  （stride2 → [2,5,6,15]——U-Net 解码 2x 上采样几何）。CPU+GPU runAuto 全过。
   全量回归 pass=114→**115** fail=0。
-- 范围注：CPU fwd（run()）；GPU kernel + 训练反向（BwdConvTranspose3D）后续。
+- 范围注：fwd CPU+GPU（run/runGpu 统一分派）；训练反向（BwdConvTranspose3D）后续。
 
 ---
 
