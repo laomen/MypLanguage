@@ -287,6 +287,13 @@ class InferenceRuntime {
             opP0_[id] = dxT;
             opCount_ = opCount_ + 1;
         }
+        // Tanh 反向（opKind 108）：A=dy, B=y（fwd 输出），C=dx。dx=dy·(1-y²)
+        void addBwdTanh(int dyT, int yT, int dxT) {
+            int id = opCount_;
+            opKind_[id] = 108;
+            opA_[id] = dyT; opB_[id] = yT; opC_[id] = dxT;
+            opCount_ = opCount_ + 1;
+        }
         void addBwdAdd(int dyT, int daT, int dbT) {
             int id = opCount_;
             opKind_[id] = 53;
@@ -646,6 +653,17 @@ class InferenceRuntime {
         void addSigmoid(int inputTid, int outputTid) {
             int id = opCount_;
             opKind_[id] = 4;
+            opA_[id] = inputTid;
+            opB_[id] = outputTid;
+            opC_[id] = 0;
+            opD_[id] = 0;
+            opCount_ = opCount_ + 1;
+        }
+
+        // Tanh（opKind 46）：逐元素激活
+        void addTanh(int inputTid, int outputTid) {
+            int id = opCount_;
+            opKind_[id] = 46;
             opA_[id] = inputTid;
             opB_[id] = outputTid;
             opC_[id] = 0;

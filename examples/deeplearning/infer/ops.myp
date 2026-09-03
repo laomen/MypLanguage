@@ -107,6 +107,17 @@ class InferOps {
             }
         }
 
+        // 逐元素 Tanh：y = 2/(1+e^{-2x}) - 1（= 2·sigmoid(2x)-1；大 |x| 双侧均不溢出）
+        void tanh(float[] arena, int inOff, int outOff, int n) {
+            int i = 0;
+            while (i < n) {
+                float x = arena[inOff + i];
+                float e = Math.exp(0.0f - 2.0f * x);
+                arena[outOff + i] = 2.0f / (1.0f + e) - 1.0f;
+                i = i + 1;
+            }
+        }
+
         // 每列一个样本，沿行做 softmax（batch=1 时等价于整行 softmax）
         void softmax(float[] arena, int inOff, int outOff, int rows, int cols) {
             int k = 0;
@@ -495,6 +506,16 @@ class InferOps {
             while (i < n) {
                 float y = arena[yOff + i];
                 arena[dxOff + i] = arena[dyOff + i] * y * (1.0f - y);
+                i = i + 1;
+            }
+        }
+
+        // 反向：y = tanh(x)；dX[i] = dY[i]·(1-y[i]²)（用前向输出 y）
+        void bwdTanh(float[] arena, int dyOff, int yOff, int dxOff, int n) {
+            int i = 0;
+            while (i < n) {
+                float y = arena[yOff + i];
+                arena[dxOff + i] = arena[dyOff + i] * (1.0f - y * y);
                 i = i + 1;
             }
         }

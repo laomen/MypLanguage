@@ -870,6 +870,15 @@ class GraphOptimizer {
                             graph.nodeIn(bd, 1, y);              // 用前向输出 y
                             graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
                             graph.endNode();
+                        } else if (t == "Tanh") {
+                            // Tanh 反向：BwdTanh(dy, y) → dx = dy·(1-y²)（用前向输出 y）
+                            int bd = graph.nodeCount();
+                            graph.beginNode();
+                            graph.nodeType(bd, "BwdTanh");
+                            graph.nodeIn(bd, 0, graph.compilerGradName(y));
+                            graph.nodeIn(bd, 1, y);
+                            graph.nodeOut(bd, graph.compilerGradName(graph.nodeInAt(ni, 0)));
+                            graph.endNode();
                         } else if (t == "Relu6" || t == "LeakyRelu" || t == "SiLU" || t == "HardSwish" || t == "LogSoftmax") {
                             // 激活反向（BwdRelu6/LeakyRelu/Silu/HardSwish/LogSoftmax(dy, x) → dx）。
                             // 各激活导数掩码需 fwd 输入 x（relu6/leaky/silu/hardswish 判区间、
@@ -1562,7 +1571,7 @@ int inferShapes(Graph graph) {
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), od0, od1, od2, od3);
                 } else if (t == "Relu" || t == "Sigmoid" || t == "Softmax" || t == "LogSoftmax" || t == "BatchNormalization"
                            || t == "ReLU6" || t == "LeakyRelu" || t == "SiLU" || t == "HardSwish" || t == "Clip" || t == "Dropout"
-                           || t == "LayerNorm" || t == "RmsNorm" || t == "GELU") {
+                           || t == "LayerNorm" || t == "RmsNorm" || t == "GELU" || t == "Tanh") {
                     int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0)); if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     graph.copyShape(graph.compilerNodeOutput(i, 0), a);
                 } else if (t == "Embedding") {

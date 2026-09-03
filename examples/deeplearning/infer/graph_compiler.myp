@@ -100,6 +100,7 @@ class GraphCompiler {
                 if (code == OpCode.BWD_REDUCEMM()) bwdLike = 1;
                 if (code == OpCode.BWD_PAD()) bwdLike = 1;
                 if (code >= OpCode.BWD_RELU6() && code <= OpCode.BWD_CLIP()) bwdLike = 1;   // 激活反向
+                if (code == OpCode.BWD_TANH()) bwdLike = 1;                                 // 激活反向（Tanh）
                 if (a < 0 || (out < 0 && bwdLike == 0)) {
                     if (Console.getEnv("MYP_GR_DBG") == "1") {
                         Console.writeString("buildRuntime wire fail type=" + graph.nodeTypeAt(ni) + " in0=" + graph.nodeInAt(ni, 0) + "(" + Fmt.i(a) + ") out=" + graph.compilerEffectiveOut(ni) + "(" + Fmt.i(out) + ")");
@@ -148,6 +149,8 @@ class GraphCompiler {
                     rt.addRelu(a, out);
                 } else if (code == OpCode.SIGMOID()) {
                     rt.addSigmoid(a, out);
+                } else if (code == OpCode.TANH()) {
+                    rt.addTanh(a, out);
                 } else if (code == OpCode.SOFTMAX()) {
                     rt.addSoftmax(a, out);
                 } else if (code == OpCode.LAYER_NORM() || code == OpCode.RMS_NORM()) {
@@ -185,6 +188,11 @@ class GraphCompiler {
                     int y = tensorId(graph.nodeInAt(ni, 1));
                     int dx = tensorId(graph.compilerNodeOutput(ni, 0));
                     rt.addBwdSigmoid(dy, y, dx);
+                } else if (code == OpCode.BWD_TANH()) {
+                    int dy = tensorId(graph.nodeInAt(ni, 0));
+                    int y = tensorId(graph.nodeInAt(ni, 1));
+                    int dx = tensorId(graph.compilerNodeOutput(ni, 0));
+                    rt.addBwdTanh(dy, y, dx);
                 } else if (code == OpCode.BWD_RELU6()) {
                     int dy = tensorId(graph.nodeInAt(ni, 0));
                     int x = tensorId(graph.nodeInAt(ni, 1));

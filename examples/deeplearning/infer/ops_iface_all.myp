@@ -83,6 +83,25 @@ class SigmoidOp {
         }
 }
 
+// ---- tanh（opKind 46 前向 / 108 反向）----
+class TanhOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            InferOps.tanh(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yb), rt.tensorRows(xa) * rt.tensorCols(xa));
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int y = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                InferOps.bwdTanh(rt.arenaRef(), rt.tensorOff(dy), rt.tensorOff(y), rt.tensorOff(dx), rt.tensorRows(y) * rt.tensorCols(y));
+            }
+        }
+}
+
 // ---- add（opKind 5 前向 / 53 反向；opRelu 融合标志；统一 4D 广播）----
 class AddOp {
     interface class IOp;
@@ -195,6 +214,25 @@ class GpuSigmoidOp {
                 int y = rt.opBAt(i);
                 int dx = rt.opCAt(i);
                 GpuInferOps.bwdSigmoid(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(y), rt.tensorOff(dx), rt.tensorRows(y) * rt.tensorCols(y));
+            }
+        }
+}
+
+// ---- tanh（GPU）----
+class GpuTanhOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            GpuInferOps.tanh(rt.arenaRef(), rt.tensorRows(xa) * rt.tensorCols(xa), rt.tensorOff(xa), rt.tensorOff(yb), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) {
+            if (rt.trainMode() == 1) {
+                int dy = rt.opAAt(i);
+                int y = rt.opBAt(i);
+                int dx = rt.opCAt(i);
+                GpuInferOps.bwdTanh(rt.arenaRef(), rt.devRef(), rt.tensorOff(dy), rt.tensorOff(y), rt.tensorOff(dx), rt.tensorRows(y) * rt.tensorCols(y));
             }
         }
 }
@@ -2412,6 +2450,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwdBwd(1, 50, new DenseOp(), 0);          rt.registerFwdBwd(1, 50, new GpuDenseOp(), 1);
     rt.registerFwdBwd(3, 70, new SoftmaxOp(), 0);        rt.registerFwdBwd(3, 70, new GpuSoftmaxOp(), 1);
     rt.registerFwdBwd(4, 52, new SigmoidOp(), 0);        rt.registerFwdBwd(4, 52, new GpuSigmoidOp(), 1);
+    rt.registerFwdBwd(46, 108, new TanhOp(), 0);         rt.registerFwdBwd(46, 108, new GpuTanhOp(), 1);
     rt.registerFwdBwd(5, 53, new AddOp(), 0);            rt.registerFwdBwd(5, 53, new GpuAddOp(), 1);
     rt.registerFwd(6, new MatmulOp(), 0);                rt.registerFwd(6, new GpuMatmulOp(), 1);
     rt.registerFwdBwd(7, 56, new ConvOp(), 0);           rt.registerFwdBwd(7, 56, new GpuConvOp(), 1);

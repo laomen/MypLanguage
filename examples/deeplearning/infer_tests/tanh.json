@@ -1,0 +1,6 @@
+{ "name":"jtanh",
+  "inputs":[{"name":"x","dims":[1,4]}],
+  "outputs":["out"],
+  "layers":[
+    { "op":"Tanh","in":"x","out":"out" }
+  ]}

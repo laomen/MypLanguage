@@ -1,0 +1,52 @@
+// json_tanh_train_main.myp — JSON Tanh 隐藏层训练（图算子 P2 反向）。
+// tanh_train.json：x[1,4]→Gemm→h[4]→Tanh→ht[4]→Gemm→logits[3]→Softmax。
+// 梯度须穿过 BwdTanh（dX=dy·(1-y²)，用 fwd 输出 y）→ BwdDense(h) → h 前权重更新：
+// loss 显著降 = BwdTanh + 接线/register 全链工作。判据：收敛后每类 loss 均 < 0.5
+// （勿只看首尾单样本——初始随机 label 错配会让单样本 loss 参差，同 c3d 教训）。
+import env;
+import fmt;
+import dl;
+
+class JsonTanhTrainApp {
+    action:
+        void feedOne(Session t, int labT, int cl) {
+            double[] bx = new double[4];
+            int i = 0;
+            while (i < 4) { bx[i] = 0.05; i = i + 1; }
+            bx[cl] = 2.0;
+            t.setInput("x", bx, 4);
+            i = 0;
+            while (i < 3) { t.setFlat(labT, i, 0.0); i = i + 1; }
+            t.setFlat(labT, cl, 1.0);
+        }
+        @constructor JsonTanhTrainApp() {
+            Session t = new Session();
+            int tok = t.loadJsonTrain("./deeplearning/infer_tests/tanh_train.json");
+            Console.writeString("load="); Console.writeLong(tok); Console.writeLine("");
+            if (tok == 0) { Console.writeLine("JSON TANH TRAIN SKIP (no load)"); return; }
+            t.setLr(0.1); t.setTrainMode(1);
+            int labT = t.tensorId("label");
+            int step = 0;
+            while (step < 400) {
+                int cl = (step * 37) % 3;
+                feedOne(t, labT, cl);
+                t.runTrain();
+                step = step + 1;
+            }
+            int bad = 0;
+            int cl = 0;
+            while (cl < 3) {
+                feedOne(t, labT, cl);
+                t.runTrain();
+                double l = t.loss();
+                Console.writeString("cl" + Fmt.i(cl) + " loss="); Console.writeFloat(l);
+                Console.writeLine("");
+                if (l > 0.5) bad = bad + 1;
+                cl = cl + 1;
+            }
+            if (tok == 1 && bad == 0) Console.writeLine("JSON TANH TRAIN OK");
+            else Console.writeLine("JSON TANH TRAIN FAIL");
+        }
+}
+
+int main() { JsonTanhTrainApp app = new JsonTanhTrainApp(); return 0; }

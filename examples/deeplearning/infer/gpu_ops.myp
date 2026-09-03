@@ -267,6 +267,17 @@ class GpuInferOps {
             }
         }
 
+        // 逐元素 Tanh：y = 2/(1+e^{-2x}) - 1（大 |x| 双侧均不溢出）
+        void tanh(float[] a, int work, int inOff, int outOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    float x = a[inOff + p];
+                    float e = Math.exp(0.0f - 2.0f * x);
+                    a[outOff + p] = 2.0f / (1.0f + e) - 1.0f;
+                }
+            }
+        }
+
         // 每列一个样本，沿行 softmax。§2.3 ③：thread-per-column 两遍（先 max 再
         // sum 再写），消除原 thread-per-element 每元素 O(rows) 冗余重扫（总读
         // O(rows²·cols) → O(rows·cols)）。列数=并行度；列少时每线程工作小（快）。
@@ -705,6 +716,16 @@ class GpuInferOps {
                     long i = p;
                     float y = a[yOff + i];
                     a[dxOff + i] = a[dyOff + i] * y * (1.0f - y);
+                }
+            }
+        }
+
+        void bwdTanh(float[] a, long dev, int dyOff, int yOff, int dxOff, int n) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float y = a[yOff + i];
+                    a[dxOff + i] = a[dyOff + i] * (1.0f - y * y);
                 }
             }
         }
