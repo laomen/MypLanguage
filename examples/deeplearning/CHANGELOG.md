@@ -6,6 +6,19 @@
 
 ---
 
+## 2026-09-03 — ConvTranspose3D 图算子 + JSON（3D 转置卷积 fwd，CPU）
+
+- kernel：转置卷积 gather 公式（od+pdt-k ≡0 mod sd → id=(od+pdt-k)/sd 界内），
+  W[Cin,Cout,kd,kh,kw] 直接拷贝；group=1 无膨胀；outPad 并入输出形状（尾行=bias）。
+- graph：OpCode CONVTRANSPOSE3D(114) + mapOpType + inferShapes(addShapeD5) +
+  classifyShapes 权重 CNN_W/CNN_B + graph_compiler wiring（opKind 86，CPU）。
+- JSON：W 5D 预注册 + ConvTranspose3D 分派（setKernel3DAttrs 3D）。
+- 测试 convt3d.json（x[1,1,2,1,1]=[1,3] W=[2,5] stride1 → [2,11,15] 手算）CPU OK。
+  全量回归 pass=114→**115** fail=0。
+- 范围注：CPU fwd（run()）；GPU kernel + 训练反向（BwdConvTranspose3D）后续。
+
+---
+
 ## 2026-09-03 — Pad 非 0 常量值（审计「Pad value」收口）
 
 - graph.myp readF32Init 增加**内存 f32 分支**（GraphWeights memVal_ offset=-2，同

@@ -109,7 +109,8 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   （推理恒等）；权重型 `Gemm`/`Conv`/`ConvTranspose`/`MatMul(可选 W)`；
   池化 `MaxPool`/`AveragePool`(kernel/strides/pads)；**3D** `Conv3D`(W 5D
   [Cout,Cin,kd,kh,kw] + kernel/strides/pads6)/`MaxPool3D`/`AveragePool3D`/`Resize`
-  (sizes [1,1,(outD,)outH,outW])——3D JSON 输入/权重用 5 维 dims；**归一化**
+  (sizes [1,1,(outD,)outH,outW])/`ConvTranspose3D`(W 5D [Cin,Cout,kd,kh,kw] + strides/
+  pads6；3D 转置卷积，U-Net 解码上采样)——3D JSON 输入/权重用 5 维 dims；**归一化**
   `BatchNormalization`(scale/bias/mean/var + epsilon)/`InstanceNormalization`
   (scale/bias + epsilon)/**`LayerNorm`(gamma/beta) / `RmsNorm`(gamma) / `GELU`**
   （图归一化/激活，复用 LLM kernel；多接 Gemm 输出，tensor 按 [特征行, 样本列] 布局，
