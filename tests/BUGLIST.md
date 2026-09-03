@@ -3395,3 +3395,39 @@ value of type ..." / 实参 "argument 1: expected 'IC', got 'NotImpl'" / 返回
   它，单一校验源；ffi 另加 `checkDupParamNames`（`ffi int cadd(int a, int a)`
   新拒绝）。负测试 `ffi_dup_param.myp`。原则：凡常规声明路径有的形参检查，所有
   「只登记不校验」收集点（ffi/事件等）都经同一校验函数复用，避免逐点复制。
+
+## BUG-135（已修复 🟩，v3.15.201）：runtime_myp @parallel 线程池丢唤醒死锁（小 n 高频微并行 ~50% 挂）
+
+**非破坏性**（`runtime_myp/pool.myp`，@parallel 线程池——mypc 生成程序实际链接的
+`libmyp_rt_myp.a` 归档，**非** `src/runtime/runtime.c` 的 C 池）。deeplearning CPU
+训练非确定性根因；编译器/算子/arena 层已排查排除。
+
+- **复现**：`/tmp/par_smalln`（n=1..32 × 2000 次 × 32 批 ≈ 64k 次微 @parallel 调用）
+  **~50-60% HANG**（timeout 8s）；大 n（4M 元素×50 轮）30/30 确定。框架 CPU 训练小张量
+  网（activ_chain/batch_matmul 等，每步大量微并行）偶发跑偏/挂起/不收敛；大网
+  （cnn/tanh/mse）并行调用少/块大 → 稳定。排查排除：codegen/算子（@parallel 收口 16→68
+  整包 revert 后 HEAD 原样复现）、arena 别名（TSan **0 race**——futex/clone 不被 TSan
+  跟踪；ASan/UBSan 0 报告）、RNG（数组零初始化 + LCG 种子 42 确定）→ 池同步竞态。
+- **根因**：`poolWorkerEntry` 经 `poolWorkWait()` **先查空 deque、再快照 workSeq 去
+  futex_wait**——发布者（`myp_pool_parallel_for`：复位计数 → 复位 deque → 推 chunk →
+  设 totalChunks → workSeq+1 → futex_wake）在 worker 快照之后 ++/wake、且 worker 快照到
+  新值 → `futex_wait(值==期望)` 真睡在无等待者的 wake 上 → 块无人处理 → 主线程 barrier
+  永等 → 死锁（~50% 概率窗口：小 n 每调用新开 barrier，64k 次下必踩）。
+- **修复**：① `poolWorkerEntry` **先快照 workSeq、再查 deque**（pop 自家 → 偷别人），
+  复查仍空才 `futex_wait(快照值)`——发布者 ++ 前块已入 deque ⇒ 快照后必取到；删
+  `poolWorkWait`。② `myp_pool_parallel_for` 的 deque 复位（bottom/top=0）包
+  `dqLock(t)/dqUnlock(t)`——防上一轮刚跑完未停靠的 worker 并发 pop/steal 读到撕裂
+  bottom/top 取到幽灵块。
+- **⚠️ 运维要点（本次首验无效根因）**：runtime_myp/*.myp 由 `runtime_myp/build.sh`
+  编译成归档 `build/libmyp_rt_myp.a`（37 模块），mypc 链接用户程序按
+  `<exe_dir>/libmyp_rt_myp.a` 引用——**只改磁盘源码、不重建归档不生效**。首验 18/30 仍挂
+  = 改动没进二进制（nm 见 `poolWorkWait` 仍在）；重建
+  `cmake --build build --target myp_rt_myp` 后符号消失、100/100 不挂。
+- **回归**：`bench/freestanding/rt_pool_test.myp` 增第 5 段高频小 n 微并行防护（复刻
+  par_smalln，~0.2s；池回退则冒烟直接挂起暴露）；par_smalln 100/100 不挂；batch_matmul /
+  activ_chain CPU 各 20/20 确定性 OK（此前 6 跑 5 FAIL / 12 跑 3 偏）；runtime_myp-only
+  PASS；deeplearning GPU 金标准 135/135；bootstrap 16/16 + 主套件 467/467。
+- **教训**：改 runtime_myp 后**必须先重建归档再验证**；验证「修复是否进二进制」用
+  `nm` 查旧符号是否消失（同 shadow 机制教训：反汇编/符号确认真实现，不能只看测试过）；
+  futex/clone 自旋实现的竞态 TSan 不跟踪——用「小 n 高频微并行最小复现 + 挂起死锁」做
+  判据，数值发散/跑偏只是其偶发表象。
