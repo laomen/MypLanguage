@@ -6,6 +6,26 @@
 
 ---
 
+## 2026-09-03 — 缺口收口 triage：Range / Slice / Split 反向（低 ROI，记录在案，不实现）
+
+「还有什么要做」survey 剩余缺口按 ROI 分流；此项判定**低 ROI → 记录在案不实现**
+（测试数仍 135，无代码改动）：
+
+- **Range 反向**：Range 是无输入常量生成器（1D 等差序列），与 runtime 单/多输入 op 模型
+  不适配（P6a/P8 两度记留待）——fwd 就非框架 op，无数据输入即无梯度回流对象，反向无意义
+  （dx=0/不做）。JSON 里生成序列手写循环即可。
+- **Slice 反向**：Slice fwd + JSON 已支持（json_slice_main）；反向 = 各轴切割 scatter-add
+  回 x（starts/ends/steps attr 数组对齐 + 负步长反向映射，BwdPad「去边取中心」的镜像）。
+  Slice 常用作形状/中间裁剪，几乎不进训练 loss 路径。
+- **Split 反向**：Split fwd 多输出 JSON 已支持（split.json/json_split_main：outs 数组 +
+  graph nodeOut 空槽/outputCount）；反向 = 各输出 dy 沿 axis concat 回 x（BwdConcat
+  fan-in 汇合的镜像），代价在多输出反向图逐 out dy 收集。Split 同 Slice 一样几乎不进训练
+  loss 路径。
+- 若未来有真实模型把 Range/Slice/Split 放进训练 loss 路径再实现；当前显式记录不实现（不
+  静默错，遇之给明确诊断）。
+
+---
+
 ## 2026-09-03 — P9b/P9c 高级索引 GPU 反向 + 2D FC 索引 + BN NHWC 反向（A 组收口）
 
 全量回归 pass=130→**135** fail=0。
