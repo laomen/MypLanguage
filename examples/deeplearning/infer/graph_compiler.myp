@@ -187,6 +187,52 @@ class GraphCompiler {
                 } else if (code == OpCode.ONEHOT()) {
                     // OneHot（opKind 85）：idx=nodeIn0（float 索引），out=nodeOut0；depth=SPLIT0()
                     rt.addOneHot(a, out, graph.compilerAttr(ni, NodeField.SPLIT0()));
+                } else if (code == OpCode.GATHER_ELEMENTS()) {
+                    // P8：GatherElements（opKind 88）：data=nodeIn0、indices=nodeIn1（float 索引
+                    // 张量）、out=nodeOut0。axis=AXIS()（负归一化）。inner=axis 后 data 维乘积，
+                    // dataAxis=axis 处 data 维，outAxis=axis 处 indices(=out) 维。
+                    int it = tensorId(graph.nodeInAt(ni, 1));
+                    int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                    int bs = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
+                    int rank = 4;
+                    if (is >= 0 && graph.compilerShapeR5(is) == 1) rank = 5;
+                    int axis = graph.compilerAttr(ni, NodeField.AXIS());
+                    if (axis < 0) axis = axis + rank;
+                    if (axis < 0) axis = 0;
+                    if (axis > rank - 1) axis = rank - 1;
+                    int dataAxis = 1, outAxis = 1;
+                    if (is >= 0) dataAxis = graph.compilerShapeDim(is, axis);
+                    if (bs >= 0) outAxis = graph.compilerShapeDim(bs, axis);
+                    if (dataAxis < 1) dataAxis = 1;
+                    if (outAxis < 1) outAxis = 1;
+                    int inner = 1;
+                    int ax2 = axis + 1;
+                    while (ax2 < rank) {
+                        int dd = 1;
+                        if (is >= 0) dd = graph.compilerShapeDim(is, ax2);
+                        if (dd < 1) dd = 1;
+                        inner = inner * dd;
+                        ax2 = ax2 + 1;
+                    }
+                    rt.addGatherElements(a, it, out, axis, inner, dataAxis, outAxis);
+                } else if (code == OpCode.SCATTER_ND()) {
+                    // P8：ScatterND（opKind 89）：data=nodeIn0、indices=nodeIn1([q,k] float 前缀)、
+                    // updates=nodeIn2、out=nodeOut0。q,k 从 indices shape；data 5 维（尾部补 1）。
+                    int it = tensorId(graph.nodeInAt(ni, 1));
+                    int ut = tensorId(graph.nodeInAt(ni, 2));
+                    int is = graph.compilerShapeIdx(graph.nodeInAt(ni, 0));
+                    int bs = graph.compilerShapeIdx(graph.nodeInAt(ni, 1));
+                    int q = 1, k = 1;
+                    if (bs >= 0) { q = graph.compilerShapeDim(bs, 0); k = graph.compilerShapeDim(bs, 1); }
+                    if (q < 1) q = 1;
+                    if (k < 1) k = 1;
+                    int d0 = 1, d1 = 1, d2 = 1, d3 = 1, d4 = 1;
+                    if (is >= 0) {
+                        d0 = graph.compilerShapeDim(is, 0); d1 = graph.compilerShapeDim(is, 1);
+                        d2 = graph.compilerShapeDim(is, 2); d3 = graph.compilerShapeDim(is, 3);
+                        if (graph.compilerShapeR5(is) == 1) d4 = graph.compilerShapeDim(is, 4);
+                    }
+                    rt.addScatterND(a, it, ut, out, q, k, d0, d1, d2, d3, d4);
                 } else if (code == OpCode.GELU()) {
                     // GELU（精确 erf 近似；n 传 0 → Op 自省 rows*cols）
                     rt.addGelu(a, out, 0);

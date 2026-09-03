@@ -969,6 +969,62 @@ class GpuInferOps {
             }
         }
 
+        // P8：GatherElements（GPU）。thread-per-out；与 CPU 同索引/钳制。
+        void gatherElements(float[] a, long dev, int dOff, int iOff, int oOff, int total,
+                            int axis, int inner, int dataAxisDim, int outAxisDim) {
+            @gpu for (long p = 0L; p < long(total); p = p + 1L) resident(a = dev) {
+                if (p < long(total)) {
+                    int i = int(p);
+                    int q = i % inner;
+                    int pp = i / inner;
+                    int ax = pp % outAxisDim;
+                    int outer = pp / outAxisDim;
+                    int ix = int(double(a[iOff + i]));
+                    if (ix < 0) ix = ix + dataAxisDim;
+                    if (ix < 0) ix = 0;
+                    if (ix >= dataAxisDim) ix = dataAxisDim - 1;
+                    a[oOff + i] = a[dOff + (outer * dataAxisDim + ix) * inner + q];
+                }
+            }
+        }
+
+        // P8：ScatterND（GPU）。thread-per-(update-row, block-elem)；块长 block 各更新行
+        // 相同（= data 维 k.. 乘积），主机侧预计算。重复前缀 = 未定义（唯一前缀常用）。
+        void scatterND(float[] a, long dev, int dOff, int iOff, int uOff, int oOff,
+                       int q, int k, int d0, int d1, int d2, int d3, int d4) {
+            int total = d0 * d1 * d2 * d3 * d4;
+            @gpu for (long p = 0L; p < long(total); p = p + 1L) resident(a = dev) {
+                if (p < long(total)) { a[oOff + int(p)] = a[dOff + int(p)]; }   // data 副本
+            }
+            int block = total;
+            int jb = 0;
+            while (jb < k) {
+                int dbj = (jb == 0) ? d0 : ((jb == 1) ? d1 : ((jb == 2) ? d2 : ((jb == 3) ? d3 : d4)));
+                block = block / dbj;
+                jb = jb + 1;
+            }
+            @gpu for (long p = 0L; p < long(q) * long(block); p = p + 1L) resident(a = dev) {
+                if (p < long(q) * long(block)) {
+                    long uu = p / long(block);
+                    long e = p % long(block);
+                    int base = 0;
+                    int R = total;
+                    int j = 0;
+                    while (j < k) {
+                        int dj = (j == 0) ? d0 : ((j == 1) ? d1 : ((j == 2) ? d2 : ((j == 3) ? d3 : d4)));
+                        R = R / dj;
+                        int cj = int(double(a[iOff + int(uu) * k + j]));
+                        if (cj < 0) cj = cj + dj;
+                        if (cj < 0) cj = 0;
+                        if (cj >= dj) cj = dj - 1;
+                        base = base + cj * R;
+                        j = j + 1;
+                    }
+                    a[oOff + base + int(e)] = a[uOff + int(uu) * block + int(e)];
+                }
+            }
+        }
+
         // Softmax 反向（阶段4d，GPU，thread-per-column）：dlogit[i] = p[i]·(dp[i] - Σ_j p[j]·dp[j])
         void bwdSoftmax(float[] a, long dev, int probOff, int dprobOff, int dlogitOff, int rows, int cols) {
             @gpu for (long p = 0L; p < long(cols); p = p + 1L) resident(a = dev) {

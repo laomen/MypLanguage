@@ -960,6 +960,58 @@ class InferOps {
             }
         }
 
+        // P8：GatherElements（数据高级索引）。data 与 indices 同形（axis 维 data 可更长）。
+        // out[i] = data[ coord(i) 沿 axis 换为 idx[i] ]。float 编码 idx；负索引 +dataAxisDim；
+        // 越界 clamp [0,dataAxisDim-1]。行优先：inner=axis 后各维乘积 → 线性 i 解为
+        //   q=i%inner, p=i/inner, ax=p%outAxis, outer=p/outAxis
+        // data 偏移 = (outer*dataAxisDim + srcIdx)*inner + q。
+        void gatherElements(float[] arena, int dOff, int iOff, int oOff, int total,
+                            int axis, int inner, int dataAxisDim, int outAxisDim) {
+            int i = 0;
+            while (i < total) {
+                int q = i % inner;
+                int p = i / inner;
+                int ax = p % outAxisDim;
+                int outer = p / outAxisDim;
+                int ix = int(double(arena[iOff + i]));
+                if (ix < 0) ix = ix + dataAxisDim;
+                if (ix < 0) ix = 0;
+                if (ix >= dataAxisDim) ix = dataAxisDim - 1;
+                arena[oOff + i] = arena[dOff + (outer * dataAxisDim + ix) * inner + q];
+                i = i + 1;
+            }
+        }
+
+        // P8：ScatterND（数据高级索引）。out = data 副本，再按 indices [q,k] 前缀 scatter：
+        // 第 u 行 prefix 坐标 (idx[u*k+0..k-1]) 在 row-major data 中定址块起点 base（前缀步长
+        // = 后续维乘积，迭代 R/=d_j 得）；块长 block = 处理完 k 维后的 R。updates [q,block]
+        // 行主 → updates[u*block+e] 写 out[base+e]。idx 负索引 +d_j 再 clamp；重复前缀后写者胜。
+        void scatterND(float[] arena, int dOff, int iOff, int uOff, int oOff,
+                       int q, int k, int d0, int d1, int d2, int d3, int d4) {
+            int total = d0 * d1 * d2 * d3 * d4;
+            int i = 0;
+            while (i < total) { arena[oOff + i] = arena[dOff + i]; i = i + 1; }   // data 副本
+            int u = 0;
+            while (u < q) {
+                int base = 0;
+                int R = total;
+                int j = 0;
+                while (j < k) {
+                    int dj = (j == 0) ? d0 : ((j == 1) ? d1 : ((j == 2) ? d2 : ((j == 3) ? d3 : d4)));
+                    R = R / dj;
+                    int cj = int(double(arena[iOff + u * k + j]));
+                    if (cj < 0) cj = cj + dj;
+                    if (cj < 0) cj = 0;
+                    if (cj >= dj) cj = dj - 1;
+                    base = base + cj * R;
+                    j = j + 1;
+                }
+                int e = 0;
+                while (e < R) { arena[oOff + base + e] = arena[uOff + u * R + e]; e = e + 1; }
+                u = u + 1;
+            }
+        }
+
         // ---- 训练：卷积/池化反向（阶段3，CPU）----
 
         // 反向：y = conv(x, w)；给定 dY[N,yC,yH,yW]

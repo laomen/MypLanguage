@@ -736,6 +736,31 @@ class InferenceRuntime {
             opP0_[id] = depth;
             opCount_ = opCount_ + 1;
         }
+        // GatherElements（opKind 88）：data=opA、indices=opB、out=opC。
+        // 逐元素 gather：out[i] = data[coord(i) 沿 axis 换成 idx[i]]。out shape=indices
+        // shape；data 与 indices 同形（axis 维 data 可更长）。参数：axis=opP0（真实轴，
+        // 0..rank-1）、inner=opP1（axis 之后各维乘积）、dataAxisDim=opP2、outAxisDim=opP3。
+        void addGatherElements(int dT, int iT, int oT, int axis, int inner,
+                               int dataAxis, int outAxis) {
+            int id = opCount_;
+            opKind_[id] = 88;
+            opA_[id] = dT; opB_[id] = iT; opC_[id] = oT;
+            opP0_[id] = axis; opP1_[id] = inner; opP2_[id] = dataAxis; opP3_[id] = outAxis;
+            opCount_ = opCount_ + 1;
+        }
+        // ScatterND（opKind 89）：data=opA、indices=opB([q,k])、updates=opC、out=opD。
+        // out = data 副本；第 u 行 prefix (idx[u*1..k-1]) 定址块 base（row-major 前缀
+        // 步长 = 后续维乘积），把 updates[u*block+e] 写入 out[base+e]。参数：opP0-4=data
+        // 5 维（尾部补 1）、opP5=q（更新行数）、opP6=k（前缀长度）。
+        void addScatterND(int dT, int iT, int uT, int oT, int q, int k,
+                          int d0, int d1, int d2, int d3, int d4) {
+            int id = opCount_;
+            opKind_[id] = 89;
+            opA_[id] = dT; opB_[id] = iT; opC_[id] = uT; opD_[id] = oT;
+            opP0_[id] = d0; opP1_[id] = d1; opP2_[id] = d2; opP3_[id] = d3; opP4_[id] = d4;
+            opP5_[id] = q; opP6_[id] = k;
+            opCount_ = opCount_ + 1;
+        }
 
         void addAdd(int aTid, int bTid, int outputTid, int doRelu,
                     int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw) {

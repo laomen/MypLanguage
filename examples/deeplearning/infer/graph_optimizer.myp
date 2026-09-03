@@ -544,7 +544,7 @@ class GraphOptimizer {
             while (i < graph.nodeCount()) {
                 if (graph.nodeInAt(i, 0) == name || graph.nodeInAt(i, 1) == name || graph.nodeInAt(i, 2) == name) {
                     string t = graph.nodeTypeAt(i);
-                    if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization" || t == "Expand" || t == "Where" || t == "Tile" || t == "Squeeze" || t == "Gather" || t == "LogSoftmax" || t == "Dropout") return Kind.CNN_ACT();   // G4/G5：4D 广播/数据算子
+                    if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization" || t == "Expand" || t == "Where" || t == "Tile" || t == "Squeeze" || t == "Gather" || t == "LogSoftmax" || t == "Dropout" || t == "GatherElements" || t == "ScatterND") return Kind.CNN_ACT();   // G4/G5：4D 广播/数据算子（P8：GatherElements/ScatterND 数据输入走自然 NCHW 布局）
                     if (t == "Conv3D" || t == "MaxPool3D" || t == "AveragePool3D") return Kind.CNN_ACT();   // 3D
                     // F8：Concat/Transpose/Reshape 等 —— 若张量本身 4D 则按 CNN 激活
                     int s = graph.compilerShapeIdx(name);
@@ -1947,6 +1947,18 @@ int inferShapes(Graph graph) {
                     if (k < 1) k = 1;
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), k, 1, 1, 1);
                     graph.addShapeD4(graph.compilerNodeOutput(i, 1), k, 1, 1, 1);
+                } else if (t == "GatherElements") {
+                    // P8：逐元素 gather（数据高级索引）。out shape = indices shape（data 与
+                    // indices 同形，axis 维 data 可更长——out=indices 同形，非 axis 维同 data）。
+                    if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    int b = graph.compilerShapeIdx(graph.nodeInAt(i, 1));
+                    if (b < 0 || graph.compilerValueExists(graph.nodeInAt(i, 1)) == 0) return 0;
+                    graph.copyShape(graph.compilerNodeOutput(i, 0), b);
+                } else if (t == "ScatterND") {
+                    // P8：scatter-nd（数据高级索引）。out shape = data shape（副本 + scatter）。
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0));
+                    if (a < 0 || graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    graph.copyShape(graph.compilerNodeOutput(i, 0), a);
                 } else if (t == "ReduceMean" || t == "ReduceSum" || t == "ReduceMax" || t == "ReduceMin") {
                     // F8：mode 0 = 全规约（标量）；mode 1 = 空间维规约（per-(n,c)，秩无关）
                     // G3：Reduce 族共用 axes 归一化 + mode 判定；redType 记录（mean/sum/max/min）。

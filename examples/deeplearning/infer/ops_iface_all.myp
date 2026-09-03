@@ -1688,6 +1688,56 @@ class GpuGatherOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
+// ---- gatherElements（opKind 88 前向推理；逐元素 gather，out shape=indices）----
+class GatherElementsOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int dt = rt.opAAt(i); int it = rt.opBAt(i); int ot = rt.opCAt(i);
+            int total = rt.tensorRows(ot) * rt.tensorCols(ot);
+            InferOps.gatherElements(rt.arenaRef(), rt.tensorOff(dt), rt.tensorOff(it), rt.tensorOff(ot), total,
+                                    rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- gatherElements（GPU，opKind 88）----
+class GpuGatherElementsOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int dt = rt.opAAt(i); int it = rt.opBAt(i); int ot = rt.opCAt(i);
+            int total = rt.tensorRows(ot) * rt.tensorCols(ot);
+            GpuInferOps.gatherElements(rt.arenaRef(), rt.devRef(), rt.tensorOff(dt), rt.tensorOff(it), rt.tensorOff(ot), total,
+                                       rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- scatterND（opKind 89 前向推理；data 副本 + indices 前缀 scatter updates）----
+class ScatterNDOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int dt = rt.opAAt(i); int it = rt.opBAt(i); int ut = rt.opCAt(i); int ot = rt.opDAt(i);
+            InferOps.scatterND(rt.arenaRef(), rt.tensorOff(dt), rt.tensorOff(it), rt.tensorOff(ut), rt.tensorOff(ot),
+                               rt.opP5At(i), rt.opP6At(i), rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- scatterND（GPU，opKind 89）----
+class GpuScatterNDOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int dt = rt.opAAt(i); int it = rt.opBAt(i); int ut = rt.opCAt(i); int ot = rt.opDAt(i);
+            GpuInferOps.scatterND(rt.arenaRef(), rt.devRef(), rt.tensorOff(dt), rt.tensorOff(it), rt.tensorOff(ut), rt.tensorOff(ot),
+                                  rt.opP5At(i), rt.opP6At(i), rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- logsoftmax（opKind 79 前向 / 106 反向；沿 axis 稳定 log-softmax）----
 class LogSoftmaxOp {
     interface class IOp;
@@ -2676,6 +2726,8 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(49, new TopkOp(), 0);                 rt.registerFwd(49, new GpuTopkOp(), 1);
     rt.registerFwd(84, new GroupNormOp(), 0);            rt.registerFwd(84, new GpuGroupNormOp(), 1);
     rt.registerFwd(85, new OneHotOp(), 0);               rt.registerFwd(85, new GpuOneHotOp(), 1);
+    rt.registerFwd(88, new GatherElementsOp(), 0);       rt.registerFwd(88, new GpuGatherElementsOp(), 1);
+    rt.registerFwd(89, new ScatterNDOp(), 0);            rt.registerFwd(89, new GpuScatterNDOp(), 1);
     rt.registerFwdBwd(86, 87, new ConvTranspose3dOp(), 0);      rt.registerFwdBwd(86, 87, new GpuConvTranspose3dOp(), 1);
     rt.registerFwdBwd(5, 53, new AddOp(), 0);            rt.registerFwdBwd(5, 53, new GpuAddOp(), 1);
     rt.registerFwd(6, new MatmulOp(), 0);                rt.registerFwd(6, new GpuMatmulOp(), 1);
