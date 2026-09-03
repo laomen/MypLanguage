@@ -13,7 +13,7 @@ tensor ops (Transpose/Slice/Concat/Split/Reshape/Expand/Where/Tile/Squeeze/Gathe
 LogSoftmax/Softmax/CE…), 3D (Conv3D/Pool3D/Pad3D/Resize3D/ConvTranspose3D), **indexing / data advanced
 indexing (ArgMax/ArgMin/TopK/OneHot/GatherElements/ScatterND — GatherElements/ScatterND with P8b
 backward gradients for training)**, **the full activation family**, LLM (RmsNorm/LayerNorm/GELU/
-**Rope** rotary position embeddings), training backward ops (incl. BN/IN scale·bias grads & 4D/batch MatMul backward), Dropout infer/train semantics. **Session GPU training unified (P10a)**: `Session.runTrainAuto()` — MYP_GPU=1 and every op in the graph has a GPU dispatch slot → persistent GPU train step, else automatic CPU fallback; GPU backward added for ReLU6/LeakyRelu/SiLU/HardSwish/Clip/LogSoftmax/Reshape + MSE/BCE loss. Real models:
+**Rope** rotary position embeddings), training backward ops (incl. BN/IN scale·bias grads & 4D/batch MatMul backward), Dropout infer/train semantics. **Session GPU training unified (P10a)**: `Session.runTrainAuto()` — MYP_GPU=1 and every op in the graph has a GPU dispatch slot → persistent GPU train step, else automatic CPU fallback; GPU backward added for ReLU6/LeakyRelu/SiLU/HardSwish/Clip/LogSoftmax/Reshape + MSE/BCE loss; **P10b** adds the remaining GPU backward ops — fan-in Sub/Mul/Div/Add joins + BN/IN/BN-NHWC/batch-MatMul/Reduce/Transpose/Expand/Tile/Gather/ReduceMM/Pad — so BN/IN/batch-MatMul training nets now run `runTrainAuto` on GPU. Real models:
 **ResNet18/ResNet50** (bit-identical
 vs ORT), **3D U-Net** (coarse/fine), dynamic batch, multi-input/output/optional-input, FP16/BF16
 weights.

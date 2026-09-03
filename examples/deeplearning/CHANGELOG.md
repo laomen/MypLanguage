@@ -6,6 +6,46 @@
 
 ---
 
+## 2026-09-03 — P10b GPU 训练收敛修复（fan-in）+ 剩余 GPU 反向（BN/IN/BN-NHWC/batch-MatMul/Reduce/Transpose/Expand/Tile/Gather/ReduceMM/Pad）
+
+全量回归 pass=135 fail=0（测试数不变；新增 3 个训练 main 转 GPU：json_bn/json_in/
+json_batch_matmul_train——MYP_GPU=1 回归下现跑 GPU 训练，loss 收敛判据同 CPU）。
+
+### P10b-1：fan-in 汇合网 GPU 训练不收敛（P10a 已知局限）修复（cc86fc2）
+- 现象：Sub/Mul/Add 汇合、swiglu 等多分支网 GPU 训练 loss 卡死/发散（CPU 正常）。
+- GPU `bwdDense` dX kernel 补 `dxOff>=0` guard（同 CPU）：图输入 x 的 dx 被清空 →
+  dx tid=-1 → `tensorOff(-1)=-1` → 原无条件写 `a[-1+i]` 越界并覆盖 arena[0]=x 缓冲。
+- `GpuAddOp.forward` 镜像 CPU AddOp 修复：输出 dims=max(a,b)（原传 tensorN/C/H/W(oc)
+  =0 → add kernel 同尺寸快路径失败 → 4D fallback 首元素和 → 输出全等 → loss 卡 ln4）。
+- `GpuSubOp/GpuMulOp/GpuDivOp` 的 `backward()` 原空体 → 新增 GPU `bwdSub/bwdMul/bwdDiv`
+  核（da/db guard）+ 填三类 backward（Sub/Mul/Div 汇合此前 GPU 无梯度）。
+- json_train_submul/json_swiglu_train 转 runTrainAuto。验证 train_add/sub/mul/swiglu
+  GPU loss 200 步与 CPU 逐位一致。
+
+### P10b-2：剩余 GPU 反向补全（b387921，无 float 原子 → thread-per-dest / scratch 分块归约）
+- gpu_ops.myp 新核 10 个：`bwdBatchnorm`(114)（thread-per-(n,c) 段写自有 dx + scratch
+  部分和 Σdy·(x-mean)·rstd/Σdy，K2 归约 Σ_n→dscale/dbias）、`bwdBatchnormNHWC`(117)
+  （thread-per-c 扫 N*S，写自有通道列 dx，ds/db 单写者）、`bwdInstancenorm`(115)
+  （thread-per-(n,c) 重算 mean/var/md/mdx 写 dx + scratch 归约）、`bwdMatmulBcast`(116)
+  （dA=dO·Bᵀ/dB=Aᵀ·dO；A/B 无广播→thread-per-out-batch 直接归约，有广播→thread-per-
+  da/db 槽扫全部输出 batch）、`bwdTranspose`(94)/`bwdPadConst`(101)（元素双射
+  thread-per-x 搬回）、`bwdReduce`(97)/`bwdReduceMM`(100)（mean/sum 广播回 / argmax
+  掩码）、`bwdBroadcastCopy`(95/96 Expand/Tile)+`bwdGather`(98)（scatter-add →
+  thread-per-dx-slot 扫全部 out，同 bwdGatherElements 模式）。
+- ops_iface_all.myp：填 GpuReduceMean/Transpose/Expand/Tile/Gather 的 `backward()`
+  （原空体）+ 新增 GpuBwdBatchnorm/Nhwc/InstanceNorm/BatchMatmul/ReduceMM/Pad 类；
+  注册 GPU bwd 槽 94-98/100/101/114-117（此前 CPU-only → gpuTrainReady 现放行
+  BN/IN/batch-MatMul 训练网）。
+- json_bn/json_in/json_batch_matmul_train 转 runTrainAuto（打印 gpu 标志）。验证：
+  三网 GPU 训练 gpu=1、loss 与 CPU 一致（BN lf 1.20e-4、IN 1.3e-12、batch-MatMul
+  5.3e-14）。
+
+### GPU bwd 覆盖（至此训练反向全 opKind 具 GPU 分派槽）
+dense/sigmoid/tanh/softmax/relu 族/reshape/conv 族/3D 族/pool 族/sub/mul/div/add/
+batch-matmul/BN/BN-NHWC/IN/reduce/reduceMM/transpose/expand/tile/gather/gatherElements/
+scatterND/pad/concat/MSE/BCE/dice/softmaxCE/update——除 slice/split/range 等已记 triage
+（不实现）外全部具备；BN/IN/batch-MatMul 归一化/矩阵类训练网不再回退 CPU。
+
 ## 2026-09-03 — P10a Session GPU 训练统一 + 激活/损失/重排 GPU 反向（A 组「Session 级 GPU 训练」第一部分）
 
 全量回归 pass=135 fail=0（测试数不变；7 个单链训练 main 改 `runTrainAuto`，在

@@ -201,10 +201,11 @@ while (step < N) {
   `gpuTrainReady()`（图内全部 opKind 有 GPU 分派槽；梯度累积/AMP 模拟除外）→ 首步
   `gpuPersistentStart` + 每步 `runGpu`（增量上传置脏输入 + 全量 D2H），否则回退 CPU
   `runTrain`（绝不静默错）。结束 `trainGpuEnd()`。GPU 反向已补：ReLU6/LeakyRelu/SiLU/
-  HardSwish/Clip/LogSoftmax/Reshape bwd + MSE/BCE loss。**已知 GPU 局限（P10b）**：
-  fan-in（同输入多分支）训练网 GPU 不收敛（Sub/Mul/Add 汇合、swiglu；CPU 正常）——
-  相关 main 仍 CPU；BN/IN/BN-NHWC/batch-MatMul/Reduce/Transpose/Expand/Tile/Gather/Pad
-  的 bwd 仍 CPU-only（`gpuTrainReady` 自动回退）。
+  HardSwish/Clip/LogSoftmax/Reshape bwd + MSE/BCE loss；**P10b 起补齐全剩余 GPU 反向**
+  ——fan-in 汇合（Sub/Mul/Div/Add bwd）修复（多分支网 GPU loss 与 CPU 逐位一致）+ BN/
+  BN-NHWC/IN/batch-MatMul/Reduce/Transpose/Expand/Tile/Gather/ReduceMM/Pad bwd →
+  BN/IN/batch-MatMul 训练网（`bn_train`/`in_train`/`batch_matmul_train`）转
+  `runTrainAuto` GPU 训练（gpu=1，loss 同 CPU）。
 - **可训结构**：链式 + fan-in 汇合（`Add`/`Sub`/`Mul`/`Concat` 在 loss 路径）均可训
   降（回归 `json_train_submul_main`：sub/mul/add 三网 200 步 loss 显著降）。**激活反向**
   全覆盖：`Relu`/`Sigmoid`/`Tanh` 早已支持；`ReLU6`/`LeakyRelu`/`SiLU`/`HardSwish`/

@@ -17,7 +17,10 @@ cuBLAS）、张量变换（Transpose/Slice/Concat/Split/Reshape/Expand/Where/Til
 GELU/**Rope** 位置编码）、训练反向算子（含 **BN/IN scale·bias 梯度** 与 **4D/batch MatMul 反向**）、Dropout 推理/训练语义。
 **Session GPU 训练统一（P10a）**：`Session.runTrainAuto()`（MYP_GPU=1 且图内全部 op 有 GPU
 分派 → 持久化 GPU 训练步，否则自动 CPU 回退）+ 激活/损失/重排 GPU 反向补缺
-（ReLU6/LeakyRelu/SiLU/HardSwish/Clip/LogSoftmax/Reshape bwd + MSE/BCE loss）。真实模型：**ResNet18/ResNet50**
+（ReLU6/LeakyRelu/SiLU/HardSwish/Clip/LogSoftmax/Reshape bwd + MSE/BCE loss）；**P10b**
+再补剩余 GPU 反向：fan-in 汇合 Sub/Mul/Div/Add + BN/IN/BN-NHWC/batch-MatMul/Reduce/
+Transpose/Expand/Tile/Gather/ReduceMM/Pad bwd —— BN/IN/batch-MatMul 训练网现走
+`runTrainAuto` GPU。真实模型：**ResNet18/ResNet50**
 （vs ORT 数值一致）、**3D U-Net**
 （coarse/fine）、动态 batch、多输入/多输出/可选输入、FP16/BF16 权重、量化前全精度。
 
