@@ -123,13 +123,16 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   `ReduceMin(axes[,keepdims])`；**索引类（行/特征轴 1D flat，单样本=整行 logits）**
   `ArgMax`/`ArgMin`（单输出标量索引）、`TopK(k, outs:[values,indices])`（前 k 大，
   输出 float 编码索引——对应 CE 标签/LLM 采样）、`OneHot(depth)`（idx float 逐元素
-  → 行优先 one-hot [nIdx,depth]）；**数据高级索引（P8）** `GatherElements(in,in2:idx,
+  → 行优先 one-hot [nIdx,depth]）；**数据高级索引（P8/P8b）** `GatherElements(in,in2:idx,
   axis)`（data/indices 同形逐元素 gather，out shape=indices；axis 0..rank-1，索引 float
   张量运行时 setInput）、`ScatterND(in,in2:idx[q,k],in3:upd)`（data 副本 + indices 前缀
-  scatter；k ≤ data 秩，块长=data[k:]，upd=[q]+data[k:]）。示例：`infer_tests/branch.json`
+  scatter；k ≤ data 秩，块长=data[k:]，upd=[q]+data[k:]）。两 op 均含**训练反向**（P8b）：
+  GE 反向 dy scatter-add 回 data（重复 idx 累加）；ScatterND 反向 dx=dy 且写位置清零、
+  du=写位置 gather dy（updates 图输入时无 du）。示例：`infer_tests/branch.json`
   （多分支 DAG）、`mlp.json`、`safe_gemm.json`、`reshape.json`、`gather.json`、
   `ops2.json`、`argmax.json`（ArgMax/ArgMin/TopK）、`gather_elements.json`、
-  `scatter_nd.json`（P8 数据高级索引）。
+  `scatter_nd.json`（P8 数据高级索引）、`gather_elem_train.json`/`scatter_nd_train.json`
+  （P8b 反向梯度训练：Conv→索引→MSE 收敛）。
 - **参数化 op（int64 内联常量）**：`shape`/`indices`/`repeats` 等 int64 数组直接内联在层里，
   框架登记为内存 int64 常量（无需 ONNX 初始器）：
   ```json

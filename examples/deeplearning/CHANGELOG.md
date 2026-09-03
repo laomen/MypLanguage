@@ -6,6 +6,31 @@
 
 ---
 
+## 2026-09-03 — P8b 数据高级索引反向：BwdGatherElements + BwdScatterND
+
+全量回归 pass=119→**123** fail=0（P8 前向索引族补训练反向；CPU-only 训练同 BwdGather）。
+
+### BwdGatherElements（opKind 111，OpCode 118）
+- 语义：out[i] 来自 data 源位置 s(i)（同前向 idx clamp）→ dx[s] 累加 dy[i]（重复 idx
+  scatter-add）；dx 先清零。参数同前向（axis/inner/dataAxisDim/outAxisDim 现算）。
+- kernel CPU `InferOps.bwdGatherElements` + BwdGatherElementsOp（registerBwd 111,0）；
+  graph OpCode/Bwd 类型 + opTraits 2 + buildReverseGraph（GatherElements→BwdGatherElements，
+  复制 axis；data 图输入时清 dx）+ graph_compiler wiring（indices=nodeIn2 float 张量直引，
+  dx=nodeOut0）。测试 bwd_gather_elements_main（axis=3 重复 idx 累加 + axis=1 通道交换）
+  数值对拍；gather_elem_train.json Conv(1x1)→GE(交换通道)→MSE 端到端训练（l0≈183→lf≈1e-4，
+  若反向路由错通道不收敛）。
+
+### BwdScatterND（opKind 112，OpCode 119）
+- 语义：out=copy(data)+scatter → dx=dy 且写位置清零（d out/d data=0）、du=写位置 dy
+  gather（唯一前缀精确；du 可为 -1=updates 图输入）。
+- kernel CPU `InferOps.bwdScatterND`（先整块 dx=dy、du 清零，逐行 base 同前向）+ Op；
+  graph 同上（updates=nodeIn2 仅引用；du 仅当 updates 是节点输出才产）。测试
+  bwd_scatter_nd_main（k=2 通道整块 + k=4 单元素两组的 dx/du 对拍）；scatter_nd_train.json
+  Conv(1x1 3ch)→ScatterND(写 ch1)→MSE 端到端训练（写位置梯度清零→梯度只回流 ch0/ch2，
+  l0≈175→lf≈4e-4）。
+
+---
+
 ## 2026-09-03 — P8 数据高级索引：GatherElements + ScatterND 图算子
 
 全量回归 pass=117→**119** fail=0（索引族 OneHot 行收口；Range 见下）。
