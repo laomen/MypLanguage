@@ -24,7 +24,6 @@ test_io.txt
 /tmp/
 node_modules/
 *.bin
-examples/deeplearning/diffusion/bin/
 
 /go/
 
@@ -57,10 +56,6 @@ docs/*.md
 # 本地工作区杂项（不追踪）
 tests_mix.myp
 
-# deeplearning 专项设计/计划/评估文档（不再追踪，本地留存；权威 design.md / gpu_paradigm.md 仍追踪）
-
 # Windows 交叉编译验证产物
 build-win-runtime/
 
-# deeplearning 框架已独立为 mypdeeplearning 仓库（2026-09-03）；本地残留 data 目录整目录忽略
-/examples/deeplearning/
