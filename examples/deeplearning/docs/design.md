@@ -3,7 +3,7 @@
 > 适用范围：`examples/deeplearning` 的 `infer/` 核心库 + `dl`（Session）统一入口
 > （纯 MYP 实现的通用静态图**推理 + 训练**框架）。
 > 路线图与性能范式见 `docs/gpu_paradigm.md`；功能/里程碑时间线见 `CHANGELOG.md`；
-> 用户速览见 `../README.md`（中英）与 `docs/sli.md`/`docs/usage.md`。
+> 用户速览见 `../README.md`（中英）与 `docs/manual.md`/`docs/manual_EN.md`（已并入原 sli/usage）。
 > 文档版本：**2026-09-03**（模块化 Graph IR + 声明式 JSON + Session 训练 + P10b GPU 反向之后）。
 
 ---
@@ -60,7 +60,7 @@ deeplearning/
 ├── json_tool/                # JSON 图小工具（独立演示 + CLI）
 ├── train/  llm/  diffusion/  # 相邻分项目（3D 训练 / Qwen2+distilgpt2 / SD1.5 文生图）
 ├── data/                     # 模型/输入/数据集（git 忽略）
-└── docs/                     # design.md（本文档）/ usage.md / sli.md / gpu_paradigm.md（路线图）
+└── docs/                     # design.md（本文档）/ manual.md + manual_EN.md / gpu_paradigm.md（路线图）
 ```
 
 ---
@@ -350,7 +350,7 @@ lowering/算子选择] → layoutNHWC(opt-in) → topoSort → planMemory → bu
 ## 附录：相关文档与验证
 
 - `../README.md` / `README_EN.md`：现状速览（中/英）。
-- `docs/usage.md`：infer 使用说明；`docs/sli.md`：`import dl` 统一入口指南。
+- `docs/manual.md` / `docs/manual_EN.md`：用户手册（已并入原 `sli.md`/`usage.md` 全部内容）。
 - `docs/gpu_paradigm.md`：GPU 范式库 + 推理/训练路线图。
 - `CHANGELOG.md`：本分项目里程碑时间线（阶段一~九 + JSON P2..P10b）。
 - 回归：`bash examples/deeplearning/infer_tests/run_all.sh` → `pass=135 fail=0`。

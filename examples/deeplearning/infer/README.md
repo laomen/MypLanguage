@@ -59,7 +59,7 @@ s.dumpGraph(); s.dumpIR(); s.dumpMem();   // 结构/计划/内存 dump
 //      op：Gemm/Conv/ConvTranspose/Pool/激活全族（Relu↔SiLU↔LeakyRelu↔ReLU6…换 op 名即换激活）/
 //           Softmax/GlobalAveragePool/Flatten + 二元 Add/Sub/Div/Mul/MatMul + 多输入 Concat
 //      权重 init/values 或 safetensors 源；训练反向覆盖激活+池化+数据重排/广播/归约族
-// 完整上手/连线/激活选用/陷阱/示例：docs/sli.md（本文件仅速览）
+// 完整上手/连线/激活选用/陷阱/示例：docs/manual.md（本文件仅速览）
 ```
 
 **布局与测试**
@@ -93,10 +93,8 @@ bash examples/deeplearning/infer_tests/run_all.sh    # → == pass=135 fail=0 =�
 ```
 
 **相关文档**（`deeplearning/docs/`）：
-- [`manual.md`](../docs/manual.md) — **用户手册**（入门 → ONNX/JSON 建模 → 训练 → 验证 → FAQ；英文 `manual_EN.md`）
+- [`manual.md`](../docs/manual.md) — **用户手册**（唯一用户文档：入门/ONNX+JSON 建模/Session/训练/验证/FAQ，已并入原 sli+usage；英文 `manual_EN.md`）
 - [`design.md`](../docs/design.md) — 架构设计说明（运行时 / opKind / 图 pass 管线 / 扩展指南）
-- [`usage.md`](../docs/usage.md) — 使用说明（构建运行 / 环境变量 / 回归测试 / 交叉校验）
-- [`sli.md`](../docs/sli.md) — SLI 上手（Session API / JSON 语法·连线 / 激活选用 / 训练 / 陷阱）
 - [`gpu_paradigm.md`](../docs/gpu_paradigm.md) — GPU 范式库 + 推理框架路线图（M1-M4 / G1-G4）
 
 ---

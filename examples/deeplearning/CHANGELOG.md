@@ -6,6 +6,19 @@
 
 ---
 
+## 2026-09-03 — 文档整合（非代码）：sli.md + usage.md 全部内容并入 manual，删除源文件
+
+用户文档单源化：`docs/manual.md`（中）+ `docs/manual_EN.md`（英）吸收原 `docs/sli.md`
+（`import dl` + JSON op 全集参考）与 `docs/usage.md`（infer 用法/Python 工具/交叉校验/
+数据文件）的全部内容——环境变量表、Session API 表、JSON 连线/激活/权重/op 全集、
+训练/checkpoint/诊断、算子级 @test、交叉校验流程、数据文件树、FAQ 合并去重为单源，
+随后 **`git rm` 删除 `docs/sli.md` / `docs/usage.md`**（不再单独保存）。
+`design.md`/`design_EN.md` 与 `infer/README.md`/`README_EN.md` 对 sli/usage 的引用已改指
+manual（README「相关文档」列表去掉已删条目）；CHANGELOG 历史条目提及 sli/usage 保留原样。
+回归不受影响（纯文档）。
+
+---
+
 ## 2026-09-03 — 文档整理（非代码）：专项设计/计划/评估文档移出 git 追踪
 
 对齐主仓「本地设计文档不追踪」约定（权威 `design.md` / `gpu_paradigm.md` 与用户

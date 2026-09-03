@@ -4,7 +4,7 @@
 > unified entry point — a general static-graph **inference + training** framework
 > implemented in pure MYP.
 > Roadmap & performance paradigm: `docs/gpu_paradigm.md`; feature/milestone timeline:
-> `CHANGELOG.md`; user quick-start: `../README.md` (CN/EN), `docs/sli.md`, `docs/usage.md`.
+> `CHANGELOG.md`; user quick-start: `../README.md` (CN/EN), `docs/manual.md`/`manual_EN.md` (which absorbed the former sli/usage).
 > Doc version: **2026-09-03** (after the modularized Graph IR, declarative JSON source,
 > Session training, and P10b GPU-backward work).
 
@@ -65,7 +65,7 @@ deeplearning/
 ├── json_tool/                # JSON-graph utility (standalone demo + CLI)
 ├── train/  llm/  diffusion/  # sibling sub-projects (3D training / Qwen2+distilgpt2 / SD1.5)
 ├── data/                     # models/inputs/datasets (git-ignored)
-└── docs/                     # design.md (this doc) / usage.md / sli.md / gpu_paradigm.md (roadmap)
+└── docs/                     # design.md (this doc) / manual.md + manual_EN.md / gpu_paradigm.md (roadmap)
 ```
 
 ---
@@ -397,7 +397,7 @@ auto-detects input/output), or `import dl` + `runAuto`.
 ## Appendix: related docs & validation
 
 - `../README.md` / `README_EN.md`: current-state quick start (CN/EN).
-- `docs/usage.md`: infer usage; `docs/sli.md`: `import dl` unified-entry guide.
+- `docs/manual.md`/`manual_EN.md`: user manual (absorbed former `sli.md`/`usage.md`).
 - `docs/gpu_paradigm.md`: GPU paradigm library + inference/training roadmap.
 - `CHANGELOG.md`: this sub-project's milestone timeline (phases 1–9 + JSON P2..P10b).
 - Regression: `bash examples/deeplearning/infer_tests/run_all.sh` → `pass=135 fail=0`.
