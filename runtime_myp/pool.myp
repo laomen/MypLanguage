@@ -152,18 +152,24 @@ void poolChunkDone() {
         __myp_syscall(202, PoolTab.barSeq, 129, 2147483647, 0, 0, 0);
     }
 }
-// 无工作 → futex 等 workSeq 变化
-void poolWorkWait() {
-    int s = __myp_atomic_load_i32_addr(PoolTab.workSeq);
-    __myp_syscall(202, PoolTab.workSeq, 128, s, 0, 0, 0);
-}
 
 // ---- worker 入口（clone 子线程；spawn 前父设 spawnTid + 等 ready 握手）----
+// 防丢唤醒约定（2026-09-03 修复 P10 死锁）：发布者（myp_pool_parallel_for）顺序
+//   复位计数 → 复位 deque → 推 chunk → 设 totalChunks → workSeq+1 → futex_wake。
+// worker 每轮**先快照 workSeq、再查 deque**（pop 自家→偷别人）：
+//   · 快照后若块已在 deque → 本轮直接 pop 到，不会睡；
+//   · 快照后 deque 空（发布者尚未推/++）→ futex_wait(快照值)：发布者随后 ++ → 值变
+//     立即返回，下轮取块；
+//   · 若 worker 在发布者 ++ 之后才快照 → 值虽新，但块在 ++ 前已推入 → 复查必取到。
+// 旧实现是「先查空 deque、再快照 workSeq 去 wait」——worker 可能在发布者 ++/wake
+// 之后才快照到新值并睡在无等待者的 wake 上（futex 值==期望 → 真睡），块无人处理 →
+// 主线程 barrier 永等 → 死锁（小 n 高频微并行 ~50% 复现）。
 void poolWorkerEntry() {
     int tid = int(__myp_mem_load_i32(PoolTab.spawnTid));
     __myp_mem_store_i64(PoolTab.workerTid + long(tid) * 8, __myp_syscall(186, 0, 0, 0, 0, 0, 0));
     __myp_mem_store_i32(PoolTab.workerReady + long(tid) * 4, 1);   // 握手：已读 spawnTid
     while (__myp_mem_load_i32(PoolTab.running) != 0) {
+        int wseq = __myp_atomic_load_i32_addr(PoolTab.workSeq);   // 先快照（防丢唤醒）
         int got = dqPop(tid);
         if (got == 0) {
             int nt = int(PoolTab.nThreads);
@@ -180,7 +186,8 @@ void poolWorkerEntry() {
                 PoolTab.workArg);
             poolChunkDone();
         } else {
-            poolWorkWait();
+            // 复查后仍无工作 → futex 等 workSeq 变化（快照后发布 → 值变 → 立即返回）
+            __myp_syscall(202, PoolTab.workSeq, 128, wseq, 0, 0, 0);
         }
     }
     __myp_syscall(60, 0);   // 池销毁 → 退出本线程
@@ -244,12 +251,15 @@ void myp_pool_parallel_for(long pool, int start, int end, int step, long fn, lon
     int chunkSize = n / maxChunks;
     if (chunkSize < 1) chunkSize = 1;
     int remainder = n % maxChunks;
-    // 复位 barrier + 清空 deque（在发布 chunk 前）
+    // 复位 barrier + 清空 deque（在发布 chunk 前；deque 复位持票号锁——防刚跑完
+    // 上一轮、尚未停靠的 worker 并发 pop/steal 读到撕裂的 bottom/top 而取到幽灵块）
     __myp_mem_store_i32(PoolTab.doneCount, 0);
     __myp_mem_store_i32(PoolTab.totalChunks, 0);
     for (int t = 0; t < nt; t = t + 1) {
+        dqLock(t);
         __myp_mem_store_i32(PoolTab.dqBottom + long(t) * 4, 0);
         __myp_mem_store_i32(PoolTab.dqTop + long(t) * 4, 0);
+        dqUnlock(t);
     }
     int iter = start;
     int actual = 0;

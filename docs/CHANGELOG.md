@@ -27,6 +27,27 @@
 
 ## 编译器版本历史
 
+### v3.15.201 — runtime_myp 线程池防丢唤醒修复（@parallel 小 n 高频微并行死锁 ~50% → 0）
+
+**非破坏性**（runtime_myp/pool.myp，@parallel 线程池）。deeplearning CPU 训练非确定性根因：
+`poolWorkerEntry` 经 `poolWorkWait()` **先查空 deque、再快照 workSeq 去 futex_wait**——发布者
+（`myp_pool_parallel_for`：复位计数 → 复位 deque → 推 chunk → 设 totalChunks → workSeq+1 →
+futex_wake）在 worker 快照之后 ++/wake、且 worker 快照到新值 → `futex_wait(值==期望)` 真睡在
+无等待者的 wake 上 → 块无人处理 → 主线程 barrier 永等 → 死锁。触发：小 n / 高频微 @parallel
+（n=1..32 × 64k 次调用 `~50%` 挂起）；deeplearning CPU 训练小张量网（activ_chain/batch_matmul
+等）同机制偶发跑偏/挂起/不收敛（大网 cnn/tanh/mse 并行调用少/块大 → 稳定）。修复：①
+`poolWorkerEntry` **先快照 workSeq、再查 deque**（pop 自家 → 偷别人），复查仍空才
+`futex_wait(快照值)`——发布者 ++ 前块已入 deque ⇒ 快照后必取到；删 `poolWorkWait`。②
+`myp_pool_parallel_for` 的 deque 复位（bottom/top=0）包 `dqLock(t)/dqUnlock(t)`——防上一轮
+刚跑完未停靠的 worker 并发 pop/steal 读到撕裂 bottom/top 取到幽灵块。⚠️ 运维要点：
+runtime_myp/*.myp 由 build.sh 编译成归档 `libmyp_rt_myp.a`，mypc 链接用户程序按
+`<exe_dir>/libmyp_rt_myp.a` 引用——只改磁盘源码**必须重建归档**
+（`cmake --build build --target myp_rt_myp`）才生效（本次修复即因未重建归档致首验无效，
+nm 见 `poolWorkWait` 仍在；重建后符号消失、挂起消除）。回归：par_smalln（64k 微 @parallel）
+100/100 不挂（修前 ~50-60%）；batch_matmul/activ_chain CPU 各 20/20 确定性 OK（此前 6 跑
+5 FAIL / 12 跑 3 偏）；`rt_pool_test` 增第 5 段高频小 n 回归防护 8/8（防丢唤醒，~0.2s）；
+runtime_myp-only PASS；deeplearning GPU 金标准 135/135；bootstrap 16/16 + 主套件 467/467。
+
 ### v3.15.200 — 退出全量环收集跳过（编译/推理加速 21.5s → 5.7s，3.8x）
 
 **非破坏性**（runtime_myp 退出路径）。perf 实测定位编译慢真正根因：**`ccAddrOk`

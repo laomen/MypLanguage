@@ -45,6 +45,33 @@ class ParTest {
             if (Parallel.workerCount() != 2) return 5;
             if (Parallel.threadCount() < 1) return 6;
 
+            // 5) 高频小 n 微并行（防丢唤醒回归，v3.15.201）——复刻 /tmp/par_smalln：
+            //    n=1..32 × 2000 次 1..32 元素微 @parallel。修复前 runtime_myp/pool.myp
+            //    poolWorkerEntry 经 poolWorkWait()「先查空 deque 再快照 workSeq 去
+            //    futex_wait」——发布者 ++/wake 后快照到新值 → futex_wait(值==期望) 真睡，
+            //    块无人处理 → 主线程 barrier 永等 → 死锁 ~50% 复现。修复=worker 先快照
+            //    workSeq 再查 deque。回归信号：池若回退此段会直接挂起（冒烟卡住即暴露）。
+            float[] pa = new float[64];
+            float[] pb = new float[64];
+            int n5 = 1;
+            while (n5 <= 32) {
+                int k5 = 0;
+                while (k5 < 64) { pa[k5] = float(k5 % 5); pb[k5] = 0.0f; k5 = k5 + 1; }
+                int rep5 = 0;
+                while (rep5 < 2000) {
+                    @parallel for (int i = 0; i < n5; i = i + 1) { pb[i] = pa[i] * 1.0000001f + 0.5f; }
+                    rep5 = rep5 + 1;
+                }
+                n5 = n5 + 1;
+            }
+            // 末轮 n5=32 覆写 pb[0..31] → 轻量校验（每 rep 同值覆盖，与 rep 数无关）
+            int j5 = 0;
+            while (j5 < 32) {
+                float expect = float(j5 % 5) * 1.0000001f + 0.5f;
+                if (pb[j5] != expect) return 7;
+                j5 = j5 + 1;
+            }
+
             return 0;
         }
 }
