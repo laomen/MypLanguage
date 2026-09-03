@@ -8,21 +8,20 @@
 
 ## 2026-09 — AvgPool2D 反向接通（2D 池化训练反向全覆盖：MaxPool/AvgPool/GAP）
 
-- **发现**：buildReverseGraph 的 `AveragePool(2D)→BwdAvgPool` 分支**早已存在**——
-  但因 opCode map 无 "BwdAvgPool"（返回 UNKNOWN=0）+ runtime/kernel/register 缺，
-  从未接通（产 BwdAvgPool 节点但 buildRuntime 遇 code 0 静默失效）。教训：buildReverseGraph
-  有分支但 opCode/runtime 未接 = 静默断链。
+- **背景**：2D AveragePool 无训练反向（此前 CNN 训练用 MaxPool/GAP 避过）。补全链路：
 - **补全**：graph_defs OpCode `BWD_AVGPOOL(93)` + opCode map + opTraits(2)；runtime
   `addBwdAvgPool`（opKind 99，opP0-8=kh,kw,sh,sw,pt,pb,pl,pr,cip）；ops.myp
   `bwdAvgPool2D` kernel（同 fwd 窗口有效数 cnt 分母，cip=1→kh*kw；dy 均摊回 dx
-  累加、清零；只依赖 pt/pl 窗口起点）；ops_iface AvgpoolOp.backward +
-  registerFwdBwd(36→99)（GPU 前向保留，训练反向 CPU-only）；graph_compiler
-  BWD_AVGPOOL wiring（参数复制自 bwd node attr，buildReverseGraph AveragePool 分支
-  早已复制 KH/KW/SH/SW/PT/PB/PL/PR/CIP）。
+  累加、清零）；ops_iface AvgpoolOp.backward + registerFwdBwd(36→99)（GPU 前向
+  保留，训练反向 CPU-only）；graph_compiler BWD_AVGPOOL wiring + buildReverseGraph
+  `AveragePool(2D)→BwdAvgPool` 分支（复制 KH/KW/SH/SW/PT/PB/PL/PR/CIP + dx guard）。
 - 测试 `infer_tests/json_avgpool_cnn_train_main.myp` + `avgpool_cnn.json`：Conv(2ch
   3x3)→Relu→AvgPool(2x2/2)→Flatten[1,18]→Gemm→Softmax 200 步 SGD loss
   **1.037→0.431** 降（CPU+GPU，MYP_IR_VERIFY=1）。全量回归 pass=87 fail=0。
 - **至此 2D 池化训练反向全覆盖**（MaxPool/AvgPool/GAP）——CNN 训练可配任意池化。
+- **工具教训**：multi_replace_string_in_file 报告失败时**可能已部分/全部写入**（本次
+  buildReverseGraph 分支实际写入却报失败，靠 git status/diff 复核补交）——失败后
+  务必 git diff 检查残留，勿假定完全未应用。
 
 ---
 
