@@ -2358,6 +2358,24 @@ class GpuConvTransposeOp {
         }
 }
 
+// ---- convTranspose3d（GPU）----
+class GpuConvTranspose3dOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i); int wb = rt.opBAt(i); int bc = rt.opCAt(i); int yd = rt.opDAt(i);
+            int bOff = -1; if (bc >= 0) bOff = rt.tensorOff(bc);
+            int yC = rt.tensorC(yd); int yD = rt.tensorD(yd); int yH = rt.tensorH(yd); int yW = rt.tensorW(yd);
+            GpuInferOps.convTranspose3d(rt.arenaRef(), rt.tensorN(yd) * yC * yD * yH * yW,
+                rt.tensorOff(xa), rt.tensorN(xa), rt.tensorC(xa), rt.tensorD(xa), rt.tensorH(xa), rt.tensorW(xa),
+                rt.tensorOff(wb), bOff,
+                rt.tensorOff(yd), yC, yD, yH, yW,
+                rt.tensorD(wb), rt.tensorH(wb), rt.tensorW(wb),
+                rt.opP0At(i), rt.opP1At(i), rt.opP2At(i), rt.opP3At(i), rt.opP4At(i), rt.opP5At(i), rt.devRef());
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- conv3d（GPU，注意 GPU 用 conv3dTiled）----
 class GpuConv3dOp {
     interface class IOp;
@@ -2625,7 +2643,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(49, new TopkOp(), 0);                 rt.registerFwd(49, new GpuTopkOp(), 1);
     rt.registerFwd(84, new GroupNormOp(), 0);            rt.registerFwd(84, new GpuGroupNormOp(), 1);
     rt.registerFwd(85, new OneHotOp(), 0);               rt.registerFwd(85, new GpuOneHotOp(), 1);
-    rt.registerFwd(86, new ConvTranspose3dOp(), 0);      // ConvTranspose3D（CPU-only fwd）
+    rt.registerFwd(86, new ConvTranspose3dOp(), 0);      rt.registerFwd(86, new GpuConvTranspose3dOp(), 1);
     rt.registerFwdBwd(5, 53, new AddOp(), 0);            rt.registerFwdBwd(5, 53, new GpuAddOp(), 1);
     rt.registerFwd(6, new MatmulOp(), 0);                rt.registerFwd(6, new GpuMatmulOp(), 1);
     rt.registerFwdBwd(7, 56, new ConvOp(), 0);           rt.registerFwdBwd(7, 56, new GpuConvOp(), 1);

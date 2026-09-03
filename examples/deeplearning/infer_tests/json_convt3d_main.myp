@@ -1,34 +1,43 @@
-// json_convt3d_main.myp — C：JSON ConvTranspose3D（图算子 P7，3D 转置卷积 fwd，CPU）。
-// x[1,1,2,1,1]=[1,3]（Cin=1,xD=2），W[1,1,2,1,1]=[2,5]（Cin,Cout,kd），stride=1 no-pad
-// → yD=(2-1)*1-0-0+2=3；y[o]=Σ_i x[i]·w[o-i]（1D 转置卷积）：
-//   y0 = x0·w0 = 1·2 = 2；y1 = x0·w1 + x1·w0 = 5+6 = 11；y2 = x1·w1 = 15
-// 判据 [2,11,15]（CPU run；GPU kernel 后续）。JSON CONVT3D OK。
+// json_convt3d_main.myp — C：JSON ConvTranspose3D（图算子 P7，3D 转置卷积 fwd，CPU+GPU）。
+// 两 Session 覆盖 stride1 与 stride2（U-Net 解码 2x 上采样几何）：
+//   s1: x[1,1,2,1,1]=[1,3] W=[2,5] stride1 → yD=3 → [2,11,15]（1D 转置卷积手算）
+//   s2: x[1,1,2,1,1]=[1,3] W=[2,5] stride2 → yD=(2-1)*2+2=4 → [2,5,6,15]
+// CPU+GPU JSON CONVT3D OK。
 import env;
 import fmt;
 import dl;
 class JsonConvt3dApp {
     action:
-        @constructor JsonConvt3dApp() {
+        int runCase(string jsonPath, double[] x, int nx, double[] exp, int ne) {
             Session s = new Session();
-            int ok = s.loadJson("./deeplearning/infer_tests/convt3d.json");
-            if (ok == 0) { Console.writeLine("JSON CONVT3D SKIP (no load)"); return; }
-            double[] x = new double[2];
-            x[0]=1.0; x[1]=3.0;
-            s.setInput("x", x, 2);
-            int rk = s.run();   // ConvTranspose3D 现 CPU fwd
+            int ok = s.loadJson(jsonPath);
+            if (ok == 0) { Console.writeLine("JSON CONVT3D SKIP (no load " + jsonPath + ")"); return 1; }
+            s.setInput("x", x, nx);
+            int rk = s.runAuto();
             double[] o = s.getOutput("y");
             int n = s.tensorSize("y");
-            double[] exp = new double[3];
-            exp[0]=2.0; exp[1]=11.0; exp[2]=15.0;
             int bad = 0;
+            if (n != ne) bad = bad + 1;
             int i = 0;
-            while (i < 3) { double d = o[i]-exp[i]; if (d<0.0) d=0.0-d; if (d>1.0e-3) bad=bad+1; i = i + 1; }
-            Console.writeString("run="); Console.writeLong(rk);
+            while (i < ne) {
+                if (i < n) { double d = o[i]-exp[i]; if (d<0.0) d=0.0-d; if (d>1.0e-3) bad=bad+1; }
+                i = i + 1;
+            }
+            Console.writeString(jsonPath + " run="); Console.writeLong(rk);
             Console.writeString(" n="); Console.writeLong(n);
             Console.writeString(" bad="); Console.writeLong(bad);
-            Console.writeString(" y1="); Console.writeFloat(o[1]);
+            Console.writeString(" y1="); Console.writeFloat((n > 1) ? o[1] : 0.0);
             Console.writeLine("");
-            if (ok==1 && rk==1 && n==3 && bad==0) Console.writeLine("JSON CONVT3D OK");
+            return (ok == 1 && rk == 1 && bad == 0) ? 0 : 1;
+        }
+        @constructor JsonConvt3dApp() {
+            double[] x = new double[2];
+            x[0]=1.0; x[1]=3.0;
+            double[] e1 = new double[3]; e1[0]=2.0; e1[1]=11.0; e1[2]=15.0;
+            double[] e2 = new double[4]; e2[0]=2.0; e2[1]=5.0; e2[2]=6.0; e2[3]=15.0;
+            int bad = runCase("./deeplearning/infer_tests/convt3d.json", x, 2, e1, 3);
+            bad = bad + runCase("./deeplearning/infer_tests/convt3d_s2.json", x, 2, e2, 4);
+            if (bad == 0) Console.writeLine("JSON CONVT3D OK");
             else Console.writeLine("JSON CONVT3D FAIL");
         }
 }

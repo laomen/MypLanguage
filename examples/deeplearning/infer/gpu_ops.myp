@@ -1595,6 +1595,63 @@ class GpuInferOps {
             }
         }
 
+        // ConvTranspose3D：thread-per-output（权重 [Cin,Cout,kd,kh,kw]；begin pad pdt/pt/pl）
+        void convTranspose3d(float[] a, int work,
+                  int xOff, int xN, int xC, int xD, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yD, int yH, int yW,
+                  int kd, int kh, int kw, int sd, int sh, int sw,
+                  int pdt, int pt, int pl, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long ox = p % yW;
+                    long oy = (p / yW) % yH;
+                    long oz = (p / (yW * yH)) % yD;
+                    long oc = (p / (yW * yH * yD)) % yC;
+                    long nn = p / (yW * yH * yD * yC);
+                    float sum = 0.0f;
+                    if (bOff >= 0) sum = a[bOff + oc];
+                    int ic = 0;
+                    while (ic < xC) {
+                        int kz = 0;
+                        while (kz < kd) {
+                            long dnum = oz + pdt - kz;
+                            if (dnum >= 0 && dnum % sd == 0) {
+                                long iz = dnum / sd;
+                                if (iz >= 0 && iz < xD) {
+                                    int ky = 0;
+                                    while (ky < kh) {
+                                        long hnum = oy + pt - ky;
+                                        if (hnum >= 0 && hnum % sh == 0) {
+                                            long iy = hnum / sh;
+                                            if (iy >= 0 && iy < xH) {
+                                                int kx = 0;
+                                                while (kx < kw) {
+                                                    long wnum = ox + pl - kx;
+                                                    if (wnum >= 0 && wnum % sw == 0) {
+                                                        long iw = wnum / sw;
+                                                        if (iw >= 0 && iw < xW) {
+                                                            sum = sum + a[xOff + nn * xC * xD * xH * xW + ic * xD * xH * xW + iz * xH * xW + iy * xW + iw]
+                                                                       * a[wOff + (((ic * yC + oc) * kd + kz) * kh + ky) * kw + kx];
+                                                        }
+                                                    }
+                                                    kx = kx + 1;
+                                                }
+                                            }
+                                        }
+                                        ky = ky + 1;
+                                    }
+                                }
+                            }
+                            kz = kz + 1;
+                        }
+                        ic = ic + 1;
+                    }
+                    a[yOff + p] = sum;
+                }
+            }
+        }
+
         // Conv3D：thread-per-output（权重 [Cout,Cin,kd,kh,kw]）
         void conv3d(float[] a, int work,
                   int xOff, int xN, int xC, int xD, int xH, int xW,
