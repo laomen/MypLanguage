@@ -341,6 +341,9 @@ class JsonModelLoader {
                 } else if (op == "Squeeze") {
                     // A3 扩展：去 size-1 维（axes 属性可选；缺省 → 全 size-1）
                     setIntArr(j, lp, "axes", NodeField.AXES0(), NodeField.AXES_N(), ni);
+                } else if (op == "OneHot") {
+                    // P6：idx float 逐元素 one-hot。depth（复用节点槽 SPLIT0）；values 固定 0/1
+                    g_.nodeInt(ni, NodeField.SPLIT0(), gint(j, lp + ".depth", 1));
                 } else if (op == "Transpose") {
                     // A3 扩展：perm 属性（缺省 → 反转维度）
                     setIntArr(j, lp, "perm", NodeField.PERM0(), NodeField.PERM_N(), ni);

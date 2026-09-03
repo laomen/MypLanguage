@@ -717,6 +717,14 @@ class InferenceRuntime {
             opP1_[id] = F32.toBits(eps);
             opCount_ = opCount_ + 1;
         }
+        // OneHot（opKind 85）：idx=opA（float 索引，n=tensorSize），out=opB；depth=opP0
+        void addOneHot(int idxT, int outT, int depth) {
+            int id = opCount_;
+            opKind_[id] = 85;
+            opA_[id] = idxT; opB_[id] = outT;
+            opP0_[id] = depth;
+            opCount_ = opCount_ + 1;
+        }
 
         void addAdd(int aTid, int bTid, int outputTid, int doRelu,
                     int an, int ac, int ah, int aw, int bn, int bc, int bh, int bw) {

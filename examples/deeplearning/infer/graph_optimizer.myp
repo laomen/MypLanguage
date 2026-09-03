@@ -1890,6 +1890,16 @@ int inferShapes(Graph graph) {
                     // P4：1D flat argmax/min → 单值索引（float 编码）[1,1,1,1]
                     if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
                     graph.addShapeD4(graph.compilerNodeOutput(i, 0), 1, 1, 1, 1);
+                } else if (t == "OneHot") {
+                    // P6：idx 逐元素 one-hot。输出 [depth, M]（FC：runtime rows=M cols=depth，
+                    // 行优先每输入元素一行）。M = idx 元素总数；depth=SPLIT0()
+                    int a = graph.compilerShapeIdx(graph.nodeInAt(i, 0));
+                    if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;
+                    int depth = graph.compilerAttr(i, NodeField.SPLIT0());
+                    if (depth < 1) depth = 1;
+                    int M = graph.compilerShapeDim(a, 0) * graph.compilerShapeDim(a, 1) * graph.compilerShapeDim(a, 2) * graph.compilerShapeDim(a, 3);
+                    if (graph.compilerShapeR5(a) == 1) M = M * graph.compilerShapeDim(a, 4);
+                    graph.addShapeD4(graph.compilerNodeOutput(i, 0), depth, M, 1, 1);
                 } else if (t == "TopK") {
                     // P4：1D flat 前 k 大 → nodeOut0=values[k]、nodeOut1=indices[k]（float）
                     if (graph.compilerValueExists(graph.nodeInAt(i, 0)) == 0) return 0;

@@ -183,6 +183,9 @@ class GraphCompiler {
                     double eps = graph.attrFloat(ni, NodeField.EPS_INT());
                     if (graph.compilerAttr(ni, NodeField.HAS_EPS()) != 1) eps = 1.0e-5;
                     rt.addGroupNorm(a, g, b, out, graph.compilerAttr(ni, NodeField.GROUP()), eps);
+                } else if (code == OpCode.ONEHOT()) {
+                    // OneHot（opKind 85）：idx=nodeIn0（float 索引），out=nodeOut0；depth=SPLIT0()
+                    rt.addOneHot(a, out, graph.compilerAttr(ni, NodeField.SPLIT0()));
                 } else if (code == OpCode.GELU()) {
                     // GELU（精确 erf 近似；n 传 0 → Op 自省 rows*cols）
                     rt.addGelu(a, out, 0);

@@ -954,6 +954,21 @@ class GpuInferOps {
             }
         }
 
+        // P6：OneHot。idxOff:[nIdx] → outOff:[nIdx*depth] 行优先；thread-per-output。
+        void oneHot(float[] a, long dev, int idxOff, int outOff, int nIdx, int depth) {
+            @gpu for (long p = 0L; p < long(nIdx) * long(depth); p = p + 1L) resident(a = dev) {
+                if (p < long(nIdx) * long(depth)) {
+                    int i = int(p / long(depth));
+                    int c = int(p % long(depth));
+                    int ix = int(double(a[idxOff + i]));
+                    if (ix < 0) ix = 0;
+                    if (ix >= depth) ix = depth - 1;
+                    if (c == ix) a[outOff + i * depth + c] = 1.0f;
+                    else a[outOff + i * depth + c] = 0.0f;
+                }
+            }
+        }
+
         // Softmax 反向（阶段4d，GPU，thread-per-column）：dlogit[i] = p[i]·(dp[i] - Σ_j p[j]·dp[j])
         void bwdSoftmax(float[] a, long dev, int probOff, int dprobOff, int dlogitOff, int rows, int cols) {
             @gpu for (long p = 0L; p < long(cols); p = p + 1L) resident(a = dev) {

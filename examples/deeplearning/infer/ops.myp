@@ -942,6 +942,24 @@ class InferOps {
             }
         }
 
+        // P6：OneHot。idxOff:[nIdx]（float 编码索引，逐个元素），outOff:[nIdx*depth]
+        // 行优先（每输入元素一行 one-hot）。idx 越界 clamp [0,depth-1]。
+        void oneHot(float[] arena, int idxOff, int outOff, int nIdx, int depth) {
+            int i = 0;
+            while (i < nIdx) {
+                int ix = int(double(arena[idxOff + i]));
+                if (ix < 0) ix = 0;
+                if (ix >= depth) ix = depth - 1;
+                int c = 0;
+                while (c < depth) {
+                    if (c == ix) arena[outOff + i * depth + c] = 1.0f;
+                    else arena[outOff + i * depth + c] = 0.0f;
+                    c = c + 1;
+                }
+                i = i + 1;
+            }
+        }
+
         // ---- 训练：卷积/池化反向（阶段3，CPU）----
 
         // 反向：y = conv(x, w)；给定 dY[N,yC,yH,yW]

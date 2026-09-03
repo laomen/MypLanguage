@@ -139,6 +139,18 @@ class TopkOp {
         void backward(InferenceRuntime rt, int i) { }
 }
 
+// ---- oneHot（opKind 85 前向推理）：idx float → out[nIdx*depth] 行优先 ----
+class OneHotOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            InferOps.oneHot(rt.arenaRef(), rt.tensorOff(xa), rt.tensorOff(yb), rt.tensorRows(xa) * rt.tensorCols(xa), rt.opP0At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
 // ---- add（opKind 5 前向 / 53 反向；opRelu 融合标志；统一 4D 广播）----
 class AddOp {
     interface class IOp;
@@ -307,6 +319,18 @@ class GpuTopkOp {
             int val = rt.opBAt(i);
             int idx = rt.opCAt(i);
             GpuInferOps.topk(rt.arenaRef(), rt.devRef(), rt.tensorOff(xa), rt.tensorOff(val), rt.tensorOff(idx), rt.tensorRows(xa) * rt.tensorCols(xa), rt.opP0At(i));
+        }
+        void backward(InferenceRuntime rt, int i) { }
+}
+
+// ---- oneHot（GPU）----
+class GpuOneHotOp {
+    interface class IOp;
+    action:
+        void forward(InferenceRuntime rt, int i) {
+            int xa = rt.opAAt(i);
+            int yb = rt.opBAt(i);
+            GpuInferOps.oneHot(rt.arenaRef(), rt.devRef(), rt.tensorOff(xa), rt.tensorOff(yb), rt.tensorRows(xa) * rt.tensorCols(xa), rt.opP0At(i));
         }
         void backward(InferenceRuntime rt, int i) { }
 }
@@ -2583,6 +2607,7 @@ void registerAllIfaceOps(InferenceRuntime rt) {
     rt.registerFwd(48, new ArgminOp(), 0);               rt.registerFwd(48, new GpuArgminOp(), 1);
     rt.registerFwd(49, new TopkOp(), 0);                 rt.registerFwd(49, new GpuTopkOp(), 1);
     rt.registerFwd(84, new GroupNormOp(), 0);            rt.registerFwd(84, new GpuGroupNormOp(), 1);
+    rt.registerFwd(85, new OneHotOp(), 0);               rt.registerFwd(85, new GpuOneHotOp(), 1);
     rt.registerFwdBwd(5, 53, new AddOp(), 0);            rt.registerFwdBwd(5, 53, new GpuAddOp(), 1);
     rt.registerFwd(6, new MatmulOp(), 0);                rt.registerFwd(6, new GpuMatmulOp(), 1);
     rt.registerFwdBwd(7, 56, new ConvOp(), 0);           rt.registerFwdBwd(7, 56, new GpuConvOp(), 1);
