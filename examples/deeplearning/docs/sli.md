@@ -115,7 +115,9 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   (scale/bias + epsilon)/**`LayerNorm`(gamma/beta) / `RmsNorm`(gamma) / `GELU`**
   （图归一化/激活，复用 LLM kernel；多接 Gemm 输出，tensor 按 [特征行, 样本列] 布局，
   gamma/beta [D=D 特征]）/**`GroupNorm`(gamma/beta [C], groups, epsilon)**（逐通道组
-  归一化；NCHW [N,C,H,W]，组=g 覆盖每 (n,g) 的 cpg·H·W；SD1.5 norm_num_groups）；**参数化（int64 常量）**
+  归一化；NCHW [N,C,H,W]，组=g 覆盖每 (n,g) 的 cpg·H·W；SD1.5 norm_num_groups）；**LLM 位置编码**
+  `Rope(in, in2:cos, in3:sin, heads)`（RoPE 图算子：x[D,S] 特征行×位置列，cos/sin[dh/2,S]
+  位置表运行时 setInput；out 独立张量 = copy+原地逐头旋转，不破坏 x）；**参数化（int64 常量）**
   `Reshape(shape)`、`Gather(indices,axis)`、`Expand(shape)`、`Tile(repeats)`、
   `Slice(starts,ends[,axes][,steps])`、`Pad(pads[,mode][,value])`（pads 8 值
   [N,C,H,W] begin+end；constant 填充值 value 内联浮点，默认 0）；

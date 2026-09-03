@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-09-03 — RoPE 图算子（LLM 位置编码，opKind 113，OpCode 120）
+
+全量回归 pass=123→**124** fail=0（P8「RoPE 图算子」收口；前向推理 LLM 算子族，同 RmsNorm/LayerNorm）。
+- 复用已有 rope kernel（原 opKind 66 原地 in-place，仅 llm_runtime_gpu_main 直连用）→ 新增
+  **图算子路径** opKind 113：`addRopeGraph(x,cos,sin,out,D,S,heads)` out 为独立张量，
+  RopeGraphOp/GpuRopeGraphOp 先 `copyFlat` x→out 再在 out 上原地旋转（不破坏 x）。
+- kernel 语义（Llama 逐头）：x[D,S]（D=heads·dh 特征行、S 位置列，row-major d*S+s），cos/sin
+  [dh/2,S]（dim-pair 行 × 位置列）；每头 h、dim-pair a 旋转行 (h·dh+a) 与 (h·dh+dh/2+a)：
+  x0'=x0·c-x1·s、x1'=x0·s+x1·c。
+- graph：OpCode ROPE(120) + mapOpType（Rope/RoPE）+ inferShapes（copyShape 保持形状）+ 图
+  compiler wiring（D/S 传 0 → Op 自省 x rows/cols；heads=GROUP() 槽复用）+ JSON（in=x、
+  in2=cos、in3=sin 位置表运行时 setInput、heads 属性）。输出形状 = 输入（逐元素旋转）。
+- 测试 rope.json：x dims [S,D]=[3,2] → 运行时 rows=D=2/S=3；heads=1 dh=2；cos=[0,1,-1]
+  sin=[1,0,0]（s0 旋转90°、s1 恒等、s2 反相）→ y=[-2,10,-100, 1,20,-200] 手算 CPU+GPU OK
+  （且 x 未被破坏：out 独立）。
+
+---
+
 ## 2026-09-03 — P8b 数据高级索引反向：BwdGatherElements + BwdScatterND
 
 全量回归 pass=119→**123** fail=0（P8 前向索引族补训练反向；CPU-only 训练同 BwdGather）。

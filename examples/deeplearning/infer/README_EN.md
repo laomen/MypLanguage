@@ -12,8 +12,9 @@ CNN (Conv/Conv3D/1x1/Pool/GAP/BN/IN/LayerNorm/Resize/Pad…), FC (Gemm/MatMul/Ba
 tensor ops (Transpose/Slice/Concat/Split/Reshape/Expand/Where/Tile/Squeeze/Gather/Reduce family/
 LogSoftmax/Softmax/CE…), 3D (Conv3D/Pool3D/Pad3D/Resize3D/ConvTranspose3D), **indexing / data advanced
 indexing (ArgMax/ArgMin/TopK/OneHot/GatherElements/ScatterND — GatherElements/ScatterND with P8b
-backward gradients for training)**, **the full activation family**,
-training backward ops, Dropout infer/train semantics. Real models: **ResNet18/ResNet50** (bit-identical
+backward gradients for training)**, **the full activation family**, LLM (RmsNorm/LayerNorm/GELU/
+**Rope** rotary position embeddings), training backward ops, Dropout infer/train semantics. Real models:
+**ResNet18/ResNet50** (bit-identical
 vs ORT), **3D U-Net** (coarse/fine), dynamic batch, multi-input/output/optional-input, FP16/BF16
 weights.
 
@@ -64,7 +65,7 @@ infer/
 ├── tensor.myp / graph_node_attrs.myp / graph_nodes.myp
 ├── tools/             # make_*_onnx.py fixtures + ORT reference; onnxvenv
 ../dl/dl.myp           # import dl package entry (thin forward of framework.myp Session)
-../infer_tests/        # end-to-end regression (123 *_main.myp, see infer_tests/README.md)
+../infer_tests/        # end-to-end regression (124 *_main.myp, see infer_tests/README.md)
 ../train ../llm ../diffusion   # sibling projects (3D training / Qwen2+distilgpt2 / SD1.5)
 ```
 
@@ -75,7 +76,7 @@ infer/
 cd examples && MYP_GPU=1 MYP_IR_VERIFY=1 /tmp/app     # data paths are relative to examples/
 # full regression (CPU+GPU, auto-discovers infer_tests/*_main.myp):
 # full regression (CPU+GPU; parallel: compile P4 + run P6):
-bash examples/deeplearning/infer_tests/run_all.sh    # → == pass=123 fail=0 == (~4min)
+bash examples/deeplearning/infer_tests/run_all.sh    # → == pass=124 fail=0 == (~4min)
 # env: MYP_GPU=1 GPU / MYP_IR_VERIFY=1 verifier / MYP_NO_REUSE=1 per-op check
 #      / MYP_PROF_CPU|GPU=1 profiling / MYP_LAYOUT_NHWC=1 / MYP_FAST_MATH=1
 ```
