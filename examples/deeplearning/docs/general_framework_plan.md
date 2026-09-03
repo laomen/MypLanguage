@@ -721,6 +721,11 @@ dl.framework（单一入口模块，如 infer/framework.myp）
   （mode/redType 经 compilerSetNRedMode/Type 复制——存 graph nRedMode_/nRedType_
   per-node 数组）。bwd_reduce_main 四组 dx 手算精确。测试数 79。剩余：
   ReduceMax/Min（argmax）、Gather（scatter）、Slice/Pad。
+- **JSON CNN 分类训练固化（完成，2026-09）**：重要发现——CNN 训练反向全链（BwdConv/
+  BwdMaxPool2D/BwdRelu/BwdFlatten/BwdDense）本就可用，此前只有 FC 训练回归。
+  cnn_train.json Conv(2ch)→Relu→MaxPool→Flatten→Gemm→Softmax：200 步 SGD loss
+  1.01→0.142（MYP_IR_VERIFY=1 ops=11）。测试数 85。后续：AvgPool2D/GAP 反向、
+  多层 CNN demo。
 - **JSON Pad 分派（完成，2026-09）**：pads int64 8 值 nodeIn1 + mode→PADMODE。
   测试 json_pad_main x[1,1,3,3] pads [0,0,1,1,0,0,1,1] → out 5x5 constant 0 手算
   CPU+GPU。测试数 84。剩余：Split 多输出、Where/Dropout/BN/InstanceNorm/Resize JSON。

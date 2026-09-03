@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-09 — JSON CNN 分类训练端到端固化（重要发现：CNN 训练反向全链本就可用）
+
+- **背景**：此前所有 JSON 训练回归都是 FC/加性网（softmaxCE 2D logits 的误解——
+  以为训练 loss 路径只能 2D，CNN 4D 无法训）。实证打破：**CNN 经 Flatten 回 2D 即可训**
+  ——Conv/MaxPool2D 反向（BwdConv/BwdMaxPool）早已在框架，只是从未有端到端 CNN
+  训练回归覆盖，缺失验证。
+- `infer_tests/cnn_train.json` + `json_cnn_train_main.myp`：data[1,1,8,8] →
+  Conv(2ch 3x3)→Relu→MaxPool(2x2)→Flatten[1,18]→Gemm→logits[1,3]→Softmax。
+  loadJsonTrain + MYP_IR_VERIFY=1（ops=11）通过；200 步 SGD（8x8 class 特征块
+  输入 + one-hot[3]）loss **1.01059→0.142419** 显著降（CPU+GPU 同值；runTrain CPU
+  计算）——梯度经 BwdConv/BwdMaxPool2D/BwdRelu/BwdFlatten(copy)/BwdDense 全链回传
+  更新 Conv+Gemm 权重。全量回归 pass=85 fail=0。
+- **后续可扩**：AvgPool2D/GlobalAveragePool 反向（当前 CNN 用 MaxPool 避过）、更
+  真实（多层）CNN 训练 demo、CNN 推理/训练数值对拍。
+
+---
+
 ## 2026-09 — JSON Pad 分派（pads int64 + mode）
 
 - **背景**：Pad 框架链路本就完整（inferShapes Pad 分支 readI64Init 读 nodeIn1 折叠进

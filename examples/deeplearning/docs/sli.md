@@ -127,7 +127,10 @@ while (step < N) {
 - **label 是 one-hot**（softmaxCE 依赖 label>0.5），非标量。
 - **每次 run 前重建输入**：训练 arena 复用会覆盖输入区。
 - **可训结构**：链式 + fan-in 汇合（`Add`/`Sub`/`Mul`/`Concat` 在 loss 路径）均可训
-  降（回归 `json_train_submul_main`：sub/mul/add 三网 200 步 loss 显著降）。fan-out
+  降（回归 `json_train_submul_main`：sub/mul/add 三网 200 步 loss 显著降）。**CNN 也
+  可训**（`cnn_train.json`/`json_cnn_train_main`：Conv→Relu→MaxPool→Flatten→FC→
+  Softmax，200 步 loss 1.01→0.14——Conv/MaxPool/Flatten 反向全链可用，4D 经 Flatten
+  回 2D 接 FC+softmaxCE）。fan-out
   到多个训练反向 op 的中间层梯度累加仍在 5c(BwdConcat) 覆盖内（见 CHANGELOG）。
 - **优化器/累积/AMP**：`setGradAccumEvery(K)` micro-batch 累积；`setAmpSim(1)` fp16
   梯度舍入模拟。GPU 训练当前 CPU-only（runTrain）。
