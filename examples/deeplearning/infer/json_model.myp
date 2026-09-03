@@ -242,6 +242,12 @@ class JsonModelLoader {
                     if (pmod == "reflect") pm = 1;
                     else if (pmod == "edge") pm = 2;
                     g_.nodeInt(ni, NodeField.PADMODE(), pm);
+                    // 非 0 常量填充值：内存 f32 标量 → nodeIn2（inferShapes Pad 折叠进
+                    // nPadCval_；仅 constant 模式有意义）
+                    if (pmod == "constant" && j.type(lp + ".value") != -1) {
+                        regF32Scalar(out + "_cv", j.getDouble(lp + ".value"));
+                        g_.nodeIn(ni, 2, out + "_cv");
+                    }
                 } else if (op == "Gemm") {
                     g_.nodeIn(ni, 1, out + "_W");
                     if (j.type(lp + ".B") != -1) g_.nodeIn(ni, 2, out + "_b");

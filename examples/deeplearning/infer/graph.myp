@@ -821,14 +821,24 @@ class Graph {
         int readF32Init(string name, int maxn) {
             int wi = initIdx(name);
             if (wi < 0) return 0;
-            if (weights_.get(wi, WeightField.OFFSET()) < 0) return 0;   // 计算常量（cF32_ 存储，无 file_ 字节）→ 不读文件
+            int off = weights_.get(wi, WeightField.OFFSET());
+            if (off < 0) {
+                // 内存 f32 权重（JSON：值存 memVal_，offset=-2；readF32Init 内存分支）——
+                // 供 Pad constant_value / Clip 边界等标量参数读取（同 readI64Init 内存分支）。
+                int base = weights_.memBase(wi);
+                if (base < 0) return 0;
+                int n = weights_.get(wi, WeightField.LENGTH()) / 4;
+                int cnt = 0;
+                while (cnt < n && cnt < maxn) { f32Tmp_[cnt] = weights_.memValD(base + cnt); cnt = cnt + 1; }
+                return cnt;
+            }
             int cnt = 0;
             int j = 0;
             while (j < weights_.get(wi, WeightField.LENGTH()) / 4 && cnt < maxn) {
-                int b0 = byteAt(weights_.get(wi, WeightField.OFFSET()) + j * 4);
-                int b1 = byteAt(weights_.get(wi, WeightField.OFFSET()) + j * 4 + 1);
-                int b2 = byteAt(weights_.get(wi, WeightField.OFFSET()) + j * 4 + 2);
-                int b3 = byteAt(weights_.get(wi, WeightField.OFFSET()) + j * 4 + 3);
+                int b0 = byteAt(off + j * 4);
+                int b1 = byteAt(off + j * 4 + 1);
+                int b2 = byteAt(off + j * 4 + 2);
+                int b3 = byteAt(off + j * 4 + 3);
                 int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
                 f32Tmp_[cnt] = F32.toDouble(bits);
                 cnt = cnt + 1;
