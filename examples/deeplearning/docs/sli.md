@@ -102,7 +102,8 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   { "op":"Mul", "in":"gact","out":"m","in2":"up" }
   ```
 - **op 集**：单输入**激活** `Relu`/`Sigmoid`/`ReLU6`(注意 `LU6` 大写)/`LeakyRelu`/
-  `SiLU`(=Swish β=1)/`HardSwish`/`Clip`(内联 `min`/`max` 边界)/`Softmax(axis)`/`LogSoftmax(axis)`/
+  `SiLU`(=Swish β=1)/`HardSwish`/`Clip`(内联 `min`/`max` 边界)/`Tanh`/`Softmax(axis)`/
+  `LogSoftmax(axis)`/
   `GlobalAveragePool`/`Flatten(axis)`；二元 `Add`/`Sub`/`Div`/`Mul`/`MatMul`；多输入
   多输入 `Concat(in/in2/in3, axis)`；三输入 `Where(in/in2/in3)`；单输入 `Sqrt`/`Dropout`
   （推理恒等）；权重型 `Gemm`/`Conv`/`ConvTranspose`/`MatMul(可选 W)`；
@@ -117,8 +118,11 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   `Slice(starts,ends[,axes][,steps])`、`Pad(pads[,mode])`（pads 8 值
   [N,C,H,W] begin+end）；
   **属性类** `Squeeze(axes)`、`Transpose(perm)`、`ReduceSum`/`ReduceMean`/`ReduceMax`/
-  `ReduceMin(axes[,keepdims])`。示例：`infer_tests/branch.json`（多分支 DAG）、
-  `mlp.json`、`safe_gemm.json`、`reshape.json`、`gather.json`、`ops2.json`。
+  `ReduceMin(axes[,keepdims])`；**索引类（行/特征轴 1D flat，单样本=整行 logits）**
+  `ArgMax`/`ArgMin`（单输出标量索引）、`TopK(k, outs:[values,indices])`（前 k 大，
+  输出 float 编码索引——对应 CE 标签/LLM 采样）。示例：`infer_tests/branch.json`
+  （多分支 DAG）、`mlp.json`、`safe_gemm.json`、`reshape.json`、`gather.json`、
+  `ops2.json`、`argmax.json`（ArgMax/ArgMin/TopK）。
 - **参数化 op（int64 内联常量）**：`shape`/`indices`/`repeats` 等 int64 数组直接内联在层里，
   框架登记为内存 int64 常量（无需 ONNX 初始器）：
   ```json
@@ -152,8 +156,11 @@ Session t = new Session();
 int ok = t.loadTrain("model.onnx");      // 或 loadJsonTrain("net.json")
 t.setLr(0.01); t.setOptimizer(2); t.setWeightDecay(1e-4);   // AdamW
 t.setTrainMode(1);
-int labT = t.tensorId("label");          // 训练自动补的 label（one-hot）
-// 每步：喂输入 + label（one-hot；softmaxCE 依赖 label>0.5）→ runTrain → loss
+// 损失模式（load 前设）：0=SoftmaxCE(默认) 1=Dice 2=MSE(回归) 3=BCE(二值/掩码)
+// t.setLossMode(2);   // MSE：label 同输出形状灌实数目标
+// t.setLossMode(3);   // BCE：输出须先 Sigmoid，label 0-1 同形状
+int labT = t.tensorId("label");          // 训练自动补的 label
+// 每步：喂输入 + label（CE/Dice one-hot；MSE/BCE 实数/掩码）→ runTrain → loss
 while (step < N) {
     t.setInput("data", bx, 784);
     for (i...) { t.setFlat(labT, i, 0.0); }
@@ -163,11 +170,14 @@ while (step < N) {
 }
 ```
 
-- **label 是 one-hot**（softmaxCE 依赖 label>0.5），非标量。
+- **label 形状随损失**：CE/Dice one-hot（softmaxCE 依赖 label>0.5，非标量）；
+  **MSE/BCE**（lossMode 2/3）label **同输出形状**灌实数目标/0-1 掩码——无需
+  Softmax 分类头，模型输出本身即预测张量（回归 `mse_reg.json`/`json_mse_train_main`
+  500 步 loss→0；二值 `bce_clf.json`/`json_bce_train_main` 600 步→floor 0.325）。
 - **每次 run 前重建输入**：训练 arena 复用会覆盖输入区。
 - **可训结构**：链式 + fan-in 汇合（`Add`/`Sub`/`Mul`/`Concat` 在 loss 路径）均可训
   降（回归 `json_train_submul_main`：sub/mul/add 三网 200 步 loss 显著降）。**激活反向**
-  全覆盖：`Relu`/`Sigmoid` 早已支持；`ReLU6`/`LeakyRelu`/`SiLU`/`HardSwish`/
+  全覆盖：`Relu`/`Sigmoid`/`Tanh` 早已支持；`ReLU6`/`LeakyRelu`/`SiLU`/`HardSwish`/
   `LogSoftmax`/`Clip` 亦已接通（CPU-only 训练，`bwd_activ_main` 数值对拍；`SiLU`+
   `Mul` SwiGLU 可训——`swiglu.json`/`json_swiglu_train_main` 200 步 loss 1.09→0.004；
   激活链 `activ_chain.json`/`json_activ_chain_train_main` LeakyRelu→ReLU6→HardSwish

@@ -6,6 +6,39 @@
 
 ---
 
+## 2026-09-03 — 算子缺口优先级 2-4：Tanh / MSE·BCE loss / ArgMax·TopK
+
+按「算子缺口审计」优先级收口（P1 LayerNorm/RMSNorm/GELU 见下条；全量回归
+pass=106→**111** fail=0）：
+
+### P2：Tanh 激活图算子（fwd/bwd，CPU+GPU + 训练）
+- OpCode TANH(105)/BWD_TANH(106) + mapOpType + inferShapes 白名单 + opTraits。
+- kernel y=2/(1+e^-2x)-1（大 |x| 双侧稳定）+ bwd dx=dy·(1-y²)（用 fwd 输出 y）；
+  runtime addTanh(opKind 46)/addBwdTanh(108)；TanhOp/GpuTanhOp registerFwdBwd(46,108)；
+  buildReverseGraph Tanh→BwdTanh。测试 tanh.json（手算 [0,0.7616,-0.7616,0.9640]）
+  + tanh_train.json（x→Gemm→Tanh→Gemm→Softmax，每类 loss 0.014/0.011/0.012）。
+
+### P3：MSE/BCE 逐元素损失（lossMode 2/3，图级训练——解锁 UNet 分割训练）
+- mseLoss（mean(out-t)²，dp=2(out-t)/N）+ bceLoss（-mean[t·ln p̂+(1-t)ln(1-p̂)]，
+  p̂=clamp(1e-7,1-1e-7)）；opKind 109/110 registerBwd（CPU-only 训练）。
+- graph MSELOSS(107)/BCELOSS(108)；**buildReverseGraph 泛化**：lossMode 2/3 = 逐元素
+  损失（模型输出本身是预测张量，无需 Softmax 分类头；label 同预测形状灌实数目标/
+  掩码），0/1 保留 SoftmaxCE/Dice 原路径；Session.setLossMode + json_model 转发。
+- 测试 mse_reg.json（回归 500 步 loss→0）+ bce_clf.json（600 步 loss→floor 0.325、
+  方向正确）。
+
+### P4：ArgMax/ArgMin/TopK 推理图算子 + JSON（行/特征轴 1D）
+- argmax/argmin（单值 float 索引）+ topk（前 k 大 values+indices，并列按下标小者先）
+  CPU+GPU；opKind 47/48/49；OpCode ARGMAX(109)/ARGMIN(110)/TOPK(111)；JSON TopK 用
+  outs:[values,indices] + k。语义：沿输入行（分类/特征）轴 1D flat（单样本=整行
+  logits，对应 runtime argmax1d/LLM 采样/CE 标签），输出 float 编码索引。
+- **基建修复**：NodeField 新增标量槽须放宽 graph_node_attrs 存储——stride 65→66 +
+  managed()/resetNode 注册（原槽仅 0..48 + CAST_TO(64)；新槽会被静默丢弃）；
+  graph.myp nodeInt 接受集补 TOPK_K。测试 argmax.json（ArgMax=1 并列先遇/ArgMin=2/
+  TopK tv=[0.9,0.9] ti=[1,3]）CPU+GPU。
+
+---
+
 ## 2026-09-03 — LayerNorm/RmsNorm/GELU 图算子 + JSON（归一化/激活补全）
 
 - **图算子接入（kernel/Op/CPU+GPU/register/runtime 均现成——LLM 手写 opKind 61/64/65
