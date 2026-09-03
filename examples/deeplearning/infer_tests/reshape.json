@@ -1,6 +1,0 @@
-{ "name":"reshape_test",
-  "inputs":[{ "name":"data", "dims":[1,6]}],
-  "outputs":["out"],
-  "layers":[
-    { "op":"Reshape","in":"data","out":"out","shape":[2,3] }
-  ]}

@@ -1,6 +1,0 @@
-{ "name":"joh",
-  "inputs":[{"name":"x","dims":[1,3]}],
-  "outputs":["oh"],
-  "layers":[
-    { "op":"OneHot","in":"x","out":"oh","depth":3}
-  ]}

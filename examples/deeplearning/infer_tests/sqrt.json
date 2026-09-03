@@ -1,6 +1,0 @@
-{ "name":"jsqrt",
-  "inputs":[{"name":"x","dims":[1,4]}],
-  "outputs":["out"],
-  "layers":[
-    { "op":"Sqrt","in":"x","out":"out" }
-  ]}

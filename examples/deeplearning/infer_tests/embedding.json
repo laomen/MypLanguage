@@ -1,7 +1,0 @@
-{ "name":"emb",
-  "outputs":["out"],
-  "layers":[
-    { "op":"Embedding","out":"out",
-      "W":{"dims":[3,2],"values":[10,11,20,21,30,31]},
-      "ids":[2,0,1] }
-  ]}

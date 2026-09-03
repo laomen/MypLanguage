@@ -1,7 +1,0 @@
-{ "name":"jslice",
-  "inputs":[{"name":"x","dims":[1,2,3,4]}],
-  "outputs":["y"],
-  "layers":[
-    { "op":"Slice","in":"x","out":"y",
-      "starts":[1,0],"ends":[3,4],"axes":[2,3] }
-  ]}

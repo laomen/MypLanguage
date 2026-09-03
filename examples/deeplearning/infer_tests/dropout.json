@@ -1,6 +1,0 @@
-{ "name":"jdro",
-  "inputs":[{"name":"x","dims":[1,4]}],
-  "outputs":["out"],
-  "layers":[
-    { "op":"Dropout","in":"x","out":"out" }
-  ]}

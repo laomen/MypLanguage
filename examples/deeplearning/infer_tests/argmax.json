@@ -1,8 +1,0 @@
-{ "name":"jam",
-  "inputs":[{"name":"x","dims":[1,5]}],
-  "outputs":["pred","minpred","tv","ti"],
-  "layers":[
-    { "op":"ArgMax","in":"x","out":"pred"},
-    { "op":"ArgMin","in":"x","out":"minpred"},
-    { "op":"TopK","in":"x","k":2,"outs":["tv","ti"]}
-  ]}

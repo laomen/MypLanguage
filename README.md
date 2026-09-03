@@ -237,7 +237,7 @@ MYPLanguage/
 ├── stdlib/           # 标准库 (.myp，42 模块)
 ├── runtime_myp/      # MYP 运行时（runtime 的 MYP 实现，de-gcc 迁移：shadow C runtime → 归档 `libmyp_rt_myp.a`，仅 MYP 链接 `(MYP runtime only)`；进度见 runtime_myp/MIGRATION_STATUS.md，构建注意：改 runtime_myp 须手动重建归档再重连 mypc）
 ├── tools/            # 自举工具链（pm 包管理 / fmt 格式化 / viz 可视化 / selfhost 自举编译器 / codegen 代码生成，MYP 实现）
-├── examples/         # 示例（含 BNCTDoseEngine 剂量引擎、deeplearning 深度学习框架）
+├── examples/         # 示例（含 BNCTDoseEngine 剂量引擎等；深度学习框架已独立 → mypdeeplearning）
 ├── mypview/          # 通用 UI 框架（零 MOS 依赖，声明式 UIX + MVVM）
 ├── MOS/              # MYP 原生操作系统（内核/服务/应用，x86 Linux）
 ├── vscode-myp/       # VS Code 扩展
@@ -249,33 +249,16 @@ MYPLanguage/
 └── tests/            # 测试套件（含 tests/stress/ 压力测试）
 ```
 
-## 🧠 深度学习框架
+## 🧠 深度学习框架（已独立成仓）
 
-仓库自带一套**纯 MYP 实现的通用深度学习框架**（`examples/deeplearning/`，LLVM 后端）。
-运行期**零 Python / 零 onnxruntime 依赖**——Python 仅用于权重抽取与数值对拍参考：
+深度学习推理/训练框架已从本仓库迁出为独立项目 **mypdeeplearning**：
 
-| 模块 | 内容 | 亮点 |
-|------|------|------|
-| `infer/` | 静态图推理框架核心 | **纯 MYP protobuf wire 读取器**直接解析真实 `.onnx`；图优化 pass 管线（常量折叠 / shape 推断 / Conv+BN+ReLU 融合 / GAP+Flatten / DCE / NHWC 布局变换 / 内存规划）；CPU + GPU 双后端（`@gpu for` 常驻内核，自动 CPU 回退）；批量感知算子（Gemm/MatMul/Conv/MaxPool/GAP/Softmax/BN/激活/张量操作…） |
-| `infer_tests/` | 端到端验证入口 | 20+ 个 `*_main.myp` 加载真实 ONNX 与 **onnxruntime 逐元素对拍**：ResNet18/50、BN 融合、激活、Concat/Reshape/Transpose/Slice/Pad/ConvTranspose/Split/AvgPool… |
-| `train/` | 训练 | XOR → MNIST MLP（97% → 推理 99%）→ **Graph IR 反向 pass**（任意 ONNX 图）→ CNN/3D 反向 + Dice loss；`@gpu for` backward 内核 |
-| `llm/` | Transformer / LLM | GPT-2 6 层完整前向 + **KV cache 增量生成**（与 transformers 逐 token 一致，token mismatch=0）；Qwen2 架构算子（RMSNorm/RoPE/GQA）；全算子 GPU 版 |
-| `diffusion/` | 文生图 | SD1.5 全管线：DDIM 调度器 → CLIP 文本编码 → UNet 去噪 → VAE 解码 → 出图。三大网络全部数值验证通过 |
-| `json_tool/` | 轻量演示 | JSON 图 + 通用 CLI（XOR/MNIST） |
+- 仓库：`https://gitee.com/tomatosoft_0/mypdeeplearning.git`
+- 内容：`examples/deeplearning/`（ONNX + 声明式 JSON 双源；推理 + 训练；CPU + GPU；dl / infer / infer_tests / json_tool / train / llm / diffusion / docs）
+- 独立构建：仓库内 `./build.sh`（工具链解析：`MYPC`/`MYP_STDLIB` → 同级 myp-language → `./bootstrap.sh` 自动获取）
+- 文档：`examples/deeplearning/docs/manual.md`（中）/ `manual_EN.md`（英）等
 
-运行示例：
-
-```bash
-# ResNet18 推理（须在 examples/ 下）
-./build/mypc deeplearning/infer_tests/r18_main.myp -o /tmp/r18 --stdlib stdlib
-cd examples && /tmp/r18              # CPU
-MYP_GPU=1 /tmp/r18                   # GPU（无 GPU 自动回退 CPU）
-
-# distilgpt2 文生文（全链路 MYP，含 BPE 分词）
-deeplearning/infer/tools/onnxvenv/bin/python deeplearning/llm/run_distilgpt2_chat.py "Hello" 48
-
-# 详细文档：examples/deeplearning/{infer,llm,train,diffusion}/README.md
-```
+历史演进记录保留在本仓库 git 历史（原 `examples/deeplearning/CHANGELOG.md` 已随迁）。
 
 ## 🎯 BNCT Dose Engine
 

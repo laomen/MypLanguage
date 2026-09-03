@@ -1,9 +1,0 @@
-{ "name":"lnorm",
-  "inputs":[{"name":"x","dims":[1,3]}],
-  "outputs":["y"],
-  "layers":[
-    { "op":"LayerNorm","in":"x","out":"y","epsilon":0.0,
-      "gamma":{"dims":[3],"values":[1.0,2.0,3.0]},
-      "beta":{"dims":[3],"values":[0.0,0.0,0.0]}}
-  ]
-}

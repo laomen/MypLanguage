@@ -1,7 +1,0 @@
-{ "name":"clipj",
-  "inputs":[{"name":"x","dims":[1,4]}],
-  "outputs":["y"],
-  "layers":[
-    { "op":"Clip","in":"x","out":"y","min":0.0,"max":1.0}
-  ]
-}
