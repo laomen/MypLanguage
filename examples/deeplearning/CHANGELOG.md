@@ -6,6 +6,19 @@
 
 ---
 
+## 2026-09-03 — Pad 非 0 常量值（审计「Pad value」收口）
+
+- graph.myp readF32Init 增加**内存 f32 分支**（GraphWeights memVal_ offset=-2，同
+  readI64Init 内存分支）——Pad constant_value / Clip 边界等标量参数现可经推断路径读。
+- json_model Pad 分派：`mode:"constant"` 且给 `value` → regF32Scalar 内存标量 wire
+  nodeIn2 → inferShapes 折叠进 nPadCval_（kernel/Op 早已吃 cval）。
+- 测试 pad_val.json（x[1,1,1,3]=[7,8,9] W 两侧 pad1 value=5 → [5,7,8,9,5]）CPU+GPU。
+  全量回归 pass=113→**114** fail=0。
+- 探测 GlobalAveragePool3D：5D 输入下现 GAP kernel 非 5D 感知（只按 H·W 均值）→
+  留待独立 5D GAP kernel（不做"免费"项）。
+
+---
+
 ## 2026-09-03 — GroupNorm + OneHot 图算子（审计行 1 收尾 + 索引族起步）
 
 全量回归 pass=111→**113** fail=0（P2-4 条目见下）。

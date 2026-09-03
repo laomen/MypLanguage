@@ -116,8 +116,8 @@ JSON 是**第二种模型源**：用户写层式 JSON，`loadJson` 直接填框�
   gamma/beta [D=D 特征]）/**`GroupNorm`(gamma/beta [C], groups, epsilon)**（逐通道组
   归一化；NCHW [N,C,H,W]，组=g 覆盖每 (n,g) 的 cpg·H·W；SD1.5 norm_num_groups）；**参数化（int64 常量）**
   `Reshape(shape)`、`Gather(indices,axis)`、`Expand(shape)`、`Tile(repeats)`、
-  `Slice(starts,ends[,axes][,steps])`、`Pad(pads[,mode])`（pads 8 值
-  [N,C,H,W] begin+end）；
+  `Slice(starts,ends[,axes][,steps])`、`Pad(pads[,mode][,value])`（pads 8 值
+  [N,C,H,W] begin+end；constant 填充值 value 内联浮点，默认 0）；
   **属性类** `Squeeze(axes)`、`Transpose(perm)`、`ReduceSum`/`ReduceMean`/`ReduceMax`/
   `ReduceMin(axes[,keepdims])`；**索引类（行/特征轴 1D flat，单样本=整行 logits）**
   `ArgMax`/`ArgMin`（单输出标量索引）、`TopK(k, outs:[values,indices])`（前 k 大，
