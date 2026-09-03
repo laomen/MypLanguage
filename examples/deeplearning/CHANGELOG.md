@@ -6,7 +6,28 @@
 
 ---
 
-## 2026-09-03 — JSON 算子覆盖扩展（3D/归一/Clip/Resize）
+## 2026-09-03 — 3D UNet JSON + Split 多输出 + 并行回归
+
+- **JSON 3D U-Net 端到端跑通**：`unet3d.json`+`json_unet3d_main`（data[1,1,8,32,32]
+  → Conv3D pad1 保尺寸 + MaxPool3D×2 → Resize(sizes 2x 上采样) + Concat(5D) 跳跃 ×2
+  → Conv1x1 → Sigmoid，18 层）CPU+GPU `MYP_IR_VERIFY=1` JSON UNET3D OK。3D JSON
+  分派（上轮）已足以表达完整 3D U-Net。
+- **Split 多输出 JSON 结构**：层用 `outs`:[a,b,c] 数组 + axis + 可选 split 尺寸
+  （int64 nodeIn1）；graph `nodeOut(i,name)` 自动填空槽 + outputCount（本为 Split 设计）；
+  Skip 判断允许 Split 无单一 out。`split.json`+`json_split_main`：x[1,9] 均分 3 段
+  a/b/c → [1,2,3]/[4,5,6]/[7,8,9] 三图输出 CPU+GPU OK。
+- **3D 训练反向 🟥 撤销（假警报）**：c3d 训练 loss 波动实为三类样本初始随机 label 错配
+  → 各自 loss 参差（cl0≈0.02 对 / cl1≈10.6 错）；判据只看首尾单样本误判。修判据
+  （收敛后每类测 loss<0.5）→ `json_c3d_train_main` 300 步后三类 0.219/0.106/0.033，
+  3D 反向全链（BwdConv3D/BwdMaxPool3D/BwdFlatten/BwdDense+CE）正常。教训：多类单
+  样本训练判据须测每类收敛 loss。
+- **并行回归**：`infer_tests/run_all.sh`（两阶段：编译 P4 控 LLVM 内存 + 运行 P6；
+  mypc 并发偶发瞬时失败加编译重试兜底）——全量 105 测试 3m44s vs 串行 10min+。
+  回归 pass=102→**105** fail=0。
+- 仍留：Pad constant_value、ConvTranspose3D；LayerNorm/RMSNorm 图算子（kernel 已有
+  RMSNorm opKind 61 未接图）、GELU/Tanh 激活、MSE/BCE loss 等见算子缺口审计。
+
+---
 
 - **JSON 补齐算子分派**（json_model.myp；ONNX/图级本已支持，只缺 JSON 接线）：
   `Conv3D`（5D W + B + 3D kernel/strides/pads[6]/dilations/group）、`MaxPool3D`/
@@ -20,9 +41,11 @@
   Flatten→Gemm→Softmax 3D 推理全链）、`json_bn`（y=[2.0,3.125] 手算）、`json_in`
   （总体方差手算对拍）、`json_clip`（[0,0.5,1,1] 手算）、`json_resize`（nearest
   sizes 语义断言）。回归 pass=97→**102** fail=0。
-- **发现 🟥**：3D CNN 训练反向端到端不稳（lr=1e-4 亦震荡）——BwdConv3D/
-  BwdMaxPool3D/3D Update 待修（3D 训练图从未端到端固化；勿 loadJsonTrain 3D）。
-  3D 推理不受影响。
+- **3D 训练反向验证为正常**（撤销初判 🟥）：c3d 3D CNN 训练 loss 波动实为三类样本初始
+  随机错配 → 各自 loss 参差（cl0≈0.02 对 / cl1≈10.6 错），判据只看首尾单样本误判。修正
+  判据（收敛后每类测 loss）→ `json_c3d_train_main` 300 步后三类 loss 0.219/0.106/0.033
+  全 <0.5，3D 反向全链（BwdConv3D/BwdMaxPool3D/BwdFlatten/BwdDense+CE）正常。教训：多类
+  单样本训练判据须测每类收敛 loss。
 - 仍留：Split 多输出（JSON out 单名结构限制）、Pad constant_value（graph_compiler
   未接）、ConvTranspose3D（无独立 3D deconv runtime）。
 

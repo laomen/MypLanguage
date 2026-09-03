@@ -62,7 +62,7 @@ infer/
 ├── tensor.myp / graph_node_attrs.myp / graph_nodes.myp
 ├── tools/             # make_*_onnx.py fixtures + ORT reference; onnxvenv
 ../dl/dl.myp           # import dl package entry (thin forward of framework.myp Session)
-../infer_tests/        # end-to-end regression (102 *_main.myp, see infer_tests/README.md)
+../infer_tests/        # end-to-end regression (105 *_main.myp, see infer_tests/README.md)
 ../train ../llm ../diffusion   # sibling projects (3D training / Qwen2+distilgpt2 / SD1.5)
 ```
 
@@ -72,7 +72,8 @@ infer/
     --stdlib stdlib --package-path examples/deeplearning
 cd examples && MYP_GPU=1 MYP_IR_VERIFY=1 /tmp/app     # data paths are relative to examples/
 # full regression (CPU+GPU, auto-discovers infer_tests/*_main.myp):
-bash /tmp/run_infer_tests.sh    # → == pass=102 fail=0 ==
+# full regression (CPU+GPU; parallel: compile P4 + run P6):
+bash examples/deeplearning/infer_tests/run_all.sh    # → == pass=105 fail=0 == (~4min)
 # env: MYP_GPU=1 GPU / MYP_IR_VERIFY=1 verifier / MYP_NO_REUSE=1 per-op check
 #      / MYP_PROF_CPU|GPU=1 profiling / MYP_LAYOUT_NHWC=1 / MYP_FAST_MATH=1
 ```
