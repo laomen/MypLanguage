@@ -15,8 +15,12 @@
 - JSON：W 5D 预注册 + ConvTranspose3D 分派（setKernel3DAttrs 3D）。
 - 测试 convt3d.json（x[1,1,2,1,1]=[1,3] W=[2,5] stride1 → [2,11,15] 手算）+ convt3d_s2.json
   （stride2 → [2,5,6,15]——U-Net 解码 2x 上采样几何）。CPU+GPU runAuto 全过。
-  全量回归 pass=114→**115** fail=0。
-- 范围注：fwd CPU+GPU（run/runGpu 统一分派）；训练反向（BwdConvTranspose3D）后续。
+- **训练反向 BwdConvTranspose3D（CPU+GPU）**：OpCode BWD_CONVTRANSPOSE3D(115) +
+  buildReverseGraph ConvTranspose3D→BwdConvTranspose3D + opKind 87 registerFwdBwd(86,87)；
+  bwd kernel db[co]=Σdy / dW[ci,co,kz,ky,kx] dy·x 整除路由累加 / dX 反向散布（CPU 三重循环
+  + GPU 三内核 thread-per-元素）。测试 convt3d_tr.json（→Flatten→Gemm→Softmax 分类
+  400 步每类 loss 0.0009/0.0004）。顺修 fwd pad 槽映射（pdt/pt/pl=opP3/opP5/opP7）。
+  全量回归 pass=115→**116** fail=0 —— ConvTranspose3D 推理+训练全链（fwd/bwd CPU+GPU）。
 
 ---
 
