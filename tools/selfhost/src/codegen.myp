@@ -4752,6 +4752,47 @@ class CodeGen {
                 int al = IrEmit.alignOf(lt);
                 sb_.append("  store " + lt + " %" + paramNames_.get(i) + ", ptr %" + paramNames_.get(i) + ".addr, align " + al + "\n");
             }
+            // BUG-141（BUG-002 selfhost 镜像）：@coro 协程参数 ARC 拥有。
+            // @coro 体比调用方作用域长寿——参数（含 this）被借用，调用方（如
+            // sieve 的 `ch = nx` 推进）释放旧 channel 时 parked 协程仍持有悬垂
+            // → 对象被 free、内存块被后续 new 复用 → parked 协程的 out 别名到新
+            // channel → 发错目标/值泄漏（coro_incremental_spawn 输出含 15 的根因）。
+            // C++ oracle codegen 早已在 registerCoroParam 对 @coro 参数 retain
+            // （BUG-002，codegen_class.cpp）；selfhost 一直缺失。入口 retain ARC
+            // 参数并注册进 funcPtrSlots_（借用参数提升为拥有槽的既有机制）：函数末
+            // releaseArcSlots 释放配对；重赋值经 funcPtrSlotHas 走 storeRef 释放旧值。
+            if (curFnCoro_ != 0) {
+                for (int pi3 = 0; pi3 < paramNames_.size(); pi3 = pi3 + 1) {
+                    string plt = paramTypes_.get(pi3);
+                    AstType ppt = paramAstTypes_.get(pi3);
+                    if (ppt == null) continue;
+                    string pslot = "%" + paramNames_.get(pi3) + ".addr";
+                    if (funcPtrSlotHas(pslot) != 0) continue;   // 防呆（不重复 retain）
+                    string pArg = "%" + paramNames_.get(pi3);
+                    int isArcP = 0;
+                    if (plt == "ptr") {
+                        // struct 方法合成 this（className "Object"，非真类）不是
+                        // ARC 引用——跳过，避免对裸结构指针 myp_retain 读头崩溃。
+                        if (paramNames_.get(pi3) == "this"
+                            && Str.len(curClass_) != 0 && isStructName(curClass_) != 0)
+                            continue;
+                        isArcP = isArcType(ppt);
+                    } else if (plt == "{ ptr, ptr }") {
+                        isArcP = 1;   // 接口 / 函数值：data/closure 计数引用
+                    } else if (plt == "{ ptr, i64 }") {
+                        isArcP = 1;   // slice backing（计数）
+                    }
+                    if (isArcP == 0) continue;
+                    if (plt == "ptr") {
+                        sb_.append("  call void @myp_retain(ptr " + pArg + ")\n");
+                    } else {
+                        string pd = newTmp();
+                        sb_.append("  " + pd + " = extractvalue " + plt + " " + pArg + ", 0\n");
+                        sb_.append("  call void @myp_retain(ptr " + pd + ")\n");
+                    }
+                    funcPtrSlots_.add(pslot);
+                }
+            }
             // main 入口：argv（C runtime 透传 raw char**，元素是裸 C 串、无 MYP
             // 12B 头）重建为真 MYP string[]。C 版字符串函数 strlen 容忍裸串；MYP
             // 版 myp_strlen 读 data-12 头 → 裸串崩溃（myp_run 归档下段错误根因）。

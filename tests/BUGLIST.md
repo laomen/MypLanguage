@@ -151,6 +151,7 @@
 | BUG-136 | 🟩 | mapping 目标 **static: 方法**被误拒 + handler 误传实例（`ev -> Console.write` 编译失败；自举 codegen 静态目标载荷错位；oracle 正常） | 回归 `tests/bugs/b136_mapping_static_target.myp`（静态目标收到事件载荷，1 断言） |
 | BUG-137 | 🟩 | **构造函数接口形参未 upcast**（`new LLMPlanner(new RealBackend())` → opt-21 `ptr vs {ptr,ptr}`；oracle 正常） | 回归 `tests/bugs/b137_ctor_iface_param.myp`（ctor 接口形参 + 接口字段分派，1 断言） |
 | BUG-140 | 🟩 | 逃逸分析把 `new T()` 栈上分配，但方法把 `this` 存进进程全局（@static 类属性）→ 悬垂/双释放崩溃（b032 转绿） | 回归 `tests/bugs/b032_event_class_inst_store.myp`（修复后 GREEN） |
+| BUG-141 | 🟩 | **selfhost @coro 参数未 ARC 拥有**（BUG-002 镜像缺失）——@coro 参数当借用，调用方释放后 parked 协程悬垂 → 对象被 free、块被后续 new 复用 → 发错目标/值泄漏（coro_incremental_spawn 输出 15；oracle codegen 同 runtime 全过） | 回归 `tests/bugs/coro_incremental_spawn.myp`（修复后 GREEN） |
 
 ---
 
@@ -3600,4 +3601,31 @@ oracle 编译+运行正常，自举 `opt-21` 报 `%t45 defined with type 'ptr' b
 - **教训**：逃逸分析的「接收者不逃逸」假设必须用被调方法是否逃逸 `this` 来证——方法能把
   this 存全局/传参/返回即逃逸；栈上化对象只有「从不把 this 交出去」才安全。
 
+## BUG-141（已修复 🟩，v3.15.203）：selfhost @coro 参数未 ARC 拥有 → parked 协程悬垂复用
 
+**非破坏性**（selfhost `codegen.myp` 函数体序言）。coro_incremental_spawn（BUG-002 复现
+@test）此前 bugs 套件唯一红：自举编译的分段素数筛输出 `2 3 5 7 11 13 15 17`（`15`=3×5
+复合数泄漏）；C++ oracle codegen + C runtime 同源全过。
+
+- **复现最小化**：`tests/bugs/coro_incremental_spawn.myp` + 独立 sieve
+  `/tmp/myp_pitfall/coro_sieve.myp`（Generator + 8 次增量 spawn Filter 链）。
+- **根因**：oracle 早在 `codegen_class.cpp registerCoroParam`（**BUG-002**）对 @coro 方法
+  参数（含 this）入口 `myp_retain`——@coro 体比调用方作用域长寿，参数须拥有；**selfhost
+  从未镜像此修复**，参数当借用。调用方推进（sieve 的 `ch = nx` 释放旧 channel）时 parked
+  协程的 `in`/`out` channel 被 free → 内存块被后续 `new Channel()` 复用 → parked 协程
+  `%out.addr` 悬垂别名到后生 channel（发送 trace 抓到发到后生句柄；判别器移位验证跟随
+  channel 句柄而非槽号）→ 值泄漏、部分 Filter 永久 park。
+- **修复**：`genFuncBody` 参数 store 循环后，`curFnCoro_` 下对 ARC 参数（class/string/
+  动态数组 → `myp_retain`；接口/函数值 `{ptr,ptr}`、slice `{ptr,i64}` → `extractvalue 0`
+  retain）注册进 `funcPtrSlots_`（借用参数提升为拥有槽的既有机制）：函数末 `releaseArcSlots`
+  释放配对，重赋值经 `funcPtrSlotHas` 走 `storeRef`（释放旧值，无泄漏）。struct 方法合成
+  this（className "Object"）跳过。与 oracle registerCoroParam 语义对齐；selfhost 侧未加
+  frame_set（MYP runtime 的 frame_set 为 stub no-op，强制销毁泄漏维持既有水平）。
+- **验证**：独立 sieve `2 3 5 7 11 13 17 19`（MYP runtime 与 C runtime 双过）；
+  coro_incremental_spawn GREEN（bugs 15 green/0 red）；run_tests.sh 464/464；bootstrap
+  MD5 门禁成立。C++ oracle 无需改动（早已含 BUG-002 修复）。
+- **回归**：`tests/bugs/coro_incremental_spawn.myp`（转绿，原唯一红）。
+- **教训**：跨编译器对照必须补全 **2×2 全矩阵（codegen × runtime）**。初判「oracle 过 /
+  selfhost 挂」误归因 runtime（自举+自举 runtime 挂、oracle+C runtime 过），实际 oracle
+  与 selfhost **codegen 不同**——补「selfhost codegen + C runtime」对照组复现后才锁定
+  selfhost codegen（bug 独立于 runtime）。

@@ -27,6 +27,32 @@
 
 ## 编译器版本历史
 
+### v3.15.203 — selfhost @coro 参数 ARC 拥有修复（BUG-141，coro_incremental_spawn 转绿）
+
+**非破坏性**（selfhost `codegen.myp` 函数体序言）。coro_incremental_spawn（BUG-002
+复现 @test）此前唯一红：自举编译的分段素数筛输出含 `15`（3×5 复合数泄漏）。**C++ oracle
+codegen + 同一 C runtime 全过、selfhost codegen + 同一 C runtime 复现**——坐实
+selfhost codegen bug（非 runtime，MYP runtime 排查是红鲱鱼）。
+
+- **根因**：oracle 早在 `codegen_class.cpp registerCoroParam`（BUG-002）对 **@coro 方法
+  参数（含 this）在入口 `myp_retain`**，因 @coro 体比调用方作用域长寿；**selfhost 从未
+  镜像**——参数当借用。调用方推进（sieve 的 `ch = nx` 释放旧 channel）时，parked 协程
+  持有的 channel 被 free → 内存块被后续 `new Channel()` 复用 → parked 协程的 `out`
+  悬垂别名到新 channel → 发错目标、值泄漏（F2 的 `%out.addr` 被覆写成后生 channel 句柄；
+  F3/F5 永久 park）。
+- **修复**：`genFuncBody` 参数 store 后，`curFnCoro_` 下对 ARC 参数（class/string/
+  动态数组/接口/函数值/slice）入口 `myp_retain`，并注册进 `funcPtrSlots_`（借用参数提升
+  为拥有槽的既有机制）——函数末 `releaseArcSlots` 释放配对，重赋值经 `funcPtrSlotHas`
+  走 `storeRef` 释放旧值。struct 方法合成 this（className "Object"）跳过，避免对裸结构
+  指针 retain。与 oracle 的 registerCoroParam 语义对齐（selfhost 侧未加 frame_set，
+  MYP runtime 的 frame_set 为 stub no-op，强制销毁泄漏维持既有水平）。
+- **验证**：独立 sieve `2 3 5 7 11 13 17 19`（MYP runtime 与 C runtime 双过）；
+  `coro_incremental_spawn` GREEN（bugs 15 green/0 red）；run_tests.sh 464/464；
+  bootstrap MD5 门禁成立。C++ oracle 无需改动（早已含 BUG-002 修复）。
+- **教训**：排查初期自举+自举 runtime 复现、oracle+Cruntime 通过 → 误判 runtime 差异，
+  直到补上「**selfhost codegen + C runtime**」对照组才定位 codegen——跨编译器对照必须
+  补齐 2×2 全矩阵（codegen × runtime），只比一对会混淆变量。
+
 ### v3.15.202 — mapping 目标支持 static 方法 + 构造器接口形参 upcast（BUG-136/137）
 
 **非破坏性**（selfhost `sema.myp`/`codegen.myp`）。两处自举 ↔ oracle divergence：
