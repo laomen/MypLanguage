@@ -970,6 +970,10 @@ private:
     // If `expr` evaluates to a slice value, return its TypeInfo (recursing
     // through subscripts so nested slices like rows[i] resolve to slice<int>).
     const TypeInfo* sliceTypeOfExpr(const Expr* expr);
+    // BUG-146: struct-field slice (r.vec / arr[i].vec) resolution cache — stable
+    // storage (std::map) for TypeInfo returned by sliceTypeOfExpr for member
+    // accesses, so subscript/.size paths can route them through the slice path.
+    std::map<const Expr*, TypeInfo> member_slice_types_;
     // Bounds-checked element address for a slice-valued expression (incl. nested
     // slice subscripts like rows[i][j]); nullptr if expr isn't a slice.
     llvm::Value* generateSliceElementAddress(const Expr* arr, llvm::Value* idx);

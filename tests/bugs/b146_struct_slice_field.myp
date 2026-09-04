@@ -1,0 +1,91 @@
+// BUG-146 复现/回归：struct 内 slice 字段「读后即子访问」codegen 错 IR
+// ---------------------------------------------------------------------------
+// 现象（mypagent MemoryFS 发现，2026-09-05）：struct 含 slice 字段
+//   struct R { string name; slice<float> vec; }
+// 时，直接访问 `r.vec.size` / `r.vec[i]` / 数组元素 `.vec[i]` 读到垃圾
+// （如把聚合 {ptr,i64} 首字节当指针解引用 → 1077936128），或 -O2 下
+// opt-21 直接编译崩溃：
+//   error: '%t..' defined with type '{ ptr, i64 }' but expected 'ptr'
+//     %t.. = getelementptr %Object, ptr %t.., i32 0, i32 0
+// 机制：codegen 把 struct 的 slice 字段 load 成值 {ptr,i64} 后，又当 ptr 二次 GEP
+// （本应 extractvalue 取 data）。与 ARC 无关（值不悬垂）。
+//
+// 判别：直接 `.vec[i]` 垃圾/崩 vs 先取局部 `slice sv = r.vec; sv[i]` 正确。
+// 修复目标：判别 A/B/C 全绿（直接字段访问与局部访问等价）。
+// 根因/修复见 tests/BUGLIST.md BUG-146。
+import test;
+import env;
+
+struct R {
+    string name;
+    slice<float> vec;
+}
+
+// 构造一个含 slice 字段的 struct（直接字段赋 slice）
+R makeR(string name, float a, float b, float c) {
+    R r;
+    r.name = name;
+    slice<float> v = new slice<float>(3);
+    v[0] = a; v[1] = b; v[2] = c;
+    r.vec = v;
+    return r;
+}
+
+@test void t_struct_slice_field_direct() {
+    // 判别 A：直接读 struct 的 slice 字段元素（修复前 → 垃圾/opt-21 崩）
+    R r = makeR("d", float(1), float(2), float(3));
+    float a = r.vec[0];   // ★ 判别点：修复前读错
+    Test.assertEq(int(a), 1, "direct r.vec[0]");
+
+    // 判别 B：struct 数组元素 → 直接字段访问
+    slice<R> arr = new slice<R>(2);
+    arr[0] = makeR("x", float(10), float(20), float(30));
+    arr[1] = makeR("y", float(40), float(50), float(60));
+    float b1 = arr[1].vec[2];
+    Test.assertEq(int(b1), 60, "arr[1].vec[2]");
+
+    // 判别 C：字段 .size 直接访问（修复前可能 opt-21 崩）
+    int sz = r.vec.size;
+    Test.assertEq(sz, 3, "direct r.vec.size");
+    Test.report("t_struct_slice_field_direct", true);
+}
+
+@test void t_struct_slice_field_local() {
+    // 对照：先取局部 slice 再访问（应恒正确；规避 codegen bug）
+    R r = makeR("d", float(1), float(2), float(3));
+    slice<float> sv = r.vec;
+    Test.assertEq(sv.size, 3, "local sv.size");
+    Test.assertEq(int(sv[0]), 1, "local sv[0]");
+    Test.assertEq(int(sv[2]), 3, "local sv[2]");
+    Test.report("t_struct_slice_field_local", true);
+}
+
+@test void t_struct_slice_write() {
+    // 判别 D：写 struct 字段 slice 元素（r.vec[i] = v；修复前 oracle 双编译器缺口）
+    R r = makeR("w", float(1), float(2), float(3));
+    r.vec[1] = float(99);
+    Test.assertEq(int(r.vec[1]), 99, "write r.vec[1]");
+    Test.assertEq(int(r.vec[0]), 1, "r.vec[0] after write");
+    Test.report("t_struct_slice_write", true);
+}
+
+@test void t_struct_slice_call_ret() {
+    // 判别 E：函数返回 struct 后直接 .vec[i]（oracle 曾漏 Call 对象 → LLVM verify 崩）
+    float a = makeR("c", float(7), float(8), float(9)).vec[2];
+    Test.assertEq(int(a), 9, "makeR().vec[2]");
+    Test.report("t_struct_slice_call_ret", true);
+}
+
+@test void t_struct_slice_of_struct_write() {
+    // 判别 F：slice<R> 数组元素 → 直接写/读其 slice 字段元素
+    slice<R> arr = new slice<R>(2);
+    arr[0] = makeR("x", float(10), float(20), float(30));
+    arr[1] = makeR("y", float(40), float(50), float(60));
+    arr[0].vec[1] = float(77);
+    Test.assertEq(int(arr[0].vec[1]), 77, "arr[0].vec[1] write");
+    Test.assertEq(int(arr[0].vec[2]), 30, "arr[0].vec[2] after write");
+    Test.assertEq(int(arr[1].vec[2]), 60, "arr[1].vec[2] untouched");
+    Test.report("t_struct_slice_of_struct_write", true);
+}
+
+int main() { return 0; }

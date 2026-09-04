@@ -156,6 +156,9 @@
 | BUG-143 | 🟩 | **selfhost struct 值拷贝/入槽 string 字段 ARC retain 缺失**（`HttpsResult` struct 含 string 字段跨 parseResponse→request→postJson 多层值传递，body 字段 +1 在值拷贝中丢失 → 长 body 悬垂 → UAF/__longjmp；判别 `Res r2 = r; r.body=""; return r2;` → Str.len 20000→20032）；oracle src/codegen emitStructFieldsValue 本齐全，selfhost gap | 回归 `tests/struct_arc_string_fields/test.myp`（拷贝+drop/多层返回/入属性，毒化复用判别） |
 | BUG-144 | 🟩 | **try 内 return 绕过 handler pop**（每次调用泄漏一个已返回栈帧的 jmp_buf；depth 达 64 后新 handler 无法入栈，后续 throw longjmp 到悬垂帧 → `__longjmp` 段错误） | 回归 `tests/@test/exception_propagation.myp` `test_return_handler_depth`（100 次提前 return 后抛出并捕获） |
 | BUG-145 | 🟩 | **顶层 const 被 codegen 成同名零参函数，selfhost 裸引用 LLVM 类型回落 i32**（`const string A=...; string s=A;` 实际 `call ptr @A()`，bool const 产生 `call i1` 后按 i32 转换的非法 IR） | 回归 `tests/@test/const_string.myp`、`tests/@test/eval.myp`（裸值引用）+ `tests/negative/const_call.myp`（调用拒绝） |
+| BUG-146 | 🟩 | **struct 内 slice 字段「读后即子访问」codegen 错 IR**（struct 含 `slice<float> vec`，直接 `r.vec[i]`/`r.vec.size`/`arr[i].vec[j]` 读到垃圾（聚合 `{ptr,i64}` 首字节被当 ptr 解引用 → 1077936128）或 -O2 下 opt-21 崩 `'%t..' defined with type '{ ptr, i64 }' but expected 'ptr'` + `getelementptr %Object, ptr %t..`；机制：codegen 把 slice 字段 load 成 `{ptr,i64}` 后又当 ptr 二次 GEP，本应 extractvalue 取 data；与 ARC 无关，独立 slice 正常，先取局部 `slice sv=r.vec; sv[i]` 正常） | 回归 `tests/bugs/b146_struct_slice_field.myp`（判别 A–F：直接字段/数组元素/.size/写/函数返回 struct 直取/slice-of-struct 元素写，双编译器 12 断言） |
+| BUG-147 | 🟩 | **实例属性数组下标 this.buf[i] 元素类型丢失（selfhost+oracle 双缺口）**——显式 `this.<动态数组属性>[i]`：selfhost sema 落成 'array'、codegen 元素 LLVM 类型落成默认（ubyte[] 属性按 i32 GEP/store 步长 4、4 字节写 → str() 读 [41 00 00 00]→"A"，本地 ubyte[] 却 i8 正确；读/写均错）。裸属性名 buf[i]、静态类属性 S.buf[i]、局部、函数返回都正常——只漏 ThisExpr 对象形态 | 回归 `tests/@test/this_prop_array_bytes.myp`（ubyte[] 逐字节写/读、str() 往返、int[] 属性、bytes() 入属性；6 断言，双编译器） |
+
 
 ---
 
@@ -3665,3 +3668,159 @@ sema 在接口变量从未被重赋值时把具体类记到 `CallExpr.resolvedCl
 - **教训**：拼接操作数的静态类型（exprLlvmType）须与实际发射值一致；接口关联返回的权威
   类型来源是 sema 的 devirt 具体类（CallExpr.resolvedClass），exprLlvmType 与 genExpr
   都要走同一来源。
+
+## BUG-143（已修复 🟩，v3.15.205）：selfhost struct 值拷贝/入槽 string 字段 ARC retain 缺失
+
+**selfhost codegen gap**（mypagent 长 LLM 回答偶发 `__longjmp` 排查根因之一）。
+`HttpsResult`（struct 含 string 字段）跨 parseResponse→request→postJson 逐层 struct
+值传递时 body 字段持有计数在值拷贝中丢失 → 长 body 悬垂 → 越界读破坏异常帧 jmp_buf。
+C++ oracle（emitStructFieldsValue）本就齐全。
+
+- **判别**：`Res r2 = r; r.body = ""; return r2;` → `Str.len(r2.body)` 从 20000 变
+  20032（读到被复用内存）。
+- **根因**：selfhost 只在 struct **字段 store**（storeRef）时 +1；struct **整体
+  拷贝/赋值/入类属性**是裸字节拷贝 → 拷贝与源共享 string；源字段随后被重赋值/释放
+  （`r.body = ""`）→ 拷贝读到被复用内存。
+- **修复**（镜像 C++ emitStructFieldsValue/emitArcFieldOp）：新增
+  `emitRetainStructValue`/`emitRetainArcFieldValue`/`structNameOfType`/
+  `isFreshStructExpr`；struct 值拷贝逐字段 retain。覆盖点：VarDecl struct 别名初始化、
+  整值赋值到 struct 局部、struct 型类属性存储、struct 字段写。fresh（调用返回 struct，
+  字段已带 +1）跳过、不重复 retain。**{ptr,ptr} 接口/函数值字段跳过**：selfhost 模型里
+  struct 接口字段是借用别名，拷贝 +1 将泄漏。
+- **回归**：`tests/struct_arc_string_fields/test.myp`（拷贝+drop/多层返回/入属性，毒化
+  复用判别）；run_tests.sh 465/465、bootstrap MD5 成立。
+- **教训**：selfhost struct 字段的「拥有」语义须与字段 store 的 retain/release 对一致；
+  只加 retain 不加 release 会改变 liveObjectCount 平衡——只补「拷贝丢失的 +1」。
+
+## BUG-144（已修复 🟩，v3.15.206）：try 内 return 绕过 exception handler pop
+
+**双编译器 + 双 runtime**（C++ oracle + selfhost codegen + C/MYP runtime）。长期运行的
+mypagent 高频在 `Json_Json_string` 后由 `__longjmp` 段错误；现场 handler depth 达 63，
+栈中保存了大量已返回函数帧的 jmp_buf。
+
+- **根因**：无 finally 的 `try` 中执行 `return` 时直接发射函数返回，绕过 try 正常出口的
+  `myp_exception_pop()` → handler 栈泄漏 → depth 撞 64 上限（push 静默丢弃）→ 栈顶恒为
+  已返回帧的悬垂 jmp_buf → 后续 throw longjmp 跳垃圾。
+- **修复**：新增 `myp_exception_get_depth()` / `myp_exception_pop_to(base)`（C runtime.c
+  + MYP exception.myp 双实现）；对含 try 的函数在 entry 保存调用前 handler 深度，每个真实
+  `ret` 前 pop 回基线。函数级基线天然覆盖嵌套 try、catch 内 return、finally 转发后的最终
+  return；正常路径已 pop 时 pop_to(base) 幂等。
+  - C++ oracle：首次生成 try（generateTryStmt）时把深度捕获懒插入 entry（alloca 按所属
+    函数识别防跨函数 stale）；emitFunctionReturn 的 val/void 两出口前恢复。
+  - selfhost：新增 `stmtHasTry` 遍历（仅含 try 的函数发射开销）；genFuncBody entry 捕获 +
+    `emitHandlerDepthRestore()` 覆盖普通值/void return、implicit return、finally 转发返回。
+- **回归**：`tests/@test/exception_propagation.myp` `test_return_handler_depth`（100 次
+  跨函数 try 内提前 return 后新建 handler 抛出并捕获；修复前稳定跳悬垂帧段错误）；双编译器
+  121/121；bootstrap MD5 一致；全量 465/465。
+- **教训**：固定深度 handler 栈在 push 达到上限时静默丢弃会把「泄漏」延迟成灾难性 longjmp；
+  凡是 try 内控制流直穿出函数（return）都要按函数统一回收，单靠 try 正常出口 pop 不够。
+
+## BUG-145（已修复 🟩，v3.15.207）：顶层 const 恢复值语义与正确 LLVM 类型
+
+**C++ oracle + selfhost sema/codegen**。顶层 const 在 parser AST 借用 FuncDecl 容器
+（body=return expr），但语言语义是值、不可调用。BUG-050 曾通过「同名零参函数 + 裸引用
+隐式调用」兼容。
+
+- **现象**：`const string A = "x"; string s = A;` selfhost 实际 `call ptr @A()`，而
+  `exprLlvmType(A)` 因 A 非局部变量回落 **i32**；`const bool EQ=...; Test.assert(EQ,...)`
+  生成 `call i1 @EQ()` 后按 i32 转换的非法 IR（`trunc i32 %t25 to i1`）→ opt-21 崩。
+- **根因**：`exprLlvmType` Identifier 分支不读 const 声明返回类型（落回 i32）；codegen
+  对 const 标识符发隐式调用而非值。
+- **修复**：
+  - const 标识符直接**展开已折叠的初始化表达式**（读 const-decl 的 return expr 子树），
+    双 codegen 不再声明/生成同名函数（C++ `declareFuncSignature`/`generateFuncDecl`、
+    selfhost `genFunction` 跳 const-decl）。
+  - selfhost `exprLlvmType` Identifier 分支读 const 声明返回 LLVM 类型（string=ptr、
+    bool=i1、int=i32…）。
+  - `CONST()` 调用语法按值语义明确拒绝：`'CONST' is not callable`（selfhost sema Call 前置
+    拦截 + C++ 去 in_call_callee_ 守卫后自然报）。
+- **回归**：`tests/@test/const_string.myp`、`tests/@test/eval.myp` 改裸值引用（含 const 依赖
+  const：`const int T5 = triple(FIB10);` 展开嵌套）；新增 `tests/negative/const_call.myp`；
+  bootstrap MD5 一致；全量 466/466。
+- **教训**：AST 借函数容器不代表可调用；凡「按名字隐式调用」的兼容补丁都要在类型推断
+  （exprLlvmType）与发射（genExpr）两处同步，否则值与类型推断分裂。
+
+## BUG-146（已修复 🟩，v3.15.209）：struct 内 slice 字段「读后即子访问」codegen 错 IR
+
+**selfhost + oracle codegen bug**（mypagent MemoryFS 发现，2026-09-05）。struct
+含 slice 字段时，**直接对字段做子访问**（`.size` / `[i]`）生成非法 IR。
+
+- **复现最小化**：
+  ```
+  struct R { string name; slice<float> vec; }
+  R makeR(...) { R r; slice<float> v = new slice<float>(3); v[0]=..;
+                 r.vec = v; return r; }          // 把 slice 赋给 struct 字段
+  R r = makeR(...);
+  float a = r.vec[0];     // ★ 直接字段子访问
+  ```
+  → 读到垃圾（如 `1077936128`，把聚合 `{ptr,i64}` 首字节当指针解引用）或 -O2 下
+  `opt-21` 直接编译崩：
+  ```
+  error: '%t..' defined with type '{ ptr, i64 }' but expected 'ptr'
+    %t.. = getelementptr %Object, ptr %t.., i32 0, i32 0
+  ```
+- **判别矩阵（实验证实）**：
+  - 独立 slice（非字段）`slice<float> lone; lone[i]` → **正常**。
+  - struct 字段 `direct.vec[2]`（不经数组）→ **垃圾**。
+  - 链式 `arr[1].vec[2]`、拆一层 `R t=arr[1]; t.vec[2]` → **仍垃圾**。
+  - **先取局部** `slice<float> sv = r.vec; sv[i]` / `sv.size` → **正常**。
+  - probe 含 `direct.vec.size` 时 O2 编译 **opt-21 崩**。
+  - → 与数组无关、与 ARC 无关（值不悬垂）；根因在「struct 的 slice 字段访问路径」。
+- **根因（LLVM IR 证据）**：
+  - selfhost：struct 的 slice 字段只被「局部 slice 变量」路径识别；`r.vec[i]` 的下标元素
+    类型与 `r.vec.size/.data` 成员未走 slice 专路 → `subscriptElemLt` 对字段 slice 默认
+    i32（float 位型当 i32 读垃圾）；`.size` 把 `load {ptr,i64}` 的 slice 值又当 `ptr`
+    二次 `getelementptr %Object` → opt-21 崩。
+  - oracle：`sliceTypeOfExpr` 只认 Identifier 局部 slice 与嵌套 Subscript，`r.vec` /
+    `arr[i].vec`（MemberAccess→struct 字段）不识别 → `r.vec[i]` 把 slice 值 `{ptr,i64}`
+    当数组基址 `getelementptr i32, {ptr,i64}, ...`（LLVM 类型错）。
+- **修复（双编译器，镜像「独立 slice」路径 = load slice 值 → extractvalue data/len）**：
+  - selfhost `codegen.myp`：① genExpr Member 的 slice `.size/.length/.data` 判定放宽为
+    「局部 slice 变量 **或** 对象 LLVM 类型 `{ptr,i64}`」（覆盖 struct 字段 slice /
+    slice 返回调用）；② `subscriptElemLt` Member 分支补 struct 字段回退——用
+    `memberFieldAstType` 取字段 AstType，slice 走 `sliceElemType`、数组走
+    `llvmType(element)`（slice<float> → float）。
+  - oracle `codegen_expr.cpp`：`sliceTypeOfExpr` 增 MemberAccess 分支（object 为 struct
+    变量 / struct 数组元素 `arr[i]` / **struct 返回调用** `makeR(...)`，字段 slice<T>
+    → 缓存 TypeInfo 于 `member_slice_types_`（std::map 节点稳定）），自动覆盖下标读/写
+    与 `generateSliceElementAddress`；`generateMemberAccess` 的 `.length/.size/.data` 增加
+    以 `sliceTypeOfExpr(e.object)` 判定的 slice 值兜底（非 slice 不动，无双生成）。
+- **回归**：`tests/bugs/b146_struct_slice_field.myp` 判别 A 直接字段 `r.vec[0]`、B 数组
+  元素 `arr[1].vec[2]`、C `r.vec.size`、D 字段 slice **写** `r.vec[1]=v`、E 函数返回
+  struct 直取 `.vec[2]`、F slice-of-struct 数组元素写 + 对照局部 `sv[i]`；修复前 O2 编译
+  崩 / 值错，修复后双编译器 5 测试 12 断言全绿；bootstrap MD5 一致；全量 467/467。
+- **规避（历史，已不需）**：凡读 struct 的 slice 字段，先取到局部 slice 再访问。
+- **教训**：slice 是聚合值 `{ptr,i64}`，非对象指针；任何「load 聚合后当指针用」都是
+  codegen 类型错。「对象是 slice」的判定（下标/元素类型/`.size/.data`）不能只看
+  Identifier 局部——struct 字段、链式、返回调用都要按 slice 值类型统一识别。
+
+## BUG-147（已修复 🟩，v3.15.208）：实例属性数组下标 this.buf[i] 元素类型（selfhost+oracle 双缺口）
+
+**selfhost sema/codegen + oracle codegen**（向量二进制化字节缓冲逐字节写被堵的根因）。
+显式 `this.<动态数组属性>[i]` 的元素类型解析两编译器都缺 `ThisExpr` 对象形态。
+
+- **现象**：
+  - selfhost sema：`this.buf[i]` 下标元素类型落成 `array`（读/写均报类型错，如
+    `cannot initialize variable 'b' of type 'ubyte' with value of type 'array'`）。
+  - oracle codegen：`this.buf[i]`（读 generateSubscript / 写 generateAssignment）落到默认
+    **i32** → ubyte[] 属性按 i32 GEP/store（步长 4、4 字节写）→ `str(this.bytes)` 读到
+    `[41 00 00 00]` 输出 `"A"`（元素读 65 却对）；本地 ubyte[] 走 i8 正确。
+  - 裸属性 `buf[i]`、静态类 `S.buf[i]`、局部、函数返回均正常——只漏显式 `this.`。
+- **根因**：selfhost `this` 是独立 kind `"This"`（非 Identifier）；Member 下标的元素类型
+  解析（sema Subscript 的 Member 分支、codegen subscriptElemLt/subscriptIsSlice/
+  subscriptElemIfaceName 的 Member 分支）只认 Identifier/静态类/链式结果，漏 This → 类名
+  落空默认 Object → 元素类型 'array' 或 LLVM 类型默认。oracle 同构（MemberAccess 分支
+  只处理 `object->kind == Identifier`）。
+- **修复**：各分支补 `This → currentClass_`，再走既有属性元素解析（propElemLt /
+  typeNodeToLLVMType(element)），镜像静态类属性路径。点：selfhost `sema.myp` Subscript
+  Member 分支 + `codegen.myp` 三处 Member 分支；oracle `codegen_expr.cpp` generateSubscript
+  + `codegen_stmt.cpp` generateAssignment。
+- **回归**：`tests/@test/this_prop_array_bytes.myp`（ubyte[] 逐字节写/读、str() 往返、
+  int[] 属性、bytes() 入属性；6 断言，双编译器 6/6）；oracle o1 探针 `prop=ABCD`（修复前
+  `prop=A`）；全量 467/467；bootstrap MD5 一致。
+- **教训**：凡按「对象形态」分派解析的路径（sema Member/Subscript、codegen 元素类型）要
+  枚举 Identifier/This/Call/Subscript/Member/New 全形态——This 常被漏（同族历史：
+  BUG-057~065 链式访问、BUG-029/033 iface upcast）。注意：@startup+@thread 才会输出
+  Console（普通 main 无输出易误判「没跑」）。
+
+

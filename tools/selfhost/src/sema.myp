@@ -7037,6 +7037,10 @@ class Sema {
                             if (pt != null && Str.len(pt.className()) != 0) cn2 = pt.className();
                         }
                         if (Str.len(cn2) == 0) cn2 = mo2.name();
+                    } else if (mo2 != null && mo2.kind() == "This" && inClass_ != 0) {
+                        // this.buf[i]：实例属性数组/切片下标（selfhost 缺 This 形态 →
+                        // 元素类型落成 'array'；镜像静态类属性与裸属性路径，类名取当前类）。
+                        cn2 = currentClass_;
                     } else if (mo2 != null && (mo2.kind() == "Call" || mo2.kind() == "Subscript" || mo2.kind() == "Member" || mo2.kind() == "New")) {
                         // BUG-063：get().field[j]——对象是链式结果 → 用 valueClass/resolvedClass
                         cn2 = mo2.valueClass();

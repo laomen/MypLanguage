@@ -1,0 +1,53 @@
+// this_prop_array_bytes: 实例属性数组/动态数组下标 this.buf[i]（selfhost gap）
+// → @test
+//
+// selfhost 此前缺 this（ThisExpr）形态：this.buf[i]（实例属性 ubyte[]/int[] 下标）
+// sema 元素类型落成 'array'，codegen 元素 LLVM 类型落成 %Object（opaque，无 size）
+// → opt-21 "base element of getelementptr must be sized"（字节级序列化缓冲被堵死）。
+// oracle 已正常；修复：sema/codegen 的 Member 下标分支把 this 归到当前类。
+// 回归覆盖：ubyte[] 逐字节写/读、str() round-trip、int[] 属性、bytes() 入属性。
+import test;
+
+class Buffer {
+    property:
+        ubyte[] bytes;
+        int[] nums;
+    action:
+    @constructor Buffer() {
+        this.bytes = new ubyte[4];
+        this.nums = new int[4];
+    }
+    void fillBytes() {
+        for (int i = 0; i < 4; i = i + 1)
+            this.bytes[i] = ubyte(65 + i);
+    }
+    ubyte byteAt(int i) { return this.bytes[i]; }
+    void setByte(int i, ubyte v) { this.bytes[i] = v; }
+    string dumpBytes() { return str(this.bytes); }
+    void fillNums() {
+        for (int i = 0; i < 4; i = i + 1)
+            this.nums[i] = 10 + i;
+    }
+    int numAt(int i) { return this.nums[i]; }
+    void adopt(string s) { this.bytes = bytes(s); }
+}
+
+@test void test_this_prop_bytes() {
+    Buffer b = new Buffer();
+    // ubyte[] 属性逐字节写 + 读
+    b.fillBytes();
+    Test.assertEq(int(b.byteAt(0)), 65, "byte0");
+    Test.assertEq(int(b.byteAt(3)), 68, "byte3");
+    Test.assertStrEq(b.dumpBytes(), "ABCD", "roundtrip");
+    // 改写单字节再转回
+    b.setByte(1, ubyte(90));
+    Test.assertStrEq(b.dumpBytes(), "AZCD", "modified");
+    // bytes() 结果写入属性缓冲
+    b.adopt("xy");
+    b.setByte(1, ubyte(90));
+    Test.assertStrEq(b.dumpBytes(), "xZ", "adopt");
+    // int[] 属性下标（同族：元素类型 i32 而非 'array'）
+    b.fillNums();
+    Test.assertEq(b.numAt(1), 11, "num1");
+    Test.report("test_this_prop_bytes", true);
+}

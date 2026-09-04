@@ -2867,6 +2867,23 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
             }
         }
     }
+    // Slice VALUE member on struct-field slice / slice-valued expr
+    // (r.vec.length / r.vec.size / r.vec.data — BUG-146). Local slice vars were
+    // handled above; route any slice-typed member through the same extractvalue.
+    // sliceTypeOfExpr keys off source types, so non-slices (.size as a real
+    // property) are untouched and never double-generated.
+    if (e.member_name == "length" || e.member_name == "size" || e.member_name == "data") {
+        if (const TypeInfo* msti = sliceTypeOfExpr(e.object.get())) {
+            if (msti->kind == TypeKind::Slice) {
+                auto* sval = generateExpr(*e.object);
+                if (sval && sval->getType()->isStructTy()) {
+                    if (e.member_name == "length" || e.member_name == "size")
+                        return builder_.CreateExtractValue(sval, 1, "slen");
+                    return builder_.CreateExtractValue(sval, 0, "sdata");
+                }
+            }
+        }
+    }
 
     // Tuple field access: t.0, t.1 — numeric member name on a tuple value.
     if (!e.member_name.empty() && std::all_of(e.member_name.begin(), e.member_name.end(),
@@ -3222,6 +3239,61 @@ const TypeInfo* CodeGen::sliceTypeOfExpr(const Expr* arr) {
         auto sit = var_slice_types_.find(id.name);
         return sit != var_slice_types_.end() ? &sit->second : nullptr;
     }
+    if (arr->kind == ExprKind::MemberAccess) {
+        // BUG-146: struct-field slice — r.vec / arr[i].vec (struct local /
+        // struct-array element). Previously only Identifier locals were slices,
+        // so r.vec[i] fell into the generic array path and treated the {ptr,i64}
+        // slice VALUE as a pointer (selfhost: %Object GEP; oracle: load/GEP on a
+        // struct value). Cache the resolved TypeInfo (std::map: node-stable).
+        auto& ma = static_cast<const MemberAccessExpr&>(*arr);
+        if (!ma.object) return nullptr;
+        std::string st_name;
+        const Expr* obj = ma.object.get();
+        if (obj->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*obj);
+            auto* oa = getNamedValue(oi.name);
+            llvm::Type* ot = nullptr;
+            if (oa) {
+                if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(oa))
+                    ot = ai->getAllocatedType();
+                else
+                    ot = getNamedValueType(oi.name);
+            }
+            if (ot && ot->isStructTy())
+                st_name = llvm::cast<llvm::StructType>(ot)->getName().str();
+        } else if (obj->kind == ExprKind::Subscript) {
+            // arr[i].vec — element struct of arr (slice<R>/R[]/fixed R[N]).
+            auto& ss = static_cast<const SubscriptExpr&>(*obj);
+            if (const TypeInfo* inner = sliceTypeOfExpr(ss.array.get())) {
+                if (inner->kind == TypeKind::Slice && inner->element_type)
+                    st_name = inner->element_type->class_name;
+            }
+        } else if (obj->kind == ExprKind::Call) {
+            // makeR(...).vec / obj.getR().vec — struct-returning call's field.
+            if (const TypeNode* rt =
+                    callReturnTypeNode(static_cast<const CallExpr&>(*obj))) {
+                if (!rt->class_name.empty() && findStruct(rt->class_name))
+                    st_name = rt->class_name;
+            }
+        }
+        if (!st_name.empty()) {
+            const StructDecl* sd = findStruct(st_name);
+            if (sd) {
+                for (auto& pr : sd->properties) {
+                    if (pr.name != ma.member_name) continue;
+                    if (pr.type.class_name == "slice" && pr.type.type_args.size() == 1) {
+                        TypeInfo st(TypeKind::Slice);
+                        st.element_type = std::make_shared<TypeInfo>(
+                            typeNodeToCodegenType(pr.type.type_args[0]));
+                        member_slice_types_[arr] = st;
+                        return &member_slice_types_[arr];
+                    }
+                    return nullptr;
+                }
+            }
+        }
+        return nullptr;
+    }
     if (arr->kind == ExprKind::Subscript) {
         // rows[i] where rows is slice<slice<int>> → rows[i] : slice<int>
         auto& ss = static_cast<const SubscriptExpr&>(*arr);
@@ -3408,6 +3480,21 @@ llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
                             elem_ty = typeNodeToLLVMType(*p.type.element_type);
                             goto do_gep;
                         }
+                    }
+                }
+            }
+        } else if (ma.object->kind == ExprKind::ThisExpr && !current_class_name_.empty()) {
+            // this.buf[i] — instance property dynamic/fixed array subscript. ThisExpr
+            // object previously fell through to the i32 default → ubyte[] property
+            // read/write used an i32 GEP/store (stride 4, 4-byte store) → str(bytes)
+            // produced [41 00 00 00] ("A"); local ubyte[] was fine (i8). Mirror the
+            // class-property resolution above for `this`.
+            const ClassDecl* cls = findClass(current_class_name_);
+            if (cls) {
+                for (auto& p : cls->properties) {
+                    if (p.name == ma.member_name && p.type.isArray() && p.type.element_type) {
+                        elem_ty = typeNodeToLLVMType(*p.type.element_type);
+                        goto do_gep;
                     }
                 }
             }

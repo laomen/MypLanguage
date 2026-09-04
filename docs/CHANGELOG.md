@@ -27,6 +27,48 @@
 
 ## 编译器版本历史
 
+### v3.15.209 — struct 字段 slice 直接子访问走 slice 专路（BUG-146，selfhost+oracle）
+
+**非破坏性修复**（selfhost `codegen.myp` + oracle `codegen_expr.cpp`）。struct 含
+`slice<T>` 字段时直接子访问（`r.vec[i]` / `arr[i].vec[j]` / `r.vec.size/.length/.data`）
+此前只对「局部 slice 变量」走 slice 专路，字段形态落入普通成员/数组路径：
+
+- selfhost：`subscriptElemLt` 对 struct 字段 slice 默认 i32（slice<float> 位型当 i32 读
+  垃圾）；`.size` 把 slice 值 `{ptr,i64}` 当对象指针二次 `%Object` GEP → opt-21 崩。
+- oracle：`sliceTypeOfExpr` 只认 Identifier/嵌套 Subscript，`r.vec`/`arr[i].vec` 不识别
+  → 下标把 slice 值当数组基址（LLVM 类型错）。
+
+修复（对齐独立 slice 路径：load slice 值 → extractvalue data/len）：
+- selfhost：slice 的 `.size/.length/.data` 判定放宽为「局部 slice 变量 **或** 对象 LLVM
+  类型 `{ptr,i64}`」；`subscriptElemLt` Member 分支补 struct 字段回退（memberFieldAstType
+  → sliceElemType / element）。
+- oracle：`sliceTypeOfExpr` 增 MemberAccess（struct 字段 slice → 缓存
+  `member_slice_types_`；对象含 struct 变量/数组元素/struct 返回调用）；
+  `generateMemberAccess` 的 `.size/.length/.data` 以 `sliceTypeOfExpr(e.object)` 兜底
+  （非 slice 不动）。
+
+回归 `tests/bugs/b146_struct_slice_field.myp`（判别 A–F：`r.vec[0]` / `arr[1].vec[2]` /
+`r.vec.size` / 字段 slice 写 `r.vec[1]=v` / 函数返回 struct 直取 `.vec[2]` /
+slice-of-struct 元素写 + 对照局部；修复后双编译器 5 测试 12 断言）；bootstrap MD5 一致；
+全量 467/467。
+
+### v3.15.208 — 实例属性数组下标 this.buf[i] 元素类型（BUG-147，selfhost+oracle）
+
+**非破坏性修复**（selfhost sema/codegen + oracle codegen）。向量二进制化的字节缓冲通常
+存成类实例属性并 `this.buf[i]` 逐字节写，但显式 `this.` 形态的元素类型解析两编译器都缺
+`ThisExpr` 对象分支：
+
+- selfhost sema：`this.buf[i]` 下标元素类型落成 `array`（读/写均报类型错）。
+- selfhost codegen：`subscriptElemLt`/`subscriptIsSlice`/`subscriptElemIfaceName` 的
+  Member 分支只认静态类与链式对象，`this.` 落到默认 → `%Object`（opaque）。
+- oracle codegen：`generateSubscript`/`generateAssignment` 的 MemberAccess 分支只认
+  Identifier 对象；`this.buf[i]` 落到默认 i32 → ubyte[] 属性按 i32 GEP/store（步长 4、
+  4 字节写）→ `str(this.bytes)` 读到 `[41 00 00 00]` 输出 "A"（本地 ubyte[] 却 i8 正确）。
+
+修复：两编译器把 `this` 归到当前类再解析属性元素类型（镜像已有静态类/裸属性路径）。
+回归 `tests/@test/this_prop_array_bytes.myp`（ubyte[] 逐字节写/读、str() 往返、int[]
+属性、bytes() 入属性，6 断言）；全量 467/467。oracle 端 o1 探针 `prop=ABCD` 修正。
+
 ### v3.15.207 — 顶层 const 恢复值语义与正确 LLVM 类型（BUG-145）
 
 **非破坏性修复**（C++ oracle + selfhost sema/codegen）。顶层 const 虽借用函数 AST

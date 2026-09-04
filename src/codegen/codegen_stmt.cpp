@@ -2002,6 +2002,22 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                         }
                     }
                 }
+            } else if (ma.object->kind == ExprKind::ThisExpr && !current_class_name_.empty()) {
+                // this.buf[i] = v — instance property array element write. ThisExpr
+                // object previously fell through to the i32 default → ubyte[] property
+                // writes used an i32 store into an i32-GEP (stride 4). Mirror the
+                // class-property resolution above for `this`.
+                const ClassDecl* cls = findClass(current_class_name_);
+                if (cls) {
+                    for (auto& p : cls->properties) {
+                        if (p.name == ma.member_name && p.type.isArray() && p.type.element_type) {
+                            elem_ty = typeNodeToLLVMType(*p.type.element_type);
+                            elem_is_class = isArcClassType(*p.type.element_type) ||
+                                            isStringType(*p.type.element_type);
+                            goto assign_gep;
+                        }
+                    }
+                }
             }
         }
 
