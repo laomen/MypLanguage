@@ -27,6 +27,30 @@
 
 ## 编译器版本历史
 
+### v3.15.204 — exprLlvmType 关联类型返回解析（BUG-142，assoc 接口拼接 opt 类型错转绿）
+
+**非破坏性**（selfhost `codegen.myp` `exprLlvmType`）。多文件引用测试矩阵期间发现；
+**非跨文件特有**（单文件即可复现），selfhost gap（C++ oracle 已正常）。
+
+- **BUG-142**：接口方法返回**关联类型** + 字符串拼接 → opt/llc 类型错
+  （`interface Cont { type Item; Item getVal(); }`，`IntBox implements Cont` 且
+  `type Item = int`，`"v=" + c.getVal()`）→ `opt-21: '%t21' defined with type
+  'i32' but expected 'ptr'`（`myp_strcat(ptr, i32)`）。`type Item = double` 同样
+  复现。拼接矩阵其余组合（int/long/double/bool/string/反序/链式/类方法返回/接口非
+  关联返回/struct 字段）全正常。
+  根因：`exprLlvmType` Member 分支对象是接口变量时跳过具体类覆盖（
+  `isInterfaceName==0` 条件）→ `methodRetAstType(接口, m)` 返回关联类型占位 →
+  llvmType 错成 "ptr"，与 genExpr 实际发射（sema devirt 已把具体类记到
+  CallExpr.resolvedClass，`IntBox_getVal` → i32/double）脱节。
+  修复：exprLlvmType Member 分支补 **B3/BUG-017 镜像**——`e.resolvedClass()`
+  （具体类）非空且实现该接口时，用 `methodRetAstType(具体类, m)` 解析关联返回。
+- **回归**：`tests/bugs/b142_assoc_concat.myp`（Item=int/double 拼接 + 链式，3 断言）；
+  run_tests.sh 464/464、bugs 16 green（新增 b142）；bootstrap MD5 门禁成立。
+- **C++ oracle**：无需改动（B3/BUG-017 已按具体类解析关联返回，c_assoc 探针原本正常）。
+- **教训**：字符串拼接操作数的静态类型（exprLlvmType）必须与实际发射值类型一致；
+  sema 的 devirt 具体类（CallExpr.resolvedClass）是解析接口关联返回的权威来源，
+  exprLlvmType 与 genExpr 都要用它。
+
 ### v3.15.203 — selfhost @coro 参数 ARC 拥有修复（BUG-141，coro_incremental_spawn 转绿）
 
 **非破坏性**（selfhost `codegen.myp` 函数体序言）。coro_incremental_spawn（BUG-002

@@ -1,0 +1,44 @@
+// BUG-142 复现：接口方法返回关联类型 + 字符串拼接 → opt/llc 类型错
+// ---------------------------------------------------------------------------
+// 修复前（selfhost codegen.myp exprLlvmType Member 分支）：对象是接口变量时
+// 跳过具体类覆盖（isInterfaceName==0 条件），methodRetAstType(接口, m) 对关联
+// 类型（type Item）返回占位类型 → llvmType 错成 ptr → 字符串拼接把真实
+// i32/double 当 ptr 传 myp_strcat →
+//   opt-21: error: '%t21' defined with type 'i32' but expected 'ptr'
+//   %t22 = call ptr @myp_strcat(ptr ..., ptr %t21)
+// C++ oracle 正常（B3/BUG-017 已按 CallExpr.resolvedClass 具体类解析关联返回）。
+// 修复：exprLlvmType Member 分支补 B3 镜像——sema 在接口变量从未被重赋值时把
+// 具体类记到 CallExpr.resolvedClass（devirt），据此用 methodRetAstType(具体类,m)
+// 解析关联返回，与 genExpr 实际发射（IntBox_getVal → i32/double）一致。
+import test;
+import env;
+
+interface Cont {
+    type Item;
+    Item getVal();
+}
+
+class IntBox {
+    interface class Cont;
+    type Item = int;
+    property: int val = 42;
+    action: int getVal() { return val; }
+}
+
+class DblBox {
+    interface class Cont;
+    type Item = double;
+    property: double val = 2.5;
+    action: double getVal() { return val; }
+}
+
+@test void t_b142_assoc_concat() {
+    Cont c = new IntBox();
+    string s1 = "v=" + c.getVal();                  // 修复前 opt 类型错（Item=int）
+    Test.assertStrEq(s1, "v=42", "assoc Item=int 拼接");
+    Cont d = new DblBox();
+    string s2 = "w=" + d.getVal();                  // 修复前同样崩（Item=double）
+    Test.assertStrEq(s2, "w=2.5", "assoc Item=double 拼接");
+    string s3 = "x" + c.getVal() + "y";             // 链式混合拼接
+    Test.assertStrEq(s3, "x42y", "assoc 链式拼接");
+}

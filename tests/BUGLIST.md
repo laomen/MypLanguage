@@ -152,6 +152,7 @@
 | BUG-137 | 🟩 | **构造函数接口形参未 upcast**（`new LLMPlanner(new RealBackend())` → opt-21 `ptr vs {ptr,ptr}`；oracle 正常） | 回归 `tests/bugs/b137_ctor_iface_param.myp`（ctor 接口形参 + 接口字段分派，1 断言） |
 | BUG-140 | 🟩 | 逃逸分析把 `new T()` 栈上分配，但方法把 `this` 存进进程全局（@static 类属性）→ 悬垂/双释放崩溃（b032 转绿） | 回归 `tests/bugs/b032_event_class_inst_store.myp`（修复后 GREEN） |
 | BUG-141 | 🟩 | **selfhost @coro 参数未 ARC 拥有**（BUG-002 镜像缺失）——@coro 参数当借用，调用方释放后 parked 协程悬垂 → 对象被 free、块被后续 new 复用 → 发错目标/值泄漏（coro_incremental_spawn 输出 15；oracle codegen 同 runtime 全过） | 回归 `tests/bugs/coro_incremental_spawn.myp`（修复后 GREEN） |
+| BUG-142 | 🟩 | **接口方法返回关联类型 + 字符串拼接 → opt/llc 类型错**（`"x=" + c.getVal()`，`Container{type Item; Item getVal();}` → exprLlvmType 误报 ptr，实际 genExpr 发 i32/double → `myp_strcat(ptr, i32)`）；单/多文件均可复现，非跨文件特有 | 回归 `tests/bugs/b142_assoc_concat.myp`（Item=int/double 拼接 + 链式，3 断言） |
 
 ---
 
@@ -3629,3 +3630,35 @@ oracle 编译+运行正常，自举 `opt-21` 报 `%t45 defined with type 'ptr' b
   selfhost 挂」误归因 runtime（自举+自举 runtime 挂、oracle+C runtime 过），实际 oracle
   与 selfhost **codegen 不同**——补「selfhost codegen + C runtime」对照组复现后才锁定
   selfhost codegen（bug 独立于 runtime）。
+## BUG-142（已修复 🟩，v3.15.204）：接口方法返回关联类型 + 字符串拼接 → opt/llc 类型错
+
+**非破坏性 bug**（selfhost `codegen.myp` `exprLlvmType`，C++ oracle 同步待查）。
+多文件引用测试矩阵（test_multifile.sh 扩展）期间发现；**非跨文件特有**（单文件即可复现）。
+
+- **复现最小化**：`interface Container { type Item; Item getVal(); }`，
+  `IntBox implements Container`（`type Item = int; int getVal() { return 42; }`），
+  `"x=" + c.getVal()`（`c` 为 `Container` 接口变量）→
+  `/usr/bin/opt-21: error: '%t21' defined with type 'i32' but expected 'ptr'`
+  `%t22 = call ptr @myp_strcat(ptr ..., ptr %t21)`。`type Item = double` 同样复现
+  （double 当 ptr）。规避：先赋给类型化局部 `int v = c.getVal();` 再拼接。
+- **拼接矩阵（其余全健康）**：`"x"+42 / +long / +double / +bool / +string / 反序
+  int+"x" / 链式 int|double|bool / 类方法返回 double / 接口(非关联)方法返回 double /
+  struct 字段 int` 均正常；**仅「接口方法返回关联类型」崩**。
+- **根因**：`exprLlvmType`（codegen.myp:11828）Member 调用分支——对象是**接口变量**
+  时跳过具体类解析（`isInterfaceName(ort3.className())==0` 才覆盖 mcls3），
+  `methodRetAstType(接口名, m)` 返回关联类型占位（`type Item`）→ `resolveType` 落空
+  → 落到 `IrEmit.kindType(e.resolvedKind())` 对未知名默认 "ptr"。而 `genExpr` 实际按
+  具体类 `IntBox_getVal` 发出 i32/double → **静态类型猜测（exprLlvmType="ptr"）与
+  实际生成值类型（i32/double）脱节** → 拼接 stringify 跳过 → `myp_strcat(ptr, i32)`。
+  非关联接口方法返回（double/int/string 静态可知）无此问题。
+- **修复**（selfhost `codegen.myp` `exprLlvmType` Member 分支）：补 **B3/BUG-017 镜像**——
+sema 在接口变量从未被重赋值时把具体类记到 `CallExpr.resolvedClass`（devirt），故当
+`callee3.resolvedClass()`（接口名）非空且 `e.resolvedClass()`（具体类）实现该接口时，
+改用 `methodRetAstType(具体类, m)` 解析关联返回，与 genExpr 实际发射（IntBox_getVal
+→ i32/double）一致。C++ oracle 无需改动（B3 早已按具体类解析，c_assoc 探针原本正常
+——本 bug 是 selfhost gap）。
+- **回归**：`tests/bugs/b142_assoc_concat.myp`（Item=int/double 拼接 + 链式，3 断言）；
+  run_tests.sh 464/464、bugs 16 green；bootstrap MD5 门禁成立。
+- **教训**：拼接操作数的静态类型（exprLlvmType）须与实际发射值一致；接口关联返回的权威
+  类型来源是 sema 的 devirt 具体类（CallExpr.resolvedClass），exprLlvmType 与 genExpr
+  都要走同一来源。

@@ -11832,6 +11832,21 @@ class CodeGen {
                         }
                     }
                     if (Str.len(mcls3) == 0) mcls3 = "Object";
+                    // BUG-142（B3/BUG-017 镜像，对齐 genExpr 接口分派）：对象是
+                    // 接口变量时上方跳过具体类覆盖（isInterfaceName==0 条件），
+                    // methodRetAstType(接口, m) 对关联类型（type Item）返回占位
+                    // 类型 → llvmType 错成 ptr → 字符串拼接把真实 i32/double 当
+                    // ptr 传 myp_strcat（opt/llc 类型错）。sema 在接口变量从未被
+                    // 重赋值时把具体类记到 CallExpr.resolvedClass（devirt）→ 用
+                    // 具体类方法返回类型解析，与 genExpr 实际发射（IntBox_getVal
+                    // → i32/double）一致。
+                    string miface0 = callee3.resolvedClass();
+                    string mecls = e.resolvedClass();
+                    if (Str.len(miface0) != 0 && isInterfaceName(miface0) != 0
+                        && Str.len(mecls) != 0 && mecls != mcls3
+                        && classImplements(mecls, miface0) != 0) {
+                        mcls3 = mecls;
+                    }
                     AstType rt3 = methodRetAstType(mcls3, callee3.memberName());
                     if (rt3 == null) rt3 = ifaceDefaultRetAstType(mcls3, callee3.memberName());
                     if (rt3 == null) rt3 = ifaceAbstractRetAstType(mcls3, callee3.memberName());
