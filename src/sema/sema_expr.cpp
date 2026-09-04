@@ -227,12 +227,9 @@ TypeInfo Sema::visitIdentifier(IdentifierExpr& expr) {
 
     auto* type = symbol_table_.lookup(expr.name);
     if (type) {
-        // BUG-050: 顶层 `const int CAP = 1024;` 是零参 const-decl 函数，已作为
-        // Function 类型注册进符号表；裸引用 `CAP`（非 `CAP()`）应折叠为常量 →
-        // 返回其返回类型，codegen 对 const-decl 标识符发射隐式零参调用。
-        // （`CAP()` 调用 callee 不折叠——in_call_callee_ 守卫。）
-        if (type->kind == TypeKind::Function && current_tu_ &&
-            !in_call_callee_) {
+        // 顶层 const 在 parser AST 中沿用 FuncDecl 容器，但语义是值而非可调用
+        // 函数。标识符始终具有声明类型，因此 `CAP()` 会自然报 not callable。
+        if (type->kind == TypeKind::Function && current_tu_) {
             const FuncDecl* cf = findFunctionDecl(expr.name);
             if (cf && cf->is_const_decl && cf->params.empty())
                 return typeNodeToTypeInfo(cf->return_type);
@@ -1852,11 +1849,7 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
         }
     }
 
-    // BUG-050: 裸 const 标识符折叠仅对非 callee 引用生效；`CAP()` 的 callee 仍按
-    // 可调用 Function 解析（与 C++/selfhost 显式调用语义一致）。
-    in_call_callee_ = true;
     auto callee_type = visitExpr(*expr.callee);
-    in_call_callee_ = false;
 
     if (callee_type.kind != TypeKind::Function) {
         auto* ident = dynamic_cast<IdentifierExpr*>(expr.callee.get());

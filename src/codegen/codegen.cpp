@@ -1683,6 +1683,7 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
     // Generic templates (type_params, not an instance) are skipped.
     for (auto& f : tu.functions) {
         if (!f.type_params.empty() && !f.is_generic_inst) continue;
+        if (f.is_const_decl) continue;
         current_type_params_.clear();
         for (size_t i = 0; i < f.type_params.size() && i < f.inst_type_args.size(); i++)
             current_type_params_.emplace_back(f.type_params[i], f.inst_type_args[i]);
@@ -1703,6 +1704,7 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
     // only monomorphized instances are emitted (like generic classes).
     for (auto& f : tu.functions) {
         if (!f.type_params.empty() && !f.is_generic_inst) continue;
+        if (f.is_const_decl) continue;
         current_type_params_.clear();
         for (size_t i = 0; i < f.type_params.size() && i < f.inst_type_args.size(); i++)
             current_type_params_.emplace_back(f.type_params[i], f.inst_type_args[i]);
@@ -2512,6 +2514,13 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_exception_pop_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {}, false),
         llvm::Function::ExternalLinkage, "myp_exception_pop", module_.get());
+    // BUG-144: handler 深度快照/恢复（函数级 try 内 return 泄漏修复）。
+    runtime_exception_get_depth_ = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {}, false),
+        llvm::Function::ExternalLinkage, "myp_exception_get_depth", module_.get());
+    runtime_exception_pop_to_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {i32}, false),
+        llvm::Function::ExternalLinkage, "myp_exception_pop_to", module_.get());
     runtime_exception_get_jmpbuf_ = llvm::Function::Create(
         llvm::FunctionType::get(p, {}, false),
         llvm::Function::ExternalLinkage, "myp_exception_get_jmpbuf", module_.get());

@@ -305,13 +305,14 @@ llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
                 }
             }
         }
-        // BUG-050: 裸 const 标识符（顶层 `const int CAP = 1024;`）→ 隐式零参调用
-        // （等价 `CAP()`，sema 已把裸引用折叠为其返回类型）。
+        // 顶层 const 是值而非函数：直接展开其已折叠的初始化表达式。
         if (current_tu_) {
             for (auto& cf : current_tu_->functions) {
                 if (cf.name == e.name && cf.is_const_decl && cf.params.empty()) {
-                    auto* fn = module_->getFunction(e.name);
-                    if (fn) return builder_.CreateCall(fn, {});
+                    if (cf.body && !cf.body->statements.empty()) {
+                        auto* ret = dynamic_cast<const ReturnStmt*>(cf.body->statements[0].get());
+                        if (ret && ret->value) return generateExpr(*ret->value);
+                    }
                     break;
                 }
             }

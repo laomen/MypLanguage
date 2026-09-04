@@ -1,0 +1,8 @@
+// EXPECT ERROR: 'LABEL' is not callable
+// Top-level const declarations are values, not synthetic zero-argument functions.
+const string LABEL = "ready";
+
+int main() {
+    string value = LABEL();
+    return 0;
+}

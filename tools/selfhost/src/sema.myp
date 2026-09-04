@@ -5612,6 +5612,15 @@ class Sema {
                 string ret = "void";
                 AstExpr callee = e.callee();
                 int callFailed = 0;  // callee 不可调用 → 实参不 visit，标 int（C++ 提前返回）
+                if (callee != null && callee.kind() == "Identifier"
+                    && findConstDeclFunc(callee.name()) != null) {
+                    diag_.error(e.line(), e.col(), "'" + callee.name() + "' is not callable");
+                    markAllExpr(callee);
+                    for (int cai = 0; cai < e.args().size(); cai = cai + 1)
+                        markAllExpr(e.args().get(cai));
+                    e.setResolvedKind("void");
+                    return "void";
+                }
                 // C++ visitCall：@coro 方法自递归（值使用）拒绝——@coro 调用生成句柄。
                 if (inCoro_ != 0 && Str.len(currentMethodName_) != 0 && inDiscardStmt_ == 0 && callee != null) {
                     int selfCall = 0;

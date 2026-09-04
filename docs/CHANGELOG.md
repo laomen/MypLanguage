@@ -27,6 +27,37 @@
 
 ## 编译器版本历史
 
+### v3.15.207 — 顶层 const 恢复值语义与正确 LLVM 类型（BUG-145）
+
+**非破坏性修复**（C++ oracle + selfhost sema/codegen）。顶层 const 虽借用函数 AST
+容器保存声明类型和初始化式，但语言语义是值。此前 BUG-050 通过生成同名零参函数并在
+裸引用处隐式调用来兼容；selfhost `exprLlvmType` 又把该标识符回落为 i32，导致
+`const bool` 生成 `call i1` 后按 i32 转换的非法 IR，`const string` 也存在 ptr/i32
+推断分裂。
+
+- const 标识符现在直接展开已折叠的初始化表达式，双 codegen 不再声明或生成同名函数。
+- selfhost `exprLlvmType` 从 const 声明读取真实 LLVM 类型（string=ptr、bool=i1 等）。
+- `CONST()` 调用语法按值语义明确拒绝：`'CONST' is not callable`。
+- 回归：`const_string` 与 `eval` 全部改为裸值引用；新增 `negative/const_call.myp`；
+  双编译器聚焦测试通过且 IR 中无 const 同名函数/调用。
+
+### v3.15.206 — try 内 return 恢复异常 handler 深度（BUG-144）
+
+**非破坏性**（C++ oracle + selfhost codegen + 双 runtime）。长期运行的 mypagent
+高频在 `Json_Json_string` 后由 `__longjmp` 段错误；现场 handler depth 已达 63，栈中
+保存了大量已返回函数帧的 jmp_buf。根因是无 finally 的 `try` 中执行 `return` 时直接
+发射函数返回，绕过 try 正常出口的 `myp_exception_pop()`。
+
+- 新增 `myp_exception_get_depth()` / `myp_exception_pop_to(base)`；仅对含 try 的函数在
+  entry 保存调用前 handler 深度，并在每个真实 `ret` 前恢复到该深度。
+- 函数级基线同时覆盖嵌套 try、catch 内 return，以及 finally 转发后的最终 return；
+  正常路径已 pop 时 `pop_to(base)` 保持幂等。
+- C++ oracle 在首次生成 try 时将基线捕获懒插入 entry；selfhost 用 `stmtHasTry` 仅为
+  含 try 的函数发射入口和返回开销。
+- 回归：`tests/@test/exception_propagation.myp` 连续 100 次跨函数 try 内提前 return，
+  随后新建 handler 抛出并捕获；修复前稳定跳入悬垂 jmp_buf 段错误，修复后双编译器
+  121/121 断言通过；bootstrap stage2/stage3 MD5 一致。
+
 ### v3.15.205 — selfhost struct 值拷贝/入槽 string 字段 ARC retain（BUG-143，struct_arc_string_fields 转绿）
 
 **非破坏性**（selfhost `codegen.myp`）。mypagent 长 LLM 回答偶发 `__longjmp` 段错误

@@ -386,6 +386,38 @@ class CodeGen {
             return 0;
         }
 
+        // 函数体是否含 try：BUG-144 的 handler 深度基线仅在需要时发射。
+        int stmtHasTry(AstStmt s) {
+            if (s == null) return 0;
+            string k = s.kind();
+            if (k == "Try") return 1;
+            if (k == "Block") {
+                for (int i = 0; i < s.bodyStmts().size(); i = i + 1)
+                    if (stmtHasTry(s.bodyStmts().get(i)) != 0) return 1;
+                return 0;
+            }
+            if (k == "If") {
+                if (stmtHasTry(s.then()) != 0) return 1;
+                return stmtHasTry(s.elseBranch());
+            }
+            if (k == "While" || k == "For" || k == "ForIn")
+                return stmtHasTry(s.body());
+            if (k == "Match") {
+                for (int i = 0; i < s.arms().size(); i = i + 1)
+                    if (stmtHasTry(s.arms().get(i).body()) != 0) return 1;
+            }
+            return 0;
+        }
+
+        // 正常函数返回前撤销本函数仍残留的 try handler。正常离开 try 的路径已经
+        // pop，pop_to(base) 是幂等的；try 内提前 return 则由此补齐漏掉的 pop。
+        void emitHandlerDepthRestore() {
+            if (Str.len(fnHandlerBase_) == 0) return;
+            string d = newTmp();
+            sb_.append("  " + d + " = load i32, ptr " + fnHandlerBase_ + "\n");
+            sb_.append("  call void @myp_exception_pop_to(i32 " + d + ")\n");
+        }
+
         // 同 TU、名称+参数数量唯一的顶层函数参数摘要。推导摘要期间遇到的
         // 调用仍按逃逸处理，避免递归/互递归误判。
         int escCallParamNoEscape(AstExpr call, int argIdx) {
@@ -1066,6 +1098,13 @@ class CodeGen {
                 }
             }
             return null;
+        }
+
+        AstExpr constDeclInit(AstFunction f) {
+            if (f == null || f.body() == null || f.body().bodyStmts().size() == 0) return null;
+            AstStmt ret = f.body().bodyStmts().get(0);
+            if (ret.kind() != "Return") return null;
+            return ret.value();
         }
 
         int isArcType(AstType t) {
@@ -1983,6 +2022,8 @@ class CodeGen {
                 if (f.typeParams().size() != 0 && f.genericInst() == 0) continue;
                 // @macro 过程宏：仅编译期求值，不发射运行时函数（同 C++）
                 if (f.isMacro() != 0) continue;
+                // 顶层 const 是值；引用点直接展开其初始化表达式，不发射同名函数。
+                if (f.constDecl() != 0) continue;
                 // test 模式：跳过用户 main（测试运行器生成新的 main，同 C++）
                 if (testMode_ != 0 && f.name() == "main") continue;
                 int dup = 0;
@@ -4699,6 +4740,7 @@ class CodeGen {
             finallyStack_ = new ArrayList<FinallyCtx>();
             finallyRetSlot_ = "";
             tryArcBases_ = new ArrayList<int>();
+            fnHandlerBase_ = "";
             threadHandles_ = new ArrayList<string>();
             curFnScope_ = 0;
             blockCounter_ = 0;
@@ -4749,6 +4791,13 @@ class CodeGen {
             }
             sb_.append(linkage + " " + retLt + " @" + fn + "(" + ps.toString() + ") {\n");
             sb_.append("entry:\n");
+            if (stmtHasTry(body) != 0) {
+                fnHandlerBase_ = "%handler_depth_base";
+                sb_.append("  " + fnHandlerBase_ + " = alloca i32, align 4\n");
+                string hd = newTmp();
+                sb_.append("  " + hd + " = call i32 @myp_exception_get_depth()\n");
+                sb_.append("  store i32 " + hd + ", ptr " + fnHandlerBase_ + ", align 4\n");
+            }
             // finally+return 的返回值槽（entry 块 alloca，支配 finally 分发块；
             // 非 void 函数预分配，C++ finally_ret_slot_）。
             if (retLt != "void") {
@@ -4925,6 +4974,7 @@ class CodeGen {
                 emitRegionExit();
                 // 函数末释放全部仍存活的 ARC 局部（C++ arcReleaseAllScopes）。
                 releaseArcSlots();
+                emitHandlerDepthRestore();
                 if (retLt == "void") {
                     sb_.append("  ret void\n");
                 } else {
@@ -8425,11 +8475,13 @@ class CodeGen {
                     emitRegionExit();
                     flushTemps();
                     releaseArcSlots();
+                    emitHandlerDepthRestore();
                     sb_.append("  ret " + curRetLt_ + " " + v + "\n");
                 } else {
                     emitRegionExit();
                     flushTemps();
                     releaseArcSlots();
+                    emitHandlerDepthRestore();
                     sb_.append("  ret void\n");
                 }
                 terminated_ = 1;
@@ -9194,9 +9246,11 @@ class CodeGen {
                     } else if (Str.len(finallyRetSlot_) != 0) {
                         string rv = newTmp();
                         sb_.append("  " + rv + " = load " + curRetLt_ + ", ptr " + finallyRetSlot_ + "\n");
+                        emitHandlerDepthRestore();
                         sb_.append("  ret " + curRetLt_ + " " + rv + "\n");
                         terminated_ = 1;
                     } else if (curRetLt_ == "void") {
+                        emitHandlerDepthRestore();
                         sb_.append("  ret void\n");
                         terminated_ = 1;
                     } else {
@@ -9674,17 +9728,11 @@ class CodeGen {
                         return p1s;
                     }
                 }
-                // ★ BUG-050：裸 const 标识符（`const int CAP = 1024;` 是零参
-                // const-decl 函数）→ 隐式零参调用 @CAP()（折叠为常量值）。sema
-                // 已把裸引用解析为返回类型；此处发射调用（同 C++ 对 const-decl
-                // 的常量折叠）。不能走变量 load（CAP 不是变量）。
+                // 顶层 const 是值而非函数：直接展开已折叠的初始化表达式。
                 AstFunction cdf2 = findConstDeclFuncCodegen(nm);
                 if (cdf2 != null) {
-                    string crt = IrEmit.llvmType(cdf2.ret());
-                    string ct2 = newTmp();
-                    sb_.append("  " + ct2 + " = call " + crt + " @" + nm + "()\n");
-                    if (crt == "ptr") addFreshTemp(ct2);
-                    return ct2;
+                    AstExpr ci = constDeclInit(cdf2);
+                    if (ci != null) return genExpr(ci);
                 }
                 if (hasVar(nm) != 0) {
                     string lt = varType(nm);
@@ -11762,6 +11810,8 @@ class CodeGen {
                     if (isFixedArrayLt(ft) != 0) return "ptr";
                     return ft;
                 }
+                AstFunction cdf = findConstDeclFuncCodegen(nm);
+                if (cdf != null) return IrEmit.llvmType(cdf.ret());
                 return varType(nm);
             }
             if (k == "Member") {
@@ -12918,6 +12968,7 @@ class CodeGen {
         ArrayList<int> localIsArc() { return localIsArc_; }
         ArrayList<FinallyCtx> finallyStack() { return finallyStack_; }
         string finallyRetSlot() { return finallyRetSlot_; }
+        string fnHandlerBase() { return fnHandlerBase_; }
         ArrayList<int> tryArcBases() { return tryArcBases_; }
         ArrayList<string> threadHandles() { return threadHandles_; }
         StringBuilder mappingInitCalls() { return mappingInitCalls_; }
@@ -12970,6 +13021,7 @@ class CodeGen {
         ArrayList<int> localIsArc_;
         ArrayList<FinallyCtx> finallyStack_;
         string finallyRetSlot_;
+        string fnHandlerBase_;   // BUG-144: 函数入口 exception handler depth 槽
         ArrayList<int> tryArcBases_;
         ArrayList<string> threadHandles_;
         StringBuilder mappingInitCalls_;

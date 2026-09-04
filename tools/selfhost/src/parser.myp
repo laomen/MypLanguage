@@ -569,7 +569,7 @@ class Parser {
             return f;
         }
 
-        // 顶层 const：const Type name = expr;  → 伪函数（return expr）。
+        // 顶层 const：暂借 AstFunction 容纳类型与初始化式，语义/codegen 均为值。
         AstFunction parseConstDecl() {
             AstFunction f = new AstFunction();
             advance(); // const

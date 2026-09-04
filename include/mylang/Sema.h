@@ -235,7 +235,6 @@ private:
     bool in_main_function_ = false;
     // BUG-050: 正在解析调用表达式 `f(...)` 的 callee —— 裸 const 标识符折叠仅对
     // 非 callee 引用生效（`CAP()` 仍按可调用 Function 解析，不被折叠成值类型）。
-    bool in_call_callee_ = false;
     int in_catch_depth_ = 0;         // >0 inside a catch block (for `throw;` rethrow)
     bool in_coro_method_ = false;    // true while checking an @coro action body (await allowed)
     // Current action name (for the @coro recursive-self-call diagnostic).

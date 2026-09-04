@@ -14,16 +14,16 @@ import test;
 const int FIB10 = fib(10);        // 55
 const int FIB20 = fib(20);        // 6765
 const double HALF = 10.0 / 4;     // 2.5
-const bool BIG = FIB10() > 50;
-const int T5 = triple(FIB10());   // 165
+const bool BIG = FIB10 > 50;
+const int T5 = triple(FIB10);     // 165
 const long BIGL = 100000L * 10L;  // 1000000
 
 @test void test_eval() {
-    Test.assertEq(FIB10(), 55, "FIB10");
-    Test.assertEq(FIB20(), 6765, "FIB20");
-    Test.assertFloatEq(HALF(), 2.5, 1e-9, "HALF");
-    Test.assertEq(BIG() ? 1 : 0, 1, "BIG");
-    Test.assertEq(T5(), 165, "T5");
-    Test.assertEq(BIGL(), 1000000, "BIGL");
+    Test.assertEq(FIB10, 55, "FIB10");
+    Test.assertEq(FIB20, 6765, "FIB20");
+    Test.assertFloatEq(HALF, 2.5, 1e-9, "HALF");
+    Test.assertEq(BIG ? 1 : 0, 1, "BIG");
+    Test.assertEq(T5, 165, "T5");
+    Test.assertEq(BIGL, 1000000, "BIGL");
     Test.report("test_eval", true);
 }

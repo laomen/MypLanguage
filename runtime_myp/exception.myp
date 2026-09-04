@@ -115,6 +115,15 @@ void myp_exception_push(long jmpbuf) {
 void myp_exception_pop() {
     if (Exc.depth > 0) Exc.depth = Exc.depth - 1;
 }
+
+// BUG-144: handler depth 快照/恢复（镜像 C runtime）。函数入口记录 depth 基线，
+// 正常返回路径统一弹回（try 内 return 直穿出跳过 pop → 泄漏 → depth
+// 撞 64 → 栈顶恒悬垂 jmp_buf → 后续 throw longjmp 跳垃圾）。
+int myp_exception_get_depth() { return Exc.depth; }
+void myp_exception_pop_to(int base) {
+    if (base < 0) base = 0;
+    while (Exc.depth > base) Exc.depth = Exc.depth - 1;
+}
 long myp_exception_get_jmpbuf() {
     if (Exc.depth > 0) {
         return __myp_mem_load_i64(Exc.handlerBufs + (Exc.depth - 1) * 8);

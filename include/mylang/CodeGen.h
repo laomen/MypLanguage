@@ -76,6 +76,12 @@ private:
 
     // ---- Current function ----
     llvm::Function* current_function_ = nullptr;
+    // BUG-144: 当前函数入口 handler 深度基线（entry alloca 槽）。函数含 try 时
+    // 在入口记录 get_depth()，显式 return 前 pop_to 弹回 —— try 内 return
+    // 直穿（无 finally）跳过块尾 pop → handler 栈泄漏 → depth 撞 64 →
+    // 栈顶恒悬垂 jmp_buf → 后续 throw longjmp 跳垃圾。函数级恢复天然覆盖任意
+    // 嵌套 return/finally 转发后的返回。
+    llvm::Value* current_fn_handler_base_ = nullptr;
 
     // ---- Loop context (for break/continue) ----
     struct LoopContext {
@@ -416,6 +422,8 @@ private:
     llvm::Function* runtime_get_error_ = nullptr;
     llvm::Function* runtime_exception_push_ = nullptr;
     llvm::Function* runtime_exception_pop_ = nullptr;
+    llvm::Function* runtime_exception_get_depth_ = nullptr;   // BUG-144
+    llvm::Function* runtime_exception_pop_to_ = nullptr;      // BUG-144
     llvm::Function* runtime_exception_get_jmpbuf_ = nullptr;
     llvm::Function* runtime_throw_object_ = nullptr;
     llvm::Function* runtime_exception_get_type_ = nullptr;

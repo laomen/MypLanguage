@@ -3647,6 +3647,20 @@ void myp_exception_pop(void) {
     if (myp_handler_depth > 0) myp_handler_depth--;
 }
 
+// Handler depth 快照（函数入口记录用）与恢复（函数正常返回前弹回入口深度）。
+// BUG-144: try 块体内 return 直穿出（无 finally）时会跳过 try
+// 正常结束的 pop → handler 栈泄漏（长期运行 depth 撞 64 上限 → 栈顶 handler 恒为
+// 早已返回帧的悬垂 jmp_buf → 后续 throw longjmp 跳垃圾地址段错误）。修复：函数
+// 入口记录 depth 基线，正常返回路径统一 pop 到基线（异常路径已由每层 rethrow 正确
+// pop，不需此恢复）。
+int myp_exception_get_depth(void) {
+    return myp_handler_depth;
+}
+void myp_exception_pop_to(int base) {
+    if (base < 0) base = 0;
+    while (myp_handler_depth > base) myp_handler_depth--;
+}
+
 // IR-level optimization barrier for the exception machinery (§五-3):
 // codegen passes the ADDRESS of each try-inner ARC slot to this no-op so LLVM
 // treats the slot as escaped memory. Without it, the -O pipeline sees the

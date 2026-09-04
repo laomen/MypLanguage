@@ -8,9 +8,10 @@ const bool EQ = ("ab" + "c") == "abc";  // 编译期字符串相等
 const string C = greet("myp");          // "hi myp"
 
 @test void test_const_string() {
-    Test.assertStrEq(A(), "hi x", "A");
-    Test.assertStrEq(B(), "abc", "B");
-    Test.assertStrEq(C(), "hi myp", "C");
-    Test.assert(EQ(), "EQ");
+    string a = A;
+    Test.assertStrEq(a, "hi x", "A");
+    Test.assertStrEq(B, "abc", "B");
+    Test.assertStrEq(C, "hi myp", "C");
+    Test.assert(EQ, "EQ");
     Test.report("test_const_string", true);
 }

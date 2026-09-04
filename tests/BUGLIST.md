@@ -154,6 +154,8 @@
 | BUG-141 | 🟩 | **selfhost @coro 参数未 ARC 拥有**（BUG-002 镜像缺失）——@coro 参数当借用，调用方释放后 parked 协程悬垂 → 对象被 free、块被后续 new 复用 → 发错目标/值泄漏（coro_incremental_spawn 输出 15；oracle codegen 同 runtime 全过） | 回归 `tests/bugs/coro_incremental_spawn.myp`（修复后 GREEN） |
 | BUG-142 | 🟩 | **接口方法返回关联类型 + 字符串拼接 → opt/llc 类型错**（`"x=" + c.getVal()`，`Container{type Item; Item getVal();}` → exprLlvmType 误报 ptr，实际 genExpr 发 i32/double → `myp_strcat(ptr, i32)`）；单/多文件均可复现，非跨文件特有 | 回归 `tests/bugs/b142_assoc_concat.myp`（Item=int/double 拼接 + 链式，3 断言） |
 | BUG-143 | 🟩 | **selfhost struct 值拷贝/入槽 string 字段 ARC retain 缺失**（`HttpsResult` struct 含 string 字段跨 parseResponse→request→postJson 多层值传递，body 字段 +1 在值拷贝中丢失 → 长 body 悬垂 → UAF/__longjmp；判别 `Res r2 = r; r.body=""; return r2;` → Str.len 20000→20032）；oracle src/codegen emitStructFieldsValue 本齐全，selfhost gap | 回归 `tests/struct_arc_string_fields/test.myp`（拷贝+drop/多层返回/入属性，毒化复用判别） |
+| BUG-144 | 🟩 | **try 内 return 绕过 handler pop**（每次调用泄漏一个已返回栈帧的 jmp_buf；depth 达 64 后新 handler 无法入栈，后续 throw longjmp 到悬垂帧 → `__longjmp` 段错误） | 回归 `tests/@test/exception_propagation.myp` `test_return_handler_depth`（100 次提前 return 后抛出并捕获） |
+| BUG-145 | 🟩 | **顶层 const 被 codegen 成同名零参函数，selfhost 裸引用 LLVM 类型回落 i32**（`const string A=...; string s=A;` 实际 `call ptr @A()`，bool const 产生 `call i1` 后按 i32 转换的非法 IR） | 回归 `tests/@test/const_string.myp`、`tests/@test/eval.myp`（裸值引用）+ `tests/negative/const_call.myp`（调用拒绝） |
 
 ---
 

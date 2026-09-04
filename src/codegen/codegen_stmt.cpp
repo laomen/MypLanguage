@@ -1344,11 +1344,29 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val, const Expr* src) {
             // release already ran before myp_free_all().
             if (!in_main_)
                 arcReleaseAllScopes();
+            auto* handler_base = llvm::dyn_cast_or_null<llvm::AllocaInst>(
+                current_fn_handler_base_);
+            if (handler_base && handler_base->getFunction() == current_function_ &&
+                runtime_exception_pop_to_) {
+                auto* base = builder_.CreateLoad(llvm::Type::getInt32Ty(ctx_),
+                    handler_base, "handler_depth_base");
+                builder_.CreateCall(runtime_exception_pop_to_->getFunctionType(),
+                    runtime_exception_pop_to_, {base});
+            }
             builder_.CreateRet(ret_val);
         } else {
             // Void return: release local slots (epilogue).
             if (!in_main_)
                 arcReleaseAllScopes();
+            auto* handler_base = llvm::dyn_cast_or_null<llvm::AllocaInst>(
+                current_fn_handler_base_);
+            if (handler_base && handler_base->getFunction() == current_function_ &&
+                runtime_exception_pop_to_) {
+                auto* base = builder_.CreateLoad(llvm::Type::getInt32Ty(ctx_),
+                    handler_base, "handler_depth_base");
+                builder_.CreateCall(runtime_exception_pop_to_->getFunctionType(),
+                    runtime_exception_pop_to_, {base});
+            }
             llvm::Type* rt = current_function_->getReturnType();
             if (rt->isVoidTy())
                 builder_.CreateRetVoid();
@@ -2697,6 +2715,22 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
     auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
     auto* i8_ty = llvm::Type::getInt8Ty(ctx_);
+
+    // BUG-144: a return from inside try bypasses the normal handler pop. Capture
+    // this function's incoming handler depth once in its entry block, so every
+    // real return can discard handlers belonging to this function. The alloca's
+    // parent identifies a stale slot without reset plumbing in every generator.
+    auto* handler_base = llvm::dyn_cast_or_null<llvm::AllocaInst>(current_fn_handler_base_);
+    if (!handler_base || handler_base->getFunction() != func) {
+        handler_base = createEntryBlockAlloca(func, i32_ty, "handler_depth_base");
+        current_fn_handler_base_ = handler_base;
+        llvm::IRBuilder<> entry_builder(ctx_);
+        entry_builder.SetInsertPoint(handler_base->getParent(),
+            std::next(handler_base->getIterator()));
+        auto* depth = entry_builder.CreateCall(runtime_exception_get_depth_->getFunctionType(),
+            runtime_exception_get_depth_, {}, "handler_depth_entry");
+        entry_builder.CreateStore(depth, handler_base);
+    }
 
     // Per-try jmp_buf, allocated in the entry block so it stays live across the
     // longjmp back to the setjmp (fixes nested tries / cross-function throws).

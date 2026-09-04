@@ -770,7 +770,7 @@ class LoadedSet {
             }
             string arg = Args.get(1);
             if (arg == "--version") {
-                Console.writeLine("MYP Self-Hosted Compiler v3.15.205");
+                Console.writeLine("MYP Self-Hosted Compiler v3.15.207");
                 return 0;
             }
             if (arg == "--help" || arg == "-h") {

@@ -37,6 +37,12 @@ int finRet() {
     try { return 7; } finally { FinOrder.seq = FinOrder.seq + "R;"; }
 }
 
+// BUG-144：无 finally 的 try 内 return 曾绕过 handler pop。
+int tryEarlyReturn() {
+    try { return 1; }
+    catch (e) { return 2; }
+}
+
 // —— 1) 多层跨函数传播：消息一次到位、中间层不吞 ——
 @test void test_multi_level() {
     string c = "";
@@ -152,7 +158,21 @@ int finRet() {
     Test.report("test_return_finally", true);
 }
 
-// —— 9) continue / break 时 finally 仍执行 ——
+// —— 9) try 内提前 return 不得泄漏 handler ——
+@test void test_return_handler_depth() {
+    // 超过运行时 handler 栈旧上限 64；修复前后续 throw 会 longjmp 到已返回栈帧。
+    for (int i = 0; i < 100; i = i + 1)
+        Test.assertEq(tryEarlyReturn(), 1, "try return");
+    int caught = 0;
+    try { throw "after-return"; }
+    catch (string s) {
+        if (s == "after-return") caught = 1;
+    }
+    Test.assertEq(caught, 1, "handler stack restored after return");
+    Test.report("test_return_handler_depth", true);
+}
+
+// —— 10) continue / break 时 finally 仍执行 ——
 @test void test_break_continue_finally() {
     string s = "";
     int i = 0;

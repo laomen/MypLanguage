@@ -91,7 +91,7 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
             }
         } else if (match(TokenKind::Keyword_const)) {
             // File-level const: const Type name = value;
-            // Treat as function returning the value so sema/codegen handles it
+            // FuncDecl is an AST container only; sema/codegen expose a value.
             TypeNode ct = parseType();
             std::string cn = parseIdentifier("expected constant name");
             consume(TokenKind::Equal, "expected '=' in const declaration");
