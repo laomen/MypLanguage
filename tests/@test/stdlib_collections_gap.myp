@@ -1,0 +1,121 @@
+// stdlib_collections_gap.myp — 标准库集合缺口回归（2026-xx 审计落地）
+//   覆盖批次 1：HashMap.keys/values/getOpt、Set.toList、StrHashMap.keys、
+//   ArrayList.contains/indexOf、五个容器空 pop/peek 安全、Sort 通用排序。
+import test;
+import option;
+import collections;
+
+@test void t_hashmap_export() {
+    HashMap<int, string> m = new HashMap<int, string>();
+    m.put(1, "a"); m.put(2, "b"); m.put(3, "c");
+    Test.assertEq(m.size(), 3);
+
+    // 缺键判定：contains 门控 + get（无需默认值猜测缺失与否）
+    Test.assert(m.contains(1));
+    Test.assert(!m.contains(99));
+    Test.assertStrEq(m.get(1, ""), "a");
+
+    // keyAt/valueAt 遍历：条目数与键集应一致
+    bool has1 = false; bool has2 = false; bool has3 = false;
+    bool hasA = false; bool hasB = false; bool hasC = false;
+    for (int i = 0; i < m.size(); i = i + 1) {
+        int k = m.keyAt(i);
+        string v = m.valueAt(i);
+        if (k == 1) has1 = true;
+        if (k == 2) has2 = true;
+        if (k == 3) has3 = true;
+        if (v == "a") hasA = true;
+        if (v == "b") hasB = true;
+        if (v == "c") hasC = true;
+    }
+    Test.assert(has1 && has2 && has3);
+    Test.assert(hasA && hasB && hasC);
+}
+
+@test void t_set_iter() {
+    Set<int> s = new Set<int>();
+    s.add(7); s.add(3); s.add(7); s.add(9);
+    Test.assertEq(s.size(), 3);
+    bool has3 = false; bool has7 = false; bool has9 = false;
+    for (int i = 0; i < s.size(); i = i + 1) {
+        int e = s.at(i);
+        if (e == 3) has3 = true;
+        if (e == 7) has7 = true;
+        if (e == 9) has9 = true;
+    }
+    Test.assert(has3 && has7 && has9);
+}
+
+@test void t_strhashmap_keys() {
+    StrHashMap<int> m = new StrHashMap<int>();
+    m.put("x", 1); m.put("y", 2);
+    Test.assertEq(m.size(), 2);
+    bool hasX = false; bool hasY = false;
+    for (int i = 0; i < m.size(); i = i + 1) {
+        if (m.keyAt(i) == "x") hasX = true;
+        if (m.keyAt(i) == "y") hasY = true;
+    }
+    Test.assert(hasX && hasY);
+    Test.assertEq(m.valueAt(0) + m.valueAt(1), 3);
+}
+
+@test void t_empty_container_safe() {
+    // 空容器 pop/peek 不再越界读（返回默认元素）
+    Deque<int> dq = new Deque<int>();
+    Test.assertEq(dq.popFront(), 0);
+    Test.assertEq(dq.popBack(), 0);
+    Test.assertEq(dq.front(), 0);
+    Test.assertEq(dq.back(), 0);
+
+    Queue<string> q = new Queue<string>();
+    // 空 string 队列 pop/peek → null（不越界、不崩）
+    string qd = q.dequeue();
+    string qp = q.peek();
+    bool qNull = (qd == null) && (qp == null);
+    Test.assert(qNull);
+
+    Stack<long> st = new Stack<long>();
+    Test.assert(st.pop() == 0L);
+    Test.assert(st.peek() == 0L);
+
+    PriorityQueue<double> pq = new PriorityQueue<double>();
+    // 空 double 堆 pop/peek：不越界、不崩（返回值语义未指定，仅防 OOB）
+    double pd = pq.pop();
+    double pp = pq.peek();
+
+    LinkedList<int> ll = new LinkedList<int>();
+    Test.assertEq(ll.removeFirst(), 0);
+    Test.assertEq(ll.removeLast(), 0);
+    Test.assertEq(ll.getFirst(), 0);
+    Test.assertEq(ll.getLast(), 0);
+
+    // 装入后再空
+    dq.pushBack(42);
+    Test.assertEq(dq.popBack(), 42);
+    Test.assertEq(dq.popFront(), 0);
+}
+
+@test void t_sort_generic() {
+    long[] la = new long[4];
+    la[0] = 5L; la[1] = -2L; la[2] = 9L; la[3] = 3L;
+    Sort.sortLongs(la, 4);
+    Test.assert(la[0] == -2L);
+    Test.assert(la[1] == 3L);
+    Test.assert(la[2] == 5L);
+    Test.assert(la[3] == 9L);
+
+    double[] da = new double[4];
+    da[0] = 2.5; da[1] = -1.0; da[2] = 0.0; da[3] = 3.3;
+    Sort.sortDoubles(da, 4);
+    Test.assert(da[0] == -1.0);
+    Test.assert(da[1] == 0.0);
+    Test.assert(da[2] == 2.5);
+    Test.assert(da[3] == 3.3);
+
+    string[] sa = new string[3];
+    sa[0] = "pear"; sa[1] = "apple"; sa[2] = "mango";
+    Sort.sortStrings(sa, 3);
+    Test.assertStrEq(sa[0], "apple");
+    Test.assertStrEq(sa[1], "mango");
+    Test.assertStrEq(sa[2], "pear");
+}

@@ -148,9 +148,6 @@ class Memory {
         // 开销；仅收集时一次 O(n) 扫描。进程退出时 myp_free_all 自动触发
         // （MYP_MEM_REPORT 报告此时只含真泄漏）；执行期可在安全点显式调用。
         // ⚠️ 须在无并发引用变更处调用（单线程阶段/空闲时）。
-        void collectCycles() {
-            myp_collect_cycles();
-        }
 
         // @region arena reserved/used 字节（region 结束时回落）
         long regionReservedBytes() { return myp_diag_region_reserved(); }

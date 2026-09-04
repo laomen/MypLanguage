@@ -99,6 +99,31 @@ class File {
             __myp_io_select(handle_);
             return __myp_io_seek(offset, whence);
         }
+        // ---- 便捷定位（封装 seek，返回 0 成功）----
+        int seekTo(int pos) {
+            __myp_io_select(handle_);
+            return __myp_io_seek(pos, 0);
+        }
+        int toStart() {
+            __myp_io_select(handle_);
+            return __myp_io_seek(0, 0);
+        }
+        int toEnd() {
+            __myp_io_select(handle_);
+            return __myp_io_seek(0, 2);
+        }
+        int skip(int n) {
+            __myp_io_select(handle_);
+            return __myp_io_seek(n, 1);
+        }
+        // 追加写：先移到文件尾再写。mode="a"/"ab" 时 fopen 本就恒在尾写；
+        // 对 "r+"/"w+" 打开的文件，本方法保证写到文件尾（而非当前光标处）。
+        int append(string text) {
+            __myp_io_select(handle_);
+            __myp_io_seek(0, 2);
+            __myp_io_write(text);
+            return 0;
+        }
     property:
         string path;
         bool isOpen;

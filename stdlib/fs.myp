@@ -90,10 +90,10 @@ class Path {
         long modifiedTime() { return myp_fs_modified_time(path_); }
         string toString() { return path_; }
 
-        // 列出当前路径下的文件
+        // 列出当前路径下的文件（动态数组，只含实际条目）
         string[] listDir() {
             int n = myp_fs_list_count(path_);
-            string[1024] parts;
+            string[] parts = new string[n];
             for (int i = 0; i < n; i = i + 1) {
                 parts[i] = myp_fs_list_get(path_, i);
             }

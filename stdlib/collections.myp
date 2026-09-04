@@ -128,6 +128,32 @@ class HashMap<K, V> {
             return false;
         }
 
+        // 迭代：keyAt(i)/valueAt(i) 按哈希桶序给出第 i 个已占条目
+        // （0 <= i < size()）。配合 size() 可遍历全部键值对。
+        K keyAt(int idx) {
+            if (occupied_ == null) { K z; return z; }
+            int seen = 0;
+            for (int i = 0; i < cap_; i = i + 1) {
+                if (occupied_[i]) {
+                    if (seen == idx) return keys_[i];
+                    seen = seen + 1;
+                }
+            }
+            K z; return z;
+        }
+
+        V valueAt(int idx) {
+            if (occupied_ == null) { V z; return z; }
+            int seen = 0;
+            for (int i = 0; i < cap_; i = i + 1) {
+                if (occupied_[i]) {
+                    if (seen == idx) return values_[i];
+                    seen = seen + 1;
+                }
+            }
+            V z; return z;
+        }
+
         void remove(K key) {
             if (occupied_ == null) return;
             int idx = key % cap_;
@@ -280,6 +306,19 @@ class Set<T> {
             for (int i = 0; i < cap_; i = i + 1) occupied_[i] = false;
         }
 
+        // 迭代：at(i) 按哈希桶序给出第 i 个已含元素（0 <= i < size()）。
+        T at(int idx) {
+            if (occupied_ == null) { T z; return z; }
+            int seen = 0;
+            for (int i = 0; i < cap_; i = i + 1) {
+                if (occupied_[i]) {
+                    if (seen == idx) return data_[i];
+                    seen = seen + 1;
+                }
+            }
+            T z; return z;
+        }
+
     function:
         void init(int n) {
             cap_ = n;
@@ -338,29 +377,35 @@ class Deque<T> {
             cnt_ = cnt_ + 1;
         }
 
-        // 从头部移除并返回
+        // 从头部移除并返回（空容器 → 返回默认元素）
         T popFront() {
-            if (cnt_ <= 0) return data_[0];  // empty
+            if (cnt_ <= 0) { T z; return z; }  // empty
             T val = data_[head_];
             head_ = (head_ + 1) % cap_;
             cnt_ = cnt_ - 1;
             return val;
         }
 
-        // 从尾部移除并返回
+        // 从尾部移除并返回（空容器 → 返回默认元素）
         T popBack() {
-            if (cnt_ <= 0) return data_[0];  // empty
+            if (cnt_ <= 0) { T z; return z; }  // empty
             tail_ = (tail_ - 1 + cap_) % cap_;
             T val = data_[tail_];
             cnt_ = cnt_ - 1;
             return val;
         }
 
-        // 查看头部元素（不移除）
-        T front() { return data_[head_]; }
+        // 查看头部元素（不移除；空容器 → 返回默认元素）
+        T front() {
+            if (cnt_ <= 0) { T z; return z; }  // empty
+            return data_[head_];
+        }
 
-        // 查看尾部元素（不移除）
-        T back() { return data_[(tail_ - 1 + cap_) % cap_]; }
+        // 查看尾部元素（不移除；空容器 → 返回默认元素）
+        T back() {
+            if (cnt_ <= 0) { T z; return z; }  // empty
+            return data_[(tail_ - 1 + cap_) % cap_];
+        }
 
         int size() { return cnt_; }
         bool isEmpty() { return cnt_ == 0; }
@@ -404,14 +449,18 @@ class Queue<T> {
         }
 
         T dequeue() {
-            if (cnt_ <= 0) return data_[0];
+            if (cnt_ <= 0) { T z; return z; }  // empty
             T val = data_[head_];
             head_ = (head_ + 1) % cap_;
             cnt_ = cnt_ - 1;
             return val;
         }
 
-        T peek() { return data_[head_]; }
+        // 查看队首（不移除；空队列 → 返回默认元素）
+        T peek() {
+            if (cnt_ <= 0) { T z; return z; }  // empty
+            return data_[head_];
+        }
         int size() { return cnt_; }
         bool isEmpty() { return cnt_ == 0; }
         void clear() {
@@ -453,12 +502,16 @@ class Stack<T> {
         }
 
         T pop() {
-            if (cnt_ <= 0) return data_[0];
+            if (cnt_ <= 0) { T z; return z; }  // empty
             cnt_ = cnt_ - 1;
             return data_[cnt_];
         }
 
-        T peek() { return data_[cnt_ - 1]; }
+        // 查看栈顶（不移除；空栈 → 返回默认元素）
+        T peek() {
+            if (cnt_ <= 0) { T z; return z; }  // empty
+            return data_[cnt_ - 1];
+        }
         int size() { return cnt_; }
         bool isEmpty() { return cnt_ == 0; }
         void clear() { cnt_ = 0; }
@@ -499,7 +552,7 @@ class PriorityQueue<T> {
         }
 
         T pop() {
-            if (cnt_ <= 0) return data_[0];
+            if (cnt_ <= 0) { T z; return z; }  // empty
             T result = data_[0];
             cnt_ = cnt_ - 1;
             data_[0] = data_[cnt_];
@@ -517,7 +570,11 @@ class PriorityQueue<T> {
             return result;
         }
 
-        T peek() { return data_[0]; }
+        // 查看堆顶（不移除；空堆 → 返回默认元素）
+        T peek() {
+            if (cnt_ <= 0) { T z; return z; }  // empty
+            return data_[0];
+        }
         int size() { return cnt_; }
         void clear() { cnt_ = 0; }
 
@@ -570,7 +627,7 @@ class LinkedList<T> {
 
         T removeFirst() {
             ensurePool();
-            if (cnt_ <= 0) return data_[0];
+            if (cnt_ <= 0) { T z; return z; }  // empty
             T val = data_[head_];
             int old = head_;
             head_ = next_[head_];
@@ -584,7 +641,7 @@ class LinkedList<T> {
 
         T removeLast() {
             ensurePool();
-            if (cnt_ <= 0) return data_[0];
+            if (cnt_ <= 0) { T z; return z; }  // empty
             T val = data_[tail_];
             int old = tail_;
             tail_ = prev_[tail_];
@@ -596,8 +653,18 @@ class LinkedList<T> {
             return val;
         }
 
-        T getFirst() { ensurePool(); return data_[head_]; }
-        T getLast() { ensurePool(); return data_[tail_]; }
+        // 查看首元素（不移除；空列表 → 返回默认元素）
+        T getFirst() {
+            ensurePool();
+            if (cnt_ <= 0) { T z; return z; }  // empty
+            return data_[head_];
+        }
+        // 查看末元素（不移除；空列表 → 返回默认元素）
+        T getLast() {
+            ensurePool();
+            if (cnt_ <= 0) { T z; return z; }  // empty
+            return data_[tail_];
+        }
         int size() { return cnt_; }
         void clear() {
             head_ = -1; tail_ = -1; cnt_ = 0;
@@ -732,6 +799,86 @@ class Sort {
                 int tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
             }
         }
+
+        // ---- 通用排序（原地快速排序，额外支持 long/double/string）----
+
+        void sortLongs(long[] arr, int n) { Sort.qsortLongs(arr, 0, n - 1); }
+
+        void qsortLongs(long[] arr, int lo, int hi) {
+            while (lo < hi) {
+                long pivot = arr[(lo + hi) / 2];
+                int i = lo;
+                int j = hi;
+                while (i <= j) {
+                    while (arr[i] < pivot) i = i + 1;
+                    while (arr[j] > pivot) j = j - 1;
+                    if (i <= j) {
+                        long tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+                        i = i + 1;
+                        j = j - 1;
+                    }
+                }
+                if (j - lo < hi - i) {
+                    Sort.qsortLongs(arr, lo, j);
+                    lo = i;
+                } else {
+                    Sort.qsortLongs(arr, i, hi);
+                    hi = j;
+                }
+            }
+        }
+
+        void sortDoubles(double[] arr, int n) { Sort.qsortDoubles(arr, 0, n - 1); }
+
+        void qsortDoubles(double[] arr, int lo, int hi) {
+            while (lo < hi) {
+                double pivot = arr[(lo + hi) / 2];
+                int i = lo;
+                int j = hi;
+                while (i <= j) {
+                    while (arr[i] < pivot) i = i + 1;
+                    while (arr[j] > pivot) j = j - 1;
+                    if (i <= j) {
+                        double tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+                        i = i + 1;
+                        j = j - 1;
+                    }
+                }
+                if (j - lo < hi - i) {
+                    Sort.qsortDoubles(arr, lo, j);
+                    lo = i;
+                } else {
+                    Sort.qsortDoubles(arr, i, hi);
+                    hi = j;
+                }
+            }
+        }
+
+        void sortStrings(string[] arr, int n) { Sort.qsortStrings(arr, 0, n - 1); }
+
+        void qsortStrings(string[] arr, int lo, int hi) {
+            while (lo < hi) {
+                string pivot = arr[(lo + hi) / 2];
+                int i = lo;
+                int j = hi;
+                while (i <= j) {
+                    while (arr[i] < pivot) i = i + 1;
+                    while (arr[j] > pivot) j = j - 1;
+                    if (i <= j) {
+                        string tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+                        i = i + 1;
+                        j = j - 1;
+                    }
+                }
+                if (j - lo < hi - i) {
+                    Sort.qsortStrings(arr, lo, j);
+                    lo = i;
+                } else {
+                    Sort.qsortStrings(arr, i, hi);
+                    hi = j;
+                }
+            }
+        }
 }
 
 
@@ -793,6 +940,32 @@ class StrHashMap<V> {
                 if (idx == start) return 0;
             }
             return 0;
+        }
+
+        // 迭代：keyAt(i)/valueAt(i) 按哈希桶序给出第 i 个已占条目
+        // （0 <= i < size()）。配合 size() 可遍历全部键值对。
+        string keyAt(int idx) {
+            if (occupied_ == null) return "";
+            int seen = 0;
+            for (int i = 0; i < cap_; i = i + 1) {
+                if (occupied_[i]) {
+                    if (seen == idx) return keys_[i];
+                    seen = seen + 1;
+                }
+            }
+            return "";
+        }
+
+        V valueAt(int idx) {
+            if (occupied_ == null) { V z; return z; }
+            int seen = 0;
+            for (int i = 0; i < cap_; i = i + 1) {
+                if (occupied_[i]) {
+                    if (seen == idx) return values_[i];
+                    seen = seen + 1;
+                }
+            }
+            V z; return z;
         }
 
         void remove(string key) {
