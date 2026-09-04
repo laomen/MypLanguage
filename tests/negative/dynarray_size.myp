@@ -1,0 +1,11 @@
+// EXPECT ERROR: dynamic array has no member
+// 动态数组 T[] 无运行时长度 API：.size()/.size/.length 应被编译器拒绝
+// （请用 slice<T>——slice 才有 .size()）。定长数组 T[N] 的 .size() 是编译期常量，
+// 见 tests/@test/fixed_array_size.myp。
+import env;
+
+int takeLen() {
+    int[] d = new int[4];
+    return d.size();
+}
+int main() { int n = takeLen(); return 0; }

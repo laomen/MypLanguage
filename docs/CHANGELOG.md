@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.210 — 固定数组 .size/.size() 返回编译期长度 N（BUG-148，selfhost）
+
+**非破坏性（selfhost sema+codegen）**。定长数组 `T[N]`（如 `int[4] a`）此前无长度
+API：`a.size()`/`a.size` 编译报错（无该成员 / void）。现支持 `.size` 与 `.size()` 属性/调用
+两形式返回编译期常量 N（与 slice 的 `.size()` 一致）：
+
+- sema：Member 属性与 Call 两分支对「定长数组表达式」放行（`fixedArrayLen`：局部/参数符号
+  arraySize、this.属性/裸属性、struct 变量.字段、函数返回定长数组）；动态数组 `T[]`
+  （arraySize=0）不拦截，维持「无运行时长度请用 slice<T>」报错。
+- codegen：Member/Call 两处发射常量 N（局部/参数从 varAstType.arraySize，this.属性从
+  propAstType，struct 字段从 memberFieldAstType）。
+- 回归 `tests/@test/fixed_array_size.myp`（局部/this.属性/struct 字段的 `.size`+`.size()`，
+  6 断言）+ 负测试 `tests/negative/dynarray_size.myp`（动态数组 `.size()` 干净拒绝，
+  selfhost 此前在 int 返回语境漏到 codegen 坏 IR，现已 sema 拦截）；bootstrap MD5 一致；
+  全量 469/469。
+
 ### v3.15.209 — struct 字段 slice 直接子访问走 slice 专路（BUG-146，selfhost+oracle）
 
 **非破坏性修复**（selfhost `codegen.myp` + oracle `codegen_expr.cpp`）。struct 含

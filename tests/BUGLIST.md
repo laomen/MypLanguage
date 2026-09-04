@@ -158,6 +158,7 @@
 | BUG-145 | 🟩 | **顶层 const 被 codegen 成同名零参函数，selfhost 裸引用 LLVM 类型回落 i32**（`const string A=...; string s=A;` 实际 `call ptr @A()`，bool const 产生 `call i1` 后按 i32 转换的非法 IR） | 回归 `tests/@test/const_string.myp`、`tests/@test/eval.myp`（裸值引用）+ `tests/negative/const_call.myp`（调用拒绝） |
 | BUG-146 | 🟩 | **struct 内 slice 字段「读后即子访问」codegen 错 IR**（struct 含 `slice<float> vec`，直接 `r.vec[i]`/`r.vec.size`/`arr[i].vec[j]` 读到垃圾（聚合 `{ptr,i64}` 首字节被当 ptr 解引用 → 1077936128）或 -O2 下 opt-21 崩 `'%t..' defined with type '{ ptr, i64 }' but expected 'ptr'` + `getelementptr %Object, ptr %t..`；机制：codegen 把 slice 字段 load 成 `{ptr,i64}` 后又当 ptr 二次 GEP，本应 extractvalue 取 data；与 ARC 无关，独立 slice 正常，先取局部 `slice sv=r.vec; sv[i]` 正常） | 回归 `tests/bugs/b146_struct_slice_field.myp`（判别 A–F：直接字段/数组元素/.size/写/函数返回 struct 直取/slice-of-struct 元素写，双编译器 12 断言） |
 | BUG-147 | 🟩 | **实例属性数组下标 this.buf[i] 元素类型丢失（selfhost+oracle 双缺口）**——显式 `this.<动态数组属性>[i]`：selfhost sema 落成 'array'、codegen 元素 LLVM 类型落成默认（ubyte[] 属性按 i32 GEP/store 步长 4、4 字节写 → str() 读 [41 00 00 00]→"A"，本地 ubyte[] 却 i8 正确；读/写均错）。裸属性名 buf[i]、静态类属性 S.buf[i]、局部、函数返回都正常——只漏 ThisExpr 对象形态 | 回归 `tests/@test/this_prop_array_bytes.myp`（ubyte[] 逐字节写/读、str() 往返、int[] 属性、bytes() 入属性；6 断言，双编译器） |
+| BUG-148 | 🟩 | **定长数组 T[N] 的 .size/.size() 缺失；动态数组 T[] 需保持拒绝**——定长数组调用/属性形式此前编译错（无该成员/void），现支持返回编译期长度 N；动态数组（无运行时长度，文档指引用 slice<T>）的 .size/.length/.data 编译器干净拒绝（曾漏到 codegen 生成坏 IR） | 回归 `tests/@test/fixed_array_size.myp`（局部/this.属性/struct 字段 `.size`+`.size()`，6 断言）+ 负测试 `tests/negative/dynarray_size.myp` |
 
 
 ---

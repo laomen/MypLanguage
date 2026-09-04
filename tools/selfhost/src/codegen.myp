@@ -1033,6 +1033,52 @@ class CodeGen {
             if (Str.startsWith(lt, "[") != 0) return 1;
             return 0;
         }
+        // 定长数组 LLVM 类型串 "[N x T]" → 长度 N（支持嵌套 "[N x [M x U]]" 取首层）。
+        int fixedArrayLenOfLt(string lt) {
+            if (Str.len(lt) < 3 || __myp_charcode(lt, 0) != 91) return -1;   // '['
+            long n = 0;
+            int started = 0;
+            int i = 1;
+            while (i < Str.len(lt)) {
+                int c = __myp_charcode(lt, i);
+                if (c >= 48 && c <= 57) { started = 1; n = n * 10 + (c - 48); i = i + 1; }
+                else break;
+            }
+            if (started == 0) return -1;
+            return int(n);
+        }
+        // 固定数组表达式的定长（.size/.length 内建发射用）：非定长返回 -1。
+        int fixedArrLenOfExpr(AstExpr arr) {
+            if (arr == null) return -1;
+            string lt = "";
+            if (arr.kind() == "Identifier") {
+                if (hasVar(arr.name()) != 0) {
+                    // 定长数组局部/参数：类型记在 AstType.arraySize（varType 是 ptr）
+                    AstType vt = varAstType(arr.name());
+                    if (vt != null && vt.arraySize() > 0) return vt.arraySize();
+                    lt = varType(arr.name());
+                } else if (hasMember(arr.name()) != 0) {
+                    AstType pt = propAstType(curClass_, arr.name());
+                    if (pt != null && pt.arraySize() > 0) return pt.arraySize();
+                    lt = propType(curClass_, arr.name());
+                }
+            } else if (arr.kind() == "Member") {
+                // struct 字段 / 类属性（含 this.）定长数组 → 从字段 AstType 取 arraySize
+                AstExpr base = arr.array();
+                string fname = arr.memberName();
+                AstType fa = null;
+                if (base != null && base.kind() == "This") {
+                    if (Str.len(curClass_) != 0) fa = propAstType(curClass_, fname);
+                } else if (base != null) {
+                    fa = memberFieldAstType(arr);
+                }
+                if (fa != null && fa.arraySize() > 0) return fa.arraySize();
+                lt = memberFieldType(arr);
+            } else {
+                lt = exprLlvmType(arr);
+            }
+            return fixedArrayLenOfLt(lt);
+        }
 
         // ---- 元组辅助 ----
         // 全数字字符串（元组字段名 "0"/"1"/...）。
@@ -10747,6 +10793,11 @@ class CodeGen {
                         return data;
                     }
                 }
+                // 固定数组 .size/.length → 编译期长度常量（"[N x T]" 内建）
+                if (mname == "size" || mname == "length") {
+                    int fN = fixedArrLenOfExpr(e.array());
+                    if (fN > 0) return "" + fN;
+                }
                 // bitfield 字段读取：f.read / this.f.read / fa[0].read → 位提取
                 if (mObj != null && Str.len(e.resolvedClass()) != 0 && isBitfieldName(e.resolvedClass()) != 0) {
                     string bfName = e.resolvedClass();
@@ -11500,6 +11551,11 @@ class CodeGen {
                             sb_.append("  " + data + " = extractvalue { ptr, i64 } " + sv + ", 0\n");
                             return data;
                         }
+                    }
+                    // 固定数组 .size()/.length() → 编译期长度常量（"[N x T]" 内建）
+                    if (mname == "size" || mname == "length") {
+                        int fN = fixedArrLenOfExpr(obj);
+                        if (fN > 0) return "" + fN;
                     }
                     // 枚举变体构造：Option.Some(42) / Color.Red（无参）
                     if (obj != null && obj.kind() == "Identifier" && isEnumName(obj.name()) != 0) {

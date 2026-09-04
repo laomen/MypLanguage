@@ -3045,6 +3045,65 @@ class Sema {
             }
             return null;
         }
+        // 定长数组 AstType 的长度（T[N] → N；非定长返回 -1）。
+        int fixedArrayLenOfAst(AstType t) {
+            if (t == null) return -1;
+            if (t.arraySize() > 0) return t.arraySize();
+            return -1;
+        }
+        // 是否为动态数组表达式（T[]，arraySize==0）。定长/其它返回 0。
+        int isDynArrayExpr(AstExpr obj) {
+            if (obj == null) return 0;
+            if (obj.kind() == "Identifier") {
+                SymbolEntry en = sym_.lookupEntry(obj.name());
+                if (en != null && en.kind() == "array" && en.arraySize() <= 0) return 1;
+            }
+            return 0;
+        }
+        // 固定数组 T[N] 表达式的编译期长度（.size/.length 内建用；非定长返回 -1）。
+        // 覆盖：定长数组局部/参数、this.定长属性/裸属性、struct 变量.定长字段、
+        // 顶层函数返回定长数组。
+        int fixedArrayLen(AstExpr obj) {
+            if (obj == null) return -1;
+            if (obj.kind() == "Identifier") {
+                SymbolEntry en = sym_.lookupEntry(obj.name());
+                if (en != null && en.kind() == "array" && en.arraySize() > 0) return en.arraySize();
+                return -1;
+            }
+            if (obj.kind() == "Member") {
+                AstExpr base = obj.array();
+                string fname = obj.memberName();
+                if (base == null) return -1;
+                if (base.kind() == "Identifier") {
+                    string bn = base.name();
+                    // 类实例.属性（同类实例私有属性允许时）
+                    int ci = findClass(bn);
+                    if (ci >= 0) { int n = fixedArrayLenOfAst(findPropTypeAst(ci, fname)); if (n > 0) return n; }
+                    // struct 变量.字段
+                    string scn = sym_.lookupClass(bn);
+                    if (Str.len(scn) != 0) {
+                        int si = findStruct(scn);
+                        if (si >= 0) { int n = fixedArrayLenOfAst(findStructPropAst(si, fname)); if (n > 0) return n; }
+                    }
+                    // 当前类裸属性名（非 this. 前缀）
+                    if (inClass_ != 0 && Str.len(currentClass_) != 0) {
+                        int n = fixedArrayLenOfAst(currentClassMemberAstType(bn));
+                        if (n > 0) return n;
+                    }
+                } else if (base.kind() == "This" && inClass_ != 0) {
+                    int n = fixedArrayLenOfAst(currentClassMemberAstType(fname));
+                    if (n > 0) return n;
+                }
+                return -1;
+            }
+            if (obj.kind() == "Call") {
+                AstExpr cal = obj.callee();
+                if (cal != null && cal.kind() == "Identifier")
+                    return fixedArrayLenOfAst(findFuncRetType(cal.name(), obj.args().size()));
+                return -1;
+            }
+            return -1;
+        }
         int findStruct(string name) {
             int si = structIdx_.get(name, -1);   // O(1)（P6 规模修复）
             if (si >= 0) return si;
@@ -6323,6 +6382,20 @@ class Sema {
                                 ret = "array";
                             }
                         }
+                        // 固定数组 .size()/.length() → 编译期长度 int（对象为 T[N]
+                        // 定长数组：局部/参数/this.属性/struct 字段/函数返回定长数组）。
+                        if (mo != null && (callee.memberName() == "size" || callee.memberName() == "length")
+                            && fixedArrayLen(mo) > 0) {
+                            if (e.args().size() != 0) diag_.error(e.line(), e.col(), "array size()/length() takes no arguments");
+                            return "int";
+                        }
+                        // 动态数组 .size()/.length() → 干净拒绝（请用 slice<T>）
+                        if (mo != null && (callee.memberName() == "size" || callee.memberName() == "length")
+                            && isDynArrayExpr(mo) != 0) {
+                            if (e.args().size() != 0) diag_.error(e.line(), e.col(), "dynamic array size()/length() takes no arguments");
+                            diag_.error(callee.line(), callee.col(), "dynamic array has no member '" + callee.memberName() + "' (no runtime length); use slice<T>");
+                            return "void";
+                        }
                         string cn = "";
                         if (mo != null && mo.kind() == "Identifier") {
                             cn = sym_.lookupClass(mo.name());
@@ -6693,6 +6766,26 @@ class Sema {
                     if (e.memberName() == "data") {
                         e.setResolvedKind("array");
                         return "array";
+                    }
+                }
+                // 定长数组 .size/.length → 编译期长度 int（对象为 T[N] 定长数组）。
+                // 动态数组 T[]（无运行时长度）的 size/length/data → 干净拒绝（请用
+                // slice<T>），避免漏到 codegen 生成坏 IR。
+                if (o == "array") {
+                    string amn = e.memberName();
+                    if (amn == "size" || amn == "length") {
+                        if (fixedArrayLen(e.array()) > 0) {
+                            e.setResolvedKind("int");
+                            return "int";
+                        }
+                        diag_.error(e.line(), e.col(), "dynamic array has no member '" + amn + "' (no runtime length); use slice<T>");
+                        e.setResolvedKind("void");
+                        return "void";
+                    }
+                    if (amn == "data" && fixedArrayLen(e.array()) <= 0) {
+                        diag_.error(e.line(), e.col(), "dynamic array has no member 'data'; use slice<T>");
+                        e.setResolvedKind("void");
+                        return "void";
                     }
                 }
                 // 静态类名.成员 → 解析为方法（function）或属性

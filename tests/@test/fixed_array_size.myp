@@ -1,0 +1,28 @@
+// fixed_array_size: 定长数组 T[N] 的 .size/.size() → 编译期长度 N（BUG-148，selfhost）
+// 此前固定数组 .size/.size() 编译报错（无该成员/void）；动态数组 T[] 无长度 → 仍报错。
+import test;
+
+struct S { int[4] arr; }
+
+class Holder {
+    property: int[6] prop;
+    action:
+    @constructor Holder() { }
+    int propSize() { return this.prop.size(); }
+}
+
+@test void test_fixed_array_size() {
+    int[4] a;
+    a[0] = 7;
+    Test.assertEq(a.size(), 4, "local size()");
+    Test.assertEq(a.size, 4, "local size prop");
+    int[5] b;
+    Test.assertEq(b.size(), 5, "b size()");
+    Holder h = new Holder();
+    Test.assertEq(h.propSize(), 6, "this.prop size()");
+    S s;
+    s.arr[0] = 5;
+    Test.assertEq(s.arr.size(), 4, "struct field size()");
+    Test.assertEq(s.arr.size, 4, "struct field size prop");
+    Test.report("test_fixed_array_size", true);
+}
