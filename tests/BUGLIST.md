@@ -148,6 +148,9 @@
 | BUG-133 | 🟩 | interface←class 转换未验实现接口 → opt 崩 | `tests/negative/iface_notimpl_assign.myp` |
 | BUG-134 | 🟩 | ffi 声明 void 形参漏校验 → opt 崩 | `tests/negative/ffi_void_param.myp` |
 | BUG-135 | 🟩 | runtime_myp @parallel 线程池丢唤醒死锁（小 n 高频微并行 ~50% 挂） | `bench/freestanding/rt_pool_test.myp`（第 5 段高频小 n 防护） |
+| BUG-136 | 🟩 | mapping 目标 **static: 方法**被误拒 + handler 误传实例（`ev -> Console.write` 编译失败；自举 codegen 静态目标载荷错位；oracle 正常） | 回归 `tests/bugs/b136_mapping_static_target.myp`（静态目标收到事件载荷，1 断言） |
+| BUG-137 | 🟩 | **构造函数接口形参未 upcast**（`new LLMPlanner(new RealBackend())` → opt-21 `ptr vs {ptr,ptr}`；oracle 正常） | 回归 `tests/bugs/b137_ctor_iface_param.myp`（ctor 接口形参 + 接口字段分派，1 断言） |
+| BUG-140 | 🟩 | 逃逸分析把 `new T()` 栈上分配，但方法把 `this` 存进进程全局（@static 类属性）→ 悬垂/双释放崩溃（b032 转绿） | 回归 `tests/bugs/b032_event_class_inst_store.myp`（修复后 GREEN） |
 
 ---
 
@@ -3523,3 +3526,78 @@ value of type ..." / 实参 "argument 1: expected 'IC', got 'NotImpl'" / 返回
   `nm` 查旧符号是否消失（同 shadow 机制教训：反汇编/符号确认真实现，不能只看测试过）；
   futex/clone 自旋实现的竞态 TSan 不跟踪——用「小 n 高频微并行最小复现 + 挂起死锁」做
   判据，数值发散/跑偏只是其偶发表象。
+
+## BUG-136（已修复 🟩，v3.15.202）：mapping 目标 static: 方法被误拒 + handler 误传实例
+
+**非破坏性**（selfhost `sema.myp` + `codegen.myp`）。自举 ↔ oracle divergence：
+`tests/test_thread.myp` 的 `mapping() { Worker.output -> Console.write; }`（oracle rc=0
+打印 10/20/30）在自举 mypc 编译失败。
+
+- **根因（两道）**：① BUG-130 的 mapping 目标存在性校验只查 `classes().actions()`，漏
+  `staticActions()`——合法静态目标（`Console.write`/`Sink.put`）被误报
+  `mapping target 'X.y' is not an action on class 'X'`；② 即便放行，自举
+  `genMappingChain` 的目标解析**先查 `hasInstanceGlobal`**——mapping 会给目标类建
+  `__myp_inst_<cls>` 全局 → 静态函数被塞实例指针 → 参数错位/数量不匹配（打印 0 而非载荷）。
+  oracle `codegen_class.cpp` 用 `is_static_action_` **静态优先**（静态则不传实例），自举漏。
+- **修复**：① `analyzeMapping` 目标校验补 `staticActions()` 命中（存在即放行）；②
+  `genMappingChain` 目标解析改 **static 优先**：`isStaticAction(cls, member)!=0` →
+  `instV=""`（无实例发射），否则才查实例全局 / `%inst` 兜底。
+- **验证**：`mapping() { Emitter.go -> Sink.put; }`（同文件 static）编译+运行打印 5；
+  `tests/test_thread.myp` 打印 10/20/30；BUG-130 负测试
+  `mapping_missing_{source,target}.myp` 仍正确拒绝（真缺失目标不受影响）；实例 action
+  目标（`Emitter.go -> Display.show`）打印 7 不受顺序调整影响。
+- **回归**：`tests/bugs/b136_mapping_static_target.myp`（静态目标收到事件载荷 5）；
+  run_tests.sh 464/464；bugs 套件 mapping 相关（mapping_ctor_self/cross_thread_multi_target/
+  mapping_thread）GREEN；bootstrap MD5 门禁成立。
+- **教训**：BUG-130 的「目标存在性校验」须与 codegen 的合法目标集合一致（action 或
+  static 方法）；mapping 会为所有目标类建实例全局——判「是否要传实例」必须看**方法本身是否
+  static**，不能看类有没有实例全局。
+
+## BUG-137（已修复 🟩，v3.15.202）：构造函数接口形参未 upcast → opt-21 ptr vs {ptr,ptr}
+
+**非破坏性**（selfhost `codegen.myp` New 分支）。自举 ↔ oracle divergence：
+`new LLMPlanner(new RealBackend())`（ctor 形参为接口 `Backend`、实参为裸具体 `new`）
+oracle 编译+运行正常，自举 `opt-21` 报 `%t45 defined with type 'ptr' but expected
+'{ ptr, ptr }'` 编译失败。
+
+- **根因**：自举 New 分支构造器调用只对实参做 `convertValueU`（数值转换），不造
+  `{data,vtable}` 接口胖指针；oracle `generateNewExpr` 对 ctor 实参做接口 upcast（同
+  `generateCall`）。BUG-034 只覆盖「方法调用实参 / 接口返回 / 接口字段写」三路，**构造器
+  实参不在内**。
+- **修复**：New 分支按 ctor 形参类型建 `apTypes`（resolve 后 AstType 列表）；实参
+  `at=="ptr" && 形参=="{ ptr, ptr }"` 时取形参 className（`isInterfaceName` 命中）→
+  `upcastIface` 上转（镜像 `generateCall` 的方法调用实参路径）。
+- **验证**：`new LLMPlanner(new RealBackend())` 编译+运行打印 `g`（ctor 存接口字段 +
+  后续 vtable 分派正确）；200k 循环无崩溃。
+- **回归**：`tests/bugs/b137_ctor_iface_param.myp`（ctor 接口形参 + `plan()` 分派）；
+  run_tests.sh 464/464；bootstrap MD5 门禁成立。
+- **教训**：接口 upcast 的覆盖面应含**一切把具体类传进接口形参的位置**——方法调用
+  （BUG-034 p3）、构造器（本 bug）、返回（BUG-034 p1）、字段写（BUG-034 p2）；新增入口
+  用 `grep 'param.*interface'` 排查遗漏。
+
+## BUG-140（已修复 🟩，v3.15.202）：逃逸分析健全性——方法把 this 存进全局仍被栈上分配
+
+**非破坏性**（selfhost `codegen.myp` 逃逸分析）。`tests/bugs/b032_event_class_inst_store.myp`
+此前在 O0/O2、selfhost/oracle 全崩（PASS 后退出清理 `myp_free_object` / 跳 0x0）。
+
+- **复现最小化**：`@static class Holder` 存类实例 + 实例含 ARC 数组字段 + 经方法把 `this`
+  存进 Holder（`a.run(){ Holder.set(this); }`）→ 崩；`Holder.set(局部)` 不崩；event 类是
+  红鲱鱼。`MYP_NO_STACK_NEW=1` 全过 → 栈上分配为元凶。
+- **根因**：逃逸分析 `escExprE` 对**方法调用接收者 `v.m()` 一律放行**——看不到方法体内
+  `this` 被存进进程全局（`__myp_static_<Cls>`）→ `new T()` 被栈上分配 → this 逃逸到
+  全局后栈帧亡全局悬垂 → teardown 释放死对象 ARC 数组字段 → 双释放/跳 0x0。
+- **修复**：接收者调用改 interprocedural——`escMethodThisEscapes(cls,m)`（把 `this` 当候选
+  跑 `escStmtE(m.body,"this")`，`escMethodDepth_` 递归护栏）、`callReceiverEscapes`（仅当
+  callee 接收者**直接**是候选 v/`this`；`v.field.m()` 是字段对象上的方法不逃逸 v，跳过）、
+  `escVarClass_`（候选名→类名）。`escExprE` 补 `This` 处理（this 裸用/传参 = 逃逸；
+  `this.field` 原地允许）。类/方法不可解析或递归 >3 → 保守判逃逸。
+- **验证**：b032 与最小复现 V10 修复后 exit 0（自举 mypc）；良性 `new P(); p.get()` 仍栈上
+  分配（不过度保守）；run_tests.sh 464/464；bugs 14 green（b032 GREEN）；bootstrap MD5 门禁成立。
+- **回归**：`tests/bugs/b032_event_class_inst_store.myp`（转绿）。
+- **C++ oracle 同步修复**：`src/codegen/escape_analysis.cpp` 同逻辑镜像（ThisExpr/接收者逃逸
+  + 方法体 this 摘要 `classMethodThisEscapes` + 候选类表 `esc_var_class`）；b032 在
+  `mypc-seed` 下亦转绿；oracle 对 selfhost 源码生成不变（bootstrap MD5 逐字节一致 e11e02…）。
+- **教训**：逃逸分析的「接收者不逃逸」假设必须用被调方法是否逃逸 `this` 来证——方法能把
+  this 存全局/传参/返回即逃逸；栈上化对象只有「从不把 this 交出去」才安全。
+
+

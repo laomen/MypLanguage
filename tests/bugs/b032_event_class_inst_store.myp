@@ -5,6 +5,11 @@
 // 字段错位——getCount() 读到垃圾（0xC000=49152，正常 0）；更严重时事件循环
 // 回调的 this 变 0x100000000 → strcmp 段错误。
 // 修复前：断言失败或运行崩溃（run_bugs.sh RED）。
+// 注（2026-09-04，BUG-140）：本用例当前崩溃的**真实根因**是逃逸分析把
+//   `new AppMgrBus()` 栈上分配，而 run() 经 Holder.set(this) 把 this 存进进程
+//   全局（__myp_static_Holder.m）→ 栈帧亡全局悬垂 → 退出清理双释放/跳 0x0。
+//   event 类是红鲱鱼（最小复现 V10 无 event 亦崩）；需实例含 ARC 数组字段才显形。
+//   自举与 C++ oracle 均已修（接收者方法逃逸 this → 不栈上化，BUG-140，v3.15.202）。
 import test;
 import env;
 import fmt;

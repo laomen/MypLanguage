@@ -1,0 +1,37 @@
+// BUG-136 复现：mapping 目标为 static: 方法（`ev -> Cls.staticFn`）
+// ---------------------------------------------------------------------------
+// 修复前（selfhost sema BUG-130 校验只查 actions()）：
+//   `Sink.put`（static:）被误报 "mapping target 'Sink.put' is not an action on
+//   class 'Sink'" → 编译失败；oracle 接受且能跑（test_thread.myp 的
+//   `Worker.output -> Console.write` 同病，C++ oracle rc=0 打印 10/20/30）。
+//   且即便放行，自举 genMappingChain 的目标解析先查 hasInstanceGlobal（mapping
+//   会给目标类建 __myp_inst_<cls> 全局）→ 静态函数被塞实例指针 → 载荷错位/参数
+//   不匹配（打印 0）。修复：① sema 目标校验补 staticActions()；② codegen 目标
+//   解析 static 优先于实例全局（instV=""，镜像 C++ codegen_class.cpp）。
+import test;
+import env;
+
+class Sink {
+    static:
+        void put(int v) { Console.write(v); }
+}
+
+class Emitter {
+    event: go(int v);
+    action:
+        @constructor Emitter() {}
+        void fire(int v) { go(v); }
+}
+
+mapping() {
+    Emitter.go -> Sink.put;
+}
+
+@test void t_static_target() {
+    Test.captureStart();
+    Emitter e = new Emitter();
+    e.fire(5);
+    Test.captureEnd();
+    Test.assertOutputContains("5", "static mapping 目标收到事件载荷 5");
+    Test.report("t_static_target", true);
+}

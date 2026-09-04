@@ -27,6 +27,35 @@
 
 ## 编译器版本历史
 
+### v3.15.202 — mapping 目标支持 static 方法 + 构造器接口形参 upcast（BUG-136/137）
+
+**非破坏性**（selfhost `sema.myp`/`codegen.myp`）。两处自举 ↔ oracle divergence：
+
+- **BUG-136**：mapping 目标为 **static: 方法**（`X.ev -> Console.write;` / `Sink.put`）被
+  误拒——BUG-130 目标存在性校验只查 `actions()`，漏 `staticActions()` → 报
+  `mapping target 'X.y' is not an action on class 'X'`；且即便放行，自举
+  `genMappingChain` 目标解析先查 `hasInstanceGlobal`（mapping 会给目标类建
+  `__myp_inst_<cls>` 全局）→ 静态函数被塞实例指针 → 载荷错位。oracle 两端均正常
+  （`tests/test_thread.myp` 的 `Worker.output -> Console.write` 打印 10/20/30）。
+  修复：① sema 目标校验补 `staticActions()`；② codegen 目标解析 **static 优先于实例
+  全局**（静态目标 `instV=""`，镜像 C++ `codegen_class.cpp` 的 `is_static_action_`）。
+- **BUG-137**：**构造函数接口形参未 upcast**——`new LLMPlanner(new RealBackend())`
+  （ctor 形参为接口 `Backend`、实参为裸具体 `new`）只走 `convertValueU` 数值转换，不造
+  `{data,vtable}` 胖指针 → `opt-21` `ptr vs {ptr,ptr}` 编译失败。oracle
+  `generateNewExpr` 对 ctor 实参做接口 upcast（同 `generateCall`），自举缺失（BUG-034
+  只覆盖方法调用实参/返回/字段写三路）。修复：New 分支按 ctor 形参类型建 `apTypes`，实参
+  `at=="ptr" && 形参=="{ ptr, ptr }"` → `upcastIface` 上转。
+- **回归**：`tests/bugs/b136_mapping_static_target.myp` + `b137_ctor_iface_param.myp`
+  （GREEN）；run_tests.sh 464/464、bugs 套件新增两用例 GREEN；bootstrap MD5 门禁成立。
+- **BUG-140**：逃逸分析健全性——此前对**方法调用接收者 `v.m()` 一律放行**，若方法把
+  `this` 存进进程全局（@static 类属性 `Holder.set(this)`）→ `new T()` 被栈上分配后
+  全局悬垂 → 退出清理双释放/跳 0x0（`b032` 崩溃根因，O0/O2 两编译器全崩；event 类是
+  红鲱鱼，需实例含 ARC 数组字段才显形）。修复：接收者调用改 interprocedural
+  （`escMethodThisEscapes`/`callReceiverEscapes`/`escVarClass_` + `This` 候选处理），
+  方法逃逸 `this` 则接收者不栈上化。b032 转绿、run_tests.sh 464/464、bugs 14 green。
+  C++ oracle `escape_analysis.cpp` 同逻辑已镜像修复（b032 两编译器均绿，bootstrap MD5
+  逐字节一致）。
+
 ### v3.15.201 — runtime_myp 线程池防丢唤醒修复（@parallel 小 n 高频微并行死锁 ~50% → 0）
 
 **非破坏性**（runtime_myp/pool.myp，@parallel 线程池）。deeplearning CPU 训练非确定性根因：

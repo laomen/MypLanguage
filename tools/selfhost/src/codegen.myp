@@ -78,10 +78,13 @@ class CodeGen {
             if (e == null) return 0;
             string k = e.kind();
             if (k == "Identifier") { if (e.name() == v) return 1; return 0; }
+            if (k == "This") return (v == "this") ? 1 : 0;
             if (k == "Member") {
                 AstExpr o = e.array();
                 while (o != null && o.kind() == "Member") o = o.array();
+                // v.field / this.field：对象本体原地，字段读写不算逃逸
                 if (o != null && o.kind() == "Identifier" && o.name() == v) return 0;
+                if (o != null && o.kind() == "This" && v == "this") return 0;
                 return escExprE(e.array(), v);
             }
             if (k == "Call") {
@@ -93,6 +96,11 @@ class CodeGen {
                     if (directV != 0 && escCallParamNoEscape(e, i) != 0) continue;
                     if (escExprE(arg, v) != 0) return 1;
                 }
+                // 方法调用接收者逃逸：v.m(...)/this.m(...)——若方法 m 会把 this
+                // 存进全局/别处（escMethodThisEscapes），接收者 v 逃逸（否则逃逸
+                // 分析把对象栈上化后 this 经方法逃逸到进程全局 → 悬垂/双释放，
+                // b032 崩溃根因）。
+                if (callReceiverEscapes(e, v) != 0) return 1;
                 return escExprE(e.callee(), v);
             }
             if (k == "Assign") {
@@ -405,6 +413,117 @@ class CodeGen {
             return 0;
         }
 
+        // ── 逃逸分析健全性（BUG-140，b032 崩溃根因）──
+        // 逃逸分析此前对「方法调用接收者 v.m()」一律放行——若方法把 this 存进
+        // 进程全局（@static 类属性等），对象被栈上化后 this 逃逸到全局 → 悬垂/
+        // 双释放。修复：接收者调用按「方法是否逃逸 this」判定（interprocedural，
+        // escMethodDepth_ 递归护栏；深度溢出/不可解析 → 保守判逃逸）。
+        int escVarClassIdx(string v) {
+            for (int i = 0; i < escVarClassNames_.size(); i = i + 1)
+                if (escVarClassNames_.get(i) == v) return i;
+            return -1;
+        }
+        string escClassOfVar(string v) {
+            int idx = escVarClassIdx(v);
+            if (idx < 0) return "";
+            return escVarClassVals_.get(idx);
+        }
+        void escSetVarClass(string v, string cls) {
+            int idx = escVarClassIdx(v);
+            if (idx >= 0) { escVarClassVals_.set(idx, cls); return; }
+            escVarClassNames_.add(v);
+            escVarClassVals_.add(cls);
+        }
+        // 找 cls 的方法体（action/static/function 段；非 ctor）。类在但方法不在
+        // 返回 null（该方法不存在则调用不可能编译通过）。
+        AstStmt escMethodBody(string cls, string mth) {
+            if (tu_ == null) return null;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name() != cls) continue;
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    AstAction a = c.actions().get(ai);
+                    if (a.ctor() == 0 && a.name() == mth) return a.body();
+                }
+                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                    AstAction a = c.staticActions().get(ai);
+                    if (a.name() == mth) return a.body();
+                }
+                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                    AstFunction f = c.funcs().get(fi);
+                    if (f.name() == mth) return f.body();
+                }
+                return null;   // 类找到但无此方法
+            }
+            return null;   // 类未找到（泛型实例名/外部）
+        }
+        // cls.method 是否把 this 逃逸出方法（escStmtE(body,"this")；this 作候选）。
+        int escMethodThisEscapes(string cls, string mth) {
+            if (tu_ == null) return 1;
+            if (escMethodDepth_ > 3) return 1;   // 递归过深 → 保守
+            AstStmt body = escMethodBody(cls, mth);
+            if (body == null) return 1;          // 不可解析 → 保守
+            escMethodDepth_ = escMethodDepth_ + 1;
+            string prev = escClassOfVar("this");
+            escSetVarClass("this", cls);
+            int r = escStmtE(body, "this");
+            escSetVarClass("this", prev);
+            escMethodDepth_ = escMethodDepth_ - 1;
+            return r;
+        }
+        // 接收者逃逸：e = v.m(...)（v 为候选）或 this.m(...)（v=="this"）且 m 逃逸
+        // this → 1。v.field.m()（字段对象上的方法）不逃逸 v，跳过（obj 须直接是
+        // Identifier/This，不得是 Member 链）。
+        int callReceiverEscapes(AstExpr e, string v) {
+            if (e == null || e.kind() != "Call") return 0;
+            AstExpr callee = e.callee();
+            if (callee == null || callee.kind() != "Member") return 0;
+            AstExpr obj = callee.array();
+            if (obj == null || obj.kind() == "Member") return 0;
+            string recv = "";
+            if (obj.kind() == "Identifier" && obj.name() == v) recv = v;
+            else if (obj.kind() == "This" && v == "this") recv = "this";
+            if (Str.len(recv) == 0) return 0;
+            string cls = escClassOfVar(recv);
+            string mth = callee.memberName();
+            if (Str.len(cls) == 0 || Str.len(mth) == 0) return 1;   // 类/方法不可解析 → 保守
+            return escMethodThisEscapes(cls, mth);
+        }
+        // 收集 new T() 候选变量名 → 类名（供 callReceiverEscapes 解析方法）。
+        void escCollectVarClasses(AstStmt s) {
+            if (s == null) return;
+            string k = s.kind();
+            if (k == "Block") {
+                for (int i = 0; i < s.bodyStmts().size(); i = i + 1) escCollectVarClasses(s.bodyStmts().get(i));
+                return;
+            }
+            if (k == "VarDecl") {
+                for (int i = 0; i < s.decls().size(); i = i + 1) {
+                    AstVar d = s.decls().get(i);
+                    if (d.init() != null && d.init().kind() == "New" && d.thread() == 0) {
+                        string c = d.init().resolvedClass();
+                        if (Str.len(c) == 0) c = d.init().className();
+                        if (Str.len(c) != 0) escSetVarClass(d.name(), c);
+                    }
+                }
+                return;
+            }
+            if (k == "If") { escCollectVarClasses(s.then()); escCollectVarClasses(s.elseBranch()); return; }
+            if (k == "While") { escCollectVarClasses(s.body()); return; }
+            if (k == "For") { escCollectVarClasses(s.init()); escCollectVarClasses(s.body()); return; }
+            if (k == "ForIn") { escCollectVarClasses(s.body()); return; }
+            if (k == "Try") {
+                escCollectVarClasses(s.tryBlock());
+                for (int i = 0; i < s.catches().size(); i = i + 1) escCollectVarClasses(s.catches().get(i).block());
+                escCollectVarClasses(s.finallyBlock());
+                return;
+            }
+            if (k == "Match") {
+                for (int i = 0; i < s.arms().size(); i = i + 1) escCollectVarClasses(s.arms().get(i).body());
+                return;
+            }
+        }
+
         int escapeTuHasLiveCall() {
             if (tu_ == null) return 0;
             for (int i = 0; i < tu_.functions().size(); i = i + 1)
@@ -437,8 +556,12 @@ class CodeGen {
             if (body == null) return res;
             // 分配内省可在调用者观测被调函数中的分配，因此整个 TU 不栈上化。
             if (escapeTuLiveCall_ != 0 || stmtHasLiveCall(body) != 0) return res;
+            escVarClassNames_ = new ArrayList<string>();
+            escVarClassVals_ = new ArrayList<string>();
+            escMethodDepth_ = 0;
             ArrayList<string> cands = new ArrayList<string>();
             escCollect(body, cands);
+            escCollectVarClasses(body);
             for (int i = 0; i < cands.size(); i = i + 1) {
                 if (escStmtE(body, cands.get(i)) == 0) res.add(cands.get(i));
             }
@@ -564,6 +687,9 @@ class CodeGen {
             escapeStackVars_ = new ArrayList<string>();  // 当前函数可栈上分配变量
             escSummaryDepth_ = 0;
             escapeTuLiveCall_ = 0;
+            escVarClassNames_ = new ArrayList<string>();
+            escVarClassVals_ = new ArrayList<string>();
+            escMethodDepth_ = 0;
             gpuCpuFallback_ = 0;
             gpuCpuLoopVarA_ = "";
             gpuCpuLoopVarLt_ = "";
@@ -3572,10 +3698,16 @@ class CodeGen {
                     callee = tcls + "_" + tgt.member();
                     AstAction ta = findAction(tcls, tgt.member());
                     if (ta != null) { tparams = ta.params(); tret = ta.ret(); }
-                    if (hasInstanceGlobal(tcls) != 0) {
+                    // 静态方法目标：不传实例——即使类因 mapping 有 __myp_inst_<cls>
+                    // 全局（mapping 会给目标类建实例全局）也不能塞实例指针，否则
+                    // 静态函数参数错位/数量不匹配。镜像 C++ codegen_class.cpp 的
+                    // is_static_action_ 优先判定（静态先于实例全局）。
+                    if (isStaticAction(tcls, tgt.member()) != 0) {
+                        instV = "";
+                    } else if (hasInstanceGlobal(tcls) != 0) {
                         instV = newTmp();
                         sb_.append("  " + instV + " = load ptr, ptr @__myp_inst_" + tcls + "\n");
-                    } else if (isStaticAction(tcls, tgt.member()) == 0) {
+                    } else {
                         instV = "%inst";
                     }
                 }
@@ -10278,6 +10410,7 @@ class CodeGen {
                     // 构造器形参 LLVM 类型（按实参个数匹配重载；int→double 等
                     // 数字提升，同 C++ generateNewExpr 的实参转换）。
                     ArrayList<string> apt = new ArrayList<string>();
+                    ArrayList<AstType> apTypes = new ArrayList<AstType>();
                     if (tu_ != null) {
                         for (int ci2 = 0; ci2 < tu_.classes().size(); ci2 = ci2 + 1) {
                             AstClass cc2 = tu_.classes().get(ci2);
@@ -10287,7 +10420,9 @@ class CodeGen {
                                 if (a2.ctor() == 0) continue;
                                 if (a2.params().size() != e.args().size()) continue;
                                 for (int pi2 = 0; pi2 < a2.params().size(); pi2 = pi2 + 1) {
-                                    apt.add(llvmType(resolveType(a2.params().get(pi2).type())));
+                                    AstType ctorRpt = resolveType(a2.params().get(pi2).type());
+                                    apt.add(llvmType(ctorRpt));
+                                    apTypes.add(ctorRpt);
                                 }
                                 break;
                             }
@@ -10301,8 +10436,24 @@ class CodeGen {
                         string av = genExpr(a);
                         string at = exprLlvmType(a);
                         if (i < apt.size()) {
-                            av = convertValueU(av, at, apt.get(i), isUnsignedKind(a.resolvedKind()));
-                            at = apt.get(i);
+                            string ctorPt = apt.get(i);
+                            if (at == "ptr" && ctorPt == "{ ptr, ptr }") {
+                                // BUG-137（NEW-2）：ctor 形参为接口、实参为具体类（如裸
+                                // `new RealBackend()`）→ 上转成 {data,vtable}（镜像 C++
+                                // generateNewExpr 的 ctor 实参接口 upcast；此前 convertValueU
+                                // 不造胖指针 → opt-21 "ptr vs {ptr,ptr}" 类型错）。
+                                string ctorIname = "";
+                                if (i < apTypes.size()) {
+                                    AstType ctorAt = apTypes.get(i);
+                                    if (ctorAt != null && Str.len(ctorAt.className()) != 0
+                                        && isInterfaceName(ctorAt.className()) != 0) ctorIname = ctorAt.className();
+                                }
+                                if (Str.len(ctorIname) != 0) av = upcastIface(a, ctorIname, av);
+                                at = "{ ptr, ptr }";
+                            } else {
+                                av = convertValueU(av, at, ctorPt, isUnsignedKind(a.resolvedKind()));
+                                at = ctorPt;
+                            }
                         }
                         as.append(", " + at + " " + av);
                     }
@@ -12681,6 +12832,11 @@ class CodeGen {
         ArrayList<string> escapeStackVars_;
         int escSummaryDepth_;
         int escapeTuLiveCall_;
+        // 逃逸分析健全性（BUG-140）：候选变量名 → 类名（接收者方法逃逸解析用；
+        // "this" → 被摘要方法所在类）。escMethodDepth_ = 方法体摘要递归护栏。
+        ArrayList<string> escVarClassNames_;
+        ArrayList<string> escVarClassVals_;
+        int escMethodDepth_;
         int curFnRegion_;
         string curRegionMark_;
         int parallelCounter_;

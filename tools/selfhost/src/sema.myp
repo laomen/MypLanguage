@@ -7673,6 +7673,16 @@ class Sema {
                                 ArrayList<AstAction> acts1 = tu_.classes().get(sc1).actions();
                                 for (int y = 0; y < acts1.size(); y = y + 1)
                                     if (acts1.get(y).name() == nm.member()) { foundA = 1; break; }
+                                if (foundA == 0) {
+                                    // BUG-136（NEW-1）：mapping 目标也可为 static: 方法
+                                    // （`ev -> Console.write` / `ev -> Sink.put`）——codegen
+                                    // findAction/isStaticAction 已支持静态目标（无实例发射），
+                                    // oracle 亦接受。此前只查 actions() → 合法静态目标被误报
+                                    // "is not an action on class"。
+                                    ArrayList<AstAction> sacts1 = tu_.classes().get(sc1).staticActions();
+                                    for (int y = 0; y < sacts1.size(); y = y + 1)
+                                        if (sacts1.get(y).name() == nm.member()) { foundA = 1; break; }
+                                }
                                 if (foundA == 0)
                                     diag_.error(0, 0, "mapping target '" + nm.src() + "." + nm.member() + "' is not an action on class '" + nm.src() + "'");
                             }

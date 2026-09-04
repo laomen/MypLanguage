@@ -1,0 +1,57 @@
+// BUG-137 复现：构造函数接口形参 + 裸 new 实参 → opt-21 类型错
+// ---------------------------------------------------------------------------
+// 修复前（selfhost codegen.myp New 分支 ctor 实参只走 convertValueU 数值转换）：
+//   `new LLMPlanner(new RealBackend())`——ctor 形参为接口 Backend、实参为具体
+//   `new RealBackend()`（ptr）→ 不造 {data,vtable} 胖指针 → opt-21
+//   "%t45 defined with type 'ptr' but expected '{ ptr, ptr }'" 编译失败。
+//   C++ oracle generateNewExpr 对 ctor 实参做接口 upcast（同 generateCall），
+//   自举缺失（BUG-034 只修了方法调用实参/返回/字段写三路，未覆盖 ctor 实参）。
+//   修复：New 分支按 ctor 形参类型建 apTypes，实参 at=="ptr" && 形参=="{ ptr,
+//   ptr }" → upcastIface 上转。
+import test;
+import env;
+
+interface Backend {
+    string gen();
+}
+
+class RealBackend {
+    interface class Backend;
+    action:
+        @constructor RealBackend() {}
+        string gen() { return "g"; }
+}
+
+interface Planner {
+    string plan();
+}
+
+class LLMPlanner {
+    interface class Planner;
+    property:
+        Backend backend_;
+    action:
+        @constructor LLMPlanner(Backend b) { backend_ = b; }
+        string plan() { return backend_.gen(); }
+}
+
+class Agent {
+    property:
+        Planner planner_;
+    action:
+        @constructor Agent() {}
+        void setPlanner(Planner p) { planner_ = p; }
+        string run() { return planner_.plan(); }
+}
+
+@test void t_ctor_iface_param() {
+    Agent ag = new Agent();
+    ag.setPlanner(new LLMPlanner(new RealBackend()));   // ctor 接口形参 + 裸 new
+    string s = ag.run();
+    if (s == "g") {
+        Test.report("t_ctor_iface_param", true);
+    } else {
+        Test.fail("ctor 接口形参：plan() 返回 '" + s + "'，期望 'g'");
+        Test.report("t_ctor_iface_param", false);
+    }
+}

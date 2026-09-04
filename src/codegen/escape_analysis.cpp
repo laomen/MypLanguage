@@ -13,10 +13,17 @@ namespace mylang {
 using CallKey = std::pair<std::string, size_t>;
 static std::map<CallKey, std::set<size_t>> noescape_params;
 static bool tu_has_live_call = false;
+// BUG-140：逃逸分析健全性——方法调用接收者 v.m() 若把 this 存进进程全局（@static
+// 类属性等）则 v 逃逸。esc_var_class = 候选/"this" → 类名；esc_method_depth = 方法体
+// 摘要递归护栏；esc_tu 由 prepareEscapeAnalysis 置位。
+static const TranslationUnit* esc_tu = nullptr;
+static std::map<std::string, std::string> esc_var_class;
+static int esc_method_depth = 0;
 
 // 前向声明（stmtEscapes <-> exprStmtMentions 互相递归）
 static bool stmtEscapes(const Stmt* s, const std::string& v);
 static bool exprStmtMentions(const Stmt* s, const std::string& v);
+static bool callReceiverEscapes(const Expr* e, const std::string& v);
 
 // ---- 表达式级逃逸判定 ----
 // v 只允许作为 MemberAccess 的 object（读/写字段）；其他位置逃逸。
@@ -37,6 +44,8 @@ static bool exprEscapes(const Expr* e, const std::string& v) {
             if (o && o->kind == ExprKind::Identifier &&
                 static_cast<const IdentifierExpr*>(o)->name == v)
                 return false;
+            // BUG-140：this.field 本体原地（v=="this" 时字段读写不算逃逸）
+            if (o && o->kind == ExprKind::ThisExpr && v == "this") return false;
             return exprEscapes(ma.object.get(), v);
         }
         case ExprKind::Call: {
@@ -59,6 +68,10 @@ static bool exprEscapes(const Expr* e, const std::string& v) {
                     continue;
                 if (exprEscapes(arg, v)) return true;
             }
+            // BUG-140：接收者方法调用 v.m()/this.m()——若方法把 this 存进进程全局
+            // 等逃逸位置，接收者 v 逃逸（此前对 receiver 一律放行 → 栈上化对象经
+            // 方法逃逸到全局 → 悬垂/双释放崩溃）。
+            if (callReceiverEscapes(&c, v)) return true;
             return exprEscapes(c.callee.get(), v);
         }
         case ExprKind::Assignment: {
@@ -140,6 +153,9 @@ static bool exprEscapes(const Expr* e, const std::string& v) {
         case ExprKind::Lambda:
             return true;  // v 出现在 lambda 内 → 逃逸（保守）
         case ExprKind::ThisExpr:
+            // BUG-140：this 作为候选（方法体摘要 v=="this"）时裸用/传参 = 逃逸；
+            // this.field 由 MemberAccess 分支放行。
+            return v == "this";
         case ExprKind::IntegerLiteral:
         case ExprKind::FloatLiteral:
         case ExprKind::BoolLiteral:
@@ -370,6 +386,76 @@ static bool exprStmtMentions(const Stmt* s, const std::string& v) {
         default:
             return true;  // Mapping/Nonlocal/GpuTile：保守逃逸
     }
+}
+
+// ---- BUG-140：接收者方法逃逸（this 逃逸进进程全局 → 接收者不栈上化）----
+// 候选变量（new T()/new T[N]）的类名：优先取 init NewExpr 的模板类名（方法定义在
+// 模板类上）；退而取声明类型。
+static std::string candidateClassName(const VarDecl& d) {
+    if (d.init_expr && d.init_expr->kind == ExprKind::NewExpr) {
+        const auto& n = static_cast<const NewExpr&>(*d.init_expr);
+        if (!n.class_name.empty()) return n.class_name;
+    }
+    return d.type.class_name;
+}
+
+// 找 cls 的方法体（action/static/function 段；非构造器）。类在但方法不在返回
+// nullptr（该方法不存在则调用不可能编译通过）。
+static const Stmt* classMethodBody(const std::string& cls, const std::string& mth) {
+    if (!esc_tu) return nullptr;
+    for (const auto& c : esc_tu->classes) {
+        if (c.name != cls) continue;
+        for (const auto& a : c.actions)
+            if (!a.has_constructor && a.name == mth) return a.body.get();
+        for (const auto& a : c.static_actions)
+            if (a.name == mth) return a.body.get();
+        for (const auto& f : c.functions)
+            if (f.name == mth) return f.body.get();
+        return nullptr;
+    }
+    return nullptr;
+}
+
+// cls.method 是否把 this 逃逸出方法（把 this 当候选跑 stmtEscapes；esc_method_depth
+// 递归护栏；深度溢出/类/方法不可解析 → 保守判逃逸）。
+static bool classMethodThisEscapes(const std::string& cls, const std::string& mth) {
+    if (!esc_tu) return true;
+    if (esc_method_depth > 3) return true;
+    const Stmt* body = classMethodBody(cls, mth);
+    if (!body) return true;
+    ++esc_method_depth;
+    auto it = esc_var_class.find("this");
+    std::string prev = (it != esc_var_class.end()) ? it->second : "";
+    esc_var_class["this"] = cls;
+    bool r = stmtEscapes(body, "this");
+    esc_var_class["this"] = prev;
+    --esc_method_depth;
+    return r;
+}
+
+// 接收者逃逸：e = v.m(...)（v 为候选）或 this.m(...)（v=="this"）且方法逃逸 this
+// → true。v.field.m()（字段对象上的方法）不逃逸 v，跳过（obj 须直接是 Identifier/
+// This，不得是 MemberAccess 链）。
+static bool callReceiverEscapes(const Expr* e, const std::string& v) {
+    if (!e || e->kind != ExprKind::Call) return false;
+    const auto& c = static_cast<const CallExpr&>(*e);
+    const Expr* callee = c.callee.get();
+    if (!callee || callee->kind != ExprKind::MemberAccess) return false;
+    const auto& ma = static_cast<const MemberAccessExpr&>(*callee);
+    const Expr* obj = ma.object.get();
+    if (!obj || obj->kind == ExprKind::MemberAccess) return false;
+    std::string recv;
+    if (obj->kind == ExprKind::Identifier &&
+        static_cast<const IdentifierExpr&>(*obj).name == v)
+        recv = v;
+    else if (obj->kind == ExprKind::ThisExpr && v == "this")
+        recv = "this";
+    if (recv.empty()) return false;
+    auto vit = esc_var_class.find(recv);
+    std::string cls = (vit != esc_var_class.end()) ? vit->second : "";
+    const std::string& mth = ma.member_name;
+    if (cls.empty() || mth.empty()) return true;   // 类/方法不可解析 → 保守
+    return classMethodThisEscapes(cls, mth);
 }
 
 // ---- 收集候选：VarDecl + NewExpr 初始化的局部变量 ----
@@ -611,6 +697,9 @@ static bool stmtHasLiveCall(const Stmt* s) {
 void prepareEscapeAnalysis(const TranslationUnit& tu) {
     noescape_params.clear();
     tu_has_live_call = false;
+    esc_tu = &tu;
+    esc_var_class.clear();
+    esc_method_depth = 0;
 
     for (auto& f : tu.functions)
         if (f.body && stmtHasLiveCall(f.body.get())) tu_has_live_call = true;
@@ -647,7 +736,11 @@ void prepareEscapeAnalysis(const TranslationUnit& tu) {
     for (auto& entry : unique) {
         auto* f = entry.second;
         for (size_t i = 0; i < f->params.size(); ++i) {
-            if (!stmtEscapes(f->body.get(), f->params[i].name))
+            const std::string& pn = f->params[i].name;
+            // 顶层函数参数 → 类名（供 BUG-140 接收者方法逃逸解析）
+            if (!f->params[i].type.class_name.empty())
+                esc_var_class[pn] = f->params[i].type.class_name;
+            if (!stmtEscapes(f->body.get(), pn))
                 summaries[entry.first].insert(i);
         }
     }
@@ -664,8 +757,12 @@ std::set<std::string> analyzeEscapeStackVars(const BlockStmt* body) {
     std::map<std::string, const VarDecl*> candidates;
     collectCandidates(body, candidates);
     if (candidates.empty()) return result;
-    // 2. 对每个候选，遍历整个函数体检查是否逃逸
+    // 2. 对每个候选，遍历整个函数体检查是否逃逸（候选→类名供 BUG-140 接收者解析）
+    esc_var_class.clear();
+    esc_method_depth = 0;
     for (auto& kv : candidates) {
+        std::string c = candidateClassName(*kv.second);
+        if (!c.empty()) esc_var_class[kv.first] = c;
         if (!stmtEscapes(body, kv.first)) result.insert(kv.first);
     }
     return result;
