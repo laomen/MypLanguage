@@ -27,6 +27,35 @@
 
 ## 编译器版本历史
 
+### v3.15.205 — selfhost struct 值拷贝/入槽 string 字段 ARC retain（BUG-143，struct_arc_string_fields 转绿）
+
+**非破坏性**（selfhost `codegen.myp`）。mypagent 长 LLM 回答偶发 `__longjmp` 段错误
+排查根因：`HttpsResult`（struct 含 string 字段）从 parseResponse→request→postJson
+逐层 struct 值传递时 body 字段持有计数在值拷贝中丢失 → 长 body 悬垂 → 越界读破坏
+异常帧 jmp_buf。C++ oracle（src/codegen `emitStructFieldsValue`）本就齐全；
+**selfhost gap**。
+
+- **BUG-143**：selfhost 只在 struct **字段 store**（storeRef）时 +1；struct **整体
+  拷贝/赋值/入类属性**是裸字节拷贝 → 拷贝与源共享 string。源字段随后被重赋值/释放
+  （`r.body = ""`）→ 拷贝读到被复用内存（判别：`Res r2 = r; r.body=""; return r2;`
+  → Str.len(r2.body) 从 20000 变 20032 垃圾）。
+- **修复**（镜像 C++ emitStructFieldsValue/emitArcFieldOp）：
+  - 新增 `emitRetainStructValue`/`emitRetainArcFieldValue`/`structNameOfType`/
+    `isFreshStructExpr`：struct 值拷贝逐字段 retain。
+  - 覆盖点：VarDecl struct 别名初始化、整值赋值到 struct 局部、struct 型类属性存储、
+    struct 字段写。fresh（调用返回 struct，字段已带 +1）跳过、不重复 retain。
+  - **{ptr,ptr} 接口/函数值字段跳过**：selfhost 既有模型里 struct 接口字段是借用
+    别名（字段 store 不 retain、无对应释放对），拷贝 +1 将泄漏（map_data_struct_iface
+    用 liveObjectCount 断言该平衡）。只处理拥有型字段：ptr（string/class/动态数组）
+    与 {ptr,i64}（slice），嵌套 struct 递归。
+- **回归**：`tests/struct_arc_string_fields/test.myp`（拷贝+drop / 多层返回 / 入属性，
+  毒化复用判别）；run_tests.sh 465/465、bootstrap MD5 门禁成立。
+- **C++ oracle**：无需改动（emitStructFieldsValue 已覆盖拷贝/返回/属性，ASAN 探针
+  全形状 20000）。
+- **教训**：selfhost struct 字段的「拥有」语义须与字段 store 的 retain/release 对一致；
+  只加 retain 不加 release（struct 局部作用域末不释放、类 destroy 不处理 struct 属性）
+  会改变 liveObjectCount 平衡 → BUG-143 只补「拷贝丢失的 +1」，不引入新释放。
+
 ### v3.15.204 — exprLlvmType 关联类型返回解析（BUG-142，assoc 接口拼接 opt 类型错转绿）
 
 **非破坏性**（selfhost `codegen.myp` `exprLlvmType`）。多文件引用测试矩阵期间发现；

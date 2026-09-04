@@ -1,0 +1,86 @@
+// BUG-143 回归：struct 值传递/拷贝时 string 字段 ARC retain
+// 现象：selfhost codegen 只在字段 store storeRef 时 +1；struct 整体拷贝/赋值/
+// 入属性是裸字节拷贝 → 拷贝与源共享 string，源字段被重赋值/释放后拷贝悬垂 →
+// 读到被复用内存（HttpsResult.body 跨多层返回 UAF → __longjmp）。
+// 修复：镜像 C++ emitStructFieldsValue——struct 值拷贝/入槽逐字段 retain
+// （fresh 调用除外，rc 转移）；interface/{ptr,ptr} 字段按既有借用别名语义跳过。
+import env;
+import text;
+import memory;
+
+struct Res { int status; string body; string error; }
+
+// B 形：字段来自局部 substring；struct 拷贝后 drop 源字段 → 拷贝应仍活
+Res copyDrop(string raw) {
+    Res r;
+    r.status = 200;
+    r.body = Str.substring(raw, 0, 20000);
+    r.error = "";
+    Res r2 = r;           // 拷贝 → 应 +1 r.body
+    r.body = "";          // drop r 的 → r2.body 应仍活
+    return r2;
+}
+
+// D 形：request→parseResponse 链（return <structCall>，多层值传递）
+Res inner(string raw) {
+    Res r;
+    r.body = Str.substring(raw, 0, 20000);
+    r.status = 200; r.error = "";
+    return r;
+}
+Res outer(string raw) {
+    StringBuilder acc = new StringBuilder();
+    acc.append(raw);
+    return inner(acc.toString());
+}
+
+// F 形：struct 入类属性，drop 源后经 getter 读回
+class Box {
+    action:
+        @constructor Box() { }
+        void set(Res v) { stored_ = v; }
+        Res get() { return stored_; }
+    property: Res stored_;
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            string raw = "H";
+            for (int i = 0; i < 3000; i = i + 1) raw = raw + "abcdefghij";
+            int fails = 0;
+
+            // B
+            Res b = copyDrop(raw);
+            string z1 = "";
+            for (int rep = 0; rep < 2000; rep = rep + 1) z1 = z1 + "ZZZZZZZZZZ";   // 毒化复用
+            if (Str.len(b.body) != 20000 || Str.substring(b.body, 0, 1) != "H") {
+                fails = fails + 1; Console.writeLine("FAIL copyDrop len=" + Str.len(b.body));
+            }
+
+            // D（多层）
+            Res d = outer(raw);
+            string z2 = "";
+            for (int rep = 0; rep < 2000; rep = rep + 1) z2 = z2 + "WWWWWWWWWW";
+            if (Str.len(d.body) != 20000 || Str.substring(d.body, 0, 1) != "H") {
+                fails = fails + 1; Console.writeLine("FAIL multiReturn len=" + Str.len(d.body));
+            }
+
+            // F（属性）
+            Res f = copyDrop(raw);
+            Box box = new Box();
+            box.set(f);
+            string z3 = "";
+            for (int rep = 0; rep < 2000; rep = rep + 1) z3 = z3 + "QQQQQQQQQQ";
+            f.body = "";                       // drop 源的 → 属性里应仍活
+            Res g = box.get();
+            if (Str.len(g.body) != 20000 || Str.substring(g.body, 0, 1) != "H") {
+                fails = fails + 1; Console.writeLine("FAIL propStore len=" + Str.len(g.body));
+            }
+
+            if (fails == 0) Console.writeLine("PASS struct_arc_string_fields");
+            else Console.writeLine("FAILED " + fails);
+        }
+}
+
+int main() { Main m = new Main(); return 0; }

@@ -1204,6 +1204,83 @@ class CodeGen {
             sb_.append("  call i32 @myp_release(ptr " + oldC + ")\n");
         }
 
+        // ── M8 structs：struct 值含 ARC 字段（string/class/动态数组/slice/接口/
+        // 函数值，或嵌套 struct）时，值拷贝/存入槽必须逐字段 retain（镜像 C++
+        // emitStructFieldsValue/emitArcFieldOp）。此前 selfhost 只在字段 store
+        // storeRef 时 +1；struct 整体拷贝/赋值/入属性是裸字节拷贝 → 拷贝与源共享
+        // string，源字段被释放（重赋值/作用域）后拷贝悬垂 → 越界读/UAF（如
+        // HttpsResult.body 跨多层 struct 值传递，mypagent 长 body __longjmp）。──
+
+        // AstType 解析后 className 是 struct（含 Parent::Name 嵌套）→ 返回 struct 名。
+        string structNameOfType(AstType t) {
+            if (t == null) return "";
+            AstType rt = resolveType(t);
+            if (rt == null) return "";
+            string cn = rt.className();
+            if (Str.len(cn) != 0 && isStructName(cn) != 0) return cn;
+            return "";
+        }
+
+        // init 是否为「fresh struct 值」：函数/方法调用返回 struct → 字段已带调用方
+        // 的 +1（rc 转移），存槽时所有权移交、不重复 retain。struct 不会由
+        // new/lambda 产生，只有 Call 是 fresh 源。
+        int isFreshStructExpr(AstExpr e) {
+            if (e == null) return 0;
+            string k = e.kind();
+            if (k == "Call") return 1;
+            return 0;
+        }
+
+        // 对已 load 出的单字段值 v retain（v 可为 ptr / {ptr,*} fat / 嵌套 struct 值）。
+        void emitRetainArcFieldValue(string v, AstType ft) {
+            if (ft == null) return;
+            AstType rt = resolveType(ft);
+            if (rt == null) return;
+            string cn = rt.className();
+            if (Str.len(cn) != 0 && isStructName(cn) != 0) {
+                // 嵌套 struct 值 → 递归逐字段 retain
+                AstStruct st = findStructByName(cn);
+                if (st != null) {
+                    string nlt = llvmType(rt);
+                    for (int ni = 0; ni < st.props().size(); ni = ni + 1) {
+                        AstProp np = st.props().get(ni);
+                        if (propHoldsArc(np.type()) == 0) continue;
+                        string nv = newTmp();
+                        sb_.append("  " + nv + " = extractvalue " + nlt + " " + v + ", " + ni + "\n");
+                        emitRetainArcFieldValue(nv, np.type());
+                    }
+                }
+                return;
+            }
+            string flt = llvmType(rt);
+            if (flt == "ptr") {
+                // string / 类实例 / 动态数组（计数 backing 即 ptr）：字段 store
+                // 走 storeRef（retain/释放）→ 拥有；拷贝须 +1 才平衡。
+                sb_.append("  call void @myp_retain(ptr " + v + ")\n");
+            } else if (flt == "{ ptr, i64 }") {
+                // slice：字段 store 走 storeSliceSlot（retain/释放）→ 拥有 → +1。
+                string d = newTmp();
+                sb_.append("  " + d + " = extractvalue { ptr, i64 } " + v + ", 0\n");
+                sb_.append("  call void @myp_retain(ptr " + d + ")\n");
+            }
+            // { ptr, ptr }（接口 / 函数值）：既有 selfhost 模型里 struct 字段 store
+            // 是借用别名（不 retain、无对应释放对）；拷贝若 +1 将无释放 → 泄漏
+            // （map_data_struct_iface 用 liveObjectCount 断言这种平衡）→ 跳过。
+        }
+
+        // 对 struct 值 val（LLVM 类型 structLt，如 %HttpsResult）逐 ARC 字段 retain。
+        void emitRetainStructValue(string structLt, string stName, string val) {
+            AstStruct st = findStructByName(stName);
+            if (st == null) return;
+            for (int i = 0; i < st.props().size(); i = i + 1) {
+                AstProp p = st.props().get(i);
+                if (propHoldsArc(p.type()) == 0) continue;
+                string fv = newTmp();
+                sb_.append("  " + fv + " = extractvalue " + structLt + " " + val + ", " + i + "\n");
+                emitRetainArcFieldValue(fv, p.type());
+            }
+        }
+
         // 具体类实例 ptr → 接口 fat pointer { data, vtable }（C++ buildInterfaceFat）。
         string buildIfaceFat(string instV, string ifaceName, string clsName) {
             string fat = newTmp() + ".fat";
@@ -8229,6 +8306,12 @@ class CodeGen {
                             string iv = genExpr(v.init());
                             string it = exprLlvmType(v.init());
                             iv = convertExpr(iv, it, lt, v.init());
+                            // M8 structs：别名拷贝（struct S s2 = s1）须逐字段 retain
+                            //（拷贝成为独立持有者，源仍持有自己的）；fresh（调用返回
+                            // struct，字段已带 +1）转移所有权、不重复 retain。
+                            string stName = structNameOfType(rvt);
+                            if (Str.len(stName) != 0 && isFreshStructExpr(v.init()) == 0)
+                                emitRetainStructValue(lt, stName, iv);
                             sb_.append("  store " + lt + " " + iv + ", ptr " + va + ", align " + al + "\n");
                         }
                     }
@@ -10041,6 +10124,18 @@ class CodeGen {
                                 emitCoroFrameSet(varAlloca(nm), cv);
                             }
                         } else {
+                            // M8 structs：整值赋值（r2 = r / r2 = f()）——别名拷贝
+                            // 须逐字段 retain（fresh 调用除外：字段已带 +1、转移）。
+                            // struct 局部字段作用域末不释放（既有模型），此处不释放
+                            // 旧值以免双释放；仅补齐拷贝的 +1。
+                            string stName2 = structNameOfType(varAstType(nm));
+                            if (Str.len(stName2) != 0) {
+                                if (isFreshStructExpr(e.rhs()) == 0)
+                                    emitRetainStructValue(lt, stName2, rv);
+                                int al2 = IrEmit.alignOf(lt);
+                                sb_.append("  store " + lt + " " + rv + ", ptr " + varAlloca(nm) + ", align " + al2 + "\n");
+                                return rv;
+                            }
                             // 借用 ARC 参数重赋值（string/class）：参数是借用
                             //（非 ARC 槽），赋值须转移新值所有权（fresh 消费 /
                             // 别名 retain）且不释放借用的入口值（调用方仍持有），
@@ -10076,6 +10171,13 @@ class CodeGen {
                         } else if (ft == "{ ptr, i64 }") {
                             storeSliceSlot(gep, rv, isFreshSliceExpr(e.rhs()));
                         } else {
+                            // M8 structs：struct 型属性（stored_ = a）——别名拷贝须
+                            // 逐字段 retain（fresh 调用除外）；旧属性字段对象销毁不
+                            // 释放（既有模型），此处不释放防双释放。
+                            AstType pAt = propAstType(curClass_, nm);
+                            string stP = (pAt != null) ? structNameOfType(pAt) : "";
+                            if (Str.len(stP) != 0 && isFreshStructExpr(e.rhs()) == 0)
+                                emitRetainStructValue(ft, stP, rv);
                             sb_.append("  store " + ft + " " + rv + ", ptr " + gep + "\n");
                         }
                     }
@@ -10238,6 +10340,13 @@ class CodeGen {
                     } else if (ft == "{ ptr, i64 }") {
                         storeSliceSlot(gep, rv, isFreshSliceExpr(e.rhs()));
                     } else {
+                        // M8 structs：struct 字段写（outer.inner = r）——别名拷贝须
+                        // 逐字段 retain（fresh 调用除外）。标量字段 structNameOfType
+                        // 为空 → 跳过。
+                        AstType mAt = memberFieldAstType(lhs);
+                        string stM = (mAt != null) ? structNameOfType(mAt) : "";
+                        if (Str.len(stM) != 0 && isFreshStructExpr(e.rhs()) == 0)
+                            emitRetainStructValue(ft, stM, rv);
                         sb_.append("  store " + ft + " " + rv + ", ptr " + gep + "\n");
                     }
                 }
