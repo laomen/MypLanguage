@@ -91,16 +91,22 @@ string myp_uds_recv(int fd, int max_len) {
 }
 
 // C: char* myp_uds_recv_line(int32_t fd) —— 逐字节到 \n，剥 \r
+// 字节透传：先累积到 arena 缓冲，最后一次性 memcpy 到 counted string。
+// （旧实现逐字节 r = r + __myp_chr(c) 把字节当码点再 UTF-8 → 中文双重编码 mojibake）
 string myp_uds_recv_line(int fd) {
-    long b = myp_arena_alloc(1);
-    string r = "";
-    while (true) {
-        long n = __myp_syscall(45, fd, b, 1, 0, 0, 0);   // recvfrom 1 byte
+    long b = myp_arena_alloc(8192);
+    int pos = 0;
+    while (pos < 8191) {
+        long n = __myp_syscall(45, fd, b + pos, 1, 0, 0, 0);   // recvfrom 1 byte
         if (n <= 0) break;
-        int c = __myp_mem_load_i8(b);
+        int c = __myp_mem_load_i8(b + pos);
         if (c == 10) break;           // '\n'
-        if (c != 13) r = r + __myp_chr(c);   // 剥 '\r'
+        if (c == 13) continue;        // 剥 '\r'（覆盖该字节）
+        pos = pos + 1;
     }
+    string r = myp_alloc(pos + 1);
+    __myp_memcpy(__myp_str_ptr(r), b, pos);
+    __myp_mem_store_i8(__myp_str_ptr(r) + pos, 0);
     return r;
 }
 
