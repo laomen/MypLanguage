@@ -28,12 +28,26 @@ ffi int recv(int fd, long buf, int len, int flags);
 ffi int close(int fd);
 ffi int fcntl(int fd, int cmd, long arg);
 ffi long gethostbyname(string name);
+ffi long __errno_location();   // NetLast：EAGAIN vs EOF 区分
 
 string netEmpty() {
     string r = myp_alloc(1);
     __myp_mem_store_i8(__myp_str_ptr(r), 0);
     return r;
 }
+
+// ---- 最近一次 recv/send 的结果/errno（供 stdlib async IO 区分 EAGAIN vs EOF）----
+@static class NetLast {
+    property:
+        int n = 0;      // 最近 myp_net_recv 返回：>0 字节 / 0 EOF / -1 错误
+        int errno = 0;
+        int sn = 0;     // 最近 myp_net_send 返回
+        int serrno = 0;
+}
+int myp_net_last_n() { return NetLast.n; }
+int myp_net_last_errno() { return NetLast.errno; }
+int myp_net_last_sn() { return NetLast.sn; }
+int myp_net_last_serrno() { return NetLast.serrno; }
 
 // 构造 AF_INET sockaddr_in（16B）：port 网络字节序，sin_addr 给定 4 字节
 long netAddrIn(int port, int ip0, int ip1, int ip2, int ip3) {
@@ -116,15 +130,35 @@ int myp_net_connect(string host, int port) {
 int myp_net_send(int fd, string data) {
     int len = myp_strlen(data);
     if (len == 0) return 0;
-    return send(fd, __myp_str_ptr(data), len, 0x4000);   // MSG_NOSIGNAL
+    int n = send(fd, __myp_str_ptr(data), len, 0x4000);   // MSG_NOSIGNAL
+    NetLast.sn = n;
+    NetLast.serrno = 0;
+    if (n < 0) {
+        long ep = __errno_location();
+        if (ep != 0) NetLast.serrno = __myp_mem_load_i32(ep);
+    }
+    return n;
 }
 
 // C: char* myp_net_recv(int32_t fd, int32_t max_len) —— 按实收长度构建
+// 记录最近结果/errno（NetLast）：stdlib async recv 据此把 EAGAIN 与真 EOF 分开
+// （EAGAIN = poll 就绪但数据未到 → 应继续等，不是连接关闭）。
 string myp_net_recv(int fd, int max_len) {
     if (max_len <= 0) max_len = 4096;
     string buf = myp_alloc(max_len + 1);
     int n = recv(fd, __myp_str_ptr(buf), max_len, 0);
+    NetLast.n = n;
+    NetLast.errno = 0;
+    if (n < 0) {
+        long ep = __errno_location();
+        if (ep != 0) NetLast.errno = __myp_mem_load_i32(ep);
+    }
     if (n <= 0) return netEmpty();
+    return netBytes(buf, n);
+}
+
+// 构造 len 字节 counted string（recv 成功用；与旧 myp_net_recv 一致）
+string netBytes(string buf, int n) {
     string r = myp_alloc(n + 1);
     __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(buf), n);
     __myp_mem_store_i8(__myp_str_ptr(r) + n, 0);

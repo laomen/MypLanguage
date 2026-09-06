@@ -27,6 +27,36 @@
 
 ## 编译器版本历史
 
+### v3.16.3 — coro async recv/send：EAGAIN ≠ EOF（高并发丢连接修复）
+
+**修复（stdlib/net.myp + runtime_myp/net.myp）**。现象：mypagent `serveCoro`
+（协程事件循环）高并发丢连接——客户端 `RemoteDisconnected`（服务器 accept 了
+却无响应即关闭，t≈0）；8 并发开始丢，24 并发 ~25%，阻塞 serve 对照零丢失。
+复现：24 路并发稳定丢 20-33%（纯 http 框架 demo 隔离后同样，非 app 层）。
+
+**根因**：coro reactor（runtime_myp/coro.myp，MYP 运行时实现）`waitFd` 的
+poll 就绪与后续非阻塞 `recv` 之间存在竞态——poll 报 POLLIN（revents=1 实测
+确认）后 recv 仍可能返回 **EAGAIN(11)**（数据未真正到位）。旧
+`recvLineAsync`/`recvAsync`/`sendAsync` 把**任何空读/非正 send 都当 EOF/失败**
+→ `connCoro` 判「空请求行」→ `cl.close()` → 客户端被无响应断开。诊断链：
+transport 日志（fd 复用/空行）→ net.myp OS 边界 trace（accept 后立即
+recvLE0）→ errno=11=EAGAIN（非 EOF 0，排除真对端关闭）→ reactor trace（poll
+rev=1、单 fd 单协程单读者、无陈旧 wait、无 fd 复用仍 EAGAIN）→ 判定为
+poll/recv 就绪竞态，属**非阻塞 IO 标准需处理的 spurious wakeup**。
+
+**修复**：
+- `runtime_myp/net.myp`：`myp_net_recv`/`myp_net_send` 记录最近一次返回 n 与
+  errno（`@static NetLast` + `myp_net_last_n/errno/sn/serrno` accessor）。
+- `stdlib/net.myp`：`recvLineAsync`/`recvAsync` 在空读时查 errno——**EAGAIN(11)
+  → 回 `waitFd` 继续等**（真数据未到，不是连接关闭）；仅真 EOF（recv 返回 0）
+  才结束。`sendAsync` 同理：send EAGAIN → 再等；EPIPE/ECONNRESET 等真错误才
+  返回。每次 EAGAIN 后都重新 park（wait 记录被消费），无自旋；15s 超时兜底。
+
+**验证**：demo 24/64/128 并发×多轮全 0 丢失（修复前 24 并发 20-33% 丢）；
+500 连发混合（GET+POST body）全 200；阻塞 serve 对照不变；MYPLanguage 全套
+554 通过 0 失败。回归门禁 `tests/bugs/b154_coro_eagain_drop/`（自包含 coro
+反应堆 + bash 并发驱动，15×24=360 请求全 200，反向门禁：修复前必红）。
+
 ### v3.16.2 — 接口/函数值数组元素覆盖 ARC 泄漏修复 + C1/C4/C6/C8 系统性矩阵
 
 **修复（ARC 配平，selfhost codegen）**：Subscript 赋值 dispatch 对

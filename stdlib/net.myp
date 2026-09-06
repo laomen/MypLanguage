@@ -31,6 +31,10 @@ ffi string myp_net_recv(int fd, int max_len);
 ffi string myp_net_recv_line(int fd);
 ffi void myp_net_close(int fd);
 ffi void myp_net_set_nonblock(int fd);   // §五-5 P2
+ffi int myp_net_last_n();        // 最近 myp_net_recv 返回字节数
+ffi int myp_net_last_errno();    // 最近 myp_net_recv errno（EAGAIN=11）
+ffi int myp_net_last_sn();       // 最近 myp_net_send 返回字节数
+ffi int myp_net_last_serrno();   // 最近 myp_net_send errno
 
 // ============================================================
 // TcpServer — TCP 服务器
@@ -131,14 +135,21 @@ class TcpClient {
 
         // ---- §五-5 P2 异步 IO（@coro 内 await）----
         // 异步接收最多 maxLen 字节：fd 可读后非阻塞读；超时（ms>0）返回空串
+        // EAGAIN（poll 就绪但数据未到）不是 EOF——继续等；真 EOF（recv 0）返回
         @async string recvAsync(int maxLen, long timeout = 0) {
             myp_net_set_nonblock(fd_);
-            long r = Coro.waitFd(fd_, 1, 0, timeout);
-            if (r == -1) return "";
-            return myp_net_recv(fd_, maxLen);
+            while (true) {
+                long r = Coro.waitFd(fd_, 1, 0, timeout);
+                if (r == -1) return "";
+                string d = myp_net_recv(fd_, maxLen);
+                if (Str.len(d) > 0) return d;
+                if (myp_net_last_errno() != 11) return "";   // EOF（非 EAGAIN）
+                // EAGAIN：本趟 waitFd 就绪但无可读 → 回 waitFd 再等
+            }
         }
 
         // 异步接收一行（直到 \n）：逐字节非阻塞读；超时返回已收内容
+        // EAGAIN 不是 EOF——回 waitFd 继续；真 EOF（recv 返回 0）才结束
         @async string recvLineAsync(long timeout = 0) {
             myp_net_set_nonblock(fd_);
             StringBuilder sb = new StringBuilder();
@@ -146,7 +157,10 @@ class TcpClient {
                 long r = Coro.waitFd(fd_, 1, 0, timeout);
                 if (r == -1) return sb.toString();
                 string ch = myp_net_recv(fd_, 1);
-                if (Str.len(ch) == 0) break;            // EOF / 连接关闭
+                if (Str.len(ch) == 0) {
+                    if (myp_net_last_errno() == 11) continue;   // EAGAIN → 再等
+                    break;            // 真 EOF / 连接关闭
+                }
                 int code = __myp_ord(ch);
                 if (code == 10) break;                   // \n
                 if (code != 13) sb.append(ch);           // 跳过 \r
@@ -155,6 +169,7 @@ class TcpClient {
         }
 
         // 异步发送整串：fd 可写后发送（非阻塞可能部分发送 → 循环补发）；超时返回已发字节
+        // send EAGAIN（poll 就绪但发送缓冲满竞态）不是失败——回 waitFd 再等
         @async int sendAsync(string data, long timeout = 0) {
             myp_net_set_nonblock(fd_);
             int total = 0;
@@ -163,8 +178,9 @@ class TcpClient {
                 long r = Coro.waitFd(fd_, 0, 1, timeout);
                 if (r == -1) return total;
                 int sent = myp_net_send(fd_, Str.substring(data, total, len));
-                if (sent <= 0) return total;
-                total = total + sent;
+                if (sent > 0) { total = total + sent; continue; }
+                if (sent < 0 && myp_net_last_serrno() == 11) continue;   // EAGAIN → 再等
+                return total;                                            // EPIPE/ECONNRESET 等真错误
             }
             return total;
         }

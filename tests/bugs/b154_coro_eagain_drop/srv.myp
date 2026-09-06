@@ -1,0 +1,70 @@
+// tests/bugs/b154_coro_eagain_drop/srv.myp — EAGAIN-as-EOF 回归复现服务端
+// ---------------------------------------------------------------------------
+// 纯 stdlib coro 反应堆（同 myp_http.serveCoro 架构）：acceptor @coro waitFd +
+// 每连接 connCoro @async recvLineAsync/sendAsync。只 import stdlib（env/text/net/
+// coro）。handler = 同步短任务（回 "ok"）。
+//
+// BUG-154 背景（2026-09-07，mypagent serveCoro 高并发丢连接，RemoteDisconnected
+//   at t≈0）：coro reactor 的 poll 就绪与 recv 之间存在竞态——waitFd 返回「fd 就
+//   绪」（poll POLLIN）后非阻塞 recv 仍可能返回 EAGAIN（数据未真正到位）。旧
+//   recvLineAsync/recvAsync 把**任何空读都当 EOF** → connCoro 判「空请求行」→
+//   cl.close() → 客户端收到 RemoteDisconnected（服务器 accept 了却无响应即关）。
+//   实测：24 路并发 ~25% 丢（8 并发即开始丢）；strace 放慢后消失（时序竞态）。
+// 修复：stdlib/net.myp recvLineAsync/recvAsync/sendAsync 区分 EAGAIN(errno 11)
+//   vs 真 EOF(recv 0)——EAGAIN 回 waitFd 继续等，仅真 EOF 结束。runtime_myp/
+//   net.myp 记录每次 recv/send 的 errno（NetLast）。
+//
+// 编译：<MYPLanguage>/build/mypc -O2 --stdlib <MYPLanguage>/stdlib -o srv srv.myp
+// 驱动：bash tests/bugs/b154_coro_eagain_drop/repro.sh [port] [rounds]
+//       退出码 0 = 全部 200（已修复）；非 0 = 出现丢包（回归）
+import env;
+import text;
+import net;
+import coro;
+
+class Srv {
+    action:
+        @constructor Srv() {}
+
+        // acceptor 协程（非阻塞 accept，同 BUG-153 修复）
+        @coro void acceptLoop(TcpServer srv) {
+            while (true) {
+                long r = Coro.waitFd(srv.getFd(), 1, 0, 0);
+                if (r < 0) continue;
+                TcpClient cl = new TcpClient();
+                if (srv.acceptNb(cl) != 0) continue;
+                this.conn(cl);
+            }
+        }
+
+        // 每连接协程：async 读请求行/头 → 同步响应 "ok" → async 响应 → close
+        @coro void conn(TcpClient cl) {
+            string line = await cl.recvLineAsync(15000);
+            if (Str.len(line) == 0) { cl.close(); return; }   // 空行 = 丢包症状
+            // 读剩余头到空行（GET 无 body；content-length 解析非本复现重点）
+            while (true) {
+                string hdr = await cl.recvLineAsync(15000);
+                if (Str.len(hdr) == 0) break;
+            }
+            string resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+            await cl.sendAsync(resp);
+            cl.close();
+        }
+
+        void run(int port) {
+            TcpServer srv = new TcpServer(port);
+            this.acceptLoop(srv);
+            while (true) Coro.scheduler();
+        }
+}
+
+class Boot {
+    action:
+        @constructor Boot() {
+            string p = Console.getEnv("B154_PORT");
+            int port = Str.len(p) > 0 ? Str.toInt(p) : 8814;
+            Srv s = new Srv();
+            s.run(port);
+        }
+}
+int main() { Boot b = new Boot(); return 0; }
