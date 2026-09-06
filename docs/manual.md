@@ -1033,6 +1033,70 @@ c(0);                        // 2
   实现为准：`A(10, 1, -1, -1, 1, 0) = -67`（见 `tests/@test/man_or_boy.myp`），验证
   闭包按引用捕获 + 递归 thunk 传递的正确性。
 
+### FFI — 调用 C 函数（v2.1，additive）
+
+`ffi` 在**文件顶层**声明一个**直接绑定 C 函数**（同名符号）的外部函数——让 MYP
+调用 libc / C 运行时 / 第三方 C 代码：
+
+```myp
+ffi int    myp_strlen(string s);          // C: int myp_strlen(const char* s)
+ffi long   myp_now_ms();                  // C: int64_t myp_now_ms()
+ffi double myp_math_sqrt(double x);       // C: double myp_math_sqrt(double)
+ffi long   myp_regex_compile(string p);   // 返回句柄 → long 承载
+ffi void   myp_regex_free(long handle);
+```
+
+- **绑定**：声明名必须与**链接时可解析的 C 符号**同名（C 运行时 `myp_*`、
+  `libc` 函数、或用户自己的 C 目标文件；de-gcc 仅链 MYP 归档 + libc 时同样解析）。
+- **类型映射**：
+
+  | MYP | C 侧 |
+  |---|---|
+  | `int`/`long`/`double`/`float`/`bool`… | 对应数值类型 |
+  | `string` 实参 | `const char*`（MYP 字符串缓冲） |
+  | `string` 返回 | `char*`（NUL 结尾；MYP 包装为 string） |
+  | `long` | 指针/句柄（regex/sync/memory 惯例） |
+  | `void` 返回 | `void`（**形参不能用 `void`**，编译期拒绝） |
+
+- **调用**：FFI 是顶层函数——**同文件直接调用**（放 `action:`/`function:`/
+  `static:` 方法或 `@constructor` 内）：
+
+```myp
+import env;
+
+ffi int myp_strlen(string s);
+
+class Probe {
+    action:
+        @constructor Probe() { Console.write(myp_strlen("hello")); }  // 5
+}
+int main() { Probe p = new Probe(); return 0; }
+```
+
+- **跨模块导出**：顶层函数**跨模块不可见** → 惯例是把 FFI **包进 `static:`
+  方法**由用户 `import` 后调用（stdlib 全用此模式，如 `Str.len` 包 `myp_strlen`）：
+
+```myp
+ffi int myp_strlen(string s);
+
+class Str {
+    static:
+        int len(string s) { return myp_strlen(s); }   // 用户：Str.len("hi")
+}
+```
+
+- **`main()` 限制**：`main` 里不能把调用写成**一整条语句**（`myp_strlen(s);`
+  报 `direct function call not allowed in main() — use mapping() instead`）；
+  **赋值/`return` 表达式内**的调用放行（`int n = myp_strlen("hi");` 可以）——最稳
+  仍是包进 class，由 `@constructor`/`@startup`/`action` 触发。
+- **约束**：形参不能用 `void`、参数名不能重复（编译期报错）；参数/返回用基本类型
+  或 `string`，指针/句柄用 `long`。
+- **与 intrinsic 的区别**：`__myp_*` 是编译器预注册 intrinsic（用户代码调用即
+  undefined symbol）；`ffi` 是**用户可写**的标准机制（v2.1，顶层声明）——stdlib
+  新库（fs/text/process/json/memory/barrier/future/sync/net/crypto…）全部用 `ffi`
+  声明绑定运行时 C 函数。EBNF：`ffi ReturnType Identifier '(' ParamList? ')' ';'`
+  （grammar.md）。
+
 ---
 
 ## 6. Class 组件系统

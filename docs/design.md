@@ -533,6 +533,41 @@ int main() {
 
 > `slice<T>` 集合二元同样支持（逐元素 `A + B` / 标量广播 `A * k` / 对称 `k * A`，基于 `slice.size()` 运行时长度）。
 
+### 4.7 FFI（外部函数接口，调用 C 函数）
+
+**目的**：让 MYP 代码直接调用 C 世界——libc、C 运行时 `myp_*`、第三方 C 库；
+是 intrinsic 表（§10.20）之外**用户可写**的外部函数机制（v2.1）。
+
+**语法**（顶层声明，与 class/function/enum 平行；EBNF 见 grammar.md `FFIDecl`）：
+
+```
+FFIDecl ::= 'ffi' ReturnType Identifier '(' ParamList? ')' ';'
+```
+
+```myp
+ffi int    myp_strlen(string s);        // → C: int myp_strlen(const char* s)
+ffi long   myp_now_ms();
+ffi string myp_str_substring(string s, int start, int end);
+ffi void   myp_regex_free(long handle);
+```
+
+**语义要点**：
+
+- **按名绑定**：声明名 = 链接目标 C 符号名；不生成包装/胶水，调用即 C 调用
+  （de-gcc 仅链 MYP 归档 + libc 时同样解析 `myp_*`/libc 符号）。
+- **类型映射**：数值标量 ↔ C 对应类型；`string` 实参 → `const char*`（MYP 字符串
+  缓冲），`string` 返回 → `char*` 由 MYP 包装；指针/句柄一律 `long` 承载
+  （regex/sync/memory handle 惯例）。形参禁 `void`（`ffi int cadd(void v)` 拒绝），
+  参数名禁重复。
+- **可见性/封装**：FFI 是顶层函数，同文件可直接调用（放 class `action:`/
+  `function:`/`static:` 方法或 `@constructor`）；**顶层函数跨模块不可见**（§9）——
+  跨模块使用须包进 `static:` 方法（stdlib 全模式：`Str.len` 包 `myp_strlen` 等）。
+- **`main()` 约束**：main 禁语句级裸调用（`f();` 独立成语句），赋值/return 表达式
+  内调用放行——同顶层函数规则；惯例经 class 方法/`@constructor`/`@startup` 调用。
+- **与 intrinsic 互补**：`__myp_*` 为编译器注册、用户不可见；stdlib 更新库
+  （fs/text/process/json/memory/barrier/future/sync/net/crypto…）走顶层 `ffi`
+  声明直接绑定运行时 C 函数，不经 `registerIntrinsics`（§10.20）。
+
 ---
 
 ## 5. 类型系统

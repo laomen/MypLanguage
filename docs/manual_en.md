@@ -1083,6 +1083,78 @@ int main(int argc, string[] argv) {
 }
 ```
 
+### FFI — Calling C Functions (v2.1, additive)
+
+`ffi` declares, at **file top level**, a function that **binds directly to a C
+function** (same-name symbol) — letting MYP call libc / the C runtime /
+third-party C code:
+
+```myp
+ffi int    myp_strlen(string s);          // C: int myp_strlen(const char* s)
+ffi long   myp_now_ms();                  // C: int64_t myp_now_ms()
+ffi double myp_math_sqrt(double x);       // C: double myp_math_sqrt(double)
+ffi long   myp_regex_compile(string p);   // returned handle → carried as long
+ffi void   myp_regex_free(long handle);
+```
+
+- **Binding**: the declared name must match a **link-resolvable C symbol** (the
+  C runtime's `myp_*` functions, `libc` functions, or your own linked C objects;
+  it also resolves under de-gcc links that pull only the MYP archive + libc).
+- **Type mapping**:
+
+  | MYP | C side |
+  |---|---|
+  | `int`/`long`/`double`/`float`/`bool`… | matching numeric type |
+  | `string` argument | `const char*` (MYP string buffer) |
+  | `string` return | `char*` (NUL-terminated; MYP wraps it into a string) |
+  | `long` | pointers/handles (regex/sync/memory convention) |
+  | `void` return | `void` (**parameters cannot be `void`**, compile error) |
+
+- **Calling**: an FFI declaration is a top-level function — call it **from the
+  same file** (inside `action:`/`function:`/`static:` methods or an
+  `@constructor`):
+
+```myp
+import env;
+
+ffi int myp_strlen(string s);
+
+class Probe {
+    action:
+        @constructor Probe() { Console.write(myp_strlen("hello")); }  // 5
+}
+int main() { Probe p = new Probe(); return 0; }
+```
+
+- **Exporting across modules**: top-level functions are **not visible across
+  modules** → the convention is to **wrap the FFI in a `static:` method** so users
+  `import` the class and call it (all of stdlib does this, e.g. `Str.len` wraps
+  `myp_strlen`):
+
+```myp
+ffi int myp_strlen(string s);
+
+class Str {
+    static:
+        int len(string s) { return myp_strlen(s); }   // user: Str.len("hi")
+}
+```
+
+- **`main()` restriction**: `main` cannot issue a call as a **standalone
+  statement** (`myp_strlen(s);` → `direct function call not allowed in main() —
+  use mapping() instead`); calls inside an **assignment / `return` expression**
+  are allowed (`int n = myp_strlen("hi");`). Safest is still wrapping in a class
+  invoked from `@constructor`/`@startup`/an action.
+- **Constraints (compile errors)**: parameters cannot be `void`; parameter names
+  must be unique; parameters/returns use basic types or `string`; pointers/handles
+  go through `long`.
+- **vs intrinsics**: `__myp_*` are compiler-registered intrinsics (calling them
+  from user code → undefined symbol); `ffi` is a **user-writable** standard
+  mechanism (v2.1, top-level declaration) — the newer stdlib modules
+  (fs/text/process/json/memory/barrier/future/sync/net/crypto…) all bind runtime
+  C functions via `ffi` declarations. EBNF: `ffi ReturnType Identifier
+  '(' ParamList? ')' ';'` (grammar.md).
+
 ---
 
 ## 6. Class Component System
