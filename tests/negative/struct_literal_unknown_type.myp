@@ -1,0 +1,6 @@
+// EXPECT ERROR: unknown type 'Foo'
+// 结构体初始化器负例：未知类型名（不是 struct/class/enum）→ 干净拒绝。
+import env;
+void main() {
+    Foo p = Foo{ x: 1 };
+}

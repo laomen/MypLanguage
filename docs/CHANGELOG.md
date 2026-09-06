@@ -27,6 +27,45 @@
 
 ## 编译器版本历史
 
+### v3.15.216 — 结构体/对象初始化器 `Pt{x:1, y:2}`（additive，selfhost）
+
+**非破坏性加法（值式 struct 字面量，selfhost 超前 / seed 冻结不解析）**。`Pt{x:1,
+y:2}` 作**值式 struct 字面量**（自带 struct 名，无目标绑定），消掉"声明 + 逐字段
+赋值"样板，与数组字面量（v3.15.214/215）同族：
+
+```myp
+struct Point { int x; int y; }
+Point a = Point{ x: 1, y: 2 };      // 声明初值
+Point b = Point{ y: 7 };            // 缺省字段 → 零初始化
+Point c = Point{ y: 3, x: 9 };      // 乱序（按字段名）
+p = Point{ x: 5, y: 6 };            // 赋值位置
+Point mk(int v) { return Point{ x: v, y: v * 2 }; }   // 返回位置
+int s = sum(Point{ x: 1, y: 2 });   // 实参位置（一等 struct 值）
+```
+
+- **grammar §Expression**：`Primary` 增 `StructLiteral ::= Identifier '{'
+  StructFieldInit (',' StructFieldInit)* '}'`，`StructFieldInit ::= Identifier ':'
+  Expression`（产物文件级 struct 值，字段乱序/缺省）。
+- **ast**（`ast.myp` `AstExpr`）：新 kind `StructLit`（struct 名存 className_，字段名
+  列表 `initFields_` 与初值 `elements_` 平行存；cloneExpr/dump 同步）。
+- **parser**（`parser.myp` `parsePrimaryInner`）：identifier 后紧跟 `{`（非 quote/fn）
+  → 解析 `Name { f: e, … }` 建 StructLit（字段用 `:` 分隔）。
+- **sema**（`sema.myp`）：`visitExpr(StructLit)`——按名解析**文件级 struct**（未知名 /
+  类名 / 枚举名干净拒绝），字段存在性 + 重复 + 逐值 `typesCompat` 校验（int→double
+  等提升允许，float 字段需 `3.0f`）；**v1 限纯标量字段**（string/类/接口/切片/数组/
+  嵌套 struct/enum 引用字段干净拒绝——防浅拷贝 ARC/嵌套越界）；`var p = Pt{...}`
+  干净拒绝（须显式类型）。设 resolvedKind "struct" + resolvedClass=struct 名。
+- **codegen**（`codegen.myp`）：`genStructLit` = 零初始化临时槽 → 逐字段 GEP 填
+  （structFieldIndex/structFieldType + convertValue）→ 整体 load `%Pt` 寄存器
+  （与 `Point q = p` 浅拷贝同形态）；`exprLlvmType(StructLit)` = `%Pt`。声明/赋值/
+  返回/实参均经既有 struct 值管道，无额外绑定位。
+- AST dump 稳定（StructLit 专用分支）；bootstrap MD5 一致。
+- 回归 `tests/@test/struct_literal.myp`（完整/缺省零初始化/乱序/提升/long·bool·
+  float/赋值/返回/实参两形态，16 断言）+ 7 负例（unknown field/dup/type mismatch/
+  class name/ARC field/var infer/unknown type）。
+- 后续（路线）：类对象初始化器 `new P{…}`（经 accessor setter）、嵌套 struct 字段、
+  `var` 推断、字符串/引用字段 struct（需逐字段 ARC 语义）。
+
 ### v3.15.215 — 数组字面量返回/赋值位置绑定（additive，selfhost）
 
 **非破坏性加法（续 v3.15.214）**。`[e1, e2, …]` 除声明初值外，**返回位置**与

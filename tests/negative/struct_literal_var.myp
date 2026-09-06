@@ -1,0 +1,7 @@
+// EXPECT ERROR: var inference from a struct literal is not supported yet
+// 结构体初始化器负例：var 推断 v1 不支持（须显式类型 `Pt p = Pt{...}`）。
+import env;
+struct Pt { int x; }
+void main() {
+    var p = Pt{ x: 1 };
+}

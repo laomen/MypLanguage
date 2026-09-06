@@ -1,0 +1,10 @@
+// EXPECT ERROR: requires a file-level struct type (class 'Cx')
+// 结构体初始化器负例：类名不是 struct → 干净拒绝（类对象初始化器后续路线）。
+import env;
+class Cx {
+    action:
+        @constructor Cx() {}
+}
+void main() {
+    Cx p = Cx{ x: 1 };
+}

@@ -1,0 +1,8 @@
+// EXPECT ERROR: struct initializer v1 supports scalar fields only
+// 结构体初始化器负例：struct 含 string（ARC 引用）字段 → v1 干净拒绝
+//（防浅拷贝 ARC 悬垂；string 等引用字段 struct 暂用逐字段赋值）。
+import env;
+struct S { int n; string s; }
+void main() {
+    S v = S{ n: 1, s: "x" };
+}

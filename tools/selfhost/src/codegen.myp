@@ -1793,6 +1793,35 @@ class CodeGen {
             return heap;
         }
 
+        // 结构体初始化器（additive）`Point{x:1, y:2}` → struct 值。sema 已限定
+        // 文件级 struct + 纯标量字段并设 resolvedClass=struct 名。物化：零初始化
+        // 临时槽 → 逐字段 GEP 填（convertValue 到字段类型）→ 整体 load 出
+        // %Point 寄存器（与 `Point q = p` 的浅拷贝同形态；标量字段无 ARC 风险）。
+        string genStructLit(AstExpr e) {
+            string sn = e.resolvedClass();
+            if (Str.len(sn) == 0) sn = e.className();
+            string lt = "%" + llvmSafeName(sn);
+            string tmp = newTmp();
+            sb_.append("  " + tmp + " = alloca " + lt + ", align 8\n");
+            sb_.append("  store " + lt + " zeroinitializer, ptr " + tmp + ", align 8\n");
+            for (int i = 0; i < e.initFields().size(); i = i + 1) {
+                string fld = e.initFields().get(i);
+                AstExpr val = e.elements().get(i);
+                if (val == null) continue;
+                int fidx = structFieldIndex(sn, fld);
+                string fLt = structFieldType(sn, fld);
+                string vv = genExpr(val);
+                string vt = exprLlvmType(val);
+                string cv = convertValue(vv, vt, fLt);
+                string gep = newTmp();
+                sb_.append("  " + gep + " = getelementptr " + lt + ", ptr " + tmp + ", i32 0, i32 " + fidx + "\n");
+                sb_.append("  store " + fLt + " " + cv + ", ptr " + gep + "\n");
+            }
+            string rv = newTmp();
+            sb_.append("  " + rv + " = load " + lt + ", ptr " + tmp + ", align 8\n");
+            return rv;
+        }
+
         // 数组字面量 [e0,..]（additive → 动态 T[]）：建 fresh slice backing 并
         // 逐元素填（元素类型/ARC 语义同 fixedArrayToDynamic）。e.elemType 由 sema
         // 在显式动态数组目标处绑定；无目标用例已被 sema 拒绝。
@@ -10685,6 +10714,9 @@ class CodeGen {
             if (k == "ArrayLit") {
                 return genArrayLit(e);
             }
+            if (k == "StructLit") {
+                return genStructLit(e);
+            }
             if (k == "New") {
                 if (e.className() == "slice") {
                     return genSliceNew(e);
@@ -11941,6 +11973,11 @@ class CodeGen {
         string exprLlvmType(AstExpr e) {
             if (e == null) return "i32";
             string k = e.kind();
+            if (k == "StructLit") {
+                string sln = e.resolvedClass();
+                if (Str.len(sln) == 0) sln = e.className();
+                return "%" + llvmSafeName(sln);
+            }
             if (k == "ArrayLit") return "ptr";   // 动态数组字面量 → data 指针
             if (k == "Integer") {
                 if (e.isChar() != 0) return "i8";

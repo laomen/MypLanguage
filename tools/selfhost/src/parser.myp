@@ -2369,6 +2369,31 @@ class Parser {
                     lam.setName(lname);
                     return lam;
                 }
+                // 结构体初始化器（additive）：Type { f1: v1, f2: v2, ... } →
+                // 值式 struct 字面量（sema 校验字段名/齐性并限定标量 struct）。
+                // 仅当标识符后紧跟 '{'（表达式内此前 `ident {` 无合法形态，除
+                // quote/fn 两特例已在上方处理）。
+                if (curVal() != "quote" && curVal() != "fn" && peekNextKind() == "{") {
+                    string sname = curVal();
+                    advance();
+                    consume("{", "expected '{' after struct type name in initializer");
+                    AstExpr sl = new AstExpr();
+                    sl.setKind("StructLit");
+                    sl.setClassName(sname);
+                    if (curKind() != "}") {
+                        while (true) {
+                            string fname = parseIdentifier("expected field name in struct initializer");
+                            consume(":", "expected ':' after field name in struct initializer");
+                            sl.initFields().add(fname);
+                            sl.elements().add(parseExpr());
+                            if (matchKind(",") != 0) {
+                                if (curKind() == "}") break;
+                            } else break;
+                        }
+                    }
+                    consume("}", "expected '}' after struct initializer");
+                    return sl;
+                }
                 AstExpr e = new AstExpr();
                 e.setKind("Identifier");
                 e.setName(curVal());

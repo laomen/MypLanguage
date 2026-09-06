@@ -1,0 +1,52 @@
+// 结构体初始化器（additive，v3.15.216）回归：`Pt{x:1, y:2}` → 值式 struct 字面量
+// （自带 struct 名，无目标绑定）。覆盖：声明初值/缺省字段零初始化/乱序/数值提升
+// int→double/赋值/返回/实参；v1 限文件级 struct + 纯标量字段（string/类/嵌套
+// struct 字段 → 干净拒绝，见 negative）；var 推断 v1 不支持（干净拒绝）。
+import test;
+import env;
+
+struct Pt { int x; int y; }
+struct Mixed { int x; double d; float f; long l; bool b; }
+
+int sumAll(Mixed m) {
+    return m.x + int(m.d) + int(m.f) + int(m.l) + (m.b ? 1 : 0);
+}
+
+class R {
+    action:
+        @constructor R() {}
+        Pt mk(int v) { return Pt{ x: v, y: v * 2 }; }   // 返回位置
+        void go() {
+            // 声明初值（完整）
+            Pt a = Pt{ x: 1, y: 2 };
+            Test.assertEq(a.x, 1, "a0");
+            Test.assertEq(a.y, 2, "a1");
+            // 缺省字段零初始化
+            Pt b = Pt{ y: 7 };
+            Test.assertEq(b.x, 0, "b0");
+            Test.assertEq(b.y, 7, "b1");
+            // 乱序 + 数值提升（int 字面量 → double 目标）+ long/bool/float
+            Mixed c = Mixed{ b: true, x: 5, d: 6, l: 7L, f: 8.0f };
+            Test.assertEq(c.x, 5, "c0");
+            Test.assert(c.d == 6.0, "c1");
+            Test.assert(c.f == 8.0, "c2");
+            Test.assertEq(c.l, 7L, "c3");
+            Test.assert(c.b, "c4");
+            // 赋值位置
+            Pt d = Pt{ x: 0, y: 0 };
+            d = Pt{ x: 9, y: 10 };
+            Test.assertEq(d.x, 9, "d0");
+            Test.assertEq(d.y, 10, "d1");
+            // 返回位置（方法返回 struct 字面量）
+            Pt m = mk(5);
+            Test.assertEq(m.x, 5, "m0");
+            Test.assertEq(m.y, 10, "m1");
+            // 实参位置：直接字面量传值 + 局部拷贝传值一致
+            Test.assertEq(sumAll(Mixed{ x: 1, d: 2.0, f: 3.0f, l: 4L, b: true }), 11, "arg0");
+            Mixed cc = Mixed{ x: 1, d: 2.0, f: 3.0f, l: 4L, b: true };
+            Test.assertEq(sumAll(cc), 11, "arg1");
+            Test.report("go", true);
+        }
+}
+
+@test void t() { R r = new R(); r.go(); Test.report("t", true); }

@@ -1,0 +1,7 @@
+// EXPECT ERROR: struct 'Pt' has no field named 'z'
+// 结构体初始化器负例：未知字段 → 干净拒绝。
+import env;
+struct Pt { int x; int y; }
+void main() {
+    Pt p = Pt{ x: 1, z: 2 };
+}

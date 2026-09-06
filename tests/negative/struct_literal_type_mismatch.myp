@@ -1,0 +1,7 @@
+// EXPECT ERROR: struct field 'x' of type 'int' cannot be initialized with value of type 'string'
+// 结构体初始化器负例：字段类型与初值不兼容 → 干净拒绝。
+import env;
+struct Pt { int x; }
+void main() {
+    Pt p = Pt{ x: "a" };
+}

@@ -3924,6 +3924,14 @@ class Sema {
                 }
             }
         }
+        // 结构体初始化器（additive）v1：字段类型限纯标量（int/long/uint/ulong/
+        // float/double/byte/char/bool/bit）——含 string/类/接口/切片/数组/嵌套
+        // struct/enum 引用字段的 struct 拒绝（浅拷贝安全边界）。
+        int isStructScalarKind(string k) {
+            if (k == "int" || k == "long" || k == "uint" || k == "ulong" || k == "float"
+                || k == "double" || k == "byte" || k == "char" || k == "bool" || k == "bit") return 1;
+            return 0;
+        }
         // 属性类型的具体类名（供 obj.prop.method() 链式解析）
         string findPropTypeClass(int ci, string name) {
             AstType pt = findPropTypeAst(ci, name);
@@ -4330,6 +4338,22 @@ class Sema {
                                 }
                             }
                         }
+                    }
+                    // 结构体初始化器（additive）var 推断 v1 不支持——干净拒绝（否则
+                    // 符号无 className → p.x 级联 void）。声明带上 struct 名让后续
+                    // 成员访问不级联（有错误 → codegen 不运行）。
+                    if (v.isInferred() != 0 && it == "struct" && v.init() != null
+                        && v.init().kind() == "StructLit") {
+                        AstExpr il3 = v.init();
+                        string scn2 = "";
+                        if (il3 != null && Str.len(il3.resolvedClass()) != 0) scn2 = il3.resolvedClass();
+                        int dln = v.nameLine();
+                        int dcn = v.nameCol();
+                        if (dln == 0) { dln = s.line(); dcn = s.col(); }
+                        diag_.error(dln, dcn, "var inference from a struct literal is not supported yet; declare the type explicitly (e.g. 'Pt p = Pt{...}')");
+                        if (Str.len(scn2) != 0) sym_.declareClass(v.name(), "struct", scn2);
+                        else sym_.declare(v.name(), it);
+                        continue;
                     }
                     AstType vt2 = v.type();
                     if (v.isInferred() != 0) {
@@ -5402,6 +5426,68 @@ class Sema {
                 }
                 e.setResolvedKind("array");
                 return "array";
+            }
+            if (k == "StructLit") {
+                // 结构体初始化器（additive）：`Point{x:1, y:2}` → struct 值（自带
+                // struct 名，无目标绑定）。v1：文件级 struct + 纯标量字段；未知名 /
+                // 类·枚举名 / 引用·复合字段 → 干净拒绝（防浅拷贝 ARC/嵌套越界）。
+                string sn = e.className();
+                AstStruct stl = null;
+                for (int zx = 0; zx < tu_.structs().size(); zx = zx + 1) {
+                    if (tu_.structs().get(zx).name() == sn) { stl = tu_.structs().get(zx); break; }
+                }
+                if (stl == null) {
+                    for (int ai = 0; ai < e.elements().size(); ai = ai + 1) {
+                        if (Str.len(e.elements().get(ai).resolvedKind()) == 0) visitExpr(e.elements().get(ai));
+                    }
+                    string what = "unknown type";
+                    if (findClass(sn) >= 0) what = "class '" + sn + "'";
+                    else if (findEnum(sn) >= 0) what = "enum '" + sn + "'";
+                    diag_.error(e.line(), e.col(), "struct initializer '" + sn + "{...}' requires a file-level struct type (" + what + ")");
+                    e.setResolvedKind("void");
+                    return "void";
+                }
+                ArrayList<AstProp> sps = stl.props();
+                for (int fi2 = 0; fi2 < sps.size(); fi2 = fi2 + 1) {
+                    AstProp fp = sps.get(fi2);
+                    AstType ft2 = fp.type();
+                    string fk2 = ft2 != null ? typeToKind(ft2) : "int";
+                    if (isStructScalarKind(fk2) == 0) {
+                        diag_.error(e.line(), e.col(), "struct initializer v1 supports scalar fields only; field '" + fp.name() + "' of '" + sn + "' has type '" + fk2 + "'");
+                        break;
+                    }
+                }
+                for (int ix = 0; ix < e.initFields().size(); ix = ix + 1) {
+                    string fname = e.initFields().get(ix);
+                    AstExpr fv = e.elements().get(ix);
+                    if (fv != null && Str.len(fv.resolvedKind()) == 0) visitExpr(fv);
+                    AstProp mprop = null;
+                    for (int fy = 0; fy < sps.size(); fy = fy + 1) {
+                        if (sps.get(fy).name() == fname) { mprop = sps.get(fy); break; }
+                    }
+                    if (mprop == null) {
+                        diag_.error(e.line(), e.col(), "struct '" + sn + "' has no field named '" + fname + "'");
+                        continue;
+                    }
+                    int dup = 0;
+                    for (int d2 = 0; d2 < ix; d2 = d2 + 1) {
+                        if (e.initFields().get(d2) == fname) { dup = 1; break; }
+                    }
+                    if (dup != 0) {
+                        diag_.error(e.line(), e.col(), "duplicate field '" + fname + "' in struct initializer for '" + sn + "'");
+                        continue;
+                    }
+                    AstType fat = mprop.type();
+                    string fk = fat != null ? typeToKind(fat) : "int";
+                    if (fv != null && Str.len(fv.resolvedKind()) != 0 && fv.resolvedKind() != "void"
+                        && typesCompat(fk, fv.resolvedKind()) == 0) {
+                        diag_.error(e.line(), e.col(), "struct field '" + fname + "' of type '" + fk
+                            + "' cannot be initialized with value of type '" + fv.resolvedKind() + "'");
+                    }
+                }
+                e.setResolvedClass(sn);
+                e.setResolvedKind("struct");
+                return "struct";
             }
             if (k == "Binary") {
                 string l = visitExpr(e.lhs());

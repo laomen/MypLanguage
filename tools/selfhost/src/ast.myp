@@ -1438,6 +1438,7 @@ class AstExpr {
             catchExpr_ = null;
             timeout_ = null;
             elements_ = new ArrayList<AstExpr>();
+            initFields_ = new ArrayList<string>();
             namedName_ = "";
             namedValue_ = null;
             stmt_ = null;
@@ -1466,6 +1467,8 @@ class AstExpr {
         ArrayList<string> captureSlots() { return captureSlots_; }
         ArrayList<string> nonlocalCells() { return nonlocalCells_; }
         ArrayList<AstExpr> elements() { return elements_; }
+        ArrayList<string> initFields() { return initFields_; }
+        void setInitFields(ArrayList<string> v) { initFields_ = v; }
         void setArgs(ArrayList<AstExpr> v) { args_ = v; }
         void setCallTypeArgs(ArrayList<AstType> v) { callTypeArgs_ = v; }
         void setTypeArgs(ArrayList<AstType> v) { typeArgs_ = v; }
@@ -1593,6 +1596,7 @@ class AstExpr {
             c.setCatchExpr(catchExpr_);
             c.setTimeout(timeout_);
             c.setElements(elements_);
+            c.setInitFields(initFields_);
             c.setNamedName(namedName_);
             c.setNamedValue(namedValue_);
             c.setStmt(stmt_);
@@ -1700,6 +1704,14 @@ class AstExpr {
             } else if (kind_ == "GpuReduceExpr") {
                 Dump.line(sb, ind, "(GpuReduceExpr result=" + resultKind_ + ")" + tsfx());
                 if (stmt_ != null) stmt_.dump(sb, ind + 2);
+            } else if (kind_ == "StructLit") {
+                // 结构体初始化器 Point{x:1, y:2}：className_=struct 名，initFields_/
+                // elements_ 平行存字段名/初值表达式。
+                Dump.line(sb, ind, "(StructLit type=\"" + Dump.esc(className_) + "\")" + tsfx());
+                for (int si = 0; si < initFields_.size(); si = si + 1) {
+                    Dump.line(sb, ind + 2, "(Field name=\"" + Dump.esc(initFields_.get(si)) + "\")");
+                    if (si < elements_.size() && elements_.get(si) != null) elements_.get(si).dump(sb, ind + 4);
+                }
             } else {
                 Dump.line(sb, ind, "(Expr)" + tsfx());
             }
@@ -1819,6 +1831,7 @@ class AstExpr {
         AstExpr catchExpr_;
         AstExpr timeout_;
         ArrayList<AstExpr> elements_;
+        ArrayList<string> initFields_;
         string namedName_;
         AstExpr namedValue_;
         AstStmt stmt_;
