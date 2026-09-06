@@ -1,0 +1,36 @@
+// R2（roadmap §六 R2）：@region / arena 分配微基准。
+// @region 内连续小分配（动态数组）吞吐；region 函数返回后 region reserved 应回落
+// 到基线（region 释放）。输出 "R2 <k> <v>"。
+import env;
+import memory;
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long baseRegion = Memory.regionReservedBytes();
+            long baseArena = Memory.arenaReservedBytes();
+            long n = 200000;
+            long t0 = __myp_now_ms();
+            long acc = allocLoop(n);       // @region：退出即释放
+            long t1 = __myp_now_ms();
+            long regDelta = Memory.regionReservedBytes() - baseRegion;
+            long arenaDelta = Memory.arenaReservedBytes() - baseArena;
+            Console.writeString("R2 region_alloc_ms=" + ("" + (t1 - t0))
+                + " n=" + ("" + n) + " acc=" + ("" + acc)
+                + " region_reserved_delta=" + ("" + regDelta)
+                + " arena_reserved_delta=" + ("" + arenaDelta) + "\n");
+        }
+}
+
+// 顶层 @region 函数（@region 注解 action/顶层，不能放 function: 段）
+@region long allocLoop(long n) {
+    long s = 0;
+    for (long i = 0; i < n; i = i + 1) {
+        int[] a = new int[8];      // region 内小分配
+        a[0] = int(i);
+        s = s + a[0];
+    }
+    return s;
+}
+
+int main() { Bench b = new Bench(); return 0; }

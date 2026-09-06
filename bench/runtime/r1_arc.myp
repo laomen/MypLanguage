@@ -1,0 +1,32 @@
+// R1（roadmap §六 R1）：ARC 引用计数微基准。
+// 测短命 class 创建/销毁配对吞吐（编译器插桩 retain/release），verify live
+// count 归零（区分"能跑"与"无泄漏"）。输出机器可解析 "R1 <k> <v>"。
+import env;
+import memory;
+
+class Blob {
+    property: int payload_;
+    action:
+        void set(int v) { payload_ = v; }
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long base = Memory.liveObjectCount();
+            long n = 500000;
+            long t0 = __myp_now_ms();
+            long acc = 0;
+            for (long i = 0; i < n; i = i + 1) {
+                Blob b = new Blob();      // 创建：alloc + rc=1
+                b.set(1);                 // 用一次
+                acc = acc + 1;            // 作用域末 → release（配对）
+            }
+            long t1 = __myp_now_ms();
+            long live = Memory.liveObjectCount() - base;
+            Console.writeString("R1 shortlived_ms=" + ("" + (t1 - t0))
+                + " n=" + ("" + n) + " live_delta=" + ("" + live)
+                + " acc=" + ("" + acc) + "\n");
+        }
+}
+int main() { Bench b = new Bench(); return 0; }
