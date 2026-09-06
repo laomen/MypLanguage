@@ -163,6 +163,7 @@
 | BUG-150 | � | **net send 未屏蔽 SIGPIPE → 服务端写已关闭连接崩（exit 141，v3.15.225 修复）**——对已关闭 socket send 默认触发 SIGPIPE 终止进程；myp_http 协程服务端向断开客户端写响应即崩（曾误判"高并发饿死"，实为崩溃后新连接全失败）。修复：三处 send 加 MSG_NOSIGNAL（Linux 0x4000）→ 写已关连接返回 EPIPE(-1) 优雅处理 | 回归 `tests/bugs/b150_send_sigpipe.myp`（服务端 send 一包（客户端不读）→ 客户端带未读数据 close 发 RST → 服务端再写不崩；复现时验证：去修复 → exit 141 SIGPIPE，加修复 → 5 断言全绿） |
 | BUG-151 | � | **@parallel 并发 worker 内 try/catch/throw → 异常状态跨线程串扰（段错误/假 uncaught，v3.15.232 修复）**——MYP 异常运行时状态（Exc.depth/handlerBufs/curType/errBuf）原为 @static 进程级全局、非线程安全：@parallel 并发 worker 各自 try/catch push/pop 交叉改写共享 handler 栈 → worker throw longjmp 到**别线程** jmp_buf（段错误 exit 139/总线 135），depth 丢失 → 假 `uncaught exception (object,type N)` exit 134。mypagent `fan_shared_mem_check`（3 真并发子 agent 各 tick 内 try/catch + Json/memory 操作）间歇 5-7% 崩 = type 21(JsonError) 未捕获假象。修复：Exc 改 `@static @thread class`（LLVM thread_local，对齐 C runtime `__thread`；pthread_create 真 TLS） | 复现（修复前）mypagent `tests/fan_shared_mem_check.myp` 2/25 + 纯 MYP `@parallel` try/catch/throw 7/8；回归 `tests/@test/parallel_exc_threadsafe.myp`（8×40000×16 并发 try+throw，修复前 ~全崩） |
 | BUG-152 | 🟩 | **@coro/@async 跨线程 + 接口 fat 四条运行时红线（合并，v3.15.65 起逐步修/纪律规避）**：①resume 持锁跨 ctx_switch → yield 绝不持锁（跨线程 coroLock 死锁；单线程递归 depth 掩盖）；锁 resume post-switch 统一释放、事件处理移出 coro 锁外（防 coro→ev 与 ev→coro 反转）；②跨线程 coroLock 死锁（同①特化）；③接口 fat 跨长 run GC/UAF（接口注入 observer 长生命周期 retain 不牢 → 悬垂/坏胖指针 null vtable 派发崩）——长活引用用具体型字段持有；④@async worker 跨线程投递不能落 string 局部（帧末 ARC release → 悬垂）——io.myp 返 raw addr 建头 + 协程侧 retain(+1) 交棒 | 纪律/回归：mypagent PITFALLS §9 + GuardManager 具体型字段/RemoteMemStore.fork/spawnSubParallel 只读共享；现场 coro_thread/async_file（v3.15.65）；无独立编译负测试（非 mypc 缺陷） |
+| BUG-153 | 🟥 | **coro 调度器（serveCoro 反应堆）真并发突发楔死——acceptor 不再被 poll，进程存活（非 SIGPIPE 崩溃）**：MYP runtime coro 事件循环下，同一瞬间多连接并发突发（如 2 路同时鉴权 `/api/sessions`，handler 内 `Process.output("ls…")` 子进程+文件 IO）→ 请求全超时（服务端存活）；突发后单发也偶发挂起。半开/慢客户端单发不楔（正常）。v0.1.118 同族「高并发+挂起连接部分饿死」曾被 BUG-150(SIGPIPE 崩) 误判覆盖——本观测**进程存活**排除 SIGPIPE，是真正的 poll/就绪处理边界（runtime_myp/coro.myp 调度器，未定位） | 现场复现 mypagent `tests/gate_concurrency.sh`（注释记边界，不做突发断言）+ 干净复现 2 路并发 /api/sessions 双双超时；无独立纯 MYP 最小复现（待建） |
 
 
 ---
@@ -3991,3 +3992,39 @@ mypagent 高频在 `Json_Json_string` 后由 `__longjmp` 段错误；现场 hand
 - **回归/纪律落点**：mypagent PITFALLS §9 + 架构纪律（GuardManager 具体型字段、RemoteMemStore
   .fork 每线程独立镜像、spawnSubParallel 真并发子只读共享 backend/tools、UDS 结果投递）。无独立
   编译器负测试（非 mypc 缺陷）；现场复现见 coro_thread/async_file（v3.15.65）。
+
+## BUG-153（未修复 🟥）：coro 调度器（serveCoro 反应堆）真并发突发楔死——acceptor 不再被 poll，进程存活
+
+> 运行时缺陷（非 mypc 编译器）；mypagent 网关 serveCoro 实测（v0.1.138）。v0.1.118 曾记同族
+> 「10+ 长期挂起慢连接 + 高并发新请求时部分饿死/超时（MYP coro 调度器 poll/就绪处理边界）」，
+> 后被 BUG-150（SIGPIPE 崩，exit 141）误判覆盖——本观测**进程存活**（非崩溃），排除 SIGPIPE，
+> 是真正的 coro 调度器 poll/就绪处理边界问题。
+
+- **现象（mypagent `HttpServer.serveCoro`，v0.1.138）**：
+  - 架构：acceptor 协程 `Coro.waitFd(监听fd)` → accept → spawn 每连接 `connCoro`（
+    `await recvLineAsync/recvAsync/sendAsync`）；主循环 `while(true) Coro.scheduler()`。
+  - **半开/慢客户端不楔**：单个连接只发半截请求（请求行+部分头、无空行、不关闭）挂起 →
+    其它**单发**短请求（/health、鉴权 /api/sessions）秒回 200——v0.1.118 核心价值正常。
+  - **真并发突发楔死**：2 个 curl **同一瞬间**并发 GET /api/sessions（鉴权；handler 内
+    `SessionStore.list()` 用 `Process.output("ls …")` fork/exec 子进程 + 文件读）→ 两请求都超时
+    （curl `--max-time` code 000）；服务端进程**存活**（ps 可见，非 exit 141/139）。
+  - **突发后遗症**：8 路并发突发后，单发 /api/sessions 偶能通一次、随后单发 /health 也挂
+    （服务端存活）——acceptor 不再被就绪处理/poll。
+  - 纯 /health 2 路并发（无鉴权、无子进程/文件 IO）两请求都 200——楔死疑与 handler 内容
+    （协程内 fork/exec 子进程、文件 IO）相关，待进一步隔离。
+- **位置**：`runtime_myp/coro.myp`（selfhost/MYP runtime：Coro.scheduler/waitFd、fd 注册与
+  poll/就绪处理）；C 侧 `src/runtime/runtime.c` 同族待查。应用侧 myp_http serveCoro/acceptLoop/
+  connCoro（mypagent）行为正确，仅暴露此运行时边界。
+- **根因（未定位，待查）**：怀疑①多 fd 同批就绪时 acceptor 循环 `waitFd` 重注册/就绪消费边界；
+  ②协程内 fork/exec（`Process.output` ls 子进程）与并发注册 fd 的交互。需 runtime_myp 调度器
+  深挖（poll 集合维护 + 每轮就绪驱动）。
+- **影响**：单进程 serveCoro 服务端**不能**承担多浏览器并发网关（多租户设计「网关短路径并发
+  不阻塞」验收受阻）——并发突发会楔死 acceptor；薄网关多连接转发同样依赖本修复。
+- **规避（应用侧，已采用）**：mypagent 网关**默认回阻塞 serve**（单连接串行，稳定）；serveCoro
+  仅显式 `MYP_WEB_CORO=1` 且只用于「单活动请求 + 容忍半开客户端」形态；长 /chat 不在事件循环内跑。
+- **复现（现场）**：mypagent `tests/gate_concurrency.sh`（注释记录边界，不做突发断言）+ 干净
+  复现：coro 服务端 + 2 路同时 curl 鉴权 /api/sessions → 双双超时、服务存活。无独立纯 MYP 最小
+  复现（待建，隔离 Process.output/fork 因素）。
+- **教训**：服务端「高并发全失败」先分 ①进程崩（exit 141 SIGPIPE → BUG-150 类）②进程活但
+  acceptor 不响应（调度器楔死，本 BUG）——用 `kill -0`/`ps` 验存活再归因，勿把两者混为一谈。
+  同类「慢挂起连接 + 高并发」问题先排除 SIGPIPE 再查调度器。
