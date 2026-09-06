@@ -53,6 +53,38 @@ class LoadedSet {
             return s;
         }
 
+        // P2 整闭包缓存键：编译器身份（二进制 size+mtime，重建即变）+ 全部读入文件
+        // （路径串 + 内容，loaded.set 含主文件/附加文件/全部 import）+ codegen 影响标志。
+        // 命中跳过 derive/sema/codegen 安全：闭包内容同 ⇒ 结果同；出错内容 hash 必变 →
+        // miss 走全量报错。命中后用缓存 .ll，Link 内对象缓存再跳 opt+llc。
+        string closureKey(LoadedSet loaded, int autoMain, int testMode, int libraryMode, int freestanding) {
+            long h = 1469598103934665603;
+            string self = "";
+            if (Args.count() > 0) self = Args.get(0);
+            string ident = "" + Fs.fileSize(self) + "|" + Fs.modifiedTime(self);
+            for (int i = 0; i < Str.len(ident); i = i + 1) {
+                h = (h ^ __myp_charcode(ident, i)) * 1099511628211;
+            }
+            string flags = "" + autoMain + "|" + testMode + "|" + libraryMode + "|" + freestanding;
+            for (int i = 0; i < Str.len(flags); i = i + 1) {
+                h = (h ^ __myp_charcode(flags, i)) * 1099511628211;
+            }
+            ArrayList<string> set = loaded.set();
+            for (int i = 0; i < set.size(); i = i + 1) {
+                string p = set.get(i);
+                if (Fs.isFile(p) == 0) continue;
+                for (int j = 0; j < Str.len(p); j = j + 1) {
+                    h = (h ^ __myp_charcode(p, j)) * 1099511628211;
+                }
+                h = h ^ 1;   // 路径/内容分隔
+                string content = Frontend.readFile(p);
+                for (int j = 0; j < Str.len(content); j = j + 1) {
+                    h = (h ^ __myp_charcode(content, j)) * 1099511628211;
+                }
+            }
+            return Link.hexLong(h);
+        }
+
         // 确定性转义（format.md §2）：\n \t \r \" \\ \0。
         // 注：MYP 串无法承载 NUL 字节，lexer 用 0x01 哨兵表示 \0，此处映射回 \0。
         string escape(string s) {
@@ -496,13 +528,14 @@ class LoadedSet {
             if (Fs.exists(file + ".libs") != 0) {
                 Link.addLibsSidecar(Str.trim(Frontend.readFile(file + ".libs")));
             }
+            LoadedSet loaded = new LoadedSet();   // 函数级：闭包缓存需在 parse 块外读 loaded
             Lexer lx = new Lexer(src);
             ArrayList<Tok> toks = lx.tokenize();
             DiagEngine diag = lx.diags();
             Parser pr = new Parser(toks, diag);
             AstTU tu = pr.parse();
             if (diag.errorCount() == 0) {
-                LoadedSet loaded = new LoadedSet();
+                loaded = new LoadedSet();
                 string sourceDir = Fs.dirname(file);
                 // 命令行输入文件预置进 loaded（import 跳过，防重复加载/重复类名）。
                 for (int fi = 0; fi < files.size(); fi = fi + 1) {
@@ -569,38 +602,71 @@ class LoadedSet {
                 Frontend.printDiagnostics(diag);
                 return 1;
             }
-            // @derive(X) 类级派生（@derive(Json) → 注入 toJson/fromJson；须在 sema 前）。
-            Frontend.deriveAll(tu, diag);
-            if (diag.errorCount() != 0) {
-                Frontend.printDiagnostics(diag);
-                return 1;
-            }
-            Sema se = new Sema(diag);
-            se.setAutoMain(autoMain);
-            if (timing != 0) tcDerive = __myp_now_ms();
-            se.expandMacros(tu);
-            se.analyze(tu);
-            if (diag.errorCount() != 0) {
-                Frontend.printDiagnostics(diag);
-                return 1;
-            }
-            if (timing != 0) tcSema = __myp_now_ms();
-            CodeGen cg = new CodeGen();
-            cg.setTestMode(testMode);
-            cg.setLibraryMode(libraryMode);
-            cg.setFreestanding(freestanding);
-            string ir = cg.generate(tu);
-            if (timing != 0) tcCg = __myp_now_ms();
-            // A4：打印编译期警告（C++ 镜像：@coro 过小栈等）
-            ArrayList<string> warns = cg.warnings();
-            for (int wi = 0; wi < warns.size(); wi = wi + 1) {
-                Console.writeLine("warning: " + warns.get(wi));
-            }
+            // ---- P2 整闭包缓存：命中跳过 derive/sema/codegen，直接用缓存 .ll ——
+            // Link 内对象缓存再跳过 opt+llc（全命中 selfhost 自编 ~1.9s → ~0.4s）。
+            // 键含编译器身份 + 全部读入文件（path+content）+ codegen 标志 ⇒ 内容同 ⇒
+            // 结果同（命中跳 sema 安全）；出错内容 hash 必变 → miss 全量报错。emitLlvmOnly
+            // 不缓存（用户要当前 IR）；link 从不缓存 → 链接错误每次重现。 ----
             string llPath = outPath + ".ll";
-            File of = new File();
-            of.open(llPath, "w");
-            of.write(ir);
-            of.close();
+            string closureCache = "";
+            int ccEnable = (emitLlvmOnly == 0) ? 1 : 0;
+            if (ccEnable != 0) {
+                closureCache = Fs.join(Link.objCacheDir(), "c_" + Frontend.closureKey(loaded, autoMain, testMode, libraryMode, freestanding) + ".ll");
+            }
+            int ccHit = 0;
+            if (ccEnable != 0 && Fs.isFile(closureCache) != 0) ccHit = 1;
+            string ir = "";
+            if (ccHit != 0) {
+                // 命中：写缓存 .ll（与全新 codegen 逐字节一致）→ Link 走对象缓存。
+                File cfin = new File();
+                cfin.open(closureCache, "r");
+                ir = cfin.readAll();
+                cfin.close();
+                File ofin = new File();
+                ofin.open(llPath, "w");
+                ofin.write(ir);
+                ofin.close();
+            } else {
+                // 全量路径：derive → macro/sema → codegen → 写 .ll → 存闭包缓存。
+                Frontend.deriveAll(tu, diag);
+                if (diag.errorCount() != 0) {
+                    Frontend.printDiagnostics(diag);
+                    return 1;
+                }
+                Sema se = new Sema(diag);
+                se.setAutoMain(autoMain);
+                if (timing != 0) tcDerive = __myp_now_ms();
+                se.expandMacros(tu);
+                se.analyze(tu);
+                if (diag.errorCount() != 0) {
+                    Frontend.printDiagnostics(diag);
+                    return 1;
+                }
+                if (timing != 0) tcSema = __myp_now_ms();
+                CodeGen cg = new CodeGen();
+                cg.setTestMode(testMode);
+                cg.setLibraryMode(libraryMode);
+                cg.setFreestanding(freestanding);
+                ir = cg.generate(tu);
+                if (timing != 0) tcCg = __myp_now_ms();
+                // A4：打印编译期警告（C++ 镜像：@coro 过小栈等）
+                ArrayList<string> warns = cg.warnings();
+                for (int wi = 0; wi < warns.size(); wi = wi + 1) {
+                    Console.writeLine("warning: " + warns.get(wi));
+                }
+                File of = new File();
+                of.open(llPath, "w");
+                of.write(ir);
+                of.close();
+                // codegen 成功即存闭包缓存（link 失败不存——每次重现链接错误）。
+                if (ccEnable != 0) {
+                    if (Fs.isDir(Link.objCacheDir()) == 0) Fs.mkdirP(Link.objCacheDir());
+                    File cfout = new File();
+                    cfout.open(closureCache, "w");
+                    cfout.write(ir);
+                    cfout.close();
+                }
+            }
             if (emitLlvmOnly != 0) {
                 Console.writeLine("LLVM IR saved: " + llPath);
                 if (timing != 0) {
