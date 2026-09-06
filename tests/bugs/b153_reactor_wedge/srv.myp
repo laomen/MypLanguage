@@ -20,7 +20,11 @@ class Srv {
                 long r = Coro.waitFd(srv.getFd(), 1, 0, 0);
                 if (r < 0) continue;
                 TcpClient cl = new TcpClient();
-                if (srv.accept(cl) != 0) continue;
+                // BUG-153 修复：非阻塞 accept（acceptNb）——poll 就绪与 accept 竞态下
+                // 无待接连接时返回 -1，回到 waitFd 继续等，绝不在事件循环内阻塞。
+                // （修复前用阻塞 accept()：并发突发时某趟 poll 报监听就绪但 accept 队列
+                // 已空 → 阻塞 accept 永久等待 → 反应堆停摆，acceptor 不再被 poll。）
+                if (srv.acceptNb(cl) != 0) continue;
                 this.conn(cl);
             }
         }

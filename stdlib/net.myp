@@ -48,6 +48,20 @@ class TcpServer {
             return client_fd >= 0 ? 0 : -1;
         }
 
+        // 非阻塞 accept（coro 反应堆 / 事件循环用；BUG-153 修复）：
+        // 监听 fd 置 O_NONBLOCK 后 accept——无待接连接立即返回 -1（EAGAIN），
+        // **绝不在事件循环/协程内阻塞**。调用约定：先 Coro.waitFd(监听fd) 就绪再
+        // acceptNb；返回 -1 时回到 waitFd 继续等（避免阻塞 accept 在 poll 就绪与
+        // accept 竞态下永久卡死 → 整个反应堆停摆，acceptor 不再被 poll、进程存活）。
+        // 注意：一旦调用即把监听 fd 置非阻塞（后续 accept 亦非阻塞）——仅 coro 反应堆
+        // 用；同步 serve（靠阻塞 accept 等连接）继续用上面的 accept() 不变。
+        int acceptNb(TcpClient client) {
+            myp_net_set_nonblock(fd_);
+            int client_fd = myp_net_accept(fd_);
+            client.setFd(client_fd);
+            return client_fd >= 0 ? 0 : -1;
+        }
+
         int getFd() { return fd_; }
 
         void close() {

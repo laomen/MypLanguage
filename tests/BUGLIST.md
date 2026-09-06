@@ -163,7 +163,7 @@
 | BUG-150 | � | **net send 未屏蔽 SIGPIPE → 服务端写已关闭连接崩（exit 141，v3.15.225 修复）**——对已关闭 socket send 默认触发 SIGPIPE 终止进程；myp_http 协程服务端向断开客户端写响应即崩（曾误判"高并发饿死"，实为崩溃后新连接全失败）。修复：三处 send 加 MSG_NOSIGNAL（Linux 0x4000）→ 写已关连接返回 EPIPE(-1) 优雅处理 | 回归 `tests/bugs/b150_send_sigpipe.myp`（服务端 send 一包（客户端不读）→ 客户端带未读数据 close 发 RST → 服务端再写不崩；复现时验证：去修复 → exit 141 SIGPIPE，加修复 → 5 断言全绿） |
 | BUG-151 | � | **@parallel 并发 worker 内 try/catch/throw → 异常状态跨线程串扰（段错误/假 uncaught，v3.15.232 修复）**——MYP 异常运行时状态（Exc.depth/handlerBufs/curType/errBuf）原为 @static 进程级全局、非线程安全：@parallel 并发 worker 各自 try/catch push/pop 交叉改写共享 handler 栈 → worker throw longjmp 到**别线程** jmp_buf（段错误 exit 139/总线 135），depth 丢失 → 假 `uncaught exception (object,type N)` exit 134。mypagent `fan_shared_mem_check`（3 真并发子 agent 各 tick 内 try/catch + Json/memory 操作）间歇 5-7% 崩 = type 21(JsonError) 未捕获假象。修复：Exc 改 `@static @thread class`（LLVM thread_local，对齐 C runtime `__thread`；pthread_create 真 TLS） | 复现（修复前）mypagent `tests/fan_shared_mem_check.myp` 2/25 + 纯 MYP `@parallel` try/catch/throw 7/8；回归 `tests/@test/parallel_exc_threadsafe.myp`（8×40000×16 并发 try+throw，修复前 ~全崩） |
 | BUG-152 | 🟩 | **@coro/@async 跨线程 + 接口 fat 四条运行时红线（合并，v3.15.65 起逐步修/纪律规避）**：①resume 持锁跨 ctx_switch → yield 绝不持锁（跨线程 coroLock 死锁；单线程递归 depth 掩盖）；锁 resume post-switch 统一释放、事件处理移出 coro 锁外（防 coro→ev 与 ev→coro 反转）；②跨线程 coroLock 死锁（同①特化）；③接口 fat 跨长 run GC/UAF（接口注入 observer 长生命周期 retain 不牢 → 悬垂/坏胖指针 null vtable 派发崩）——长活引用用具体型字段持有；④@async worker 跨线程投递不能落 string 局部（帧末 ARC release → 悬垂）——io.myp 返 raw addr 建头 + 协程侧 retain(+1) 交棒 | 纪律/回归：mypagent PITFALLS §9 + GuardManager 具体型字段/RemoteMemStore.fork/spawnSubParallel 只读共享；现场 coro_thread/async_file（v3.15.65）；无独立编译负测试（非 mypc 缺陷） |
-| BUG-153 | 🟥 | **coro 调度器（serveCoro 反应堆）真并发突发楔死——acceptor 不再被 poll，进程存活（非 SIGPIPE 崩溃）**：同一瞬间 2 路并发连接 → 请求全超时（服务端存活）；突发后单发也挂。**纯 echo（无 fork/文件 IO/鉴权）同样楔死（1-2 轮即楔，3/3）**——是反应堆 accept/fd 就绪处理缺陷，非 handler 因素。半开/慢客户端单发不楔（正常）。v0.1.118 同族「高并发+挂起连接部分饿死」曾被 BUG-150(SIGPIPE 崩) 误判覆盖——本观测**进程存活**排除 SIGPIPE（runtime_myp/coro.myp 调度器，未定位） | 自包含复现 `tests/bugs/b153_reactor_wedge/{srv.myp,repro.sh}`（纯 stdlib 内联反应堆，2 路并发 GET，3/3 稳定楔死）；网关侧 mypagent `tests/bug153_repro.sh` |
+| BUG-153 | � | **coro 调度器（serveCoro 反应堆）真并发突发楔死——acceptor 不再被 poll，进程存活（非 SIGPIPE 崩溃）**：同一瞬间 2 路并发连接 → 请求全超时（服务端存活）；突发后单发也挂。**纯 echo（无 fork/文件 IO/鉴权）同样楔死（1-2 轮即楔，3/3）**——是反应堆 accept/fd 就绪处理缺陷，非 handler 因素。半开/慢客户端单发不楔（正常）。v0.1.118 同族「高并发+挂起连接部分饿死」曾被 BUG-150(SIGPIPE 崩) 误判覆盖——本观测**进程存活**排除 SIGPIPE（runtime_myp/coro.myp 调度器，未定位） | 自包含复现 `tests/bugs/b153_reactor_wedge/{srv.myp,repro.sh}`（纯 stdlib 内联反应堆，2 路并发 GET，3/3 稳定楔死）；网关侧 mypagent `tests/bug153_repro.sh` |
 
 
 ---
@@ -3993,7 +3993,7 @@ mypagent 高频在 `Json_Json_string` 后由 `__longjmp` 段错误；现场 hand
   .fork 每线程独立镜像、spawnSubParallel 真并发子只读共享 backend/tools、UDS 结果投递）。无独立
   编译器负测试（非 mypc 缺陷）；现场复现见 coro_thread/async_file（v3.15.65）。
 
-## BUG-153（未修复 🟥）：coro 调度器（serveCoro 反应堆）真并发突发楔死——acceptor 不再被 poll，进程存活
+## BUG-153（已修复 🟩，v3.15.242，stdlib net 非阻塞 accept）：coro 调度器 serveCoro 反应堆真并发突发楔死——acceptor 不再被 poll，进程存活
 
 > 运行时缺陷（非 mypc 编译器）；mypagent 网关 serveCoro 实测（v0.1.138）。v0.1.118 曾记同族
 > 「10+ 长期挂起慢连接 + 高并发新请求时部分饿死/超时（MYP coro 调度器 poll/就绪处理边界）」，
@@ -4032,3 +4032,19 @@ mypagent 高频在 `Json_Json_string` 后由 `__longjmp` 段错误；现场 hand
 - **教训**：服务端「高并发全失败」先分 ①进程崩（exit 141 SIGPIPE → BUG-150 类）②进程活但
   acceptor 不响应（调度器楔死，本 BUG）——用 `kill -0`/`ps` 验存活再归因，勿把两者混为一谈。
   同类「慢挂起连接 + 高并发」问题先排除 SIGPIPE 再查调度器。
+
+## 修复（v3.15.242，stdlib `net.myp` 非阻塞 accept）
+
+- **根因定位**：coro 反应堆 acceptor 模式 = `Coro.waitFd(监听fd)` 就绪 → **阻塞 `accept()`**
+  （`myp_net_accept` 阻塞；监听 fd 未 O_NONBLOCK）。真并发突发下 poll 就绪与 accept 之间出现
+  竞态窗口（连接已被 accept 消费、就绪事件滞后）→ 某趟 accept 时队列空 → **阻塞 accept 永久
+  卡死** → acceptor 不再进 scheduler → 整个事件循环停摆（进程存活、acceptor 不再被 poll）。
+  strace 证据：3 次成功 accept（warm+2 路）后第 4 次 `accept(3,…)` 无返回、进程被 kill 时仍
+  阻塞在 accept syscall。fork 假设被推翻（自包含纯 stdlib 复现 8ff235b：纯 echo 无 fork 也楔）。
+- **修复（stdlib `TcpServer.acceptNb`）**：监听 fd 置 `O_NONBLOCK` 后 accept——无待接连接立即
+  返回 -1（EAGAIN），调用方回到 `waitFd` 继续等，**绝不在事件循环内阻塞**（标准 reactor 语义）。
+  同步 serve（靠阻塞 accept 等连接）继续用原 `accept()` 不变。coro 反应堆（myp_http/复现
+  srv.myp）改用 `acceptNb`。
+- **验证**：`tests/bugs/b153_reactor_wedge/repro.sh`（自包含纯 coro 反应堆，40 轮 2 路并发 +
+  跟进单发）修复前 round1 即楔，修复后 **40 轮全 200（NO-WEDGE）**；async_socket/全量 541/541
+  + bugs 20/20 无回归。mypagent myp_http coro serve 侧需同步改用 acceptNb（跨项目跟进）。

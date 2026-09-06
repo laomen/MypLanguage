@@ -27,6 +27,24 @@
 
 ## 编译器版本历史
 
+### v3.15.242 — BUG-153 修复：coro 反应堆非阻塞 accept（stdlib net acceptNb）（stdlib/运行时）
+
+**BUGLIST BUG-153（运行时，非编译器）**。stdlib `net.myp` `TcpServer.acceptNb`。
+
+- **根因**：coro 反应堆 acceptor（`Coro.waitFd(监听fd)` → 阻塞 `accept()`）在真并发突发下，
+  poll 就绪与 accept 间竞态 → accept 时队列已空 → **阻塞 accept 永久卡死** → acceptor 不再
+  进 scheduler → 事件循环停摆（进程存活、acceptor 不再被 poll、请求全超时）。strace 证据：
+  3 次成功 accept 后第 4 次 `accept(3)` 无返回、进程被 kill 时仍阻塞在 accept syscall。纯
+  stdlib 自包含复现（无 fork）稳定触发（round1 即楔）。
+- **修复**：`TcpServer.acceptNb` = 监听 fd 置 `O_NONBLOCK` 后 accept，无待接连接立即返 -1
+  （EAGAIN），调用方回 `waitFd` 继续等，绝不在事件循环内阻塞（标准 reactor 语义）。同步
+  serve（阻塞 accept 等连接）继续用原 `accept()` 不变。coro 反应堆（myp_http/复现 srv.myp）
+  改用 acceptNb。
+- **验证**：`tests/bugs/b153_reactor_wedge/repro.sh`（自包含纯 coro 反应堆，40 轮 2 路并发 +
+  跟进单发）修复前 round1 楔 → 修复后 **40 轮全 200 NO-WEDGE**；全量 541/541 + bugs 20/20
+  （async_socket 等 net/coro 目录无回归）。mypagent myp_http coro serve 侧同步改用 acceptNb
+  （跨项目跟进）。
+
 ### v3.15.241 — M-3 声明式宏卫生：宏体自声明局部 gensym（不撞调用方作用域）（selfhost additive）
 
 **非破坏性硬化（metaprogramming_gaps M-3，声明式宏展开器）**。sema `sema.myp`。
