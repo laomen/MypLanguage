@@ -572,15 +572,30 @@ LSP_PASS=0
 LSP_FAIL=0
 if [ -f "$PROJ_ROOT/tests/test_lsp.js" ] && command -v node >/dev/null 2>&1; then
     MYP_LSP_BIN="${MYP_LSP:-$(dirname "$MYPCC")/myp_lsp}"
+    # ① 单 URI hover/completion/documentSymbol + didChange 缓存失效
     lsp_out=$(MYP_LSP="$MYP_LSP_BIN" node "$PROJ_ROOT/tests/test_lsp.js" 2>&1)
     if echo "$lsp_out" | grep -qE "myp-lsp PASS=[0-9]+ FAIL=0"; then
         echo -e "${GREEN}PASS${NC} (hover/completion/documentSymbol 缓存失效)"
-        LSP_PASS=1
+        LSP_PASS=$((LSP_PASS + 1))
     else
-        echo -e "${RED}FAIL${NC}"
+        echo -e "${RED}FAIL${NC} (test_lsp.js)"
         echo "$lsp_out" | tail -15
         LSP_FAIL=1
         FAILED_TESTS="$FAILED_TESTS myp_lsp(hover-cache)"
+    fi
+    # ② 协议级覆盖（C7）：URI 隔离/didClose 生命周期/重复 didChange/UTF-8/
+    #    空·错·超大文件/高频交替不串位/非法 JSON-RPC 不崩
+    if [ -f "$PROJ_ROOT/tests/test_lsp_protocol.js" ]; then
+        proto_out=$(MYP_LSP="$MYP_LSP_BIN" node "$PROJ_ROOT/tests/test_lsp_protocol.js" 2>&1)
+        if echo "$proto_out" | grep -qE "myp-lsp-proto PASS=[0-9]+ FAIL=0"; then
+            echo -e "${GREEN}PASS${NC} (LSP 协议级：URI 隔离/生命周期/UTF-8/异常输入)"
+            LSP_PASS=$((LSP_PASS + 1))
+        else
+            echo -e "${RED}FAIL${NC} (test_lsp_protocol.js)"
+            echo "$proto_out" | tail -15
+            LSP_FAIL=1
+            FAILED_TESTS="$FAILED_TESTS myp_lsp(protocol)"
+        fi
     fi
 else
     echo "  (node 或 test_lsp.js 不可用)"
