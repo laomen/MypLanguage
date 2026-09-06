@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.15.240 — MO-4 路径 import 找不到文件 → 明确诊断（漏 `.myp` 不再级联误导）（selfhost additive）
+
+**非破坏性硬化（module_gaps MO-4，诊断改进）**。`main.myp Frontend.loadModule`。
+
+- 相对/绝对路径 import（`import "./sub/lib.myp";`）找不到文件时，此前镜像 C++ **静默
+  return 0**（只打 stderr 不加诊断）→ import 文件未并入 TU → 引用其符号报**级联误导**
+  （`undefined symbol 'x'` / `'x' is not callable` / `argument 1: expected 'int',
+  got 'void'`）——漏 `.myp` 扩展名（manual §10 规定相对/绝对导入须带）是最典型触发。
+- 修复：路径 import 找不到即发一条明确诊断
+  `cannot find import file '<path>' (relative/absolute imports need the '.myp'
+  extension; no such file: '<resolved>')`。名字 import（stdlib/点分）找不到仍报原
+  `cannot find import '<name>'` 不变。
+- 负测试 tests/negative/import_missing_ext.myp（EXPECT ERROR 匹配新诊断子串）；
+  全量 540/540 + bugs 20/20 + bootstrap MD5 一致。
+
 ### v3.15.239 — A5 容器型形参推导（`ArrayList<T>` 实参 → T）（selfhost additive 超前 oracle）
 
 **非破坏性硬化（generic_gaps A5，selfhost 新功能先落地）**。sema `sema.myp`。

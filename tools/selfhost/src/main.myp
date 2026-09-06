@@ -274,6 +274,13 @@ class LoadedSet {
                 // 名字 import 失败才加诊断。
                 if (imp.isPath() == 0) {
                     diag.error(0, 0, "cannot find import '" + imp.name() + "'");
+                } else {
+                    // MO-4（v3.15.240）：路径 import 找不到文件也发明确诊断——此前
+                    // 静默返回 → import 文件未并入 → 引用其符号报级联误导（undefined
+                    // symbol / 'x' is not callable / expected int got void）。相对/
+                    // 绝对导入须带 `.myp` 扩展名（manual §10），漏后缀即典型触发。
+                    diag.error(0, 0, "cannot find import file '" + imp.path()
+                        + "' (relative/absolute imports need the '.myp' extension; no such file: '" + path + "')");
                 }
                 return 0;
             }

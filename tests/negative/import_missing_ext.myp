@@ -1,0 +1,8 @@
+// module MO-4 负向：相对路径 import 漏 `.myp` 扩展名 → 明确诊断
+// 曾静默（loadModule 找不到文件直接 return 0）→ import 未并入 → 引用其符号报
+// 级联误导（undefined symbol / 'x' is not callable / expected int got void）。
+// v3.15.240 起路径 import 找不到即报一条 "cannot find import file ..."（提示需
+// .myp 扩展名）；名字 import 找不到仍报 "cannot find import '<name>'"。相对/绝对
+// 导入须带 .myp（manual §10）。
+// EXPECT ERROR: cannot find import file './missing_module'
+import "./missing_module";
