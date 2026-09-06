@@ -159,6 +159,7 @@
 | BUG-146 | 🟩 | **struct 内 slice 字段「读后即子访问」codegen 错 IR**（struct 含 `slice<float> vec`，直接 `r.vec[i]`/`r.vec.size`/`arr[i].vec[j]` 读到垃圾（聚合 `{ptr,i64}` 首字节被当 ptr 解引用 → 1077936128）或 -O2 下 opt-21 崩 `'%t..' defined with type '{ ptr, i64 }' but expected 'ptr'` + `getelementptr %Object, ptr %t..`；机制：codegen 把 slice 字段 load 成 `{ptr,i64}` 后又当 ptr 二次 GEP，本应 extractvalue 取 data；与 ARC 无关，独立 slice 正常，先取局部 `slice sv=r.vec; sv[i]` 正常） | 回归 `tests/bugs/b146_struct_slice_field.myp`（判别 A–F：直接字段/数组元素/.size/写/函数返回 struct 直取/slice-of-struct 元素写，双编译器 12 断言） |
 | BUG-147 | 🟩 | **实例属性数组下标 this.buf[i] 元素类型丢失（selfhost+oracle 双缺口）**——显式 `this.<动态数组属性>[i]`：selfhost sema 落成 'array'、codegen 元素 LLVM 类型落成默认（ubyte[] 属性按 i32 GEP/store 步长 4、4 字节写 → str() 读 [41 00 00 00]→"A"，本地 ubyte[] 却 i8 正确；读/写均错）。裸属性名 buf[i]、静态类属性 S.buf[i]、局部、函数返回都正常——只漏 ThisExpr 对象形态 | 回归 `tests/@test/this_prop_array_bytes.myp`（ubyte[] 逐字节写/读、str() 往返、int[] 属性、bytes() 入属性；6 断言，双编译器） |
 | BUG-148 | 🟩 | **定长数组 T[N] 的 .size/.size() 缺失；动态数组 T[] 需保持拒绝**——定长数组调用/属性形式此前编译错（无该成员/void），现支持返回编译期长度 N；动态数组（无运行时长度，文档指引用 slice<T>）的 .size/.length/.data 编译器干净拒绝（曾漏到 codegen 生成坏 IR） | 回归 `tests/@test/fixed_array_size.myp`（局部/this.属性/struct 字段 `.size`+`.size()`，6 断言）+ 负测试 `tests/negative/dynarray_size.myp` |
+| BUG-149 | 🟥 | **接口方法返回自定义 class 被解析成 void**——`interface I { R m(); }` 经接口变量调用 `R r = v.m();` 编译错 `cannot initialize variable 'r' of type 'R' with value of type 'void'`（返回类型 class 在调用点未携带、回落 void；同族 BUG-017 string→i32） | 待建 `tests/bugs/iface_return_class.myp`（修复前编译拒绝，规避：void+out 填充） |
 
 
 ---
@@ -3823,5 +3824,40 @@ mypagent 高频在 `Json_Json_string` 后由 `__longjmp` 段错误；现场 hand
   枚举 Identifier/This/Call/Subscript/Member/New 全形态——This 常被漏（同族历史：
   BUG-057~065 链式访问、BUG-029/033 iface upcast）。注意：@startup+@thread 才会输出
   Console（普通 main 无输出易误判「没跑」）。
+
+## BUG-149（未修复 🟥，v3.15.210 实测）：接口方法返回自定义 class 被解析成 void
+
+**oracle mypc 实测**（mypagent v0.1.116 抽 myp_http 模块时暴露）：
+`interface HttpHandler { HttpResp handle(HttpReq req); }`（接口纯签名返回自定义 class），
+经接口变量调用 `HttpResp resp = h.handle(req);` → 编译错
+`cannot initialize variable 'resp' of type 'HttpResp' with value of type 'void'`
+——接口方法返回类型为自定义 class 时，调用点把返回类型解析成 void。
+
+- **现象**：
+  - 接口方法返回**自定义 class**（非 string/int 等基本型）→ 经接口变量调用点把返回
+    类型解析成 void，赋值/初始化报类型错；调用当语句（忽略返回）时不报（隐藏）。
+  - 返回 string 经接口分派有同族 BUG-017（关联类型占位回落 i32）；class 返回则回落
+    void。返回 struct / slice 同族待查。
+  - 具体类直接调用（`c.make()`）返回正常——只发生在**经接口（fat/vtable）调用**。
+- **复现最小化**（待建 `tests/bugs/iface_return_class.myp`，修复前编译拒绝）：
+  ```
+  class R { action: @constructor R(){} int n(){ return 1; } property: int n_; }
+  interface I { R make(); }
+  class C { interface class I;
+      action:
+          @constructor C(){}
+          R make(){ R r = new R(); return r; }
+  }
+  // 调用点：I v = new C(); R r = v.make();    → "initialize ... with void"
+  ```
+- **根因（待定位）**：接口方法返回类型为自定义 class 时，sema/codegen 对「经接口
+  变量调用」的返回类型未携带 class → 回落 void（无返回对象分配/无类型）。selfhost
+  自举是否同缺待查（mypagent 均用 oracle mypc 编译实测）。
+- **规避（已采用）**：可复用模块的回调接口用 **void + out 填充**（
+  `void handle(req, R out)`：调用方 `R out = new R();` 传入，被调方 set 字段）——
+  MYP 验证范式（同 SessionStore.load(sid, MessageList out)、Evaluator.evaluate(…,
+  Verdict out)）。或经具体类持有返回。
+- **教训**：新增「接口方法返回自定义 class」前先小样验证返回类型是否携带；跨模块
+  回调一律 out 填充，别依赖接口方法返回 class。
 
 
