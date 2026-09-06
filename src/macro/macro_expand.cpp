@@ -17,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace mylang {
 
@@ -376,10 +377,31 @@ namespace {
 
 // 属性类型 → JSON 字段的 toJson 表达式片段（MYP 源码文本）与 fromJson 赋值语句。
 // 返回 false = 类型不支持（err 填充原因）。
+// derived：本 TU 内声明了 @derive(Json) 的类名集合（P1 嵌套类支持）。
+// owner_cls：当前被派生的类名（自引用检测）。
 bool jsonFieldExpr(const TypeNode& t, const std::string& name,
+                   const std::string& owner_cls,
+                   const std::unordered_set<std::string>& derived,
                    std::string& to_expr, std::string& from_stmt, std::string& err) {
-    if (t.element_type || !t.class_name.empty() || t.is_tuple || t.isFunction()) {
-        err = "array/class/struct/tuple/function";
+    // P1：嵌套 @derive(Json) 类属性——toJson 调子对象 toJson；fromJson 先 new 子
+    // 对象，再用 p.subString(path) 取子树 JSON 字符串交子对象 fromJson。子类必须
+    // 也是本 TU 内 @derive(Json)（否则生成的 toJson/fromJson 调用无落点）。
+    if (!t.class_name.empty()) {
+        if (t.class_name == owner_cls) {
+            err = "self-referential property (nested own class)";
+            return false;
+        }
+        if (derived.count(t.class_name) != 0) {
+            to_expr = "\"\\\"" + name + "\\\":\" + " + name + ".toJson()";
+            from_stmt = name + " = new " + t.class_name + "(); " + name +
+                        ".fromJson(p.subString(\"" + name + "\"));";
+            return true;
+        }
+        err = "nested type '" + t.class_name + "' must also be @derive(Json)";
+        return false;
+    }
+    if (t.element_type || t.is_tuple || t.isFunction()) {
+        err = "array/tuple/function";
         return false;
     }
     switch (t.basic_type) {
@@ -416,6 +438,11 @@ bool jsonFieldExpr(const TypeNode& t, const std::string& name,
 } // namespace
 
 bool expandDerives(TranslationUnit& tu, DiagnosticEngine& diag) {
+    // P1 嵌套类：先收集本 TU 内声明 @derive(Json) 的类名（展开前 derive 字段未清），
+    // 供 jsonFieldExpr 判定「嵌套类属性」是否可调用其 toJson/fromJson。
+    std::unordered_set<std::string> derived;
+    for (auto& c : tu.classes)
+        if (c.derive == "Json") derived.insert(c.name);
     for (auto& cls : tu.classes) {
         if (cls.derive.empty()) continue;
         if (cls.derive != "Json") {
@@ -444,10 +471,13 @@ bool expandDerives(TranslationUnit& tu, DiagnosticEngine& diag) {
         for (size_t i = 0; i < n; ++i) {
             const auto& p = cls.properties[i];
             std::string te, fs, err;
-            if (!jsonFieldExpr(p.type, p.name, te, fs, err)) {
+            if (!jsonFieldExpr(p.type, p.name, cls.name, derived, te, fs, err)) {
+                std::string extra = err.empty()
+                    ? "int/long/double/float/bool/string or nested @derive(Json) class"
+                    : err;
                 diag.error(p.range, "property '" + p.name + "' of class '" + cls.name +
                                     "' has a type not supported by @derive(Json) "
-                                    "(v1: int/long/double/float/bool/string)");
+                                    "(" + extra + ")");
                 bad = true;
                 break;
             }

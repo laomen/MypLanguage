@@ -27,6 +27,26 @@
 
 ## 编译器版本历史
 
+### v3.16.5 — @derive(Json) P1 第一步：嵌套 @derive(Json) 类属性
+
+**功能（additive，编译器派生宏）**。`@derive(Json)` 类属性类型扩展——**嵌套
+@derive(Json) 类**（属性类型是另一个本 TU 内 `@derive(Json)` 的类）：toJson 递归
+调子对象 `toJson()`；fromJson 自动 `new` 子对象 + `p.subString(path)` 取子树
+JSON 交子对象 `fromJson`。多层嵌套 round-trip 稳定，输出为合法 JSON 可路径读。
+自引用类属性（类型=自身）与嵌套类未 `@derive(Json)` → 编译期诊断。
+
+- oracle `src/macro/macro_expand.cpp`（`jsonFieldExpr` 加 derived 集合/owner 判
+  定，`expandDerives` 预扫描派生类名）+ selfhost `tools/selfhost/src/main.myp`
+  （`deriveAll` 同逻辑，合成源码逐字节一致），bootstrap MD5 gate 通过。
+- stdlib/runtime：`Json.subString(path)`（`myp_json_substring`，runtime_myp/
+  json.myp 子树序列化 `jsonSubImpl` = resolve path → `jsonSerializeNode`）。
+- 测试：`manual_serde_derive.myp` 加 `t_nested_roundtrip`/`t_deep_roundtrip`；
+  负测试 `derive_nested_not_derived`/`derive_self_referential`。全套 556 通过
+  0 失败。
+- 范围：仅嵌套类一步。P1 其余（enum / `T[]`/`slice` / `Option<T>` / 泛型类
+  per-instance）仍 open（`T[]` 无长度元数据、`slice<T>` 属性类型待成熟，需另行
+  设计）。
+
 ### v3.16.4 — LSP 性能基准 bench/lsp（roadmap §5.3）+ MYP_LSP_TIMING 钩子
 
 **新增** `bench/lsp/`（driver.js + run.sh + README）：合成 5k 类 .myp → didOpen /

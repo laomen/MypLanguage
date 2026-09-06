@@ -554,6 +554,13 @@ class LoadedSet {
         // 抽出生成的两个方法注入目标类。须在 sema 前调用。
         void deriveAll(AstTU tu, DiagEngine diag) {
             int n = tu.classes().size();
+            // P1 嵌套类：预扫描本 TU 内 @derive(Json) 类名（展开前 derive 未清），
+            // 供属性分发判定嵌套类属性可否调其 toJson/fromJson（镜像 C++ 预扫描）。
+            ArrayList<string> derNames = new ArrayList<string>();
+            for (int dci = 0; dci < n; dci = dci + 1) {
+                AstClass dc = tu.classes().get(dci);
+                if (dc.derive() == "Json") derNames.add(dc.name());
+            }
             for (int ci = 0; ci < n; ci = ci + 1) {
                 AstClass cls = tu.classes().get(ci);
                 if (Str.len(cls.derive()) == 0) continue;
@@ -581,14 +588,33 @@ class LoadedSet {
                     AstType pt = p.type();
                     string te = "";
                     string fs = "";
-                    if (pt.element() != null || Str.len(pt.className()) != 0
-                        || pt.isTuple() != 0 || pt.funcReturn() != null) {
-                        diag.error(p.line(), p.col(), "property '" + p.name() + "' of class '" + cls.name() + "' has a type not supported by @derive(Json) (v1: int/long/double/float/bool/string)");
+                    string bn = pt.basicName();
+                    string cn = pt.className();
+                    if (Str.len(cn) != 0) {
+                        // P1：嵌套 @derive(Json) 类属性（镜像 C++）——toJson 调子
+                        // 对象 toJson；fromJson 先 new 子对象再 p.subString 交子 fromJson。
+                        if (cn == cls.name()) {
+                            diag.error(p.line(), p.col(), "property '" + p.name() + "' of class '" + cls.name() + "' has a type not supported by @derive(Json) (self-referential property (nested own class))");
+                            bad = 1;
+                            break;
+                        }
+                        int isDer = 0;
+                        for (int di2 = 0; di2 < derNames.size(); di2 = di2 + 1) {
+                            if (derNames.get(di2) == cn) isDer = 1;
+                        }
+                        if (isDer != 0) {
+                            te = "\"\\\"" + p.name() + "\\\":\" + " + p.name() + ".toJson()";
+                            fs = p.name() + " = new " + cn + "(); " + p.name() + ".fromJson(p.subString(\"" + p.name() + "\"));";
+                        } else {
+                            diag.error(p.line(), p.col(), "property '" + p.name() + "' of class '" + cls.name() + "' has a type not supported by @derive(Json) (nested type '" + cn + "' must also be @derive(Json))");
+                            bad = 1;
+                            break;
+                        }
+                    } else if (pt.element() != null || pt.isTuple() != 0 || pt.funcReturn() != null) {
+                        diag.error(p.line(), p.col(), "property '" + p.name() + "' of class '" + cls.name() + "' has a type not supported by @derive(Json) (array/tuple/function)");
                         bad = 1;
                         break;
-                    }
-                    string bn = pt.basicName();
-                    if (bn == "int" || bn == "long" || bn == "short" || bn == "byte"
+                    } else if (bn == "int" || bn == "long" || bn == "short" || bn == "byte"
                         || bn == "uint" || bn == "ulong" || bn == "ushort" || bn == "ubyte") {
                         te = "\"\\\"" + p.name() + "\\\":\" + " + p.name();
                         fs = p.name() + " = p.getInt(\"" + p.name() + "\");";
@@ -602,7 +628,7 @@ class LoadedSet {
                         te = "\"\\\"" + p.name() + "\\\":\\\"\" + Json.escape(" + p.name() + ") + \"\\\"\"";
                         fs = p.name() + " = p.getString(\"" + p.name() + "\");";
                     } else {
-                        diag.error(p.line(), p.col(), "property '" + p.name() + "' of class '" + cls.name() + "' has a type not supported by @derive(Json) (v1: int/long/double/float/bool/string)");
+                        diag.error(p.line(), p.col(), "property '" + p.name() + "' of class '" + cls.name() + "' has a type not supported by @derive(Json) (type not supported)");
                         bad = 1;
                         break;
                     }

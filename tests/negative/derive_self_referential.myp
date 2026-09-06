@@ -1,0 +1,12 @@
+// EXPECT ERROR: self-referential property (nested own class)
+// @derive(Json) 自引用类（属性类型 = 自身）→ 编译期诊断（递归 toJson/fromJson
+// 无终止，v3.16.5 P1 拒绝）。
+import json;
+
+@derive(Json)
+class SelfNode {
+    property:
+        string name;
+        SelfNode child;
+}
+int main() { return 0; }

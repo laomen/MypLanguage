@@ -1,0 +1,18 @@
+// EXPECT ERROR: nested type 'Plain' must also be @derive(Json)
+// @derive(Json) 嵌套类属性：子类型必须也是 @derive(Json)（否则生成的
+// toJson/fromJson 调用无落点）→ 编译期诊断（v3.16.5 P1）。
+import json;
+
+class Plain {
+    action:
+        string getName() { return name; }
+    property:
+        string name;
+}
+
+@derive(Json)
+class BadNested {
+    property:
+        Plain inner;
+}
+int main() { return 0; }

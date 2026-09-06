@@ -27,6 +27,7 @@ ffi int myp_json_set_value(long handle, string path, string raw);
 ffi int myp_json_add_child(long handle, string path, string key, string raw);
 ffi int myp_json_remove(long handle, string path);
 ffi string myp_json_serialize(long handle);
+ffi string myp_json_substring(long handle, string path);   // 子树序列化（嵌套 fromJson）
 
 // JSON 文档解析器
 class Json {
@@ -96,6 +97,12 @@ class Json {
         // 整个文档美化序列化为字符串
         string serialize() {
             return myp_json_serialize(handle_);
+        }
+
+        // path 指向的子树序列化为 JSON 字符串（含容器）；供 @derive(Json) 嵌套类
+        // fromJson 取子对象再交嵌套类 fromJson(string)。path 无效返回 "null"。
+        string subString(string path) {
+            return myp_json_substring(handle_, path);
         }
 
         void free() {

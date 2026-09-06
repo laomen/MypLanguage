@@ -695,6 +695,15 @@ string jsonSerializeImpl(long handle) {
     return jsonStrDup(jsonSerializeNode(int(handle) - 1, 0));
 }
 
+// 子树序列化：resolve path 到节点 → 序列化该子树（供 @derive(Json) 嵌套类
+// fromJson 取子对象字符串再交嵌套类 fromJson）。path 无效返回 "null"。
+string jsonSubImpl(long handle, string path) {
+    if (handle <= 0) return jsonStrDup("null");
+    int cur = jsonResolvePath(int(handle) - 1, path);
+    if (cur < 0) return jsonStrDup("null");
+    return jsonStrDup(jsonSerializeNode(cur, 0));
+}
+
 long myp_json_parse(string s) { jsonLock(); long r = jsonParseImpl(s); jsonUnlock(); return r; }
 int myp_json_get_type(long handle, string path) { jsonLock(); int r = jsonGet_typeImpl(handle, path); jsonUnlock(); return r; }
 string myp_json_get_string(long handle, string path) { jsonLock(); string r = jsonGet_stringImpl(handle, path); jsonUnlock(); return r; }
@@ -709,3 +718,4 @@ int myp_json_set_value(long handle, string path, string raw) { jsonLock(); int r
 int myp_json_add_child(long handle, string path, string key, string raw) { jsonLock(); int r = jsonAdd_childImpl(handle, path, key, raw); jsonUnlock(); return r; }
 int myp_json_remove(long handle, string path) { jsonLock(); int r = jsonRemoveImpl(handle, path); jsonUnlock(); return r; }
 string myp_json_serialize(long handle) { jsonLock(); string r = jsonSerializeImpl(handle); jsonUnlock(); return r; }
+string myp_json_substring(long handle, string path) { jsonLock(); string r = jsonSubImpl(handle, path); jsonUnlock(); return r; }

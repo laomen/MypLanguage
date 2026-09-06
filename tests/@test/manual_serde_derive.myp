@@ -44,3 +44,66 @@ class Player {
     Test.assertEq(doc.getBool("alive"), 0);
     doc.free();
 }
+
+// ---- P1 嵌套 @derive(Json) 类（v3.16.5）----
+// 类属性类型为另一个 @derive(Json) 类 → toJson 递归调子 toJson；fromJson 先 new
+// 子对象，再用 Json.subString(path) 取子树 JSON 交子 fromJson。多层嵌套 round-trip。
+
+@derive(Json)
+class NestedItem {
+    action:
+        string getName() { return name; }
+        int getQty() { return qty; }
+    property:
+        string name;
+        int qty;
+}
+
+@derive(Json)
+class NestedOrder {
+    action:
+        string itemName() { return item.getName(); }
+        int total() { return qty + item.getQty(); }
+    property:
+        NestedItem item;
+        int qty;
+}
+
+@derive(Json)
+class DeepWrap {
+    property:
+        NestedOrder order;
+}
+
+@test void t_nested_roundtrip() {
+    NestedOrder o = new NestedOrder();
+    o.fromJson("{\"item\":{\"name\":\"pear\",\"qty\":7},\"qty\":1}");
+    string j = o.toJson();
+    Test.assertStrEq(j, "{\"item\":{\"name\":\"pear\",\"qty\":7},\"qty\":1}");
+    Test.assertStrEq(o.itemName(), "pear");
+    Test.assertEq(o.total(), 8);
+    // fromJson 已自动 new 嵌套子对象；round-trip 稳定
+    NestedOrder o2 = new NestedOrder();
+    o2.fromJson(j);
+    Test.assertStrEq(o2.toJson(), j);
+    // 输出是合法 JSON（可解析并读到嵌套字段）
+    Json doc = new Json(j);
+    Test.assertEq(doc.getInt("qty"), 1);
+    Test.assertEq(doc.getInt("item.qty"), 7);
+    Test.assertStrEq(doc.getString("item.name"), "pear");
+    doc.free();
+}
+
+@test void t_deep_roundtrip() {
+    DeepWrap w = new DeepWrap();
+    w.fromJson("{\"order\":{\"item\":{\"name\":\"deep\",\"qty\":2},\"qty\":5}}");
+    string j = w.toJson();
+    Test.assertStrEq(j, "{\"order\":{\"item\":{\"name\":\"deep\",\"qty\":2},\"qty\":5}}");
+    DeepWrap w2 = new DeepWrap();
+    w2.fromJson(j);
+    Test.assertStrEq(w2.toJson(), j);
+    // 多层嵌套可路径读取
+    Json doc = new Json(j);
+    Test.assertStrEq(doc.getString("order.item.name"), "deep");
+    doc.free();
+}
