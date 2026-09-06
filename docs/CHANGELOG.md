@@ -27,6 +27,33 @@
 
 ## 编译器版本历史
 
+### v3.15.232 — BUG-151 修复：@parallel 并发 worker 异常状态逐线程化（runtime_myp/exception.myp）
+
+**BUG-151（🟩）**。@parallel 并发 worker 内 try/catch/throw（mypagent 真并发子 agent
+各 tick 内 try/catch + Json/memory 操作）间歇崩：`uncaught exception (object, type
+21)` exit 134（假 uncaught）或段错误 exit 139/总线错误 135（隔离 ~5-7%）。type 21 =
+JsonError——子 tick 内 Json 解析失败**本应被同线程 catch**，却报未捕获。
+
+- **根因（MYP runtime 落后 C runtime）**：异常运行时状态 `Exc`（depth/handlerBufs/
+  curType/curObj/errBuf）是 `@static class` → **进程级全局、非线程安全**；C runtime
+  （runtime.c）同函数为 `static __thread`（真 TLS）→ C 版无此 bug。@parallel worker
+  是 pthread（v3.15.77 起 myp_thread_spawn 用 pthread_create 建真 TLS）——各自
+  try/catch push/pop **交叉读写共享 handler 栈**：①worker throw → get_jmpbuf 读全局
+  depth 顶部槽 = 别线程刚 push 的 jmp_buf → longjmp 到别线程栈帧 → 段错误/总线；
+  ②并发 push/pop 非原子 → depth 丢失到 0 → 同线程该被 catch 的异常报 "uncaught" →
+  exit(134) 杀全进程。
+- **最小纯 MYP 复现（本版建立）**：`@parallel` 8 worker × 40000 项 × 16 次内层
+  try/throw/catch——修复前 ~7/8 段错误/总线错误；no-throw 变体全稳定（隔离到 throw/
+  longjmp 路径）；arena 预暖不变（排除分配首触）。mypagent fan_shared_mem_check
+  修复前隔离 2/25 崩。
+- **修复（runtime_myp/exception.myp 一处）**：`Exc` 改 `@static @thread class` → LLVM
+  `thread_local`（@thread 静态类 + pthread TLS 真逐线程）——异常状态逐线程，各 worker
+  try/catch/throw 线程内一致（同线程 catch 生效、无跨线程 longjmp、无假 uncaught），
+  对齐 C runtime `__thread` 语义。
+- 正例 `tests/@test/parallel_exc_threadsafe.myp`（8×40000×16 并发 try+throw，修复前
+  ~全崩 → 全绿）；全量 528/528 + bugs 20/20 + bootstrap MD5 一致；mypagent
+  fan_shared_mem_check 隔离 30/30（修复前 2/25）。
+
 ### v3.15.231 — A1 两条边界：跨实例类泛型（instance-of-instance 类型实参）+ 泛型类接口默认方法（selfhost）
 
 **非破坏性硬化（generic_gaps A1 收尾后两条边界，parser + sema + codegen）**。A1 仅剩的

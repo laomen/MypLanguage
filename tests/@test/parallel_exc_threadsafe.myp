@@ -1,0 +1,37 @@
+// BUG-151（v3.15.232，runtime_myp/exception.myp）回归：@parallel 并发 worker 内
+// try/catch/throw 的异常状态逐线程隔离。
+// 根因：异常运行时状态（Exc.depth/handlerBufs/curType/curObj/errBuf）原为 @static
+//（进程级全局、非线程安全）——@parallel 并发 worker 各自 try/catch push/pop 交叉
+// 改写共享 handler 栈 → worker throw longjmp 到**别线程**的 jmp_buf → 段错误/总线
+// 错误（exit 139/135）；depth 丢失 → 假 "uncaught exception" → exit(134) 杀全进程
+//（mypagent fan_shared_mem_check 间歇 5-7%）。
+// 修复：Exc 改 `@static @thread class`（→ LLVM thread_local；myp_thread_spawn 自
+// v3.15.77 用 pthread_create 建真 TLS）——对齐 C runtime 的 `static __thread` 版。
+// 本回归：8 worker × 40000 项 × 内层 8 次 try、1/5 抛 Boom（修复前 ~7/8 段错误/
+// 总线错误；修复后全绿）。@parallel 体驱动 try/catch+throw 是 BUG-151 最小纯 MYP
+// 复现（mypagent 侧 3 子 agent 各 tick 内 try/catch + Json 操作的等价形态）。
+import test;
+import env;
+import error;
+import pool;
+
+class Boom {
+    action:
+        @constructor Boom() {}
+}
+
+@test void t() {
+    int N = 8;
+    Parallel.setThreads(N);
+    @parallel for (int i = 0; i < 40000; i = i + 1) {
+        for (int k = 0; k < 16; k = k + 1) {
+            try {
+                if ((i + k) % 5 == 0) throw new Boom();
+                int x = k * 3 + i;
+            } catch (Boom e) { }
+            catch (Error e) { }
+            catch (e) { }
+        }
+    }
+    Test.report("t", true);
+}

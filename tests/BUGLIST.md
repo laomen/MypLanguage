@@ -161,7 +161,7 @@
 | BUG-148 | 🟩 | **定长数组 T[N] 的 .size/.size() 缺失；动态数组 T[] 需保持拒绝**——定长数组调用/属性形式此前编译错（无该成员/void），现支持返回编译期长度 N；动态数组（无运行时长度，文档指引用 slice<T>）的 .size/.length/.data 编译器干净拒绝（曾漏到 codegen 生成坏 IR） | 回归 `tests/@test/fixed_array_size.myp`（局部/this.属性/struct 字段 `.size`+`.size()`，6 断言）+ 负测试 `tests/negative/dynarray_size.myp` |
 | BUG-149 | � | **接口方法返回自定义 class 被解析成 void（selfhost 落后）**——`interface I { R m(); }` 经接口变量调用 `R r = v.m();` 编译错 `cannot initialize variable 'r' of type 'R' with value of type 'void'`（接口收集 pass 早于类注册 → typeToKind 回落 "void"；oracle 正常）。修复：使用点对接口方法声明返回 AstType 惰性重算 kind + 设 valueClass | 回归 `tests/bugs/iface_return_class.myp`（devirt new + 接口形参非 devirt + 链式；2 @test/4 断言，双编译器） |
 | BUG-150 | � | **net send 未屏蔽 SIGPIPE → 服务端写已关闭连接崩（exit 141，v3.15.225 修复）**——对已关闭 socket send 默认触发 SIGPIPE 终止进程；myp_http 协程服务端向断开客户端写响应即崩（曾误判"高并发饿死"，实为崩溃后新连接全失败）。修复：三处 send 加 MSG_NOSIGNAL（Linux 0x4000）→ 写已关连接返回 EPIPE(-1) 优雅处理 | 回归 `tests/bugs/b150_send_sigpipe.myp`（服务端 send 一包（客户端不读）→ 客户端带未读数据 close 发 RST → 服务端再写不崩；复现时验证：去修复 → exit 141 SIGPIPE，加修复 → 5 断言全绿） |
-| BUG-151 | 🟥 | **@parallel 并发子 + UDS 共享记忆（mypagent_mem 服务）间歇逃逸异常/段错误**——mypagent `fan_shared_mem_check`：3 真并发子各 fork RemoteMemStore 连同一 Memory 服务，首轮 memory.search 远程遍历（每访问一条全量 UDS list 刷新 + Json 分配）与 done 写并发 → 间歇（隔离 ~5-7%）`uncaught exception (object,type 21)` exit 134 / 段错误 exit 139。A/B 交错 20 轮 基线=改后=1/20 → HEAD 既有（非 v0.1.119 引入） | 复现 mypagent `tests/fan_shared_mem_check.myp`（隔离循环 ~5%）；最小纯 MYP 复现（@parallel N 线程并发连同一 UDS server list/save）待建 |
+| BUG-151 | � | **@parallel 并发 worker 内 try/catch/throw → 异常状态跨线程串扰（段错误/假 uncaught，v3.15.232 修复）**——MYP 异常运行时状态（Exc.depth/handlerBufs/curType/errBuf）原为 @static 进程级全局、非线程安全：@parallel 并发 worker 各自 try/catch push/pop 交叉改写共享 handler 栈 → worker throw longjmp 到**别线程** jmp_buf（段错误 exit 139/总线 135），depth 丢失 → 假 `uncaught exception (object,type N)` exit 134。mypagent `fan_shared_mem_check`（3 真并发子 agent 各 tick 内 try/catch + Json/memory 操作）间歇 5-7% 崩 = type 21(JsonError) 未捕获假象。修复：Exc 改 `@static @thread class`（LLVM thread_local，对齐 C runtime `__thread`；pthread_create 真 TLS） | 复现（修复前）mypagent `tests/fan_shared_mem_check.myp` 2/25 + 纯 MYP `@parallel` try/catch/throw 7/8；回归 `tests/@test/parallel_exc_threadsafe.myp`（8×40000×16 并发 try+throw，修复前 ~全崩） |
 
 
 ---
@@ -3924,30 +3924,30 @@ mypagent 高频在 `Json_Json_string` 后由 `__longjmp` 段错误；现场 hand
   改回 0 → 该测试 exit 141（SIGPIPE 崩）；恢复修复 → 5 断言全绿。bugs 20/20 + 全量 520/520。
 - **教训**：服务端协程写前对端可能已断；「高并发全失败 + 进程消失」先查信号退出（exit 141=SIGPIPE）再归因调度。
 
-## BUG-151（未修复 🟥）：@parallel 并发子 + UDS 共享记忆 间歇逃逸异常/段错误
+## BUG-151（已修复 🟩，v3.15.232）：@parallel 并发 worker 异常状态跨线程串扰 → 段错误/假 uncaught
 
-- **现象**：mypagent `tests/fan_shared_mem_check.myp`（@parallel 真并发 3 子 + 各自
-  RemoteMemStore fork 连同一 mypagent_mem 服务写共享记忆）**间歇崩溃**——隔离循环
-  ~5-7%（20 轮 1 次），套件下偶发：`uncaught exception (object, type 21)` → exit 134
-  （abort），或段错误 exit 139。输出示例：`mem server start=0` 后随即崩。
-- **排除归因（A/B 交错证据）**：mypagent 基线（HEAD，未含 v0.1.119 改动）与改后
-  交错各 20 轮：**基线=1/20、改后=1/20（相等）**——HEAD 既有潜在缺陷，非某次改动
-  引入。隔离 30 轮 基线 2/30 vs 改后 6/30 的差异为系统漂移（顺序跑负载上升），
-  交错对照才可信。
-- **触发面（mypagent 侧观察）**：每并发子首轮 `memory.search` 走远程遍历——RemoteMemStore
-  的 `count()/tierAt()/keyAt()/valueAt()` **每访问一条都 `ensureFresh()` → 全量 UDS list
-  拉取 + Json 解析（大量分配）**；与子 done 的 `store`（semantic 写）并发。@parallel
-  线程各自 UDS + 重分配，疑与 MYP stdlib/runtime 的 @parallel 线程异常传播（type 21
-  未捕获逃逸）或 GC 时序有关；也可能是 RemoteMemStore 并发镜像刷新设计放大分配压力。
-- **定位难点**：复现率低（~5%）、gdb 难稳定捕捉；`type 21` 具体异常类型未查明。
-- **复现**：mypagent `bash tests/run_memory_tests.sh` 偶发 fan_shared_mem_check FAIL
-  （exit 134/139）；隔离：`mypc -O2 --stdlib <stdlib> tests/fan_shared_mem_check.myp
-  -o /tmp/fsc` 后 `for i in $(seq 1 30); do timeout 60 /tmp/fsc; done` 约 1-2/30 崩。
-  注意该测试需 `build/bin/mypagent_mem`（缺失会自动 mypc 现编）。
-- **建议排查方向**：① MYP stdlib @parallel 池 worker 线程内 `throw` 是否跨线程逃逸/
-  未处理 → abort（type 21）；② runtime 在 @parallel 多线程大量分配下的 GC 线程安全；
-  ③ 最小纯 MYP 复现：N 个 @parallel 线程各自连同一 Uds server 并发 `list`+`save` 循环
-  压测（现复现挂在 mypagent，未提炼为 MYPLanguage `tests/bugs/` 独立用例——待建）。
-- **教训**：并发/偶发崩溃先 A/B 交错对照排除系统漂移，别把漂移当回归；「并发 +
-  UDS 每访问全量刷新」的分配风暴会放大底层线程安全/GC 问题的触发概率。
-
+- **现象**：@parallel 并发 worker 内 try/catch/throw（如 mypagent `fan_shared_mem_check`
+  真并发子 agent 各 tick 内 try/catch + Json/memory 操作）间歇崩——隔离 ~5-7%
+  `uncaught exception (object, type 21)` exit 134（abort），或段错误 exit 139 /
+  总线错误 exit 135。type 21 = JsonError：子 agent tick 内 Json 解析失败**本应被
+  同线程 catch**，却报未捕获（假 uncaught，实为异常状态被并发破坏）。
+- **根因（MYP runtime 落后于 C runtime）**：异常运行时状态 `Exc`（depth/handlerBufs/
+  curType/curObj/errBuf）是 `@static class` → **进程级全局、非线程安全**；C runtime
+  （runtime.c）同函数是 `static __thread`（真 TLS）→ C 版无此 bug（selfhost/MYP
+  runtime 独占缺陷）。@parallel worker 是 pthread（v3.15.77 起 myp_thread_spawn 用
+  pthread_create 建真 TLS），各自 try/catch 的 push/pop **交叉读写共享 handler 栈**：
+  ①worker throw → myp_exception_get_jmpbuf 读全局 depth 顶部槽 = **别线程**刚 push
+  的 jmp_buf → longjmp 到别线程栈帧 → 段错误/总线错误；②并发 push/pop 非原子 →
+  depth 丢失到 0 → 本应同线程 catch 的异常报 "uncaught" → exit(134) 杀全进程。
+- **最小纯 MYP 复现（BUGLIST ③，本版建立）**：`@parallel for` 8 worker × 40000 项 ×
+  16 次内层 `try{ (i+k)%5==0 → throw new Boom(); } catch(Boom/Error/e)`——修复前
+  ~7/8 段错误/总线错误；no-throw 变体全稳定（隔离到 throw/longjmp 路径）；
+  arena 预暖不变（排除分配首触）。mypagent fan_shared_mem_check 修复前隔离
+  2/25 崩。
+- **修复（v3.15.232，runtime_myp/exception.myp 一处）**：`Exc` 改 `@static @thread
+  class` → LLVM `thread_local`（@thread 静态类自 v3.15.77 pthread TLS 起真逐线程）
+  ——异常状态逐线程，try/catch/throw 各自线程内一致（同线程 catch 生效、无跨线程
+  longjmp、无假 uncaught），与 C runtime `__thread` 语义对齐。
+- **回归**：`tests/@test/parallel_exc_threadsafe.myp`（8×40000×16 并发 try+throw，
+  修复前 ~全崩 → 修复后全绿）+ mypagent fan_shared_mem_check 隔离 30/30（修复前
+  2/25）+ 全量 528/528 + bugs 20/20 + bootstrap MD5 一致。

@@ -23,7 +23,13 @@ ffi int myp_release(string obj);
 ffi string myp_to_string_i32(int val);
 ffi void longjmp(long jb, int val);   // libc（jmp_buf 指针 / 64 位）
 
-@static class Exc {
+// BUG-151（v3.15.232）：异常状态必须**逐线程**——`@thread` 静态类 → LLVM
+// thread_local（pthread 建真 TLS，v3.15.77 起 myp_thread_spawn 用 pthread_create），
+// 对齐 C runtime 的 `static __thread` 版（runtime.c 本就 __thread）。此前 @static
+//（进程级全局）→ @parallel 并发 worker 各自 try/catch push/pop 交叉改写共享
+// handler 栈 → worker throw longjmp 到**别线程**的 jmp_buf（栈帧已去/将去）→
+// 段错误/总线错误；depth 丢失 → 假 "uncaught exception" → exit(134) 杀全进程。
+@static @thread class Exc {
     property:
         long handlerBufs = 0;   // 处理栈（arena 64*8 jmp_buf* 槽，0=未初始化）
         int depth = 0;
