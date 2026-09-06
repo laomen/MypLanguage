@@ -1,0 +1,20 @@
+// EXPECT ERROR: shift amount 33 exceeds the 32-bit width of the operand
+// N-3 负测试：常量越宽移位 1<<33 ——shl 移位量 ≥ 位宽是 LLVM poison/无回绕语义，
+// 此前静默未定义值。selfhost 鲁棒性提升：字面量移位量越宽干净拒绝
+// （小整型字面量按 int 提升判 32 位；long 系 64 位）。
+import test;
+import env;
+
+class R {
+    action:
+        @constructor R() {}
+        void go() {
+            int s = 1 << 33;
+            Test.assertEq(s, 0, "s");
+        }
+}
+@test void t() {
+    R r = new R();
+    r.go();
+    Test.report("t", true);
+}

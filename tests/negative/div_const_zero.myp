@@ -1,0 +1,20 @@
+// EXPECT ERROR: division by zero (constant zero divisor)
+// N-2 负测试：常量零除数 100/0 ——整数除零是 LLVM poison/UB，此前静默产出垃圾
+// 值（无 SIGFPE/无诊断）。selfhost 鲁棒性提升：字面量零除数干净拒绝
+// （float/double 除零 = IEEE inf 合法，不受影响）。
+import test;
+import env;
+
+class R {
+    action:
+        @constructor R() {}
+        void go() {
+            int w = 100 / 0;
+            Test.assertEq(w, 0, "w");
+        }
+}
+@test void t() {
+    R r = new R();
+    r.go();
+    Test.report("t", true);
+}

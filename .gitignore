@@ -52,6 +52,7 @@ docs/*.md
 !docs/manual_en.md
 !docs/grammar.md
 !docs/CHANGELOG.md
+docs/review/
 
 # 本地工作区杂项（不追踪）
 tests_mix.myp

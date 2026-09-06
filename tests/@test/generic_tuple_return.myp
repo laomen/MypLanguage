@@ -1,0 +1,21 @@
+// B2 回归：泛型函数返回元组，T 在元组 funcParamTypes 里未替换。
+// `(int, T) pair<T>(int a, T b){ return (a,b); }` 实例化 pair<string> —— selfhost
+// 曾取模板返回 (int, T)（未实例化，T→void）→ 值类型 (int, void) 误报 / 坏 IR。
+// 修复：destructureTupleElems（sema）+ exprLlvmType 元组返回块（codegen）优先用
+// CallExpr.resolved（实例名，clone 已替换 T）。
+
+import test;
+import env;
+
+(int, T) pair<T>(int a, T b) { return (a, b); }
+(T, A) swap<T, A>(A a, T b) { return (b, a); }
+
+@test void t1() {
+    (int, string) r = pair<string>(1, "x");
+    Test.assertEq(r.0, 1, "a");
+    Test.assertStrEq(r.1, "x", "b");
+    (int, string) s = swap<int, string>("hi", 7);
+    Test.assertEq(s.0, 7, "s0");
+    Test.assertStrEq(s.1, "hi", "s1");
+    Test.report("t1", true);
+}

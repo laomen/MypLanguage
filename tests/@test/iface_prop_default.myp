@@ -1,0 +1,45 @@
+// B1 [E-G2] 回归（非泛型）：接口类型类属性 `Shape s_ = new Circle()` 默认初值
+// upcast + 属性派发。selfhost 曾漏接口属性默认初值的 fat-ptr upcast（b032/033
+// 只修局部/数组，属性字段漏网）→ opt-21 "ptr vs {ptr,ptr}"。修复：NewExpr 属性
+// 默认初值块对接口属性做 upcastIface（BUG-137 同族）。
+
+import test;
+import env;
+
+interface Shape {
+    int area();
+}
+class Circle {
+    interface class Shape;
+    action:
+        int area() { return radius * radius; }
+        void setR(int r) { radius = r; }
+    property: int radius;
+}
+class Rect {
+    interface class Shape;
+    action:
+        int area() { return 7; }
+}
+class Plain {
+    property: Shape s_ = new Circle();   // 默认初值：具体类 → 接口属性
+    action:
+        int go() { return this.s_.area(); }
+        void set(Shape s) { this.s_ = s; }
+        Shape get() { return this.s_; }
+}
+
+@test void t1() {
+    Plain p = new Plain();
+    Test.assertEq(p.go(), 0, "default circle area (radius 0)");
+    Circle c = new Circle();
+    c.setR(3);
+    p.set(c);
+    Test.assertEq(p.go(), 9, "assigned circle");
+    Shape s = p.get();
+    Test.assertEq(s.area(), 9, "get as iface");
+    Plain q = new Plain();
+    q.set(new Rect());
+    Test.assertEq(q.go(), 7, "rect via iface");
+    Test.report("t1", true);
+}

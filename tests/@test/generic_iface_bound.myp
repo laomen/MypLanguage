@@ -1,0 +1,35 @@
+// B1 [E-G2] 回归（泛型受约束 T）：泛型类 `G<T where T : Shape>` 方法内
+// （1）T 形参直接接口方法派发 `s.area()`（返回 int），（2）`T ret(T s){ return s; }`
+// 返回类型参数。selfhost 曾把 `return s` 误报 "cannot return value of type
+// 'interface' from function returning 'int'"（typeToKind(T) 占位回落 int）。
+// 修复：返回类型为类型参数时跳过模板期 return 严格检查（实例化权威）。
+
+import test;
+import env;
+
+interface Shape {
+    int area();
+}
+class Circle {
+    interface class Shape;
+    action:
+        int area() { return radius * radius; }
+        void setR(int r) { radius = r; }
+    property: int radius;
+}
+
+class G<T where T : Shape> {
+    action:
+        int go(T s) { return s.area(); }
+        T ret(T s) { return s; }
+}
+
+@test void t1() {
+    G<Circle> g = new G<Circle>();
+    Circle c = new Circle();
+    c.setR(4);
+    Test.assertEq(g.go(c), 16, "T param iface dispatch");
+    Circle c2 = g.ret(c);
+    Test.assertEq(c2.area(), 16, "T return identity");
+    Test.report("t1", true);
+}

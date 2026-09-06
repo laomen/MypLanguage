@@ -1,0 +1,14 @@
+// semantic_gaps §3 负向：关系比较 < 左操作数为 bool 须拒绝（此前 BUG-118 豁免
+// bool → `0 < x < 10` 被左结合当 ((0<x)<10)，bool→int 静默错算；oracle 干净
+// 拒绝 "expected numeric type, got 'bool'"）。
+// EXPECT ERROR: expected numeric type, got 'bool'
+import env;
+class T {
+    action:
+        @constructor T() {
+            int x = 15;
+            bool b = (0 < x < 10);
+            Console.writeString("A\n");
+        }
+}
+int main(){T t=new T();return 0;}

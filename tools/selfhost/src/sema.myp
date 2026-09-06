@@ -2480,7 +2480,14 @@ class Sema {
             if (dv.kind() == "Call") {
                 AstExpr tcl = dv.callee();
                 if (tcl != null && tcl.kind() == "Identifier") {
-                    AstType trt = findFuncRetType(tcl.name(), dv.args().size());
+                    // B2（元组返回 T 未替换）：泛型函数调用 pair<string>(1,"x")——
+                    // callee 名是模板 "pair"，其返回 (int, T) 未实例化 → T 的
+                    // typeToKind 回落 void → 值类型 (int, void)（应 (int, string)）。
+                    // resolved 存的是实例化名 pair_string_inst（其返回已被 clone 替换）
+                    // → 优先用 resolved；普通函数 resolved 为空则回落源名。
+                    string fname = dv.resolved();
+                    if (Str.len(fname) == 0) fname = tcl.name();
+                    AstType trt = findFuncRetType(fname, dv.args().size());
                     if (trt != null && trt.isTuple() != 0) {
                         ArrayList<string> out = new ArrayList<string>();
                         for (int i = 0; i < trt.funcParamTypes().size(); i = i + 1) out.add(typeToKind(trt.funcParamTypes().get(i)));
@@ -4129,6 +4136,22 @@ class Sema {
                         lambdaExpectedRet_ = null;
                         if (initLocal.kind() == "Lambda") initLocal.setResolvedKind("int");
                     }
+                    // §6.2 / BUG-100 family：函数类型变量以裸具名函数初始化
+                    // `(int)->int f = inc;` ——visitExpr(inc) 落到 "function"（自举
+                    // codegen 不支持函数名→闭包转换；oracle 也拒 "undefined variable
+                    // 'inc'"）→ typesCompat("function","function") 放行 → codegen 发
+                    // 非法 {ptr,ptr} IR → opt-21 崩。干净拒绝（镜像函数实参的既有
+                    // 消息）；合法写法 = lambda 包装 (x)=>inc(x)。
+                    if (v.init() != null && v.type() != null && v.type().funcReturn() != null && v.isInferred() == 0) {
+                        AstExpr bareI = v.init();
+                        if (bareI != null && bareI.kind() == "Identifier") {
+                            SymbolEntry benI = sym_.lookupEntry(bareI.name());
+                            if (funcIdx_.contains(bareI.name()) != 0 && (benI == null || Str.len(benI.funcRet()) == 0)) {
+                                diag_.error(bareI.line(), bareI.col(), "cannot use function name '" + bareI.name()
+                                    + "' as a value; wrap it in a lambda: (args) => " + bareI.name() + "(args)");
+                            }
+                        }
+                    }
                     // BUG-016：`var r = voidCall();` 推断为 void 此前放行 → codegen 用
                     // Int(i32) alloca 存 void 值 → LLVM getPrefTypeAlign(void) 无限递归段错误。
                     // void 值不能赋给变量，应报错（仅当有初始化器、且 visitExpr 未级联报错时补报；
@@ -4453,7 +4476,17 @@ class Sema {
                     // NotImpl()`（函数返 IC）自举此前 typesCompat 放行 → codegen
                     // @__myp_vtable_IC_NotImpl 未定义 → opt-21 崩（oracle 拒）。
                     int rBad2 = 0;
-                    if (Str.len(currentRet_) != 0 && currentRet_ != "void"
+                    // B1（E-G2）：函数返回类型是类型参数 T（`T ret(T s)`）——
+                    // typeToKind(T) 占位回落 "int"，而 T 值（受约束 interface/类）是
+                    // 另一身份 → 模板期 return 误报（"interface" vs "int"）。返回
+                    // 类型为 genericParam 时跳过模板期严格检查（实例化时按具体
+                    // 类型实参做权威校验；同 anyVoidParam 占位跳过哲学）。
+                    int retIsTypeParam = currentRetAst_ != null && currentRetAst_.genericParam() != 0 ? 1 : 0;
+                    // T 引用点不标 genericParam（仅声明节点标）——className 命中当前
+                    // 泛型上下文类型参数名也算类型参数返回。
+                    if (retIsTypeParam == 0 && currentRetAst_ != null && Str.len(currentRetAst_.className()) != 0
+                        && inGeneric(currentRetAst_.className()) != 0) retIsTypeParam = 1;
+                    if (retIsTypeParam == 0 && Str.len(currentRet_) != 0 && currentRet_ != "void"
                         && Str.len(rt) != 0 && rt != "void" && typesCompat(currentRet_, rt) == 0) rBad2 = 1;
                     if (rBad2 == 0 && currentRet_ == "interface" && rt == "class" && s.value() != null) {
                         string ifaceName = currentRetAst_ != null ? currentRetAst_.className() : "";
@@ -5295,6 +5328,28 @@ class Sema {
                     diag_.error(e.line(), e.col(), "string operations are not supported inside '@gpu for' bodies");
                 }
                 string op = e.op();
+                // N-2/N-3（常量除零/越宽移位，鲁棒性）：字面量除数 0（整数除法/取模）
+                // 与字面量移位量 ≥ 左操作数位宽 是 LLVM poison/UB → 此前静默产出
+                // 垃圾值（100/0 得非 0；1<<33 得未定义值），无诊断。oracle 同接受，
+                // 此处在 sema 干净拒绝（自举优于 oracle 的鲁棒性承诺）。
+                // 除法/取模：右操作数是整数字面量 0（float/double 除零 = IEEE inf，
+                // 合法 → 仅整数路径拒绝）。
+                if ((op == "/" || op == "%") && e.rhs() != null && e.rhs().kind() == "Integer"
+                    && e.rhs().value() == 0L
+                    && l != "float" && l != "double" && r != "float" && r != "double"
+                    && r != "string" && r != "null") {
+                    diag_.error(e.rhs().line(), e.rhs().col(), "division by zero (constant zero divisor)");
+                } else if ((op == "<<" || op == ">>") && e.rhs() != null && e.rhs().kind() == "Integer") {
+                    long shv = e.rhs().value();
+                    // 移位宽度按运算语义（小整型字面量/操作数提升至 int 计算——
+                    // `1 << 30` 的字面量 1 按 byte 分类会误导成 8 位；long 系 64 位）。
+                    int iw = (l == "long" || l == "ulong") ? 64 : 32;
+                    if (shv < 0) {
+                        diag_.error(e.rhs().line(), e.rhs().col(), "shift amount is negative");
+                    } else if (iw > 0 && shv >= iw) {
+                        diag_.error(e.rhs().line(), e.rhs().col(), "shift amount " + shv + " exceeds the " + iw + "-bit width of the operand");
+                    }
+                }
                 if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">="
                     || op == "&&" || op == "||") {
                     string opr = resolveOp(e, op, e.lhs(), l, r);
@@ -5358,8 +5413,11 @@ class Sema {
                     // a < 5（a 为 struct，@op 不匹配）此前静默当 bool → codegen
                     // 比较异构类型 → opt-21 崩（integer constant must have
                     // integer type）。==/!= 双端 sema 均宽松（后端崩）不属缺口。
+                    // semantic_gaps §3：bool 左操作数也须拒绝（此前豁免 bool →
+                    // `0 < x < 10` 被左结合当 ((0<x)<10)，bool→int 静默错算；
+                    // oracle 干净拒绝 "expected numeric type, got 'bool'"）。
                     if ((op == "<" || op == ">" || op == "<=" || op == ">=")
-                        && Str.len(l) != 0 && l != "string" && l != "bool"
+                        && Str.len(l) != 0 && l != "string"
                         && l != "bit" && l != "bitvector" && l != "null"
                         && isNumKind(l) == 0) {
                         diag_.error(e.lhs().line(), e.lhs().col(), "expected numeric type, got '" + exprTypeName(e.lhs(), l) + "'");
@@ -5577,6 +5635,20 @@ class Sema {
                     return "void";
                 }
                 int badAssign = (l != "void" && r != "void" && typesCompat(l, r) == 0) ? 1 : 0;
+                // §6.2 / BUG-100 family：函数类型变量被赋裸具名函数 `f = inc;`
+                // ——r 经 isFuncName 回落 "function"，typesCompat("function",
+                // "function") 放行 → codegen 发非法 IR → opt-21 崩（i32 vs ptr）。
+                // RHS 是注册顶层函数名（无函数类型变量条目）→ 干净拒绝（同 var 初始化）。
+                if (l == "function" && e.rhs() != null && e.rhs().kind() == "Identifier") {
+                    string rhsN = e.rhs().name();
+                    SymbolEntry rhsE = sym_.lookupEntry(rhsN);
+                    if (funcIdx_.contains(rhsN) != 0 && (rhsE == null || Str.len(rhsE.funcRet()) == 0)) {
+                        diag_.error(e.rhs().line(), e.rhs().col(), "cannot use function name '" + rhsN
+                            + "' as a value; wrap it in a lambda: (args) => " + rhsN + "(args)");
+                        e.setResolvedKind(l);
+                        return l;
+                    }
+                }
                 // BUG-054：struct 赋值须比较具体 struct 名（typesCompat 只比
                 // kind "struct"，不同 struct 互赋静默过 sema → LLVM opt 报错）。
                 if (badAssign == 0 && l == "struct" && r == "struct"

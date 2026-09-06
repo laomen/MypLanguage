@@ -1,0 +1,22 @@
+// EXPECT ERROR: cannot use function name 'inc' as a value; wrap it in a lambda: (args) => inc(args)
+// §6.2（BUG-100 family）负测试：函数类型变量以裸具名函数初始化
+// `(int)->int f = inc;` ——oracle 拒 "undefined variable 'inc'"；selfhost 曾放行
+// → codegen 非法 {ptr,ptr} IR → opt-21 崩（i32 vs {ptr,ptr}）。合法：lambda
+// `(x)=>inc(x)` / 函数类型变量。
+import test;
+import env;
+
+int inc(int x) { return x + 1; }
+class Runner {
+    action:
+        @constructor Runner() {}
+        void go() {
+            (int) -> int f = inc;
+            Test.assertEq(f(1), 2, "call");
+        }
+}
+@test void t() {
+    Runner r = new Runner();
+    r.go();
+    Test.report("t", true);
+}

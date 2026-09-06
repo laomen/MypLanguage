@@ -3874,3 +3874,31 @@ mypagent 高频在 `Json_Json_string` 后由 `__longjmp` 段错误；现场 hand
   自举 myp_self2==myp_self3 MD5 一致；全量 470/0。
 
 
+
+## v3.15.212 — selfhost 修复战役（review 驱动，未编号批量）
+
+按 `docs/review/*` 深挖结论修 selfhost 编译器（seed 冻结）。修复清单见
+`docs/CHANGELOG.md` v3.15.212 条目；回归均落 `tests/@test/` / `tests/negative/`
+（全部 bootstrap MD5 一致，全量 480/480 + bugs 19/19）：
+
+- **sem §3**：bool 进数值比较 → 干净拒绝（负 `relop_bool_lhs`）。
+- **generic B0**：泛型体调非泛型类 static（Math.pi）返回类型占位错值 →
+  `exprLlvmType` 类名 static 解析 + `methodIsGeneric` 守卫（`@test/generic_body_static_ret`）。
+- **generic B1/E-G2（已支持形态）**：接口属性默认初值 upcast
+  （`@test/iface_prop_default`）+ 泛型受约束 T 方法返回类型参数跳过模板期检查
+  （`@test/generic_iface_bound`）。T 属性直派发 oracle 亦不支持（`this.s_.area()`
+  oracle "cannot call"），不视为 selfhost 缺口。
+- **concurrency C-1**：@parallel 体读类属性 → 实例方法捕获 this
+  （`@test/parallel_prop_read`）。
+- **sem §6.2**：裸具名函数作一等值（var-init/assign）→ 干净拒绝
+  （负 `fntype_bare_fn_init` / `fntype_bare_fn_assign`）。
+- **generic B2**：元组返回 T 替换（`@test/generic_tuple_return`）。
+- **numeric N-2/N-3**：常量除零/越宽移位 → 干净拒绝（负 `div_const_zero` /
+  `shift_too_wide`；鲁棒性优于 oracle）。
+
+**仍开放（review 深挖族，selfhost 未支持，oracle 均 PASS，待续）**：
+- **B5** 泛型类属性套自身 T（`ArrayList<T> list_`）：body 内 `list_.add(v)` 派发到
+  `@ArrayList_T_inst_add`（占位类未替换）→ opt undefined。
+- **B4** 泛型类内泛型 static（类级 T + 方法级 R 并存实例化打架）。
+- **B3** 关联类型 T::Item 在泛型顶层函数内（assoc 返回 LLVM 类型错位）。
+- **B6** 泛型类方法内 `new Option<V>()`（V=类类型参数）默认构造丢类型参数。

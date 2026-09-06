@@ -3329,6 +3329,28 @@ class CodeGen {
             return out;
         }
 
+        // 类 cls 方法 name 是否为泛型方法（typeParams>0）。泛型方法的返回类型
+        // 声明可能只是类型参数（R），无法给出具体 LLVM 类型 → 需要此判定来
+        // 避免按声明覆盖已实例化的 resolvedKind。
+        int methodIsGeneric(string cls, string name) {
+            if (tu_ == null) return 0;
+            int ci = classIndex(cls);
+            if (ci < 0) return 0;
+            AstClass c = tu_.classes().get(ci);
+            for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                AstAction a = c.actions().get(ai);
+                if (a.name() == name && a.typeParams().size() != 0) return 1;
+            }
+            for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                AstAction a = c.staticActions().get(ai);
+                if (a.name() == name && a.typeParams().size() != 0) return 1;
+            }
+            for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                if (c.funcs().get(fi).name() == name && c.funcs().get(fi).typeParams().size() != 0) return 1;
+            }
+            return 0;
+        }
+
         // 类 cls 方法 name 的返回 AstType（null = 未找到）。
         AstType methodRetAstType(string cls, string name) {
             if (tu_ == null) return null;
@@ -3348,8 +3370,7 @@ class CodeGen {
         }
 
         // 类 cls 方法 name 的第 idx 个形参 AstType（null = 未找到）。
-        AstType methodParamAstType(string cls, string name, int idx) {
-            if (tu_ == null) return null;
+        AstType methodParamAstType(string cls, string name, int idx) {            if (tu_ == null) return null;
             int ci = classIndex(cls);   // O(1)
             if (ci < 0) return null;
             AstClass c = tu_.classes().get(ci);
@@ -5128,6 +5149,20 @@ class CodeGen {
                     localNames_.get(i), localTypes_.get(i), localAllocas_.get(i),
                     localAstTypes_.get(i), localElemTypes_.get(i), localIsSlice_.get(i), localIsArc_.get(i));
             }
+            // C-1（并行体属性读）：@parallel 体内读类属性（`tally[i] = step_` /
+            // `this.x`）——body 是独立函数只捕获外层局部，this 没传 → body 内
+            // loadThis() 引用外层 `%this.addr` → opt-21 "use of undefined value
+            // '%this.addr'"。oracle 支持属性读（值语义正确）。修：实例方法
+            // （paramNames_ 含 "this" 且当前类是真实类）捕获 this（ptr，借用不
+            // retain/release），body 解包时把 this alloca 命名为 this.addr。
+            int hasThisParam = 0;
+            for (int hp = 0; hp < paramNames_.size(); hp = hp + 1) {
+                if (paramNames_.get(hp) == "this") { hasThisParam = 1; break; }
+            }
+            if (hasThisParam != 0 && isStructName(curClass_) == 0) {
+                addCapture(capNames, capTypes, capAllocas, capAst, capElem, capSlice, capArc,
+                    "this", "ptr", "%this.addr", null, "", 0, 0);
+            }
             string capT = "";
             string capA = "null";
             if (capNames.size() > 0) {
@@ -5243,7 +5278,8 @@ class CodeGen {
                 headBuf.append("  " + gep + " = getelementptr " + capT + ", ptr %arg, i32 0, i32 " + i + "\n");
                 string cv = newTmp();
                 headBuf.append("  " + cv + " = load " + capTypes.get(i) + ", ptr " + gep + "\n");
-                string va = newTmp();
+                // C-1：捕获的 this 命名为字面 this.addr（loadThis 固定读 %this.addr）。
+                string va = capNames.get(i) == "this" ? "%this.addr" : newTmp();
                 int al = IrEmit.alignOf(capTypes.get(i));
                 headBuf.append("  " + va + " = alloca " + capTypes.get(i) + ", align " + al + "\n");
                 headBuf.append("  store " + capTypes.get(i) + " " + cv + ", ptr " + va + "\n");
@@ -10641,13 +10677,37 @@ class CodeGen {
                             string ft = propType(cls, prop.name());
                             string gep = newTmp();
                             sb_.append("  " + gep + " = getelementptr %" + cls + ", ptr " + t + ", i32 0, i32 " + pi + "\n");
+                            // B1（E-G2）：接口类型属性的默认初值 `Shape s_ = new Circle()`
+                            // ——new Cls() 是具体 ptr，需上转 {data,vtable}（BUG-029 family；
+                            // b032/033 只修局部/数组，属性默认初值路径漏 upcast → opt-21
+                            // "ptr vs {ptr,ptr}"）。镜像 BUG-137 ctor 实参 upcast + storeRef
+                            // 所有权（fresh 转移/别名 retain；新对象槽已清零，无旧值释放）。
+                            if (ft == "{ ptr, ptr }" && pt == "ptr") {
+                                AstType ppt = resolveType(prop.type());
+                                string pIname = "";
+                                if (ppt != null && Str.len(ppt.className()) != 0
+                                    && isInterfaceName(ppt.className()) != 0) pIname = ppt.className();
+                                if (Str.len(pIname) != 0) {
+                                    string rawPv = pv;
+                                    string upPv = upcastIface(prop.init(), pIname, rawPv);
+                                    if (Str.len(upPv) != 0 && upPv != rawPv) {
+                                        if (isFreshTemp(rawPv) != 0) consumeTemp(rawPv);
+                                        else sb_.append("  call void @myp_retain(ptr " + rawPv + ")\n");
+                                        pv = upPv;
+                                        pt = "{ ptr, ptr }";
+                                    }
+                                }
+                            }
                             pv = convertValue(pv, pt, ft);
                             // BUG-028 镜像 C++：ARC 引用（class/string/动态数组 = ptr）
                             // 属性初始化器——fresh 转移所有权（storeRef 内部 consumeTemp，
                             // 语句末 flushTemps 不再释放），alias retain。此前直接 store →
                             // fresh new 的 rc=1 留在 pendingTemps_，语句末被释放 → 属性槽
                             // 悬垂（读取 use-after-free；setter 重赋值 → 双释放段错误 139）。
-                            if (ft == "ptr" && isArcType(prop.type()) != 0) {
+                            if (ft == "{ ptr, ptr }") {
+                                // 接口属性槽：fat 值已含 upcast vtable；data 所有权见上。
+                                sb_.append("  store { ptr, ptr } " + pv + ", ptr " + gep + "\n");
+                            } else if (ft == "ptr" && isArcType(prop.type()) != 0) {
                                 storeRef(gep, pv, isFreshTemp(pv));
                             } else {
                                 sb_.append("  store " + ft + " " + pv + ", ptr " + gep + "\n");
@@ -11657,6 +11717,20 @@ class CodeGen {
                     && (callee.name() == "__myp_atof" || callee.name() == "__myp_io_read_double")) {
                     retLt = "double";
                 }
+                // 泛型模板体内 sema resolvedKind 为 int 占位 → 成员调用（class
+                // static / 实例方法，如 Math.pi()）返回类型被发成 i32，与真实声明
+                // （double/string/class/float…）不符 → 运行期读错位得错值（B0）。
+                // 用被调方法声明返回 AstType 重算 LLVM 类型。触发条件=exprLlvmType
+                // 给 i32 但声明非 i32（正是占位污染场景）；非泛型上下文两者一致，
+                // 覆盖无效果；@coro/接口/枚举变体等路径已提前 return，不达此处。
+                if (Str.len(mCls) != 0 && Str.len(mName) != 0
+                    && isTopLevelFunc(mName) == 0 && retLt == "i32") {
+                    AstType mrtX = methodRetAstType(mCls, mName);
+                    if (mrtX != null) {
+                        string declLt = llvmType(mrtX);
+                        if (Str.len(declLt) != 0 && declLt != "i32" && declLt != "void") retLt = declLt;
+                    }
+                }
                 // @coro 方法/函数调用 → 创建协程 + 传参 + 首启，返回 handle（i64）
                 if (Str.len(mName) != 0) {
                     if (isTopLevelFunc(mName) != 0 && findFuncCoro(mName) != null) {
@@ -11952,7 +12026,12 @@ class CodeGen {
                 if (e.resolvedKind() == "tuple") {
                     AstExpr callee = e.callee();
                     if (callee != null && callee.kind() == "Identifier") {
-                        AstType rt = findFuncRetAstType(callee.name(), e.args().size());
+                        // B2：泛型函数返回元组——callee 名是模板，其返回 (int,T)
+                        // 未实例化（T→void）；resolved 是实例名（pair_string_inst，
+                        // clone 已把 T 替换成 string）→ 优先用 resolved。
+                        string rname = e.resolved();
+                        if (Str.len(rname) == 0) rname = callee.name();
+                        AstType rt = findFuncRetAstType(rname, e.args().size());
                         if (rt != null && rt.isTuple() != 0) {
                             return llvmType(rt);
                         }
@@ -12068,6 +12147,16 @@ class CodeGen {
                     // string）。对象是具体类实例变量时用其类型。
                     string mcls3 = callee3.resolvedClass();
                     AstExpr obj3 = callee3.array();
+                    // B0（泛型模板体占位修复）：类名 static 方法调用（Math.pi()）
+                    // ——obj 是类名非变量，varAstType 为空 → mcls3 落 "Object" →
+                    // 声明返回类型解析不到 → exprLlvmType 回落 i32（与真实 double
+                    // 不符 → 运行期错值）。类名 → 该类自身。但泛型 static 方法
+                    // （List.id<R> 实例调用）返回声明只是类型参数 R → 无具体类型
+                    // → 不覆盖（交回 resolvedKind/实例名，否则错标 ptr）。
+                    if (obj3 != null && obj3.kind() == "Identifier" && isClassName(obj3.name()) != 0
+                        && methodIsGeneric(obj3.name(), callee3.memberName()) == 0) {
+                        mcls3 = obj3.name();
+                    }
                     if (obj3 != null && obj3.kind() == "Identifier") {
                         AstType oat3 = varAstType(obj3.name());
                         if (oat3 != null) {

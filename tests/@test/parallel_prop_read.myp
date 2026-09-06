@@ -1,0 +1,48 @@
+// C-1 回归：@parallel 体内访问类属性。selfhost 曾把并行 body 抽成只捕获外层
+// 局部的独立函数，this 没传 → body 内读属性（step_ / this.x）引用外层
+// `%this.addr` → opt-21 "use of undefined value '%this.addr'"。oracle 支持
+// （值语义正确）。修复：实例方法 @parallel 捕获 this（ptr），body 解包时把
+// this alloca 命名为 this.addr。
+
+import test;
+import env;
+
+class P2 {
+    property: int step_;
+    action:
+        void setStep(int s) { step_ = s; }
+        int runBare() {
+            int n = 100;
+            int[] tally = new int[n];
+            @parallel for (int i = 0; i < n; i = i + 1) { tally[i] = step_; }
+            int acc = 0;
+            for (int i = 0; i < n; i = i + 1) acc = acc + tally[i];
+            return acc;
+        }
+        int runThisX() {
+            int n = 50;
+            int[] tally = new int[n];
+            @parallel for (int i = 0; i < n; i = i + 1) { tally[i] = this.step_ * 2; }
+            int acc = 0;
+            for (int i = 0; i < n; i = i + 1) acc = acc + tally[i];
+            return acc;
+        }
+}
+
+// 顶层函数（无 this）内的 @parallel 仍正常（对照：捕获外层局部不受影响）
+int topLevelRun() {
+    int n = 64;
+    int base = 5;
+    int[] tally = new int[n];
+    @parallel for (int i = 0; i < n; i = i + 1) { tally[i] = base + i; }
+    return tally[0] + tally[63];
+}
+
+@test void t1() {
+    P2 p = new P2();
+    p.setStep(3);
+    Test.assertEq(p.runBare(), 300, "parallel bare prop");
+    Test.assertEq(p.runThisX(), 300, "parallel this.x prop");
+    Test.assertEq(topLevelRun(), 5 + 68, "parallel top-level locals");
+    Test.report("t1", true);
+}

@@ -41,6 +41,51 @@
   `v.make().n()`，4 断言，双编译器）；bootstrap myp_self2==myp_self3 MD5 一致；
   全量 470/470。
 
+### v3.15.212 — selfhost 修复战役（review 驱动，非破坏性）
+
+**非破坏性修复（selfhost sema.myp / codegen.myp）**。按 `docs/review/*` 深挖结论
+逐条修 selfhost 编译器缺陷；seed (mypc-seed) 冻结不升级，只改自举编译器。全部
+bootstrap myp_self2==myp_self3 MD5 一致；全量 480/480 + bugs 19/19。
+
+- **sem §3（bool 进数值比较 clean reject）**：去掉 BUG-118 关系比较检查的 bool 豁免，
+  `0 < x < 10` 现报 `expected numeric type, got 'bool'`（对齐 oracle）。负测试
+  `tests/negative/relop_bool_lhs.myp`。
+- **generic B0（泛型体调非泛型类 static 返回类型占位）**：泛型 static 方法/顶层泛型
+  函数体内 `Math.pi()`（返回 double）此前按占位 i32 发 call → 读错位得 v=0 静默错值。
+  修复 `codegen.myp` `exprLlvmType` Call/Member 分支：obj 为**类名**（static 调用）时
+  mcls3=该类自身并经 `methodRetAstType` 取声明返回类型；新增 `methodIsGeneric` 守卫防
+  泛型 static（List.id<R> 返回类型参数）被误覆盖。回归
+  `tests/@test/generic_body_static_ret.myp`（3 形态 3 断言）。
+- **generic B1/E-G2（已支持形态；接口属性/受约束 T 调接口方法）**：(a) 接口类型类属性
+  默认初值 `Shape s_ = new Circle()` 缺 fat-ptr upcast（BUG-032/033 只修局部/数组，
+  属性默认初值漏网）→ opt "ptr vs {ptr,ptr}"；修复 NewExpr 属性默认初值块对接口属性
+  `upcastIface` + 所有权（fresh 转移/别名 retain）。(b) 泛型受约束方法
+  `T ret(T s){return s;}`（返回类型参数）模板期误报 `interface vs int`；修复 return 类型
+  为类型参数（genericParam 或 className∈当前泛型上下文）时跳过模板期严格检查（实例化
+  权威）。回归 `tests/@test/iface_prop_default.myp`（4 断言）+
+  `tests/@test/generic_iface_bound.myp`（2 断言）。
+- **concurrency C-1（@parallel 体内读类属性）**：并行 body 抽成独立函数只捕获局部，
+  this 未传 → 体内 `tally[i]=step_` 引用外层 `%this.addr` → opt "use of undefined
+  value"。修复：实例方法 @parallel 捕获 this（ptr，借用不 retain），body 解包把 this
+  alloca 命名为 `this.addr`（loadThis 即读它）。回归
+  `tests/@test/parallel_prop_read.myp`（裸属性/this.x/顶层对照，3 断言）。
+- **sem §6.2（裸具名函数作一等值 clean reject）**：`(int)->int f = inc;` / `f = inc;`
+  此前 selfhost 放行 → codegen 非法 {ptr,ptr} IR → opt 崩（oracle 拒 "undefined
+  variable"）。修复函数类型变量**声明初始化**与**赋值**两路径对「注册顶层函数名、无函数
+  类型变量条目」的 RHS 干净拒绝（复用函数实参既有 lambda 提示消息）。负测试
+  `tests/negative/fntype_bare_fn_init.myp` / `fntype_bare_fn_assign.myp`。
+- **generic B2（元组返回中的 T 未替换）**：泛型函数 `(int,T) pair<T>(...)` 实例化
+  `pair<string>` 值类型得 `(int, void)`（取模板返回未替换）。修复 `destructureTupleElems`
+  （sema）与 `exprLlvmType` 元组返回块（codegen）优先用 `CallExpr.resolved`（实例名，
+  clone 已替换）而非 callee 模板名。回归
+  `tests/@test/generic_tuple_return.myp`（单/多类型参数 2 调用 4 断言）。
+- **numeric N-2/N-3（常量除零/越宽移位 clean reject，鲁棒性优于 oracle）**：
+  `100/0`、`1<<33` 整数零除数/越宽移位是 LLVM poison/UB，此前静默垃圾值。sema Binary
+  分支：字面量零除数（float/double 除零 = IEEE inf 除外）报 `division by zero`；字面量
+  移位量 ≥ 运算宽度（long 系 64，其余 int 提升 32）或为负时报错。负测试
+  `tests/negative/div_const_zero.myp` / `shift_too_wide.myp`。
+- `.gitignore` 增 `docs/review/`（本地 review 文档不入库）。
+
 ### v3.15.210 — 固定数组 .size/.size() 返回编译期长度 N（BUG-148，selfhost）
 
 **非破坏性（selfhost sema+codegen）**。定长数组 `T[N]`（如 `int[4] a`）此前无长度

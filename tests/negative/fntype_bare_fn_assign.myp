@@ -1,0 +1,23 @@
+// EXPECT ERROR: cannot use function name 'inc' as a value; wrap it in a lambda: (args) => inc(args)
+// §6.2（BUG-100 family）负测试：函数类型变量被赋裸具名函数 `f = inc;`
+// ——RHS 经 isFuncName 回落 "function"，typesCompat("function","function") 放行
+// → codegen 非法 IR → opt-21 崩（i32 vs ptr）。应为干净拒绝（同 var 初始化/
+// 函数实参路径）。
+import test;
+import env;
+
+int inc(int x) { return x + 1; }
+class Runner {
+    action:
+        @constructor Runner() {}
+        void go() {
+            (int) -> int f = (int x) => x;
+            f = inc;
+            Test.assertEq(f(1), 2, "call");
+        }
+}
+@test void t() {
+    Runner r = new Runner();
+    r.go();
+    Test.report("t", true);
+}

@@ -1,0 +1,26 @@
+// B0 回归：泛型模板体（static 方法 / 顶层泛型函数）内调用非泛型类 static 方法
+// （Math.pi → double），selfhost 曾按占位 i32 发 call → 静默错值 v=0。
+// 修复：exprLlvmType Call/Member 分支补类名 static 解析（methodIsGeneric 守卫）
+// + genExpr 返回类型按声明重算。三种形态都要验证。
+
+import test;
+import env;
+import math;
+
+class B {
+    static:
+        double g<T>(double a) { return Math.pi(); }      // 外来 static double
+        double pi2() { return 3.5; }
+        int h<T>(int a) { double v = B.pi2(); return v > 3.0 ? 1 : 0; } // 自身 static 全限定
+}
+
+double g2<T>(double a) { return Math.pi(); }             // 顶层泛型函数
+
+@test void t1() {
+    double v = B.g<int>(1.0);
+    Test.assert(v > 3.0 && v < 3.2, "pi in gs");
+    Test.assertEq(B.h<int>(0), 1, "h own static");
+    double w = g2<int>(1.0);
+    Test.assert(w > 3.0 && w < 3.2, "pi in tf");
+    Test.report("t1", true);
+}
