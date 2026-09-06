@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.16.1 — P2 增量编译落地：opt+llc 整闭包 .o 缓存（selfhost link.myp，性能）
+
+**非破坏性（性能）**。按 `docs/incremental_parallel_compile.md` P2 实施（P0 sema 哈希
+化早已落地；P1 import 前端并行收益≈0——前端实测 ~0.16s）。ccache 式确定性缓存：
+`link()` 以 **llPath 内容哈希** ⊕ opt/llc 决定参数（optLevel/doOpt/freestanding/工具
+路径）为键缓存 **opt+llc 产物（.o）**——命中跳过 opt+llc、直接用缓存 .o 链接
+（runtime/桥/lld 照常）。
+
+- `.ll` 内容已编码全部源码/import/编译器/codegen 影响 → 任一变化自动失效（精确）。
+- 缓存目录 `MYP_CACHE` 覆盖 → 默认 `~/.cache/mypc`；写回临时文件 + `mv` 原子（并发安全）。
+- **不改任何对外输出**：命中 .o 与全新 opt+llc 逐字节一致（实测冷/热产物 md5 相同）。
+- **验证**：mypc 自编 selfhost（32728 行/10 模块，-O2）**8.0s → 1.95s（4.1x）**；
+  自举 3 代 MD5 门禁通过（self2==self3，`b58fc1e9…`）；@test 正例/负例诊断/-O2 回归通过。
+- 背景：分段计时 write+link（opt+llc+lld）= 6.4s（~80%）、codegen 1.07s、macro+sema
+  0.56s、front 0.16s → 缓存落在 opt+llc（最大头且最安全：确定性函数）。
+
 ### v3.16.0 — 里程碑：版本节奏切 minor（v3.16 周期开始；git tag v3.16.0）
 
 **版本节奏规则（自本版起）**：此前每功能/修复 commit +1 patch（v3.15.244 个 patch 全堆在

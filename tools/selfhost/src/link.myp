@@ -228,6 +228,35 @@ import collections; // ArrayList
             return "/tmp/myp_rt_cache/myp_rt_" + Link.hexLong(h) + ".o";
         }
 
+        // P2 整闭包 .o 缓存目录：MYP_CACHE 覆盖 → 默认 ~/.cache/mypc → 回退 /tmp。
+        string objCacheDir() {
+            string e = Console.getEnv("MYP_CACHE");
+            if (Str.len(e) != 0) return e;
+            string h = Console.getEnv("HOME");
+            if (Str.len(h) != 0) return Fs.join(h, ".cache/mypc");
+            return "/tmp/myp_cache";
+        }
+
+        // 程序 .o 缓存键：llPath 内容哈希 + opt/llc 决定参数（optLevel/doOpt/
+        // freestanding/工具路径）。llPath 内容已编码全部源码/import/编译器/codegen
+        // 影响 → 任一变化自动失效；命中 .o 与全新 opt+llc 逐字节一致（确定性）。
+        string progObjKey(string llPath, int optLevel, int doOpt, int freestanding) {
+            string content = "";
+            if (Fs.isFile(llPath) != 0) content = Link.fileContent(llPath);
+            string extra = "" + optLevel + "|" + doOpt + "|" + freestanding + "|" + Link.findLlc();
+            if (doOpt != 0) {
+                extra = extra + "|" + Link.findOpt() + "|" + Link.findHostTriple() + "|" + Link.findPassPlugin();
+            }
+            long h = 1469598103934665603;
+            for (int i = 0; i < Str.len(content); i = i + 1) {
+                h = (h ^ __myp_charcode(content, i)) * 1099511628211;
+            }
+            for (int i = 0; i < Str.len(extra); i = i + 1) {
+                h = (h ^ __myp_charcode(extra, i)) * 1099511628211;
+            }
+            return Link.hexLong(h);
+        }
+
         // ---- 通用桥接发现（对拍 src/main.cpp linkObjects；新增桥无需改编译器）----
         // bridges 目录（MYP_BRIDGES 冒号分隔追加；默认 <stdlib>/bridges）下 *.c 即
         // 候选桥接。程序 obj 的 nm -u 未定义符号 × 桥 nm --defined-only 取交集命中
@@ -500,40 +529,57 @@ import collections; // ArrayList
             int doOpt = (optLevel > 0) ? 1 : 0;
             if (optEnv == "1") doOpt = 1;
             else if (optEnv == "0") doOpt = 0;
-            if (doOpt != 0) {
-                string opt = Link.findOpt();
-                string optPath = outPath + ".opt.ll";
-                string mt = Link.findHostTriple();
-                string plugin = Link.findPassPlugin();
-                string optCmd = opt + " " + llPath;
-                if (Str.len(plugin) != 0) {
-                    optCmd = optCmd + " -load-pass-plugin=" + plugin
-                        + " -passes='default<O" + optLevel + ">,myp-arc-transfer,verify'";
-                } else {
-                    optCmd = optCmd + " -O" + optLevel;
+            // ---- P2 整闭包 .o 缓存：opt+llc 是（.ll 内容 × 工具/参数）的确定性函数，
+            // 以 llPath 内容哈希为键缓存产物 → 未变闭包直接跳过 opt+llc（selfhost 自编
+            // -O2 实测：write+link 6.4s→~0.4s，占全量 ~80%）。源码/编译器一变 → .ll 变 →
+            // 键变 → 自动失效；命中 .o 与全新 opt+llc 逐字节一致。目录 MYP_CACHE 覆盖 →
+            // 默认 ~/.cache/mypc。不改任何对外输出（仅省时）。 ----
+            string cacheDir = Link.objCacheDir();
+            string progKey = Link.progObjKey(llPath, optLevel, doOpt, freestanding);
+            string progCache = Fs.join(cacheDir, "o_" + progKey + ".o");
+            int cachedObj = (Fs.isFile(progCache) != 0) ? 1 : 0;
+            string objPath = outPath + ".o";
+            string cmd = "";   // 函数级：后续 runtime/ctx/gpu/lib/bridge 编译复用
+            if (cachedObj == 0) {
+                if (doOpt != 0) {
+                    string opt = Link.findOpt();
+                    string optPath = outPath + ".opt.ll";
+                    string mt = Link.findHostTriple();
+                    string plugin = Link.findPassPlugin();
+                    string optCmd = opt + " " + llPath;
+                    if (Str.len(plugin) != 0) {
+                        optCmd = optCmd + " -load-pass-plugin=" + plugin
+                            + " -passes='default<O" + optLevel + ">,myp-arc-transfer,verify'";
+                    } else {
+                        optCmd = optCmd + " -O" + optLevel;
+                    }
+                    if (Str.len(mt) > 0) optCmd = optCmd + " -mtriple=" + mt;
+                    // v3.15.73: 显式 -mcpu=generic 让 opt 建立带 CPU 子目标的
+                    // TargetMachine，补全 LoopUnroll/LoopVectorize 的指令·寄存器成本
+                    // 模型——否则串行进位链循环不展开。仅 -mtriple 不足。
+                    optCmd = optCmd + " -mcpu=generic";
+                    optCmd = optCmd + " -o " + optPath + " 2>&1";
+                    if (Process.run(optCmd) != 0) {
+                        Console.writeLine("opt failed");
+                        return 1;
+                    }
+                    srcLl = optPath;
                 }
-                if (Str.len(mt) > 0) optCmd = optCmd + " -mtriple=" + mt;
-                // v3.15.73: 显式 -mcpu=generic 让 opt 建立带 CPU 子目标的
-                // TargetMachine，补全 LoopUnroll/LoopVectorize 的指令·寄存器成本
-                // 模型——否则串行进位链循环不展开（bigint 74→62ms、floyd 69→57ms、
-                // sha256 17→15ms；与 oracle 进程内 createTargetMachine("generic")
-                // 对齐）。仅 -mtriple 不足（opt 缺 CPU 子目标时成本模型仍保守）。
-                optCmd = optCmd + " -mcpu=generic";
-                optCmd = optCmd + " -o " + optPath + " 2>&1";
-                if (Process.run(optCmd) != 0) {
-                    Console.writeLine("opt failed");
+                string llc = Link.findLlc();
+                // --freestanding：静态重定位模型（匹配无 PIE 的裸静态链接）；常规 PIC。
+                string reloc = (freestanding != 0) ? "-relocation-model=static" : "-relocation-model=pic";
+                cmd = llc + " " + srcLl + " -filetype=obj " + reloc + " -o " + objPath + " 2>&1";
+                if (Process.run(cmd) != 0) {
+                    Console.writeLine("llc failed");
                     return 1;
                 }
-                srcLl = optPath;
-            }
-            string llc = Link.findLlc();
-            string objPath = outPath + ".o";
-            // --freestanding：静态重定位模型（匹配无 PIE 的裸静态链接）；常规 PIC。
-            string reloc = (freestanding != 0) ? "-relocation-model=static" : "-relocation-model=pic";
-            string cmd = llc + " " + srcLl + " -filetype=obj " + reloc + " -o " + objPath + " 2>&1";
-            if (Process.run(cmd) != 0) {
-                Console.writeLine("llc failed");
-                return 1;
+                // 缓存写回：临时文件 + mv 原子落位（并发冷编译同内容，最后一次胜出）。
+                if (Fs.isDir(cacheDir) == 0) Fs.mkdirP(cacheDir);
+                string tmpc = progCache + ".t" + Process.getPid();
+                Process.run("cp -f " + objPath + " " + tmpc + " && mv -f " + tmpc + " " + progCache);
+            } else {
+                // 命中：跳过 opt+llc，直接用缓存 .o 走下方链接（runtime/桥/lld 照常）。
+                objPath = progCache;
             }
             // --freestanding（档B）：无 CRT / runtime.c / libc / gcc —— codegen 已
             // 发射 _start（call main → exit syscall），这里直接静态链接。
