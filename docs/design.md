@@ -1,6 +1,6 @@
 # MYP 语言设计文档
 
-> 版本: 3.15 | 日期: 2026-08-24
+> 版本: 3.16 | 日期: 2026-09-07
 
 ---
 
@@ -113,7 +113,7 @@ mapping() {
 |------|------|------|
 | **简单事情变复杂** | 简单逻辑若坚持组件化需 class + event + action + mapping | ⚠️ 已缓解：顶层函数/`static:` 方法可直接写过程式逻辑（Dual Paradigm） |
 | **控制流不直观** | mapping 多了可能形成事件循环（`a→b→c→a`），代码中不易察觉 | ✅ 已缓解：编译期环路检测（§3.3） |
-| **调试困难** | 事件是异步跳转的，传统断点难以追踪"谁触发了谁" | ⚠️ 已缓解：`--trace` 事件追踪（v2.4）+ DAP 调试器（v3.7） |
+| **调试困难** | 事件是异步跳转的，传统断点难以追踪"谁触发了谁" | ⚠️ 已缓解：DAP 调试器（v3.7，`myp_debug`，VS Code 断点/单步/变量） |
 | **纯计算别扭（仅指事件驱动风格）** | 用 event→action 表达矩阵/图像等计算密集循环确实别扭 | ✅ 非语言缺陷：MYP 是双范式——计算直接用过程式（顶层函数/`static:`/action 体内）+ `@parallel for`（v2.4）/`@gpu for` 数据并行，matmul 性能持平 C++（§8.8） |
 | **运行时开销** | 事件分发需查 mapping 表 + 参数打包 + 消息分发，比直接函数调用慢 | ⚠️ 基本属实：同线程仍走事件队列 + 线性查表 + 间接调用（非零开销） |
 | **学习曲线** | class 组件 + mapping 声明式思维需要转变编程范式 | ✅ 属实 |
@@ -124,7 +124,6 @@ mapping() {
 |------|---------|------|
 | 运行时开销 | **事件分发内联**（规划）：同线程 mapping 直接内联为函数调用 | 🔜 规划中，未实现——当前同线程 dispatch 仍走事件队列 + 线性查表（`myp_handlers[]`）+ 间接调用 |
 | 事件循环 | **编译期环路检测**：静态分析 mapping 链，检测同一实例多次出现 | ✅ 已实现（sema `checkMappingCycles`，编译期警告） |
-| 调试困难 | **`--trace` 事件追踪**：运行时输出 `event_fire`/`dispatch` 日志 | ✅ 已实现（v2.4，`--trace` 选项） |
 | 调试困难 | **DAP 调试器** `myp_debug`（断点/单步/变量） | ✅ 已实现（v3.7） |
 | 简单任务繁琐 | 轻量语法糖（匿名 mapping、自由函数级事件绑定） | 🔜 规划中，未实现（可先用顶层函数/`static:` 方法缓解） |
 | 不适合计算 | **Dual Paradigm**：action 内是完整过程式代码 + `@parallel for`/`@gpu for` 并行原语 | ✅ 已实现（过程式自 v1；并行 v2.4；`@pure` 注解 🔜 规划中，未实现） |
@@ -2066,7 +2065,7 @@ maxThreads/warpSize）、`Device`、`DevMath`（设备端数学 = `Math` 泛型�
 | `GpuByoc`/`GpuLib` | BYOC 自编译 kernel（`load(ptx, name)` + `launch(kctx, grid, block, args…)`）、cuBLAS 封装 |
 
 > 详见 mypdeeplearning 独立仓 `docs/gpu_paradigm.md`（https://gitee.com/tomatosoft_0/mypdeeplearning）、**§8.8**（`@parallel for`
-> 对照）、§12.5（自举 GPU 收口）。
+> 对照）、§12.2（自举 GPU 收口）。
 
 ### 10.17 UI — ui / sdl
 
@@ -2267,6 +2266,12 @@ const int T5    = triple(FIB10());  // 165(@eval 互调 + const 引用)
 深递归有深度上限,超限编译期优雅报错(负测试 `tests/negative/eval_recursion.myp`:
 `compile-time evaluation: recursion depth exceeded`),编译器"永不崩溃"。
 
+**只读常量表(M-2,v3.15.243)**:模块级 `@eval <T>[N] <name> = [c1, c2, ...];`
+(或 `<T>[]`,N 由元素数定)把数组初值编译期固化为**只读常量数组**(LLVM private
+constant,`.rodata`),运行时可下标读 `name[i]`(i 可为运行时变量/表达式;元素支持
+字面量/纯常量算术/顶层 const 标量引用)。表只能下标读,裸表名引用/多语句体 clean
+拒绝——与 `@eval` 函数互补(函数算标量,表固化数组)。
+
 ### 11.3 声明式宏 `macro`(语法级,v3.5)
 
 `macro` 是**顶层关键字声明**的代码模板,与 class/struct/enum/mapping 平行。
@@ -2290,6 +2295,14 @@ macro twice($body) { $body $body }      // body 重复展开两次
     Console.write(v);        // v=37
 }
 ```
+
+**表达式/值位展开(M-1,v3.15.244)**:宏体为**恰一条 ExprStmt**(单表达式宏,如
+`macro twice($e) { ($e)+($e); }`)时,可在任意**表达式位置**调用并展开为表达式:
+`int r = twice(21);` 得 42;可作实参/三元/赋值 RHS/return/嵌套(宏内嵌宏递归)。
+多语句宏体仍只能语句位(表达式位 clean 拒绝)。
+**宏卫生(M-3,v3.15.241)**:宏体**自声明的局部**展开时自动 gensym(原名 →
+`原名_m<seq>`),不再与调用方同名变量冲突(此前 `int tmp=7; setV(tmp,1);` 报
+duplicate variable)。
 
 ### 11.4 过程宏 `@macro` + `quote`(全功能,v3.6)
 
@@ -2406,7 +2419,7 @@ MYPLanguage/
 │       ├── Type.h
 │       └── runtime.h
 ├── src/
-│   ├── main.cpp               # mypc 编译器入口（驱动各 phase）
+│   ├── main.cpp               # C++ seed 编译器入口（驱动各 phase；构建 mypc-seed）
 │   ├── myp_viz.cpp            # 可视化工具
 │   ├── token.cpp / SourceLocation.cpp
 │   ├── ast/
@@ -2449,20 +2462,19 @@ MYPLanguage/
 │   └── ...                    #   exceptions/operators/metaprogramming/constructor/
 │                              #   optimization_debugging/slice/UPGRADE_V3/CHANGELOG）
 ├── build/                     # 构建产物
-│   ├── mypc              # MYP 编译器
+│   ├── mypc              # MYP 编译器（自举不动点，myp_self2 副本）
+│   ├── mypc-seed         # C++ seed 引导编译器（冻结）
 │   ├── myp_debug         # DAP 调试适配器（gdb MI 桥）
 │   ├── myp_lsp           # MYP 语言服务器
 │   ├── myp               # 自举包管理（tools/pm）
 │   ├── myp_fmt2          # 自举格式化器（tools/fmt）
 │   ├── myp_viz2          # 自举可视化器（tools/viz）
-│   ├── myp_debug         # DAP 调试适配器（gdb MI 桥）
-│   ├── myp_lsp           # MYP 语言服务器
 │   ├── myp_viz           # 可视化工具（C++ 版）
 │   └── myp_fmt           # 格式化工具（C++ 版）
 └── build-asan/               # ASAN/UBSAN 构建
 ```
 
-### 11.4 第一版范围（核心先行）
+### 12.1 第一版范围（核心先行）
 
 第一版只实现语言核心最小集：
 
@@ -2474,7 +2486,7 @@ CodeGen  → 表达式 + 控制流 + 函数 + 基本 class（不含 event/mappin
 Runtime  → print/println + 基本运行时
 ```
 
-### 12.5 当前状态与后续计划
+### 12.2 当前状态与后续计划
 
 **当前全部已实现：**
 
@@ -2567,7 +2579,7 @@ Runtime  → print/println + 基本运行时
 | **v2.1** | 泛型（monomorphization）、枚举 + 模式匹配、Lambda/闭包、FFI、包管理器（myp）、LSP、VS Code 扩展、共享/静态库（--shared/--static） |
 | **v2.2** | 内置测试框架（@test + --test）、myp fmt 格式化、标准库扩充 |
 | **v2.3** | Barrier 同步、Future/Promise、Atomic 操作、Stream 流类型、接口多态、mapping @scope/where/lambda 节点/delay/throttle、TUI（ui.myp） |
-| **v2.4** | `--trace` 事件追踪、错误处理完善（finally/throw;/对象异常/接口匹配）、`@parallel for` + 工作窃取线程池 + 并行体捕获/数学/静态方法、Barrier/Future stdlib 封装 |
+| **v2.4** | 错误处理完善（finally/throw;/对象异常/接口匹配）、`@parallel for` + 工作窃取线程池 + 并行体捕获/数学/静态方法、Barrier/Future stdlib 封装 |
 | **v3.0** | 协程完整体系（C1-C10：`@coro`/`await`/调度器/事件等待/超时/取消等，详见 `coro.md`）、协程 Channel/await Future、事件队列动态化、property 默认值修复、`long` 后缀、Class 级 `const`、Range for |
 | **v3.1** | IR 优化管线（-O1/-O2/-O3 NewPM） |
 | **v3.2** | DWARF 调试信息（-g） |
@@ -2581,6 +2593,8 @@ Runtime  → print/println + 基本运行时
 | **v3.10** | showcase/probe 差分测试驱动的语言修复、系统探测 |
 | **v3.11** | 定宽整型别名（int8/16/32/64、uint8/16/32/64）、协程/Channel 性能（rendezvous）、C 运行时 -O2、perf 优化 |
 | **v3.12** | 内存系列收尾：`string`/`T[]`/`slice` 引用计数 + in-place 字符串拼接（O(n²)→O(n)）、struct 引用字段值语义 ARC、跨线程原子 ARC（M6）、`@weak` 弱引用（M7）、内存诊断/失败注入/strict 校验（M9）、协程句柄世代化 + 栈池字节上限（M1/M2） |
+| **v3.13 → v3.15** | 编译器/自举/运行时里程碑（自 v3.13.0 起条目独立递增）：自举收口（不动点字节全同）、`runtime_myp` de-gcc 迁移、协程/异常线程安全硬化、元编程补齐（M-1/M-2/M-3）等——逐条见 `docs/CHANGELOG.md` |
+| **v3.16.0** | 里程碑批次（首个 git annotated tag `v3.16.0`）；此后 minor=功能/里程碑批次（收敛后升 + tag）、patch=批次内小修复 |
 
 **未来 / 规划中：**
 
