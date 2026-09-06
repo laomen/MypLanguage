@@ -28,7 +28,7 @@ for f in r1_arc r2_region r3_coro r3b_switch r4_file_io r5_channel; do
     if [ "$f" = "r5_channel" ] || [ "$f" = "r3b_switch" ]; then
         # 多配置输出（每行独立指标）：直接展示一轮全部行 + 峰值 RSS
         out=$(/usr/bin/time -v "/tmp/${f}_bench" 2>&1)
-        echo "$out" | grep -E "^R[0-9] "
+        echo "$out" | grep -E "^R[0-9]"
         rss=$(echo "$out" | grep "Maximum resident" | grep -oE "[0-9]+" | head -1)
         echo "  peak_rss_kb=${rss}"
     else
@@ -36,7 +36,7 @@ for f in r1_arc r2_region r3_coro r3b_switch r4_file_io r5_channel; do
         best_line=""
         for ((i = 0; i < ITERS; i++)); do
             out=$(/usr/bin/time -v "/tmp/${f}_bench" 2>&1)
-            line=$(echo "$out" | grep -E "^R[0-9] " | head -1)
+            line=$(echo "$out" | grep -E "^R[0-9]" | head -1)
             rss=$(echo "$out" | grep "Maximum resident" | grep -oE "[0-9]+" | head -1)
             ms=$(echo "$line" | grep -oE "ms=[0-9]+" | head -1 | grep -oE "[0-9]+")
             if [ -n "$ms" ] && [ "$ms" -lt "$best_ms" ]; then best_ms=$ms; best_line="$line"; best_rss=$rss; fi
