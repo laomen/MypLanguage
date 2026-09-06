@@ -567,6 +567,11 @@ ffi void   myp_regex_free(long handle);
 - **与 intrinsic 互补**：`__myp_*` 为编译器注册、用户不可见；stdlib 更新库
   （fs/text/process/json/memory/barrier/future/sync/net/crypto…）走顶层 `ffi`
   声明直接绑定运行时 C 函数，不经 `registerIntrinsics`（§10.20）。
+- **外部库链接（纯 ffi 访问系统库）**：模块旁放 `<模块>.myp.libs` 侧车即可注入 `-l`
+  链接标志（Go `#cgo LDFLAGS` 风格，免 C 桥/免 gcc）；需 C 封装（指针/struct API →
+  基本类型函数）时用**通用桥**——`MYP_BRIDGES` 目录（默认含 `<stdlib>/bridges`）下
+  `*.c` 按「未定义符号 ∩ 桥定义符号」自动编译链接（`.cflags`/`.libs` 侧车，固定点
+  解析桥依赖链）。纯 ffi 绑定的外部库不入 stdlib，放 `libs/`（manual §13，SDL 实例）。
 
 ---
 

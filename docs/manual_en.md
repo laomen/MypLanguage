@@ -3450,6 +3450,90 @@ Variant-A uses `ld.lld` (removes gcc's link role but keeps libc); `--freestandin
 > no libc/CRT/runtime — for bare-metal/kernel/self-contained use (experimental, see the §13
 > full option table).
 
+### External C Libraries & Sidecar Linking (libs/, `.myp.libs`, bridges)
+
+Third-party C libraries such as SDL/GL/zlib are **not bound into the standard library** —
+the rule: **has a language construct binding → runtime/language capability** (e.g. `@gpu for`
+→ runtime_myp); **pure `ffi` binding → external library** (the repo's `libs/` dir). External
+libraries hook in through two compiler mechanisms: the **`.myp.libs` sidecar** (declare extra
+link libraries for pure ffi — no C bridge, no gcc; Go `#cgo LDFLAGS` style) and **generic
+bridge discovery** (bridge `.c` + `.cflags`/`.libs` sidecars, auto-compiled and linked).
+
+Repo `libs/` layout (three shapes — also a template for new external libraries):
+
+```
+libs/
+├── sdl/                          # convenience layer: import sdl
+│   ├── sdl.myp                   #   ffi myp_sdl_* (window/render/draw… thin API)
+│   └── bridges/
+│       ├── sdl_bridge.c          #   bridge: wraps SDL2 pointer/struct APIs into plain scalar funcs
+│       ├── sdl_bridge.c.cflags   #   sidecar: compile flags (-D_REENTRANT)
+│       └── sdl_bridge.c.libs     #   sidecar: link libraries (-lSDL2 -lpng)
+├── ttf/                          # import ttf (needs the sdl renderer; same shape)
+│   └── bridges/sdl_ttf_bridge.c + .cflags + .libs   # -lSDL2_ttf
+└── sdl_ffi/                      # pure interface: import sdl_ffi (SDL_* 1:1; you write the logic)
+    ├── sdl_ffi.myp               #   ffi int SDL_Init(int flags); … (handles/pointers as long)
+    └── sdl_ffi.myp.libs          #   sidecar: -lSDL2 (pure ffi — no bridge, no gcc)
+```
+
+**Using the libraries** (`import` resolves to `libs/` via the package path; bridges are found
+via `MYP_BRIDGES`):
+
+```sh
+# convenience layer (has a C bridge): package path + MYP_BRIDGES pointing at the bridge dirs
+MYP_BRIDGES="libs/sdl/bridges:libs/ttf/bridges" \
+  ./build/mypc app.myp --package-path libs -o app
+
+# pure interface (only the .myp.libs sidecar, no gcc): package path is enough
+./build/mypc app.myp --package-path libs -o app
+```
+
+```myp
+import sdl;       // myp_sdl_* convenience layer (window state/event translation/draw helpers)
+import sdl_ffi;   // or pure ffi straight to SDL_* (1:1; you write the logic)
+```
+
+**The two kinds of sidecar**:
+
+| Sidecar | Location | Effect |
+|---|---|---|
+| `<module>.myp.libs` | next to the `.myp` | declares **extra link libraries** (`-lSDL2`…), injected automatically when the module is imported / the main file is compiled (Go `#cgo LDFLAGS` style) |
+| `<bridge>.c.cflags` / `<bridge>.c.libs` | next to the bridge `.c` | the bridge's **compile flags / link libraries** |
+
+**Generic bridge auto-discovery (no compiler changes)**: after compiling the program, `nm`
+gives the set of undefined symbols; the compiler scans every `*.c` under the `MYP_BRIDGES`
+dirs (colon-separated; **`<stdlib>/bridges` is always appended**). For each bridge, its
+defining symbols (via `nm`) are intersected with the undefined set — a hit means it is
+picked: `gcc`-compiled (with `.cflags`, cached by mtime) → linked (with `.libs`), and the
+bridge's own undefined symbols are merged back into the set in a **fixpoint iteration** until
+stable (a bridge may depend on another bridge/library, e.g. `sdl_ttf → sdl`). Prebuilt
+`.so`/`.a` files are matched the same way by symbols (closed-source distribution: a dir with
+just `<secret.so + a wrapping .myp>`, pointed to by `MYP_BRIDGES`). Bridges already MYP-ified
+into `libmyp_rt_myp.a` (`mypifiedBridge`) skip C compilation (de-gcc, no gcc).
+
+**Adding a new external C library** (three steps):
+
+```myp
+// ① mylib.myp — declare the C functions with ffi (pointers/handles as long; structs as user buffers)
+ffi int mylib_init(int flags);
+```
+```sh
+# ②a pure-ffi route: put mylib.myp.libs beside the module to declare the link libraries (no bridge, no gcc)
+echo '-lmylib' > mylib.myp.libs
+# ②b bridge route (SDL-style wrapper): mylib.myp + bridges/mylib_bridge.c +
+#     mylib_bridge.c.cflags/.libs; point MYP_BRIDGES at bridges/ when compiling
+```
+```sh
+# ③ use it: give the parent dir via --package-path and import
+./build/mypc app.myp --package-path ./lib_parent -o app
+```
+
+> MYP FFI supports only basic types (no pointer/struct parameters) — that is why bridges
+> exist: they wrap SDL2-style pointer/struct APIs into plain-scalar functions so MYP only
+> passes int/string. The `libs/` convenience layer `myp_sdl_*` is kept for mypview & similar
+> frameworks; **new users are encouraged to use the pure interface `sdl_ffi.myp` + their own
+> logic**. See `libs/sdl/README.md`.
+
 ### Self-Hosted Compiler (myp_self)
 
 MYP's compiler itself is being **fully rewritten in MYP** (T5 self-hosting project,
@@ -3686,6 +3770,7 @@ export MYP_FAST_MATH=1                                     # codegen: FP fast-ma
 export MYP_FMT=./build/myp_fmt2                            # self-hosted compiler fmt subcommand formatter path (optional)
 export MYP_GPU=1                                         # enable CUDA GPU backend (default CPU fallback)
 export MYP_RT_MYP=./build/libmyp_rt_myp.a                # force MYP-runtime-archive linking (de-gcc: no libmyp_rt.a/gcc)
+export MYP_BRIDGES="libs/sdl/bridges:libs/ttf/bridges"  # bridge C-file search dirs (colon-separated; <stdlib>/bridges always appended)
 export MYP_STDLIB=./stdlib                               # default stdlib dir (equivalent to --stdlib)
 ```
 

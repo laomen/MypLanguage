@@ -3311,6 +3311,84 @@ MYP 提供 `myp_debug`（DAP ↔ gdb 桥），可在 VS Code 内断点/单步/�
 > `Memory.alloc`（§11）；`--freestanding` 产物无 libc/CRT/runtime，用于裸机/内核/
 > 自包含（实验，见 §13 完整选项表）。
 
+### 外部 C 库与侧车链接（libs/、`.myp.libs`、桥）
+
+SDL/GL/zlib 这类**第三方 C 库绑定不进标准库**——判定标准：**有语言构造绑定 → 运行时/
+语言能力**（如 `@gpu for` → runtime_myp）；**纯 `ffi` 绑定 → 外部库**（仓库 `libs/`
+目录）。外部库接入靠两个编译器机制：**`.myp.libs` 侧车**（纯 ffi 声明链接库，免 C 桥、免
+gcc，Go `#cgo LDFLAGS` 风格）与**通用桥接发现**（bridge `.c` + `.cflags`/`.libs` 侧车，
+自动编译链接）。
+
+仓库 `libs/` 结构（三种形态，也是新外部库的模板）：
+
+```
+libs/
+├── sdl/                          # 便利层：import sdl
+│   ├── sdl.myp                   #   ffi myp_sdl_*（窗口/渲染/绘图…薄接口）
+│   └── bridges/
+│       ├── sdl_bridge.c          #   桥：把 SDL2 指针/struct API 包成纯基本类型函数
+│       ├── sdl_bridge.c.cflags   #   侧车：编译标志（-D_REENTRANT）
+│       └── sdl_bridge.c.libs     #   侧车：链接库（-lSDL2 -lpng）
+├── ttf/                          # import ttf（依赖 sdl 渲染器；同模式）
+│   └── bridges/sdl_ttf_bridge.c + .cflags + .libs   # -lSDL2_ttf
+└── sdl_ffi/                      # 纯接口：import sdl_ffi（SDL_* 1:1，用户自写业务逻辑）
+    ├── sdl_ffi.myp               #   ffi int SDL_Init(int flags); …（句柄/指针用 long）
+    └── sdl_ffi.myp.libs          #   侧车：-lSDL2（纯 ffi，免桥免 gcc）
+```
+
+**用库**（`import` 经包路径解析到 `libs/`；桥经 `MYP_BRIDGES` 发现）：
+
+```sh
+# 便利层（有 C 桥）：包路径 + MYP_BRIDGES 指向桥目录
+MYP_BRIDGES="libs/sdl/bridges:libs/ttf/bridges" \
+  ./build/mypc app.myp --package-path libs -o app
+
+# 纯接口（仅 .myp.libs 侧车，免 gcc）：只需包路径
+./build/mypc app.myp --package-path libs -o app
+```
+
+```myp
+import sdl;       // myp_sdl_* 便利层（简洁，含窗口状态/事件翻译/绘图辅助）
+import sdl_ffi;   // 或纯 ffi 直达 SDL_*（1:1，业务逻辑自写）
+```
+
+**两种侧车**：
+
+| 侧车 | 位置 | 作用 |
+|---|---|---|
+| `<模块>.myp.libs` | 与 `.myp` 同目录 | 该模块声明**额外链接库**（`-lSDL2`…），`import`/编译主文件时自动注入（Go `#cgo LDFLAGS` 风格） |
+| `<桥名>.c.cflags` / `<桥名>.c.libs` | 与 bridge `.c` 同目录 | 桥的**编译标志 / 链接库** |
+
+**通用桥自动发现（无需改编译器）**：程序编译后 `nm` 取未定义符号集；编译器扫
+`MYP_BRIDGES` 目录（冒号分隔；**默认恒追加 `<stdlib>/bridges`**）下所有 `*.c`——对每个
+桥 `nm` 其定义符号，与未定义符号**有交集**即命中：`gcc` 编译（带 `.cflags`，按 mtime 缓存）
+→ 链接（带 `.libs`），并把桥自己的未定义符号并入集合**固定点迭代**直到稳定（桥可依赖另一
+桥/库，如 `sdl_ttf → sdl`）。预编译 `.so`/`.a` 同款按符号匹配直链（闭源分发：目录只放
+`<secret.so + 封装 .myp>`，`MYP_BRIDGES` 指向即可）。`libmyp_rt_myp.a` 已 MYP 化的桥
+（`mypifiedBridge`）跳过 C 编译（de-gcc 免 gcc）。
+
+**新加一个外部 C 库**（三步）：
+
+```myp
+// ① mylib.myp — ffi 声明 C 函数（指针/句柄用 long；struct 用用户缓冲）
+ffi int mylib_init(int flags);
+```
+```sh
+# ②a 纯 ffi 路线：模块旁放 mylib.myp.libs 声明链接库（免桥、免 gcc）
+echo '-lmylib' > mylib.myp.libs
+# ②b 桥路线（SDL 式封装）：mylib.myp + bridges/mylib_bridge.c +
+#     mylib_bridge.c.cflags/.libs；编译时 MYP_BRIDGES 指向 bridges/
+```
+```sh
+# ③ 使用：模块父目录经 --package-path 提供，import 即用
+./build/mypc app.myp --package-path ./lib_parent -o app
+```
+
+> MYP 的 FFI 只支持基本类型（无指针/struct 参数）——桥实现存在的意义就是把 SDL2 这类
+> 指针/struct API 包成「无指针、无 struct」的纯基本类型函数，MYP 侧只传 int/string。
+> `libs/` 便利层 `myp_sdl_*` 保留给 mypview 等框架；**新用户推荐纯接口 `sdl_ffi.myp` +
+> 自写逻辑**。详见 `libs/sdl/README.md`。
+
 ### 自举编译器（myp_self）
 
 MYP 的编译器本体正用 MYP 语言**完全重写**（T5 自举项目，`tools/selfhost/`）：
@@ -3604,6 +3682,7 @@ export MYP_FAST_MATH=1                                     # codegen：FP 运算
 export MYP_FMT=./build/myp_fmt2                            # 自举编译器 fmt 子命令的格式化器路径（可选）
 export MYP_GPU=1                                         # 启用 CUDA GPU 后端（默认 CPU 回退）
 export MYP_RT_MYP=./build/libmyp_rt_myp.a                # 强制 MYP 运行时归档链接（de-gcc：无 libmyp_rt.a/gcc）
+export MYP_BRIDGES="libs/sdl/bridges:libs/ttf/bridges"  # 桥 C 文件搜索目录（冒号分隔；默认恒含 <stdlib>/bridges）
 export MYP_STDLIB=./stdlib                               # 默认标准库目录（等效 --stdlib）
 ```
 
