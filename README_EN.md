@@ -200,6 +200,26 @@ See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/desig
 
 `vscode-myp/` provides syntax highlighting and LSP smart editing (completion, hover, go-to-definition).
 
+## ⚙️ Compile Options / Environment / Freestanding
+
+**Common compile options** (full list: `mypc --help` and each sub-command usage):
+| Option | Purpose |
+|--------|---------|
+| `-o <path>` | Output path (default `<file>.out`) |
+| `--emit-llvm` | Emit only `<out>.ll` (skip linking, for IR inspection) |
+| `--stdlib <path>` | Stdlib directory |
+| `mypc run <file> [args]` | `go run`-style build & run |
+| `mypc fmt [--check] <file>` | Format (`--check` = verify only) |
+| `mypc --bootstrap` | Self-host fixed-point check (2-level MD5 gate) |
+| `--freestanding` | **Static ELF without libc/CRT/runtime** (codegen emits `_start` + syscall entry; no gcc link; supported, experimental/bare-metal oriented) |
+
+**Environment variables** (common ones; internal debug/experimental vars are many and change per version, not enumerated here — see sources & CHANGELOG):
+| Variable | Purpose |
+|----------|---------|
+| `MYP_GPU=1` | Enable CUDA GPU backend |
+| `MYP_RT_MYP=<archive>` | Force MYP-runtime-archive linking (de-gcc: no libmyp_rt.a/gcc, MYP runtime + libc only) |
+| `MYP_STDLIB=<path>` | Default stdlib dir (equivalent to `--stdlib`) |
+
 ## 🧪 Testing
 
 ```bash

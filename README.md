@@ -197,6 +197,26 @@ int main() { Main m = new Main() @thread; return 0; }
 
 `vscode-myp/` 提供语法高亮和 LSP 智能编辑（补全、悬停、跳转定义）。
 
+## ⚙️ 编译选项 / 环境变量 / 无运行时构建（freestanding）
+
+**常用编译选项**（完整列表以 `mypc --help` 及各子命令 usage 为准）：
+| 选项 | 作用 |
+|------|------|
+| `-o <path>` | 输出路径（默认 `<file>.out`） |
+| `--emit-llvm` | 仅生成 `<out>.ll`（跳过链接，便于检查 IR） |
+| `--stdlib <path>` | 指定标准库目录 |
+| `mypc run <file> [args]` | 仿 `go run` 编译并运行 |
+| `mypc fmt [--check] <file>` | 格式化（`--check` 仅校验） |
+| `mypc --bootstrap` | 自举不动点校验（2 级 MD5 门禁） |
+| `--freestanding` | **无 libc/CRT/runtime 的静态 ELF**（codegen 直发 `_start` + syscall 入口，链接免 gcc；已支持，实验/裸机向） |
+
+**环境变量**（常用；内部调试/实验变量众多且随版本变化，不在此穷举——见源码与 CHANGELOG）：
+| 变量 | 作用 |
+|------|------|
+| `MYP_GPU=1` | 启用 CUDA GPU 后端 |
+| `MYP_RT_MYP=<归档>` | 强制以 MYP 运行时归档链接（de-gcc：无 libmyp_rt.a/gcc，仅 MYP runtime + libc） |
+| `MYP_STDLIB=<路径>` | 默认标准库目录（等效 `--stdlib`） |
+
 ## 🧪 测试
 
 ```bash
