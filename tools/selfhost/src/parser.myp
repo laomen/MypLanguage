@@ -327,7 +327,15 @@ class Parser {
 
         AstParam parseParam(int allowDefault) {
             AstParam p = new AstParam();
-            if (matchKind("ref") != 0) p.setRef(1);
+            if (matchKind("ref") != 0) {
+                p.setRef(1);
+                // v3.15.238：`ref` 参数未实现 —— 双编译器都把它当**值传递**静默
+                // 接受（semantic_gaps §2 P1 静默误导：声明 `ref int x` 暗示引用语义，
+                // 实为拷贝，调用后实参不变）。干净拒绝防误用；真 ref 属 additive。
+                Tok refTok = tokAt(current_ - 1);
+                diag_.error(refTok.line(), refTok.col(),
+                    "'ref' parameters are not supported (passed by value silently); remove 'ref'");
+            }
             p.setType(parseType());
             // 畸形签名加固（v3.15.223）：参数须有名。此前 `(T )`/`(int )` 无名参数被
             // 静默接受 → codegen 发 `i32 %`（空名参数 alloca）→ opt-21 "expected ')'

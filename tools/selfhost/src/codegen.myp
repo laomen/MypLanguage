@@ -10527,6 +10527,18 @@ class CodeGen {
                     }
                     return t;
                 }
+                // 值类型（int/fp）与 null 比较：null 是 ptr 常量，不能出现在
+                // icmp i32 ..., null。coalesce `a ?? b` 在 parser 展开成
+                // `(a != null ? a : b)`（镜像 C++ parseCoalesce）→ int 上崩
+                // opt "null must be a pointer type"。对齐 oracle 语义：值类型判
+                // null = 判零（int a??5：a=0→5、a≠0→a，seed q1/q3 验证）。残留
+                // null 常量（convert 未转换者）按 opLt 转零常量；ptr 类型保持。
+                if ((lv == "null" || rv == "null") && opLt != "ptr") {
+                    string zc = "0";
+                    if (opLt == "double") zc = "0.000000e+00";
+                    else if (opLt == "float") zc = "0.000000e+00";
+                    if (lv == "null") lv = zc; else rv = zc;
+                }
                 if (op == "+") { if (isFp != 0) insn = "fadd"; else insn = "add"; }
                 else if (op == "-") { if (isFp != 0) insn = "fsub"; else insn = "sub"; }
                 else if (op == "*") { if (isFp != 0) insn = "fmul"; else insn = "mul"; }

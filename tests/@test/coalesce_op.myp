@@ -1,0 +1,30 @@
+// coalesce_op.myp — 空合并 `??`（v3.15.238，selfhost 对齐 oracle）
+// parser 把 `a ?? b` 展开成 `(a != null ? a : b)`（镜像 C++ parseCoalesce）。
+// 修复前：selfhost 对**值类型**（int）生成 `icmp ne i32 %a, null` → opt-21
+// "null must be a pointer type" 崩；oracle（seed）本就支持（int: 非零取左否则右
+// = 判 null 用 0；string/类: 判非 null 取左）。修复（codegen 二元比较）：残留
+// null 常量在非 ptr 类型上按 opLt 转同类型零（int→0，fp→0.0）；ptr 不变。
+
+import test;
+
+class N {
+    action: int v() { return 7; }
+}
+
+@test void t() {
+    int a0 = 0;
+    Test.assertEq(a0 ?? 5, 5, "c0");          // 零 → 取右（判 null = 判 0）
+    int a1 = 3;
+    Test.assertEq(a1 ?? 7, 3, "c1");          // 非零 → 取左
+    string s0;
+    Test.assertStrEq(s0 ?? "d", "d", "c2");   // 未初始化 string = null → 右
+    string s1 = "";
+    Test.assertStrEq(s1 ?? "x", "", "c3");    // 空串非 null → 左
+    N n0;
+    N r = n0 ?? new N();
+    Test.assertEq(r.v(), 7, "c4");            // 类 null → 右分支 new
+    N n1 = new N();
+    N r1 = n1 ?? new N();
+    Test.assertEq(r1.v(), 7, "c5");           // 类非 null → 左
+    Test.report("t", true);
+}

@@ -1,0 +1,9 @@
+// semantic_gaps §2 负向：`ref` 参数干净拒绝（v3.15.238）
+// `ref` 是保留字但无引用语义实现 —— 双编译器曾把它当**值传递**静默接受
+//（`void bump(ref int x){ x=5; }` 调 `bump(y)` 后 y 不变 = 静默误导）。
+// 选择干净拒绝（不实现、不删保留字：删除属破坏性语法变更，撞 v1.0 规格冻结）；
+// 真能力如需走 additive（标量 out 窄形态）。
+// EXPECT ERROR: 'ref' parameters are not supported
+void bump(ref int x) { x = 5; }
+void g(ref string s) { s = "a"; }
+class C { action: void f(ref int y) { y = 1; } }

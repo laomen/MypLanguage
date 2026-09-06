@@ -27,6 +27,28 @@
 
 ## 编译器版本历史
 
+### v3.15.238 — `??` 空合并对齐 oracle（值类型判零）+ `ref` 参数干净拒绝（selfhost additive）
+
+**非破坏性硬化（semantic_gaps §1/§2 P1）。** codegen `codegen.myp` + parser `parser.myp`。
+
+- **`??` 空合并对齐 oracle（semantic §2 记录纠偏）**：oracle（seed）本就支持
+  `a ?? b`（`int b = a ?? 5`：非零取左否则右；string/类判非 null 取左）。selfhost
+  parser 已把 `??` 展开成 `(a != null ? a : b)`（镜像 C++ parseCoalesce），但对**值
+  类型**（int）生成 `icmp ne i32 %a, null` → opt-21 `null must be a pointer type`
+  崩（语义文档曾误记「语法层无 ??」——实为 selfhost 值类型路径落后）。修复（codegen
+  二元比较）：残留 null 常量在非 ptr 类型按 opLt 转同类型零（int→0 / fp→0.0），
+  ptr 不变。正例 tests/@test/coalesce_op.myp（int 零/非零、string null/空串、类
+  null/非 null，6 断言）。
+- **`ref` 参数干净拒绝（semantic §2 P1）**：`ref` 是保留字但 Param 无引用语义实现——
+  双编译器都把它当值传递静默接受（`void bump(ref int x)` 调 `bump(y)` 后 y 不变 =
+  静默误导）。选择干净拒绝：parser parseParam 遇 `ref` 报 `'ref' parameters are
+  not supported (passed by value silently); remove 'ref'`（顶层函数/类方法/function
+  段同拒）。**不删保留字**（删除属破坏性语法变更，撞 v1.0 规格冻结）；真能力若做走
+  additive **标量 out 窄形态**（int/double 传地址改写，避开 ARC/别名/跨帧雷；禁
+  @coro/闭包捕获），引用类型仍用返回交棒/对象字段惯用法。负测试
+  tests/negative/ref_param.myp。
+- 全量 + bugs 20/20 + bootstrap MD5 一致。
+
 ### v3.15.237 — 泛型 parity 收尾：B5 属性收者委托 / B3 assoc 局部 / B4 泛型类 static 共存（selfhost additive）
 
 **非破坏性硬化（generic_gaps B 系剩余三缺口，全勾销）**。codegen `codegen.myp`。
