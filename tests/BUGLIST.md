@@ -160,6 +160,7 @@
 | BUG-147 | 🟩 | **实例属性数组下标 this.buf[i] 元素类型丢失（selfhost+oracle 双缺口）**——显式 `this.<动态数组属性>[i]`：selfhost sema 落成 'array'、codegen 元素 LLVM 类型落成默认（ubyte[] 属性按 i32 GEP/store 步长 4、4 字节写 → str() 读 [41 00 00 00]→"A"，本地 ubyte[] 却 i8 正确；读/写均错）。裸属性名 buf[i]、静态类属性 S.buf[i]、局部、函数返回都正常——只漏 ThisExpr 对象形态 | 回归 `tests/@test/this_prop_array_bytes.myp`（ubyte[] 逐字节写/读、str() 往返、int[] 属性、bytes() 入属性；6 断言，双编译器） |
 | BUG-148 | 🟩 | **定长数组 T[N] 的 .size/.size() 缺失；动态数组 T[] 需保持拒绝**——定长数组调用/属性形式此前编译错（无该成员/void），现支持返回编译期长度 N；动态数组（无运行时长度，文档指引用 slice<T>）的 .size/.length/.data 编译器干净拒绝（曾漏到 codegen 生成坏 IR） | 回归 `tests/@test/fixed_array_size.myp`（局部/this.属性/struct 字段 `.size`+`.size()`，6 断言）+ 负测试 `tests/negative/dynarray_size.myp` |
 | BUG-149 | � | **接口方法返回自定义 class 被解析成 void（selfhost 落后）**——`interface I { R m(); }` 经接口变量调用 `R r = v.m();` 编译错 `cannot initialize variable 'r' of type 'R' with value of type 'void'`（接口收集 pass 早于类注册 → typeToKind 回落 "void"；oracle 正常）。修复：使用点对接口方法声明返回 AstType 惰性重算 kind + 设 valueClass | 回归 `tests/bugs/iface_return_class.myp`（devirt new + 接口形参非 devirt + 链式；2 @test/4 断言，双编译器） |
+| BUG-150 | 🟥 | **net send 未屏蔽 SIGPIPE → 服务端写已关闭连接崩（exit 141）**——对已关闭 socket send 默认触发 SIGPIPE 终止进程；myp_http 协程服务端向断开客户端写响应即崩（曾误判"高并发饿死"，实为崩溃后新连接全失败）。运行时三处 send flags=0 无 MSG_NOSIGNAL | 待建 `tests/bugs/b150_send_sigpipe.myp`（服务端协程 accept 后写；客户端发半包即关；回归断言进程存活 + send 非致命） |
 
 
 ---
@@ -3902,3 +3903,19 @@ mypagent 高频在 `Json_Json_string` 后由 `__longjmp` 段错误；现场 hand
 - **B4** 泛型类内泛型 static（类级 T + 方法级 R 并存实例化打架）。
 - **B3** 关联类型 T::Item 在泛型顶层函数内（assoc 返回 LLVM 类型错位）。
 - **B6** 泛型类方法内 `new Option<V>()`（V=类类型参数）默认构造丢类型参数。
+
+## BUG-150（未修复 🟥）：net send 未屏蔽 SIGPIPE → 服务端写已关闭连接崩（exit 141）
+
+- **现象**：myp_http 协程服务端（serveCoro）向已断开客户端写响应 → 进程 SIGPIPE 崩（exit 141「断开的管道」）。
+  复现：客户端发半包请求（请求行+部分头，不发空行）后断开 → 服务端 connCoro 读头返回/超时后向已关 fd sendAsync 写 → 崩。
+  曾误判为"10+ 慢挂起连接高并发饿死"（0/20 秒失败）——实为服务端已崩（进程消失），非调度问题。
+- **位置（运行时三处 send flags=0，均无 MSG_NOSIGNAL）**：
+  - `runtime_myp/net.myp` `myp_net_send`：`send(fd, ptr, len, 0)`
+  - `runtime_myp/uds.myp` sendto：`__myp_syscall(44, fd, buf, len, 0, 0, 0)`（flags=0）
+  - `stdlib/bridges/net_bridge.c` `myp_net_send`（Linux）：`send(fd, data, len, 0)`
+- **根因**：对已关闭连接 send 默认 SIGPIPE 终止进程；服务端写慢/断开客户端是常态，须 `MSG_NOSIGNAL(0x4000)`
+  或进程 `signal(SIGPIPE, SIG_IGN)`，令 send 返回 EPIPE 由上层优雅处理（关闭该连接即可）。
+- **建议修复 + 复现**（用户指示不改运行时，仅记录）：flags 加 MSG_NOSIGNAL 或启动忽略 SIGPIPE；
+  复现测试待建 `tests/bugs/b150_send_sigpipe.myp`（协程服务端 accept → 客户端半包即关 → 服务端再写不崩、进程存活）。
+- **教训**：服务端协程写前对端可能已断；「高并发全失败 + 进程消失」先查信号退出（exit 141=SIGPIPE）再归因调度。
+
