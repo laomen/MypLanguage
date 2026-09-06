@@ -530,7 +530,7 @@ class LoadedSet {
             int timing = 0;
             string tvs = Console.getEnv("MYP_COMPILE_TIMING");
             if (Str.len(tvs) != 0 && tvs == "1") timing = 1;
-            long tc0 = 0, tcFront = 0, tcDerive = 0, tcSema = 0, tcCg = 0;
+            long tc0 = 0, tcFront = 0, tcMain = 0, tcMerge = 0, tcDerive = 0, tcSema = 0, tcCg = 0;
             if (timing != 0) tc0 = __myp_now_ms();
             string file = files.get(0);
             if (Fs.exists(file) == 0) {
@@ -551,6 +551,7 @@ class LoadedSet {
             AstTU tu = pr.parse();
             if (diag.errorCount() == 0) {
                 loaded = new LoadedSet();
+                if (timing != 0) tcMain = __myp_now_ms();   // read+lex+parse 主文件完
                 string sourceDir = Fs.dirname(file);
                 // 命令行输入文件预置进 loaded（import 跳过，防重复加载/重复类名）。
                 for (int fi = 0; fi < files.size(); fi = fi + 1) {
@@ -604,6 +605,7 @@ class LoadedSet {
                     for (int i = 0; i < esub.macros().size(); i = i + 1) tu.macros().add(esub.macros().get(i));
                     for (int i = 0; i < esub.typeAliases().size(); i = i + 1) tu.typeAliases().add(esub.typeAliases().get(i));
                 }
+                if (timing != 0) tcMerge = __myp_now_ms();   // 附加文件并行 parse+合并完
                 // 合并后统一加载所有 imports（主文件 + 附加文件，loaded 去重）。
                 // 相对路径 import 以主文件目录解析（stdlib 名 import 与目录无关）。
                 for (int i = 0; i < tu.imports().size(); i = i + 1) {
@@ -634,6 +636,7 @@ class LoadedSet {
             string ir = "";
             if (ccHit != 0) {
                 // 命中：写缓存 .ll（与全新 codegen 逐字节一致）→ Link 走对象缓存。
+                if (timing != 0) { tcDerive = tcFront; tcSema = tcFront; tcCg = tcFront; }   // 命中跳过后段，避免负数显示
                 File cfin = new File();
                 cfin.open(closureCache, "r");
                 ir = cfin.readAll();
@@ -693,6 +696,9 @@ class LoadedSet {
                         + "ms  codegen=" + (tcCg - tcSema)
                         + "ms  write+link=" + (tcEnd - tcCg)
                         + "ms  total=" + (tcEnd - tc0) + "ms");
+                    Console.writeLine("  front detail: main(read+lex+parse)=" + (tcMain - tc0)
+                        + "ms  extra(parse+merge)=" + (tcMerge - tcMain)
+                        + "ms  importLoad=" + (tcFront - tcMerge) + "ms");
                 }
                 return 0;
             }
@@ -705,6 +711,9 @@ class LoadedSet {
                     + "ms  codegen=" + (tcCg - tcSema)
                     + "ms  write+link=" + (tcEnd - tcCg)
                     + "ms  total=" + (tcEnd - tc0) + "ms");
+                Console.writeLine("  front detail: main(read+lex+parse)=" + (tcMain - tc0)
+                    + "ms  extra(parse+merge)=" + (tcMerge - tcMain)
+                    + "ms  importLoad=" + (tcFront - tcMerge) + "ms");
             }
             return lrc;
         }
