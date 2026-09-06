@@ -110,6 +110,14 @@ hash → **stdlib 内容变更不使缓存失效** → 错误命中旧 IR（实�
 - 验证：runtime 归档重建 37 模块、自举 MD5 门禁 `d3dabef1`；两测试跑通；全套 547
   通过。
 
+#### 后端连接突发缺陷：`listen` backlog 10 → 512（commit f740a8b）
+
+`myp_net_server` 的 `listen(s, 10)` backlog 太小——真实负载并发突发超过 10 的连接被
+内核直接拒绝。HTTP 并发压测暴露：50 并发时 10–25% 连接失败、吞吐崩至 ~1500 conn/s。
+修复 backlog 10 → 512（Linux somaxconn 内）：50 并发 1418 → **40201 conn/s（28x）**、
+200 并发 0.2s 处理 5706 连接、服务端单线程 coro reactor 无内部错误（协程切换
+20–40ns 非瓶颈，连接突发才是）。
+
 ### v3.16.0 — 里程碑：版本节奏切 minor（v3.16 周期开始；git tag v3.16.0）
 
 **版本节奏规则（自本版起）**：此前每功能/修复 commit +1 patch（v3.15.244 个 patch 全堆在
