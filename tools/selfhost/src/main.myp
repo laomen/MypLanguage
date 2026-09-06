@@ -28,7 +28,10 @@ import "./link.myp";
 // （其方法在类内调用 list，正常）。
 class LoadedSet {
     action:
-        @constructor LoadedSet() { set_ = new ArrayList<string>(); }
+        @constructor LoadedSet() {
+            set_ = new ArrayList<string>();
+            files_ = new ArrayList<string>();
+        }
         void add(string s) { set_.add(s); }
         int has(string s) {
             for (int i = 0; i < set_.size(); i = i + 1) {
@@ -37,8 +40,15 @@ class LoadedSet {
             return 0;
         }
         ArrayList<string> set() { return set_; }
+        // 真实读入文件路径登记：set_ 含名字 import 的模块名（非文件，闭包 key
+        // 无法 hash 其内容）；名字 import 解析到的 stdlib 文件须另行登记，否则
+        // stdlib 内容变更不使闭包缓存失效（错误命中旧 IR）。去重由调用方 key
+        // 保证（has 命中即不再加载），重复登记无害（key 仍确定）。
+        void addFile(string path) { files_.add(path); }
+        ArrayList<string> files() { return files_; }
     property:
         ArrayList<string> set_;
+        ArrayList<string> files_;
 }
 
 // dump 输出辅助 + 前端模式实现。
@@ -54,7 +64,9 @@ class LoadedSet {
         }
 
         // P2 整闭包缓存键：编译器身份（二进制 size+mtime，重建即变）+ 全部读入文件
-        // （路径串 + 内容，loaded.set 含主文件/附加文件/全部 import）+ codegen 影响标志。
+        // （真实文件路径串 + 内容：loaded.files() 含主文件/附加文件/相对 import/名字
+        // import 解析出的 stdlib 文件——名字 import 在 set() 里只是模块名非文件，
+        // 必须走 files() 否则 stdlib 内容变更不失效）+ codegen 影响标志。
         // 命中跳过 derive/sema/codegen 安全：闭包内容同 ⇒ 结果同；出错内容 hash 必变 →
         // miss 走全量报错。命中后用缓存 .ll，Link 内对象缓存再跳 opt+llc。
         string closureKey(LoadedSet loaded, int autoMain, int testMode, int libraryMode, int freestanding) {
@@ -69,7 +81,7 @@ class LoadedSet {
             for (int i = 0; i < Str.len(flags); i = i + 1) {
                 h = (h ^ __myp_charcode(flags, i)) * 1099511628211;
             }
-            ArrayList<string> set = loaded.set();
+            ArrayList<string> set = loaded.files();
             for (int i = 0; i < set.size(); i = i + 1) {
                 string p = set.get(i);
                 if (Fs.isFile(p) == 0) continue;
@@ -317,6 +329,9 @@ class LoadedSet {
                 return 0;
             }
             string src = Frontend.readFile(path);
+            // 登记真实读入文件（闭包 key 覆盖 stdlib：名字 import 的 key 是模块名
+            // 非文件，须以解析出的真实 path 进 loaded.files()）。
+            loaded.addFile(path);
             // 模块 .myp.libs 侧车：纯 ffi 外部库链接标志（Go #cgo LDFLAGS 风格）。
             if (Fs.exists(path + ".libs") != 0) {
                 Link.addLibsSidecar(Str.trim(Frontend.readFile(path + ".libs")));
@@ -542,6 +557,7 @@ class LoadedSet {
                     string fx = files.get(fi);
                     loaded.add(Frontend.normalizePath(fx));
                     loaded.add(fx);
+                    loaded.addFile(Frontend.normalizePath(fx));   // 闭包 key 覆盖 CLI 输入
                 }
                 // 附加输入文件：并行前端（lexer+parser 每文件独立）+ 顺序合并。
                 // @parallel for 是 CPU 线程池 body（v3.13.2 起支持字符串/new/
