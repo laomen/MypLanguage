@@ -1,8 +1,10 @@
 # MYP 语言正式语法规范 (EBNF)
 
 > 语言规格版本：**1.0**（语法冻结基准）
-> 本文档是 MYP 语法的权威参考，由 `src/lexer/lexer.cpp` 与 `src/parser/parser.cpp`
-> 的实际实现整理而成。自本版本起，语法改动视为**破坏性变更**（见 `CHANGELOG.md`）。
+> 本文档是 MYP 语法的权威参考，按自举编译器（`tools/selfhost/src/{token,lexer,parser}.myp`，
+> `build/mypc`）与 C++ oracle（`src/lexer/`、`src/parser/` → `mypc-seed`，`--frontend-dump`
+> 对拍契约）的**实际实现**整理而成——两实现逐项对齐。自本版本起，语法改动视为**破坏性
+> 变更**（见 `CHANGELOG.md`）。
 
 ---
 
@@ -229,6 +231,11 @@ EnumDecl         ::= 'enum' Identifier '{' EnumVariant (',' EnumVariant)* '}'
 EnumVariant      ::= Identifier ('(' Type (',' Type)* ')')?
 ```
 
+> **其余 additive 顶层形态**（v1.0 语法冻结之外的增量，非破坏）：声明式宏 `macro 名($p…) {…}`
+> （关键字见 §1.4）与函数注解 `@eval`/`@macro`/`@async`（见 §4 `FuncAnnot`）——语法/语义详见
+> [design.md §11](design.md)、[metaprogramming.md](metaprogramming.md) 与 manual §12/§13；
+> `@op`/`operator:` 见 §7；`type` 别名见 §2.1；`@weak` 字段注解见 §4。
+
 ### 3.1 泛型函数（additive，v1.0+）
 
 ```
@@ -377,8 +384,12 @@ ClassMember      ::= 'action:' ActionDecl+
 
 ActionDecl       ::= Annot? ReturnType Identifier GenericParamList? '(' ParamList? ')' Block? ';'?
                    // 类型参数仅对 static: 段内方法有效（泛型静态方法，§3.2）
-ActionAnnot      ::= '@' 'startup' | '@' 'constructor' | '@' 'test' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )? | '@' 'region'
-FuncAnnot        ::= '@' 'test' | '@' 'region' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )?   // 顶层 @coro 协程函数
+ActionAnnot      ::= '@' 'startup' | '@' 'constructor' | '@' 'test' | '@' 'async'
+                   | '@' 'coro' ( '(' 'stack' '=' Integer ')' )? | '@' 'region'
+FuncAnnot        ::= '@' 'test' | '@' 'async' | '@' 'eval' | '@' 'macro'
+                   | '@' 'region' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )?
+                   // 顶层注解：@coro 协程函数、@async 异步 IO（@coro 内 await f()，见 manual §11 async）、
+                   //   @eval 编译期求值、@macro 过程宏（编译期执行生成 AST，见 manual §12 / design §11）
 EventDecl        ::= Identifier '(' ParamList? ')' ';'
 PropertyDecl     ::= 'const'? Type Identifier ('=' Expression)? ';'
                    | Type Identifier '{' PropAccessor* '}' ';'?     // 自动属性（additive）
@@ -402,6 +413,11 @@ Block            ::= '{' Stmt* '}'
 >   普通属性赋值/读规则（fresh/借用）。
 > - 实现：selfhost parser/sema（`accessorGet/accessorSet` 标志 + 外部读写放行）；
 >   seed(oracle) 冻结不解析该语法（selfhost 超前属允许 parity 方向）。
+
+> **字段注解：`@weak` 弱引用（additive，见 manual §11 memory）**
+> - `property:` 段字段可前置 `@weak`：`@weak Parent p;`——弱引用不增引用计数、目标销毁时
+>   自动置空（打破 parent/child 等环）。语法为字段声明前的 `'@' 'weak'`；**仅 class/interface
+>   引用字段**可用，`string`/`slice`/数值及 struct 字段编译期拒绝。
 
 > **默认参数 / 命名实参（§四-1，additive）**
 > - `Param ::= Type Identifier ('=' Expression)?`——带默认值的参数可省略（仅函数/action/构造器；
