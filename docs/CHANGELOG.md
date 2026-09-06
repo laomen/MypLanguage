@@ -27,6 +27,33 @@
 
 ## 编译器版本历史
 
+### v3.15.236 — B6 new 形态：泛型模板体内 `new Box<T>` 逐实例化（含局部析构槽）（selfhost additive）
+
+**非破坏性硬化（generic_gaps B5/B6 占位 family 的 new 形态；v3.15.235 记录缺口收尾）**。
+泛型模板体内以**外层类类型参数作显式实参经 `new`** 构造另一泛型类（`Wrap<T>.innerBox`
+中 `new Box<T>(t_)`、顶层泛型函数 `mkBox<T>` 中 `new Box<T>(x)`）此前 codegen 发模板名
+实体的未定义引用 → opt-21 崩溃。codegen `codegen.myp`。
+
+- **根因**：sema 在共享模板体上把 New 的 `resolvedClass` 落成**模板名**（Box）、ctor 落成
+  带未绑定 T 的模板构造名（`@Box_Box_T`）、alloc 用模板 size/typeid → codegen 直接采信
+  → `call void @Box_Box_T` 未定义（实例 `@Box_int_inst_Box_int` 其实已物化但未被引用）。
+  既有重建分支只覆盖 resolvedClass 为**空**的情况。
+- **修复（codegen New 发射）**：新助手 `cgClsIsTpl(name)`（类表里 typeParams>0 且未实例
+  化的模板）与 `cgNewInstName(className, ne)`（className + `resolveType(typeArgs)` 各实参
+  + `_inst`，curTypeArgs_ 生效即实例发射期 T→具体）。凡 resolvedClass 是**泛型模板**且带
+  typeArgs → 与 rc 为空同路重建实例类名（alloc size/typeid、属性默认初值全走实例），并
+  置空 baked ctor 走既有「按实例类动作 + resolveType 形参」重建实例 ctor。
+- **同根因·局部析构槽**：`Box<T> b = new Box<T>(x)` 栈逃逸分类用 `resolvedClass`（模板名）
+  → `classHasArcProps(模板)` 因 T 字段 ARC 未知误判需析构 → bake `@__myp_destroy_Box`
+  （模板桩不发射，未定义）。重建实例名后：`Box_int_inst`（int 字段）无 ARC → 直接栈上
+  分配、不注册 `__stackdrop` 槽；`Box_string_inst` 若需析构亦走正确实例桩名。
+- **记录独立小缺口（非本次引入）**：泛型返回实例上**链式**成员调用（`ws.make().get()`）
+  中间结果丢失 typeArgs → `.get()` 解析回未绑定 T 报类型错；局部中转即绕（回归测试按
+  此写）。
+- 正例 `tests/@test/generic_new_typearg.myp`（8 断言：类方法局部+返回 / 类方法直接返回
+  new / 顶层泛型函数返回 new / 顶层泛型函数局部+取内部值（触发析构路径），Wrap<int> 与
+  Wrap<string> 双实例并存互不污染）；全量 533/533 + bugs 20/20 + bootstrap MD5 一致。
+
 ### v3.15.235 — A4 构造器类型实参推导（new 泛型类 目标类型推断）（selfhost additive）
 
 **非破坏性硬化（generic_gaps A4）**。`new 泛型类(...)` 现可从**目标类型**推断缺省的

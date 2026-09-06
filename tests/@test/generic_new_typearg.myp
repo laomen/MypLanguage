@@ -1,0 +1,51 @@
+// generic_new_typearg.myp — B6-family（v3.15.236）
+// 泛型模板体内 `new Box<T>`（T=外层类类型参数 / 顶层泛型函数类型参数）：
+//   - 类方法构造 + 返回局部   Wrap<T>.make
+//   - 类方法直接返回 new      Wrap<T>.make2
+//   - 顶层泛型函数 返回 new    topNew<T>
+//   - 顶层泛型函数 局部+取内部  mkBox<T>（触发 local 析构/释放路径，曾 bake @__myp_destroy_Box）
+// 修复前：codegen New 用 sema 落成的模板 resolvedClass/ctor（@Box_Box_T 未定义）+ 模板
+// size/typeid → opt-21 "use of undefined value"；局部析构栈注册成模板名 @__myp_destroy_Box。
+// 修复：凡 resolvedClass 是泛型模板且带 typeArgs → 按 resolveType(typeArgs) 重建实例类名
+// （alloc size/typeid、ctor、析构槽全走实例），与 A 系列逐实例映射一致。
+
+import test;
+
+class Box<T> {
+    property: T v_;
+    action:
+        @constructor Box(T v) { v_ = v; }
+        T get() { return v_; }
+}
+
+class Wrap<T> {
+    property: T t_;
+    action:
+        @constructor Wrap(T t) { t_ = t; }
+        Box<T> make() { Box<T> b = new Box<T>(t_); return b; }
+        Box<T> make2() { return new Box<T>(t_); }
+}
+
+Box<T> topNew<T>(T x) { return new Box<T>(x); }
+T mkBox<T>(T x) { Box<T> b = new Box<T>(x); return b.get(); }
+
+@test void t() {
+    Wrap<int> w = new Wrap<int>(42);
+    Box<int> a = w.make();
+    Test.assertEq(a.get(), 42, "a0");
+    Wrap<string> ws = new Wrap<string>("yo");
+    Box<string> b = ws.make2();
+    Test.assertStrEq(b.get(), "yo", "a1");
+    Box<int> c = topNew<int>(7);
+    Test.assertEq(c.get(), 7, "a2");
+    Box<string> d = topNew<string>("st");
+    Test.assertStrEq(d.get(), "st", "a3");
+    Test.assertEq(mkBox<int>(9), 9, "a4");
+    Test.assertStrEq(mkBox<string>("hi"), "hi", "a5");
+    // 双实例并存回归（Wrap<int> 与 Wrap<string> 同文件物化互不污染）
+    Box<int> e = w.make2();
+    Test.assertEq(e.get(), 42, "a6");
+    Box<string> f = ws.make();
+    Test.assertStrEq(f.get(), "yo", "a7");
+    Test.report("t", true);
+}

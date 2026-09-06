@@ -1478,6 +1478,28 @@ class CodeGen {
             return argV;
         }
 
+        // B6-family（v3.15.236）：name 是否**泛型类模板**（typeParams>0 且未实例化）。
+        int cgClsIsTpl(string name) {
+            if (tu_ == null || Str.len(name) == 0) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass cct = tu_.classes().get(ci);
+                if (cct.name() == name && cct.typeParams().size() > 0 && cct.isGenericInst() == 0) return 1;
+            }
+            return 0;
+        }
+
+        // B6-family：`new Box<T>` 类名 → 实例类名（className + 解析实参 + _inst）。
+        // 共享模板体内 sema 把 resolvedClass 落成模板名（T 未绑定）；实例发射期
+        // curTypeArgs_ 生效，须 resolveType(typeArgs) 重建（同 A 系列逐实例映射）。
+        string cgNewInstName(string className, AstExpr ne) {
+            string ib = className;
+            if (ne == null) return ib;
+            for (int ti = 0; ti < ne.typeArgs().size(); ti = ti + 1) {
+                ib = ib + "_" + classInstName(resolveType(ne.typeArgs().get(ti)));
+            }
+            return ib + "_inst";
+        }
+
         // 释放当前函数全部 ARC 局部槽（返回前/函数末尾）。
         void releaseArcSlotName(string encoded) {
             string prefix = "__stackdrop|";
@@ -8668,6 +8690,13 @@ class CodeGen {
                             if (v.init() != null && v.init().kind() == "New") {
                                 stackClass = v.init().resolvedClass();
                                 if (Str.len(stackClass) == 0) stackClass = v.init().className();
+                                // B6-family：共享模板体内 `Box<T> b = new Box<T>(x)` 的
+                                // resolvedClass 是模板名（T 字段 ARC 未知 → classHasArcProps
+                                // 误判需析构 → @__myp_destroy_Box 未定义）。按当前实例重建，
+                                // 令 classHasArcProps/classSize 走实例（Box_int_inst 无 ARC
+                                // 字段 → 直接栈上分配，不注册 __stackdrop 槽）。
+                                if (cgClsIsTpl(stackClass) != 0 && v.init().typeArgs().size() > 0)
+                                    stackClass = cgNewInstName(stackClass, v.init());
                                 stackNeedsDrop = classHasArcProps(stackClass);
                                 stackAllocationBytes = 8 + classSize(stackClass);
                                 if (stackNeedsDrop == 0 || tryArcBases_.size() == 0)
@@ -10955,15 +10984,21 @@ class CodeGen {
                 // 泛型实例用 resolvedClass（Box_int_inst），模板名用 className。
                 string cls = e.className();
                 string rc = e.resolvedClass();
-                if (Str.len(rc) != 0) cls = rc;
-                else if (e.typeArgs().size() > 0) {
-                    // 共享模板体内的 new Result<T,E>(v)：resolvedClass 未解析 →
-                    // 按 className + 解析后的实参重建实例名（C++ generateNewExpr）
-                    cls = e.className();
-                    for (int ti = 0; ti < e.typeArgs().size(); ti = ti + 1) {
-                        cls = cls + "_" + classInstName(resolveType(e.typeArgs().get(ti)));
-                    }
-                    cls = cls + "_inst";
+                // B6-family（v3.15.236）：泛型模板体内 `new Box<T>`（T=外层类类型参数，
+                // 如 Wrap<T>.innerBox）——sema 在共享模板体上把 resolvedClass 落成模板名
+                // Box、ctor 落成带未绑定 T 的模板构造名（@Box_Box_T，不存在）→ 此前直接
+                // 用 rc → alloc 按模板 size/typeid、call 未定义 ctor → opt 崩。此处凡 rc
+                // 是**泛型模板**（typeParams>0 且未实例化）且带 typeArgs → 与 rc 为空同
+                // 路：按 resolveType(typeArgs)（curTypeArgs_ 生效，实例发射期 T→具体）
+                // 重建实例类名；ctor 也置空让下方按实例类重建（同 A 系列逐实例映射）。
+                int rebuiltInst = 0;
+                if (Str.len(rc) != 0 && cgClsIsTpl(rc) == 0) {
+                    cls = rc;
+                } else if (e.typeArgs().size() > 0) {
+                    // 共享模板体内的 new Result<T,E>(v) / new Box<T>（外层 T）：resolvedClass
+                    // 空或模板 → 按 className + 解析后的实参重建实例名（C++ generateNewExpr）
+                    rebuiltInst = 1;
+                    cls = cgNewInstName(e.className(), e);
                 }
                 int sz = classSize(cls);
                 int tid = classTypeId(cls);
@@ -11035,7 +11070,7 @@ class CodeGen {
                         break;
                     }
                 }
-                string ctor = e.ctor();
+                string ctor = rebuiltInst != 0 ? "" : e.ctor();
                 // 泛型实例（共享模板体）：sema 未解析 ctor → 按具体实例类名 + 实参
                 // 个数重建构造器名（C++ generateNewExpr 的泛型回退）。
                 if (Str.len(ctor) == 0 && tu_ != null) {
