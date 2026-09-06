@@ -1,0 +1,91 @@
+// R5（roadmap §六 R5）：Channel 与调度器扩展曲线。
+// 生产者/消费者数量矩阵 1x1/1xN/Nx1/NxN × channel capacity 1/大；verify 总和
+// = n(n-1)/2（防丢值/重复/错值）+ Coro.count()==0（槽全回收）。输出 "R5 <k> <v>"。
+import env;
+import channel;
+import coro;
+
+class Producer {
+    action:
+        @coro(stack=64) long run(Channel ch, long m) {
+            long i = 0;
+            while (i < m) {
+                ch.send(i);
+                i = i + 1;
+            }
+            return m;
+        }
+}
+
+class Consumer {
+    action:
+        @coro(stack=64) long run(Channel ch, long m) {
+            long s1 = 0;
+            long i = 0;
+            while (i < m) {
+                long v = ch.recv();
+                s1 = s1 + v;
+                i = i + 1;
+            }
+            return s1;
+        }
+}
+
+// np 生产者 × nc 消费者，每 producer send n/np、每 consumer recv n/nc（须整除）。
+long runCfg(long n, int np, int nc, int cap) {
+    Channel ch = new Channel();
+    ch.init(cap);
+    long[] ph = new long[np];
+    long[] chh = new long[nc];
+    for (int i = 0; i < np; i = i + 1) {
+        Producer p = new Producer();
+        ph[i] = p.run(ch, n / long(np));
+    }
+    for (int i = 0; i < nc; i = i + 1) {
+        Consumer c = new Consumer();
+        chh[i] = c.run(ch, n / long(nc));
+    }
+    long guard = 0;
+    while (Coro.count() > 0 && guard < 400000000) {
+        Coro.scheduler();
+        guard = guard + 1;
+    }
+    long got = 0;
+    for (int i = 0; i < nc; i = i + 1) got = got + Coro.result(chh[i]);
+    for (int i = 0; i < np; i = i + 1) Coro.result(ph[i]);
+    int countLeft = Coro.count();
+    ch.destroy();
+    // 每 producer send 0..m-1（m = n/np），np 路 → 总和 = np·m(m-1)/2
+    long per = n / long(np);
+    long exp = long(np) * per * (per - 1) / 2;
+    return (got == exp && countLeft == 0) ? 1 : 0;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            // 扁平配置 [n, np, nc, cap] × 5
+            long[] cfgs = new long[20];
+            cfgs[0] = 100000;  cfgs[1] = 1;  cfgs[2] = 1;  cfgs[3] = 1;     // 1x1 cap1
+            cfgs[4] = 100000;  cfgs[5] = 1;  cfgs[6] = 1;  cfgs[7] = 1024;  // 1x1 cap1024
+            cfgs[8] = 100000;  cfgs[9] = 1;  cfgs[10] = 4; cfgs[11] = 8;    // 1x4 cap8
+            cfgs[12] = 200000; cfgs[13] = 4; cfgs[14] = 4; cfgs[15] = 64;   // 4x4 cap64
+            cfgs[16] = 100000; cfgs[17] = 4; cfgs[18] = 1; cfgs[19] = 8;    // 4x1 cap8
+            string[] names = new string[5];
+            names[0] = "1x1_cap1"; names[1] = "1x1_cap1024"; names[2] = "1x4_cap8";
+            names[3] = "4x4_cap64"; names[4] = "4x1_cap8";
+            for (int k = 0; k < 5; k = k + 1) {
+                long n = cfgs[k * 4];
+                int np = int(cfgs[k * 4 + 1]);
+                int nc = int(cfgs[k * 4 + 2]);
+                int cap = int(cfgs[k * 4 + 3]);
+                long t0 = __myp_now_ms();
+                long ok = runCfg(n, np, nc, cap);
+                long t1 = __myp_now_ms();
+                Console.writeString("R5 cfg=" + names[k]
+                    + " n=" + ("" + n) + " ms=" + ("" + (t1 - t0))
+                    + " verify_ok=" + ("" + ok) + "\n");
+            }
+        }
+}
+int main() { Bench b = new Bench(); return 0; }

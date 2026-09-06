@@ -1,0 +1,36 @@
+// R4（roadmap §六 R4）：文件 I/O 并发。
+// @parallel 8 worker 各开独立 handle 读同一数据文件 + 逐字节 hash，校验全部一致
+// （防并发提速以数据错乱为代价）。数据文件由 run.sh 预生成（1MB 确定性内容）。
+// 输出 "R4 <k> <v>"。
+import env;
+import io;
+
+class Bench {
+    action:
+        @constructor Bench() {
+            string path = "/tmp/myp_r4_bench.bin";
+            int nw = 8;
+            long[] hs = new long[nw];
+            long t0 = __myp_now_ms();
+            @parallel for (int w = 0; w < nw; w = w + 1) {
+                File f = new File();
+                f.open(path, "r");
+                string s = f.readAll();
+                f.close();
+                long h = 0;
+                for (int i = 0; i < Str.len(s); i = i + 1) {
+                    h = h * 31 + __myp_charcode(s, i);
+                }
+                hs[w] = h;
+            }
+            long t1 = __myp_now_ms();
+            long ok = 1;
+            for (int i = 1; i < nw; i = i + 1) {
+                if (hs[i] != hs[0]) ok = 0;
+            }
+            Console.writeString("R4 par_read_ms=" + ("" + (t1 - t0))
+                + " workers=" + ("" + nw) + " hash=" + ("" + hs[0])
+                + " consistent=" + ("" + ok) + "\n");
+        }
+}
+int main() { Bench b = new Bench(); return 0; }

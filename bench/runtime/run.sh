@@ -14,21 +14,33 @@ STDLIB=${STDLIB:-../../stdlib}
 ITERS=${1:-1}
 [ -x "$MYPCC" ] || { echo "缺 mypc: $MYPCC"; exit 2; }
 
-echo "== bench/runtime（R1 ARC / R2 region / R3 coro spawn）=="
-for f in r1_arc r2_region r3_coro; do
+echo "== bench/runtime（R1 ARC / R2 region / R3 coro spawn / R4 文件 IO 并发 / R5 channel）=="
+# R4 数据文件：1MB 确定性内容
+if [ ! -f /tmp/myp_r4_bench.bin ]; then
+    head -c 1048576 /dev/urandom > /tmp/myp_r4_bench.bin
+fi
+for f in r1_arc r2_region r3_coro r4_file_io r5_channel; do
     "$MYPCC" -O2 --stdlib "$STDLIB" -o "/tmp/${f}_bench" "$f.myp" || { echo "编译失败: $f"; exit 1; }
 done
 
-for f in r1_arc r2_region r3_coro; do
+for f in r1_arc r2_region r3_coro r4_file_io r5_channel; do
     echo "--- $f ---"
-    best_ms=999999999
-    best_line=""
-    for ((i = 0; i < ITERS; i++)); do
+    if [ "$f" = "r5_channel" ]; then
+        # 多配置输出（每行独立指标）：直接展示一轮全部行 + 峰值 RSS
         out=$(/usr/bin/time -v "/tmp/${f}_bench" 2>&1)
-        line=$(echo "$out" | grep -E "^R[0-9] ")
+        echo "$out" | grep -E "^R[0-9] "
         rss=$(echo "$out" | grep "Maximum resident" | grep -oE "[0-9]+" | head -1)
-        ms=$(echo "$line" | grep -oE "ms=[0-9]+" | head -1 | grep -oE "[0-9]+")
-        if [ -n "$ms" ] && [ "$ms" -lt "$best_ms" ]; then best_ms=$ms; best_line="$line"; best_rss=$rss; fi
-    done
-    echo "${best_line}  peak_rss_kb=${best_rss}"
+        echo "  peak_rss_kb=${rss}"
+    else
+        best_ms=999999999
+        best_line=""
+        for ((i = 0; i < ITERS; i++)); do
+            out=$(/usr/bin/time -v "/tmp/${f}_bench" 2>&1)
+            line=$(echo "$out" | grep -E "^R[0-9] " | head -1)
+            rss=$(echo "$out" | grep "Maximum resident" | grep -oE "[0-9]+" | head -1)
+            ms=$(echo "$line" | grep -oE "ms=[0-9]+" | head -1 | grep -oE "[0-9]+")
+            if [ -n "$ms" ] && [ "$ms" -lt "$best_ms" ]; then best_ms=$ms; best_line="$line"; best_rss=$rss; fi
+        done
+        echo "${best_line}  peak_rss_kb=${best_rss}"
+    fi
 done
