@@ -27,6 +27,24 @@
 
 ## 编译器版本历史
 
+### v3.15.225 — BUG-150 修复：net send 屏蔽 SIGPIPE（写已关闭连接不崩）（runtime）
+
+**非破坏性运行时修复**。对已关闭 socket `send` 默认触发 SIGPIPE 终止进程（exit 141）；
+myp_http 协程服务端向断开客户端写响应即崩（曾误判"高并发饿死"，实为崩溃后新连接
+全失败）。修复：三处 Linux `send/sendto` flags 加 `MSG_NOSIGNAL`（0x4000）→ 写已关
+连接返回 EPIPE(-1) 优雅处理。
+
+- `runtime_myp/net.myp` `myp_net_send`：`send(fd, ptr, len, 0)` → `0x4000`（net.myp
+  仅 Linux 构建，de-gcc libc ffi）。
+- `runtime_myp/uds.myp` `myp_uds_send`：`sendto` syscall flags `0` → `0x4000`。
+- `stdlib/bridges/net_bridge.c` `myp_net_send`（Linux）：`send(..., MSG_NOSIGNAL)`
+  + `#ifndef MSG_NOSIGNAL` 回落 0；Windows 分支本就无 SIGPIPE，不受影响。
+- 回归 `tests/bugs/b150_send_sigpipe.myp`（单进程，listen backlog 先连后 accept）：
+  服务端 send 一包（客户端不读）→ 客户端带未读数据 close 发 RST → 服务端再写已 RST
+  连接不崩。**灵敏度验证**：临时把 net.myp flags 改回 0 → 该测试 exit 141（SIGPIPE
+  崩）；恢复修复 → 5 断言全绿。
+- bugs 20/20 + 全量 520/520。
+
 ### v3.15.224 — 克隆体逐体分析（实例化克隆整体类型检查）（selfhost 大项落地）
 
 **非破坏性硬化（v3.15.223 记录的"模板体完整类型检查"大项落地）**。泛型模板体

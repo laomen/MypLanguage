@@ -20,6 +20,12 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+/* BUG-150（修复）：MSG_NOSIGNAL 使 send 对已关闭连接返回 EPIPE 而非 SIGPIPE 崩
+ * （exit 141）。Linux/glibc <sys/socket.h> 已定义（0x4000）；无该宏的 POSIX
+ * （如 macOS 走 SO_NOSIGPIPE）回落 0，仅 Linux 是实际修复目标。 */
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
 #else
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -176,6 +182,8 @@ int32_t myp_net_connect(const char* host, int32_t port) {
 
 // Send a string over a socket
 // Returns: bytes sent on success, -1 on error
+// BUG-150（修复）：Linux send 加 MSG_NOSIGNAL——写已关闭连接返回 EPIPE(-1) 优雅
+// 处理，而非默认 SIGPIPE 终止进程（exit 141）。
 int32_t myp_net_send(int32_t fd, const char* data) {
     if (!data) return 0;
     size_t len = strlen(data);
@@ -185,7 +193,7 @@ int32_t myp_net_send(int32_t fd, const char* data) {
     if (s == INVALID_SOCKET) return -1;
     return (int32_t)send(s, data, (int)len, 0);
 #else
-    return (int32_t)send(fd, data, len, 0);
+    return (int32_t)send(fd, data, len, MSG_NOSIGNAL);
 #endif
 }
 

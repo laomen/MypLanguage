@@ -71,10 +71,12 @@ int myp_uds_connect(string path) {
 }
 
 // C: int32_t myp_uds_send(int32_t fd, const char* data)
+// BUG-150（修复）：sendto flags 加 MSG_NOSIGNAL(0x4000)——写已关闭的已连接
+// Unix 流套接字默认 SIGPIPE 崩；服务端向已断客户端写即崩。加后返回 EPIPE 优雅处理。
 int myp_uds_send(int fd, string data) {
     int len = myp_strlen(data);
     if (len == 0) return 0;
-    long n = __myp_syscall(44, fd, __myp_str_ptr(data), len, 0, 0, 0);   // sendto
+    long n = __myp_syscall(44, fd, __myp_str_ptr(data), len, 0x4000, 0, 0);   // sendto, MSG_NOSIGNAL
     return int(n);
 }
 

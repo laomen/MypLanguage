@@ -93,10 +93,13 @@ int myp_net_connect(string host, int port) {
 }
 
 // C: int32_t myp_net_send(int32_t fd, const char* data)
+// BUG-150（修复）：MSG_NOSIGNAL(0x4000)——写已关闭连接默认 SIGPIPE 崩（exit
+// 141）；服务端协程向已断客户端写响应即崩（曾误判高并发饿死）。加 MSG_NOSIGNAL
+// 令 send 返回 EPIPE 由上层优雅处理。net.myp 仅 Linux 构建（de-gcc libc ffi）。
 int myp_net_send(int fd, string data) {
     int len = myp_strlen(data);
     if (len == 0) return 0;
-    return send(fd, __myp_str_ptr(data), len, 0);
+    return send(fd, __myp_str_ptr(data), len, 0x4000);   // MSG_NOSIGNAL
 }
 
 // C: char* myp_net_recv(int32_t fd, int32_t max_len) —— 按实收长度构建

@@ -1,0 +1,53 @@
+// BUG-150 复现/回归：net send 未屏蔽 SIGPIPE → 服务端写已关闭连接崩（exit 141）
+// ---------------------------------------------------------------------------
+// 现象（myp_http 协程服务端）：向已断开的客户端写响应 → 进程 SIGPIPE 崩（exit
+// 141「断开的管道」）。曾误判"10+ 慢挂起连接高并发饿死"——实为服务端已崩。
+// 根因：send 对已关闭连接默认触发 SIGPIPE 终止进程（三处 flags=0 无 MSG_NOSIGNAL
+// —— runtime_myp/net.myp myp_net_send / stdlib/bridges/net_bridge.c myp_net_send /
+// runtime_myp/uds.myp myp_uds_send sendto）。
+// 修复：Linux send 加 MSG_NOSIGNAL(0x4000) → 写已关连接返回 EPIPE(-1) 优雅处理。
+// 复现（单进程，listen backlog 先连后 accept，无需协程/线程）：
+//   服务端 send 一包（客户端不读）→ 客户端带未读数据 close → 内核发 RST →
+//   服务端再写已 RST 连接：修复前 SIGPIPE 崩；修复后 send 返回 -1、进程存活。
+import test;
+import env;
+import net;
+import text;
+
+// 阻塞睡眠（runtime_myp/time.myp myp_sleep_ms，nanosleep）
+ffi void myp_sleep_ms(long ms);
+
+@test void t_b150_send_sigpipe() {
+    int port = 26319;
+    TcpServer srv = new TcpServer(port);
+    Test.assert(srv.getFd() >= 0, "server bind");
+    TcpClient c = new TcpClient();
+    int rc = c.connect("127.0.0.1", port);
+    Test.assertEq(rc, 0, "client connect");
+    TcpClient acc = new TcpClient();
+    int ar = srv.accept(acc);
+    Test.assertEq(ar, 0, "server accept");
+
+    // 服务端先写一包（客户端不读 → 留在客户端 rx 缓冲）
+    int s0 = acc.send("unread-payload-that-client-never-reads");
+    Test.assert(s0 > 0, "first send ok");
+
+    // 客户端带未读数据关闭 → 内核发 RST（而非 FIN）
+    c.close();
+    myp_sleep_ms(200);   // 等 RST 到达服务端
+
+    // 服务端再写已 RST 的连接：修复前 SIGPIPE 进程崩（run_bugs 判 RUNTIME CRASH）；
+    // 修复后 send 返回 EPIPE(-1) 优雅处理、进程存活。
+    StringBuilder big = new StringBuilder();
+    for (int i = 0; i < 64; i = i + 1) big.append("0123456789abcdef");
+    string payload = big.toString();
+    int s1 = acc.send(payload);
+    int s2 = acc.send(payload);
+    int s3 = acc.send(payload);
+    Test.assert(s1 < 0 || s2 < 0 || s3 < 0,
+        "write to closed conn returns EPIPE (no SIGPIPE crash, process alive)");
+
+    acc.close();
+    srv.close();
+    Test.report("t_b150_send_sigpipe", true);
+}
