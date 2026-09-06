@@ -96,6 +96,20 @@ hash → **stdlib 内容变更不使缓存失效** → 错误命中旧 IR（实�
   缓存；冷/热产物 md5 一致 `87ecbd65…`；改源码 miss 重编、语法错照报；自举 MD5
   门禁 `d3dabef1` 通过；全套 547 通过。
 
+#### T6：固定端口冲突——`TcpServer` 支持端口 0 + `localPort()`（commit d916f55）
+
+网络测试原固定端口（`coro_wait_compact` 24783、`b150` 26319）在 TIME_WAIT / 并发
+进程占用时偶发 bind 失败（roadmap T6）。
+
+- `runtime_myp/net.myp`：新增 `myp_net_local_port(fd)`（`getsockname` 读实际绑定
+  端口，`sin_port` 网络序还原）+ `getsockname` libc ffi 声明。
+- `stdlib/net.myp`：ffi + `TcpServer.localPort()`——`new TcpServer(0)` 由内核分配
+  空闲端口，客户端用 `localPort()` 实际端口连接，彻底规避固定端口冲突。
+- `coro_wait_compact`/`b150` 改用端口 0（输出不含端口值 → expected 不受影响）；
+  `b153`（双进程手动复现）保持参数化（`repro.sh [port]`）。
+- 验证：runtime 归档重建 37 模块、自举 MD5 门禁 `d3dabef1`；两测试跑通；全套 547
+  通过。
+
 ### v3.16.0 — 里程碑：版本节奏切 minor（v3.16 周期开始；git tag v3.16.0）
 
 **版本节奏规则（自本版起）**：此前每功能/修复 commit +1 patch（v3.15.244 个 patch 全堆在
