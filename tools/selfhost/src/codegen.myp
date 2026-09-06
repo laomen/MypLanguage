@@ -2252,7 +2252,11 @@ class CodeGen {
                 }
                 // trait 默认实现：类省略了带默认体的接口方法时，生成按类特化的默认函数
                 //（__ifdef_<iface>_<method>_<cls>；默认体内 this.method() 解析到 <cls>_<method>）
-                if (Str.len(c.iface()) != 0 && c.isGenericInst() == 0) {
+                // v3.15.231：泛型类【实例】（Box_int_inst，isGenericInst==1）同样需要——
+                // 此前仅非泛型/模板类（模板类本身被上方跳过不发射）→ 实例类的接口默认
+                // stub 缺失 → @__myp_vtable_<Iface>_<Box_int_inst> 引用
+                // @__ifdef_..._Box_int_inst 未定义（opt undefined）。
+                if (Str.len(c.iface()) != 0) {
                     for (int ii = 0; ii < tu_.interfaces().size(); ii = ii + 1) {
                         AstInterface ifc = tu_.interfaces().get(ii);
                         if (ifc.name() != c.iface()) continue;

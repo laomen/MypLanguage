@@ -3000,10 +3000,24 @@ class Sema {
             if (t != null && Str.len(t.className()) != 0 && t.className() != "slice") {
                 // 已知类 → class；enum → enum；未知类型 → void（C++ unknown type 诊断）
                 if (findClass(t.className()) >= 0) return "class";
+                // 泛型实例类名（Box_int_inst）：不在 classIdx_（classNames_ 不含
+                // _inst 克隆，除非 v3.15.226 registerInstClass 延迟注册）→ 这里兜底
+                // 扫描 tu_.classes()（isGenericInst 真类）。触发：泛型推断/类型实参把
+                // 实例类型扁平化成裸实例名（argToAstType 读 SymbolEntry.className_，
+                // instance-of-instance 泛型实参 dup(b)/dup<Box<int>>，v3.15.231）。
+                if (isGenericInstClassByName(t.className()) != 0) return "class";
                 if (findEnum(t.className()) >= 0) return "enum";
                 return "void";
             }
             return TKind.typeKindOf(t);
+        }
+        int isGenericInstClassByName(string name) {
+            if (tu_ == null) return 0;
+            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
+                AstClass c = tu_.classes().get(i);
+                if (c.name() == name && c.isGenericInst() != 0) return 1;
+            }
+            return 0;
         }
         int findBitfield(string name) {
             for (int i = 0; i < bitfieldNames_.size(); i = i + 1) {

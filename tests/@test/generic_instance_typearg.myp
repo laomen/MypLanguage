@@ -1,0 +1,62 @@
+// A1 边界 1（v3.15.231，selfhost additive）回归：跨实例类泛型（instance-of-instance
+// generic type argument）——泛型类型实参 = 泛型类【实例】（Box<int>、Box<Box<int>>）
+// 的显式（dup<Box<int>>）与推导（dup(b)）调用，含泛型体内调泛型 T 依赖 + 实例类实
+// 参（viaT<Box<int>> 内 id<T>）、两层嵌套实例类（Box<Box<int>>）穿透两层泛型链、
+// 方法级泛型/static 泛型以实例类为实参、方法级泛型返回嵌套实例容器。
+// 修复：
+// ① parser scanGenericCall 不识词法单 token `>>`（嵌套泛型类型实参闭合，如
+// dup<Box<int>>(b)）→ 曾误判为二元 < → 解析错。加 `>>` 按两个 '>' 计深（同
+// consumeGenericClose）。
+// ② sema typeToKind 不识泛型实例类名（Box_int_inst 不在 classIdx_，classNames_ 不含
+// _inst 克隆）→ 推导路径（argToAstType 把 SymbolEntry.className_=实例名扁平化）把
+// concrete 建成裸实例名 → typeToKind 返 void（"cannot initialize ... void"）。加
+// isGenericInstClassByName 兜底（扫 tu_.classes() isGenericInst）。
+import test;
+
+class Box<T> {
+    property:
+        T v;
+    action:
+        @constructor Box(T val) { v = val; }
+        T get() { return v; }
+        U id<U>(U x) { U y = x; return y; }            // 方法级泛型
+        Box<U> mk<U>(U x) { return new Box<U>(x); }    // 返回泛型类实例
+}
+
+T dup<T>(T x) { T y = x; return y; }
+T id<T>(T x) { T y = x; return y; }
+T viaT<T>(T x) { return id<T>(x); }                     // 泛型体内调泛型（T 依赖）
+T mid<T>(T x) { return viaT<T>(x); }                    // 两层泛型链
+
+@static class M {
+    static:
+        T pick<T>(T x) { return x; }
+}
+
+@test void t() {
+    Box<int> b = new Box<int>(5);
+    // 显式 / 推导 实例类实参
+    Box<int> a0 = dup<Box<int>>(b);
+    Test.assertEq(a0.get(), 5, "a0");
+    Box<int> a1 = dup(b);
+    Test.assertEq(a1.get(), 5, "a1");
+    // 泛型体内调泛型（T 依赖）+ 实例类实参（显式 & 推导）
+    Box<int> a3 = viaT<Box<int>>(b);
+    Test.assertEq(a3.get(), 5, "a3");
+    Box<int> a4 = viaT(b);
+    Test.assertEq(a4.get(), 5, "a4");
+    // 两层嵌套实例类 Box<Box<int>> 穿透两层泛型链
+    Box<Box<int>> bb = new Box<Box<int>>(b);
+    Box<Box<int>> a5 = mid<Box<Box<int>>>(bb);
+    Test.assertEq(a5.get().get(), 5, "a5");
+    Box<Box<int>> a6 = mid(bb);
+    Test.assertEq(a6.get().get(), 5, "a6");
+    // 方法级泛型 / static 泛型 以实例类为实参
+    Box<int> a7 = b.id<Box<int>>(b);
+    Test.assertEq(a7.get(), 5, "a7");
+    Box<int> a8 = M.pick<Box<int>>(b);
+    Test.assertEq(a8.get(), 5, "a8");
+    Box<Box<int>> a9 = b.mk<Box<int>>(b);
+    Test.assertEq(a9.get().get(), 5, "a9");
+    Test.report("t", true);
+}

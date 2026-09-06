@@ -1,0 +1,61 @@
+// A1 边界 2（v3.15.231，selfhost additive）回归：泛型类【模板】实现接口 + 接口默认
+// 方法（trait 默认实现）——泛型类实例（Box_int_inst）省略接口带默认体的方法时，接口
+// vtable 槽引用 @__ifdef_<Iface>_<m>_<Box_int_inst> stub；此前 codegen trait 默认生成
+// 仅限非泛型类（isGenericInst==0，模板类本身被跳过不发射）→ 实例类 stub 缺失 →
+// opt undefined value。修：trait 默认生成去 isGenericInst 排除，实例类也按名生成
+// __ifdef stub（默认体内 this.method() 经 findIfaceDefault 解析到 <实例类>_<m> /
+// 兄弟 __ifdef stub）。含：泛型模板方法体内接口 upcast 调默认、泛型 fn where T:Iface
+// 调默认、默认体调实现类抽象方法 / 默认调默认。
+import test;
+
+interface INamed {
+    string label() { return "unnamed"; }
+    string full() { return label() + "#" + label(); }   // 默认调默认
+}
+
+interface IV {
+    int val();                                        // 抽象：实现类实现
+    string tag() { return "val=" + val(); }           // 默认：体内调实现类 val()
+    string t2() { return tag() + "!"; }               // 默认调默认
+}
+
+class Box<T> {
+    interface class INamed;
+    property:
+        T v;
+    action:
+        @constructor Box(T val) { v = val; }
+        string viaIf() { INamed n = this; return n.full(); }  // 泛型模板内接口 upcast
+}
+
+class Val<T> {
+    interface class IV;
+    property:
+        T v;
+    action:
+        @constructor Val(T val) { v = val; }
+        int val() { return int(v); }                  // 实现抽象（T→int）
+}
+
+string describeNamed<T where T:INamed>(T x) { INamed n = x; return n.full(); }
+
+@test void t() {
+    Box<int> a = new Box<int>(7);
+    // 泛型模板方法体内接口 upcast 调默认（Box_int_inst stub）
+    string a0 = a.viaIf();
+    Test.assertStrEq(a0, "unnamed#unnamed", "a0");
+    // 泛型 fn where T:INamed 调接口默认（实例类类型实参 + where）
+    string a1 = describeNamed<Box<int>>(a);
+    Test.assertStrEq(a1, "unnamed#unnamed", "a1");
+    string a2 = describeNamed(a);                     // 推导 where 实参
+    Test.assertStrEq(a2, "unnamed#unnamed", "a2");
+    // 默认体调实现类抽象方法 / 默认调默认（经接口收者）
+    Val<int> v7 = new Val<int>(7);
+    IV iv = v7;
+    Test.assertStrEq(iv.tag(), "val=7", "a3");
+    Test.assertStrEq(iv.t2(), "val=7!", "a4");
+    Val<int> v9 = new Val<int>(9);
+    IV iv9 = v9;
+    Test.assertStrEq(iv9.tag(), "val=9", "a5");
+    Test.report("t", true);
+}

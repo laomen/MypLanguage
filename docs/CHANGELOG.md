@@ -27,6 +27,36 @@
 
 ## 编译器版本历史
 
+### v3.15.231 — A1 两条边界：跨实例类泛型（instance-of-instance 类型实参）+ 泛型类接口默认方法（selfhost）
+
+**非破坏性硬化（generic_gaps A1 收尾后两条边界，parser + sema + codegen）**。A1 仅剩的
+两条边界落地：
+①**跨实例类泛型**（泛型类型实参 = 泛型类【实例】`Box<int>`/`Box<Box<int>>`）的显式
+（`dup<Box<int>>`）与推导（`dup(b)`）调用，含泛型体内调泛型 T 依赖 + 实例类实参、两
+层嵌套实例类穿透两层泛型链、方法级/static 泛型以实例类为实参；
+②**泛型类模板实现接口 + 接口默认方法**（trait 默认实现）——泛型类实例省略默认方法时
+的 `__ifdef_*_Box_int_inst` stub 生成。
+
+- **parser `scanGenericCall` 不识词法单 token `>>`**（parser.myp）：嵌套泛型类型实参闭合
+  `dup<Box<int>>(b)` 的 `>>` 词法合成单 token → 前瞻扫描按深度不闭合 → 误判为二元
+  `<` → RHS `int` 类型 token → "unexpected token 'int'" 解析错。加 `>>` 按两个 `'>'`
+  计深（同 consumeGenericClose / 类型跳过）。
+- **sema `typeToKind` 不识泛型实例类名**（sema.myp）：实例类（Box_int_inst）不在
+  classIdx_（classNames_ 不含 _inst 克隆，除非 registerInstClass 延迟注册）→ 推导路径
+  （argToAstType 把 SymbolEntry.className_=实例名扁平化）把 concrete 建成裸实例名 →
+  typeToKind 返 void → "cannot initialize ... with value of type 'void'"（`Box<int> d =
+  dup(b)`）。加 `isGenericInstClassByName` 兜底（扫 tu_.classes() 的 isGenericInst 真
+  类）→ 返 class（valueClass=实例名，与显式路径同一实例名 `dup_Box_int_inst_inst`，
+  去重一致）。
+- **codegen trait 默认 stub 未给泛型类【实例】生成**（codegen.myp）：trait 默认生成守
+  `Str.len(c.iface())!=0 && c.isGenericInst()==0`——模板类（isGenericInst==0）本就被类
+  发射循环跳过，实例类又被该守卫排除 → `@__myp_vtable_<Iface>_Box_int_inst` 引用
+  `@__ifdef_<Iface>_<m>_Box_int_inst` 未定义（opt undefined）。去 isGenericInst 排除，
+  实例类按名生成 stub（默认体内 this.method() 经 findIfaceDefault 解析到
+  `<实例类>_<m>` / 兄弟 __ifdef stub）。
+- 正例：`tests/@test/generic_instance_typearg.myp`（10 断言）、`tests/@test/
+  generic_iface_default.myp`（6 断言）；全量 528/528 + bugs 20/20；bootstrap MD5 一致。
+
 ### v3.15.230 — A1 余量：泛型体内调泛型【实例】方法（this.m<U> 内嵌 + 227 物化回归）（selfhost）
 
 **非破坏性硬化（generic_gaps A1 收尾，selfhost codegen 逐实例映射 + sema 物化修复）**。

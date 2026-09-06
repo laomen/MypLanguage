@@ -2178,6 +2178,17 @@ class Parser {
                     }
                     i = i + 1; continue;
                 }
+                // 嵌套泛型类型实参闭合 `>>`（词法单 token，如 dup<Box<int>>(b)）：
+                // 拆成两个 '>' 计深（同 consumeGenericClose / 类型跳过 505 行）。
+                if (k == ">>") {
+                    depth = depth - 2;
+                    if (depth <= 0) {
+                        i = i + 1;
+                        if (i < tokens_.size() && kindAt(i) == "(") return 1;
+                        return 0;
+                    }
+                    i = i + 1; continue;
+                }
                 if (k == "(" || k == ")" || k == "{" || k == "}" || k == "&&" || k == "||"
                     || k == "=" || k == "==" || k == "!=" || k == ";" || k == ":") {
                     return 0;  // 类型内不允许这些 token → 非泛型调用
