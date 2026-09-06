@@ -1005,6 +1005,10 @@ int runLSPServer(int argc, char** argv) {
     LSPMessage msg;
     while (readMessage(msg)) {
         try {
+        // [perf] MYP_LSP_TIMING=1 → stderr 逐消息 handler 耗时（stdout 协议外带，
+        // 不干扰 JSON-RPC；bench/lsp 用区分「计算」vs「写出」）。
+        auto t0 = std::chrono::steady_clock::now();
+        bool lsp_timing = getenv("MYP_LSP_TIMING") != nullptr;
         // Extract method (handle optional spaces)
         auto method_start = msg.body.find("\"method\":");
         std::string method;
@@ -1111,6 +1115,11 @@ int runLSPServer(int argc, char** argv) {
                 std::string body = "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":" + err + "}";
                 sendMessage(body);
             }
+        }
+        if (lsp_timing && !method.empty()) {
+            double ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t0).count();
+            std::cerr << "[lsp-timing] " << method << " " << ms << " ms\n";
         }
 
         } catch (const std::exception& e) {

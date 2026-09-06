@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.16.4 — LSP 性能基准 bench/lsp（roadmap §5.3）+ MYP_LSP_TIMING 钩子
+
+**新增** `bench/lsp/`（driver.js + run.sh + README）：合成 5k 类 .myp → didOpen /
+串行 hover×120 / completion cold+warm，报吞吐与延迟。**`src/lsp/lsp_server.cpp`
+加 `MYP_LSP_TIMING=1` env 门控钩子**：每个已处理消息把 handler 耗时打到 stderr
+（`[lsp-timing] <method> <ms>`），与 stdout JSON-RPC 隔离，供基准区分「计算 vs
+写出」——cold completion ms 含构造+排序+序列化+写，warm(cache 命中) ms = 纯序列
+化+写 → **计算 ≈ cold−warm**。LSP 协议回归（test_lsp.js 14 + test_lsp_protocol.js
+30）通过。
+
+本机参考（5k 类）：didOpen 索引 ~135ms；hover handler ~0.88ms（~1130 req/s）；
+cold completion ~49ms（15048 条 / 762KB）；warm ~1.2ms（~820 req/s）；
+**计算≈48ms、写出≈1.2ms/762KB** → 优化方向是冷 completion 的 items 构造+排序
+（非 IO）。
+
 ### v3.16.3 — coro async recv/send：EAGAIN ≠ EOF（高并发丢连接修复）
 
 **修复（stdlib/net.myp + runtime_myp/net.myp）**。现象：mypagent `serveCoro`
