@@ -28,14 +28,39 @@
 
 ### Installation
 
-```bash
-# Build the MYP compiler
-cd MYPLanguage/build
-cmake .. -DCMAKE_PREFIX_PATH=/usr/lib/llvm-21/lib/cmake/llvm
-make -j$(nproc)
+Dependencies: **LLVM 21** (with the `llc`/`opt`/`ld.lld` backend tools), **CMake 3.20+**,
+**GCC/lld**.
 
-# Verify installation
+```bash
+cd MYPLanguage/build
+cmake .. -DCMAKE_PREFIX_PATH=/usr/lib/llvm-21/lib/cmake/llvm   # optional: -DMYP_ENABLE_GPU=OFF to skip GPU
+make -j$(nproc)                                                # or cmake --build . -j$(nproc)
+```
+
+`make` automatically runs two chains and produces `build/mypc` (the user-facing compiler —
+**no longer a C++ build**; see §13 Self-Hosted Compiler):
+
+- **C++ oracle chain**: `mypc-seed` — the reference implementation compiled directly with
+  LLVM 21 (`--frontend-dump` oracle contract).
+- **Self-hosting chain**: `mypc-seed` compiles `tools/selfhost/*.myp` → `myp_self` (stage-0)
+  → self-compiles → `myp_self2` (stage-1) → self-compiles again → `myp_self3` (stage-2);
+  `scripts/bootstrap_install.sh` runs an **MD5 gate**: `myp_self2 == myp_self3`
+  (byte-identical → self-hosting holds) before installing `myp_self2` as `build/mypc`; a
+  mismatch fails the build (the compiler is not self-consistent).
+- **Runtime archive**: `runtime_myp/*.myp` is compiled by `myp_self` into `libmyp_rt_myp.a`
+  (MYP runtime, de-gcc migration) — generated programs default to **MYP-runtime-only
+  linking** (`(MYP runtime only)`).
+
+Main artifacts (`build/`): `mypc` (self-hosted compiler), `mypc-seed` (oracle),
+`myp_self/self2/self3`, `myp` (package manager), `myp_fmt2`/`myp_viz2` (self-hosted
+formatter/visualizer), `myp_lsp`/`myp_debug`, `libmyp_rt_myp.a` (MYP runtime archive) /
+`libmyp_rt.a` (C runtime).
+
+Verify the build:
+
+```bash
 ./build/mypc --help
+MYPCC=./build/mypc bash tests/run_tests.sh    # full regression
 ```
 
 ### Hello World

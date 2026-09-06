@@ -28,14 +28,33 @@
 
 ### 安装
 
-```bash
-# 编译 MYP 编译器
-cd MYPLanguage/build
-cmake .. -DCMAKE_PREFIX_PATH=/usr/lib/llvm-21/lib/cmake/llvm
-make -j$(nproc)
+依赖：**LLVM 21**（含 `llc`/`opt`/`ld.lld` 后端工具）、**CMake 3.20+**、**GCC/lld**。
 
-# 验证安装
+```bash
+cd MYPLanguage/build
+cmake .. -DCMAKE_PREFIX_PATH=/usr/lib/llvm-21/lib/cmake/llvm   # 可选 -DMYP_ENABLE_GPU=OFF 跳过 GPU
+make -j$(nproc)                                                # 或 cmake --build . -j$(nproc)
+```
+
+`make` 自动完成两条链并产出 `build/mypc`（用户级编译器——**已非 C++ 编译**，见 §13 自举）：
+
+- **C++ oracle 链**：`mypc-seed`——LLVM 21 直接编译的参考实现（`--frontend-dump` 对拍契约）。
+- **自举链**：`mypc-seed` 编译 `tools/selfhost/*.myp` → `myp_self`（stage-0）→ 自编 →
+  `myp_self2`（stage-1）→ 再自编 → `myp_self3`（stage-2）；`scripts/bootstrap_install.sh`
+  **MD5 门禁**校验 `myp_self2 == myp_self3` 字节一致（自举成立）→ 才把 `myp_self2` 安装为
+  `build/mypc`；不一致 → 构建失败（编译器自不一致）。
+- **运行时归档**：`runtime_myp/*.myp` 由 `myp_self` 编译成 `libmyp_rt_myp.a`（MYP 运行时，
+  de-gcc 迁移）——生成程序默认**仅链 MYP 运行时**（输出 `(MYP runtime only)`）。
+
+主要产物（`build/`）：`mypc`（自举编译器）、`mypc-seed`（oracle）、`myp_self/self2/self3`、
+`myp`（包管理）、`myp_fmt2`/`myp_viz2`（自举格式化/可视化）、`myp_lsp`/`myp_debug`、
+`libmyp_rt_myp.a`（MYP 运行时归档）/ `libmyp_rt.a`（C 运行时）。
+
+验证安装：
+
+```bash
 ./build/mypc --help
+MYPCC=./build/mypc bash tests/run_tests.sh    # 全量回归
 ```
 
 ### Hello World
