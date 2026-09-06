@@ -532,11 +532,13 @@ Primary          ::= IntegerLiteral | FloatLiteral | BoolLiteral
                    | Identifier                    // 变量 / 类名 / 枚举变体
                    | '(' Expression ')'
                    | TupleLiteral                  // (a, b, …)：顶层逗号
+                   | ArrayLiteral                  // [e1, e2, …] → 动态数组 T[]
                    | 'new' ClassType TypeArgList? '(' ArgumentList? ')'
                    | 'new' Type '[' Expression ']' ( '[' Expression ']' )*
                    | LambdaExpression
 
 TupleLiteral     ::= '(' Expression (',' Expression)+ ')'   // ≥2 元素（含尾逗号）
+ArrayLiteral     ::= '[' Expression (',' Expression)* ']'   // 动态数组字面量（additive，v1 需显式 T[] 目标）
 LambdaExpression ::= '(' ParamList? ')' '=>' '{' Stmt* '}'   // FatArrow '=>'
                  // body 内可用 NonlocalStmt 按引用捕获外层函数变量（共享可变）
 ArgumentList     ::= Expression (',' Expression)*

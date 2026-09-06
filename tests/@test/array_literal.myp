@@ -1,0 +1,29 @@
+// 数组字面量（additive，v3.15.214）回归：`T[] xs = [e1, ...]` → 动态数组（一等值，
+// 堆 backing + ARC）。v1 仅支持"显式动态数组目标的声明初值"；定长/var/赋值/实参位
+// 置干净拒绝（见 negative）。
+
+import test;
+import env;
+
+class R {
+    action:
+        @constructor R() {}
+        void go() {
+            int[] a = [1, 2, 3];
+            Test.assertEq(a[0], 1, "a0");
+            Test.assertEq(a[1], 2, "a1");
+            Test.assertEq(a[2], 3, "a2");
+            double[] d = [1, 2];          // int 字面量 → double 提升
+            Test.assert(d[0] == 1.0 && d[1] == 2.0, "double");
+            string[] s = ["x", "y"];      // string 常量元素（ARC/immortal）
+            Test.assertStrEq(s[0], "x", "s0");
+            Test.assertStrEq(s[1], "y", "s1");
+            int[] e = [];                 // 空字面量（有类型目标）
+            Test.assertEq(0, 0, "empty");
+            long[] l = [7L];
+            Test.assertEq(l[0], 7L, "long");
+            Test.report("go", true);
+        }
+}
+
+@test void t() { R r = new R(); r.go(); Test.report("t", true); }

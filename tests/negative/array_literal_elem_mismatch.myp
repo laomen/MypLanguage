@@ -1,0 +1,13 @@
+// EXPECT ERROR: array literal element 2: cannot convert 'string' to 'int'
+// 数组字面量负例：元素类型与目标元素不兼容 → 干净拒绝。
+import test;
+import env;
+
+class R {
+    action:
+        @constructor R() {}
+        void go() {
+            int[] a = [1, "x"];
+        }
+}
+@test void t() { R r = new R(); r.go(); Test.report("t", true); }

@@ -1793,6 +1793,60 @@ class CodeGen {
             return heap;
         }
 
+        // 数组字面量 [e0,..]（additive → 动态 T[]）：建 fresh slice backing 并
+        // 逐元素填（元素类型/ARC 语义同 fixedArrayToDynamic）。e.elemType 由 sema
+        // 在显式动态数组目标处绑定；无目标用例已被 sema 拒绝。
+        string genArrayLit(AstExpr e) {
+            AstType et = e.elemType();
+            if (et == null) {
+                // 防御（不应到达）：空 backing。
+                string guard = newTmp();
+                sb_.append("  " + guard + " = call ptr @myp_alloc_slice_backing(i64 0, i32 8, i32 1)\n");
+                addFreshTemp(guard);
+                return guard;
+            }
+            int n = e.elements().size();
+            string eLt = llvmType(et);
+            int elemKind = arrayElemKind(et);
+            int elemSize = typeByteSize(et);
+            string heap = newTmp();
+            sb_.append("  " + heap + " = call ptr @myp_alloc_slice_backing(i64 " + n + ", i32 " + elemSize + ", i32 " + elemKind + ")\n");
+            addFreshTemp(heap);
+            for (int i = 0; i < n; i = i + 1) {
+                AstExpr el = e.elements().get(i);
+                string ev = genExpr(el);
+                string at = exprLlvmType(el);
+                string dst = newTmp();
+                sb_.append("  " + dst + " = getelementptr " + eLt + ", ptr " + heap + ", i32 " + i + "\n");
+                if (elemKind == 0) {
+                    // 类/字符串元素：fresh 转移（consume），否则别名 retain；
+                    // 槽为新 backing（分配器清零）→ 无需释放旧值。
+                    if (at == "ptr") {
+                        if (isFreshTemp(ev) != 0) consumeTemp(ev);
+                        else sb_.append("  call void @myp_retain(ptr " + ev + ")\n");
+                        sb_.append("  store ptr " + ev + ", ptr " + dst + "\n");
+                    } else if (at == "{ ptr, ptr }") {
+                        // 接口元素（fat）：data fresh 转移/别名 retain
+                        string d0 = newTmp();
+                        sb_.append("  " + d0 + " = extractvalue { ptr, ptr } " + ev + ", 0\n");
+                        if (isFreshTemp(ev) != 0) consumeTemp(ev);
+                        else sb_.append("  call void @myp_retain(ptr " + d0 + ")\n");
+                        sb_.append("  store { ptr, ptr } " + ev + ", ptr " + dst + "\n");
+                    }
+                } else if (eLt == "{ ptr, i64 }") {
+                    // slice 元素：retain backing 再拷贝 fat
+                    string d0 = newTmp();
+                    sb_.append("  " + d0 + " = extractvalue { ptr, i64 } " + ev + ", 0\n");
+                    sb_.append("  call void @myp_retain(ptr " + d0 + ")\n");
+                    sb_.append("  store { ptr, i64 } " + ev + ", ptr " + dst + "\n");
+                } else {
+                    string cv = convertValue(ev, at, eLt);
+                    sb_.append("  store " + eLt + " " + cv + ", ptr " + dst + "\n");
+                }
+            }
+            return heap;
+        }
+
         // 计算 return 表达式的值（定长数组 → 堆拷贝为动态数组 backing；
         // 其余按声明类型转换）。
         string genReturnValue(AstExpr e) {
@@ -10628,6 +10682,9 @@ class CodeGen {
                 sb_.append("  " + t + " = load " + elemLt + ", ptr " + gep + "\n");
                 return t;
             }
+            if (k == "ArrayLit") {
+                return genArrayLit(e);
+            }
             if (k == "New") {
                 if (e.className() == "slice") {
                     return genSliceNew(e);
@@ -11884,6 +11941,7 @@ class CodeGen {
         string exprLlvmType(AstExpr e) {
             if (e == null) return "i32";
             string k = e.kind();
+            if (k == "ArrayLit") return "ptr";   // 动态数组字面量 → data 指针
             if (k == "Integer") {
                 if (e.isChar() != 0) return "i8";
                 if (e.isUnsigned() != 0) {

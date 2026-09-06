@@ -1,0 +1,13 @@
+// EXPECT ERROR: array literal yields a dynamic array (int[]); cannot initialize fixed array int[3]
+// 数组字面量负例：产物是动态数组 T[]，不能初始化定长 int[3]（v1；定长请逐位赋值）。
+import test;
+import env;
+
+class R {
+    action:
+        @constructor R() {}
+        void go() {
+            int[3] a = [1, 2, 3];
+        }
+}
+@test void t() { R r = new R(); r.go(); Test.report("t", true); }

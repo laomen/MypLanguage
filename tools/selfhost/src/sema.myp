@@ -3906,6 +3906,24 @@ class Sema {
             }
             return 0;
         }
+        // 数组字面量（additive）：把 [e1,..] 绑定到动态数组目标元素类型 elemT——
+        // 设 init.elemType（codegen 建 backing 用）并逐元素校验可转换（元素
+        // 已由 visitExpr(ArrayLit) 检查过自身类型）。声明位置报错行回退用 v。
+        void bindArrayLitTo(AstExpr lit, AstType elemT, AstVar v, AstStmt s) {
+            lit.setElemType(elemT);
+            string ek = typeToKind(elemT);
+            for (int i = 0; i < lit.elements().size(); i = i + 1) {
+                AstExpr el = lit.elements().get(i);
+                string ekk = el.resolvedKind();
+                if (Str.len(ekk) == 0) ekk = visitExpr(el);
+                if (Str.len(ekk) != 0 && ekk != "void" && Str.len(ek) != 0 && typesCompat(ek, ekk) == 0) {
+                    int dl = v.nameLine();
+                    int dc = v.nameCol();
+                    if (dl == 0) { dl = s.line(); dc = s.col(); }
+                    diag_.error(dl, dc, "array literal element " + (i + 1) + ": cannot convert '" + ekk + "' to '" + ek + "'");
+                }
+            }
+        }
         // 属性类型的具体类名（供 obj.prop.method() 链式解析）
         string findPropTypeClass(int ci, string name) {
             AstType pt = findPropTypeAst(ci, name);
@@ -4147,6 +4165,25 @@ class Sema {
                             if (vtLambda != null) {
                                 AstType frLambda = vtLambda.funcReturn();
                                 if (frLambda != null) lambdaExpectedRet_ = frLambda;
+                            }
+                        }
+                        // 数组字面量（additive）：显式动态数组目标 `T[] xs = [...]`
+                        // ——先 bind（设 elemType 供 codegen，随后的 generic
+                        // visitExpr(init) 走"已绑定"路径返回 array）。定长 T[N] 目标
+                        // v1 干净拒绝（错误 → codegen 不运行；仍绑定避免二次报错）。
+                        // var / 非数组目标 → generic ArrayLit 报"需显式 T[] 目标"。
+                        AstExpr alInit2 = v.init();
+                        if (alInit2.kind() == "ArrayLit" && v.isInferred() == 0) {
+                            AstType vtArr2 = v.type();
+                            if (vtArr2 != null && vtArr2.element() != null) {
+                                if (vtArr2.arraySize() == 0) {
+                                    bindArrayLitTo(alInit2, vtArr2.element(), v, s);
+                                } else {
+                                    int dl = v.nameLine(); int dc = v.nameCol();
+                                    if (dl == 0) { dl = s.line(); dc = s.col(); }
+                                    diag_.error(dl, dc, "array literal yields a dynamic array (int[]); cannot initialize fixed array int[" + vtArr2.arraySize() + "] — declare as int[] or fill elementwise");
+                                    bindArrayLitTo(alInit2, vtArr2.element(), v, s);
+                                }
                             }
                         }
                         it = visitExpr(initLocal);
@@ -5337,6 +5374,20 @@ class Sema {
                 }
                 e.setResolvedKind(t);
                 return t;
+            }
+            if (k == "ArrayLit") {
+                // 数组字面量 [e1, ...]（additive → 动态 T[]）。声明处（VarDecl）
+                // 会先 bindArrayLitTo 设 elemType；此处：
+                //  - elemType 已设（合法 decl）→ 返回 "array"（元素已检查过）；
+                //  - 未设（赋值/实参/return 等位置）→ 干净拒绝（v1 范围）。
+                if (e.elemType() == null) {
+                    for (int ai = 0; ai < e.elements().size(); ai = ai + 1) {
+                        if (Str.len(e.elements().get(ai).resolvedKind()) == 0) visitExpr(e.elements().get(ai));
+                    }
+                    diag_.error(e.line(), e.col(), "array literal requires a typed dynamic array target (declare as e.g. 'int[] xs = [1,2,3]')");
+                }
+                e.setResolvedKind("array");
+                return "array";
             }
             if (k == "Binary") {
                 string l = visitExpr(e.lhs());

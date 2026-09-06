@@ -27,6 +27,37 @@
 
 ## 编译器版本历史
 
+### v3.15.214 — 数组字面量 `[1,2,3]`（additive，selfhost）
+
+**非破坏性加法（selfhost 超前 / seed 冻结不解析）**。`[e1, e2, …]` 作**动态数组
+`T[]`** 字面量（一等值：堆 backing + ARC，绕开已坏的定长数组 return/pass 值管道）。
+v1 支持**显式动态数组目标的声明初值**：
+
+```myp
+int[] a = [1, 2, 3];      // 动态数组
+double[] d = [1, 2];      // int 字面量 → double 提升
+string[] s = ["x", "y"];  // 字符串常量元素
+int[] e = [];             // 空字面量（有类型目标）
+```
+- **grammar §Expression**：`Primary` 增 `ArrayLiteral ::= '[' Expression (',' Expression)* ']'`
+  （产物动态 `T[]`，元素数任意；v1 需显式 `T[]` 目标）。
+- **parser**（`parser.myp` `parsePrimaryInner`）：识别 `[` 建 `ArrayLit` 节点（elements）。
+- **sema**（`sema.myp`）：VarDecl 显式 `T[]` 目标先在 generic visit **前** `bindArrayLitTo`
+  （绑定 `expr.elemType` + 逐元素 `typesCompat` 校验齐性/可转换，int→double 等提升
+  允许）；定长 `int[N]` 目标 / `var` 推断 / 赋值·实参位 → 干净拒绝（v1 范围）。
+  generic `visitExpr(ArrayLit)`：已绑定 → 返回 `array`；未绑定（其它位置）→ 报
+  "requires a typed dynamic array target"。
+- **codegen**（`codegen.myp`）：新增 `genArrayLit` —— `myp_alloc_slice_backing(n,
+  elemSize, elemKind)` 建 fresh backing，逐元素填（标量 `convertValue` 到元素类型；
+  类/字符串/接口元素按 fresh 转移/别名 retain，镜像 `fixedArrayToDynamic`）；
+  `exprLlvmType(ArrayLit)` = `ptr`。
+- AST dump 稳定（ArrayLit 由既有 elements 表达）；bootstrap MD5 一致。
+- 回归 `tests/@test/array_literal.myp`（int/double/string/empty/long，9 断言）+ 负例
+  `tests/negative/array_literal_fixed.myp` / `array_literal_var.myp` /
+  `array_literal_elem_mismatch.myp`。
+- 后续（路线）：赋值/实参/返回位置绑定、`var` 推断、定长退化填充、`@eval` 常量表
+  （M-2 语法部分即此）。
+
 ### v3.15.213 — 自动属性访问器 `{ get; set; }`（additive，selfhost）
 
 **非破坏性加法（语法糖，selfhost 超前 / seed 冻结不解析）**。属性字段仍默认私有，

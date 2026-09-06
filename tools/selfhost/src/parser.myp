@@ -2378,6 +2378,23 @@ class Parser {
             if (k == "new") {
                 return parseNewExpr();
             }
+            if (k == "[") {
+                // 数组字面量（additive）：[e1, e2, ...] → 动态数组 T[]（sema 绑
+                // 定元素类型/校验齐性；v1 仅显式 int[] 目标）。
+                advance();
+                AstExpr al = new AstExpr();
+                al.setKind("ArrayLit");
+                if (curKind() != "]") {
+                    while (true) {
+                        al.elements().add(parseExpr());
+                        if (matchKind(",") != 0) {
+                            if (curKind() == "]") break;
+                        } else break;
+                    }
+                }
+                consume("]", "expected ']' after array literal");
+                return al;
+            }
             if (k == "(") {
                 // lambda / 元组 / 括号：`(...)` 匹配后跟 `=>` 即 lambda
                 if (scanLambda() != 0) {

@@ -1,0 +1,13 @@
+// EXPECT ERROR: array literal requires a typed dynamic array target
+// 数组字面量负例：var 推断（无显式动态数组目标）v1 干净拒绝。
+import test;
+import env;
+
+class R {
+    action:
+        @constructor R() {}
+        void go() {
+            var a = [1, 2, 3];
+        }
+}
+@test void t() { R r = new R(); r.go(); Test.report("t", true); }
