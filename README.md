@@ -2,7 +2,7 @@
 
 > 事件驱动组件语言 | LLVM 21 后端 | 内置 GPU 支持
 >
-> 编译器 v3.15.197 | 语言规格 v1.0
+> 编译器 v3.16.0 | 语言规格 v1.0
 
 <p align="center">
   <img src="logo/logo2.png" alt="MYP Logo" width="460">

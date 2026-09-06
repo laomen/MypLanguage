@@ -2,7 +2,7 @@
 
 > Event-Driven Component Language | LLVM 21 Backend | Built-in GPU Support
 >
-> Compiler v3.15.197 | Language Spec v1.0
+> Compiler v3.16.0 | Language Spec v1.0
 
 <p align="center">
   <img src="logo/logo2.png" alt="MYP Logo" width="460">

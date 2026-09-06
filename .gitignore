@@ -60,3 +60,8 @@ tests_mix.myp
 # Windows 交叉编译验证产物
 build-win-runtime/
 
+# examples 演示二进制（对应 .myp 的编译产物，不入库；工作区保留可重编）
+examples/bnct_simple
+examples/sdl_demo
+examples/tui_demo
+
