@@ -357,6 +357,128 @@ class LoadedSet {
             return 1;
         }
 
+        // ---- P2b frontless：lexer 级 import 闭包扫描（不建 AST）----
+        // 镜像 loadModule 的 import 提取 + 路径解析，供 parse 前判缓存。
+        // 安全：scan 与真实闭包不一致 ⇒ key 不同 ⇒ probe miss → 退回 parse 后真实
+        // key 判定（原逻辑兜底）；scan 精确才命中，命中 ⇔ 闭包(路径+内容)==历史
+        // 全量闭包 ⇒ 输出逐字节一致。错误内容 key 必变 → miss → 全量报错。
+        // 注意 resolve 与 loadModule 同段逻辑必须同步（漂移只损命中率不失正确性）。
+        string resolveImportMirror(AstImport imp, string sourceDir, string packagePath) {
+            string path = "";
+            if (imp.isPath() != 0) {
+                if (Str.len(imp.path()) != 0 && __myp_charcode(imp.path(), 0) == 47) {
+                    path = imp.path();
+                } else {
+                    path = sourceDir + "/" + imp.path();
+                }
+            } else {
+                string slash = Frontend.dotToSlash(imp.name());
+                string stdlib = Frontend.stdlibResolve();
+                string p1 = stdlib + "/" + slash + ".myp";
+                string p2 = sourceDir + "/../stdlib/" + slash + ".myp";
+                string p3 = sourceDir + "/stdlib/" + slash + ".myp";
+                if (Fs.exists(p1) != 0) path = p1;
+                else if (Fs.exists(p2) != 0) path = p2;
+                else if (Fs.exists(p3) != 0) path = p3;
+                else {
+                    int np = Str.splitCount(packagePath, ":");
+                    for (int pi = 0; pi < np && Str.len(path) == 0; pi = pi + 1) {
+                        string pp = Str.trim(Str.splitGet(packagePath, ":", pi));
+                        if (Str.len(pp) == 0) continue;
+                        string pkgSrc = pp + "/" + slash + "/src/" + imp.name() + ".myp";
+                        string pkgRoot = pp + "/" + slash + "/" + imp.name() + ".myp";
+                        if (Fs.exists(pkgSrc) != 0) path = pkgSrc;
+                        else if (Fs.exists(pkgRoot) != 0) path = pkgRoot;
+                        if (Str.len(path) == 0 && Str.len(imp.name()) > 0) {
+                            int hasDot = 0;
+                            int dot = 0;
+                            for (int di = 0; di < Str.len(imp.name()); di = di + 1) {
+                                if (__myp_charcode(imp.name(), di) == 46) {
+                                    if (hasDot == 0) dot = di;
+                                    hasDot = 1;
+                                }
+                            }
+                            if (hasDot != 0) {
+                                string pkgName = Str.substring(imp.name(), 0, dot);
+                                string subSlash = Frontend.dotToSlash(Str.substring(imp.name(), dot + 1, Str.len(imp.name())));
+                                string pkgSrc2 = pp + "/" + pkgName + "/src/" + subSlash + ".myp";
+                                string pkgRoot2 = pp + "/" + pkgName + "/" + subSlash + ".myp";
+                                if (Fs.exists(pkgSrc2) != 0) path = pkgSrc2;
+                                else if (Fs.exists(pkgRoot2) != 0) path = pkgRoot2;
+                            }
+                        }
+                    }
+                    if (Str.len(path) == 0) path = p1;
+                }
+            }
+            return Frontend.normalizePath(path);
+        }
+
+        // 提取单个文件的 import 列表（token 级；顺序与 parser 顶层 import 一致）。
+        ArrayList<AstImport> scanImportsOf(string path) {
+            ArrayList<AstImport> imps = new ArrayList<AstImport>();
+            if (Fs.isFile(path) == 0) return imps;
+            string src = Frontend.readFile(path);
+            Lexer lx = new Lexer(src);
+            ArrayList<Tok> toks = lx.tokenize();
+            for (int i = 0; i < toks.size(); i = i + 1) {
+                if (toks.get(i).kind() != "import") continue;
+                i = i + 1;
+                AstImport d = new AstImport();
+                if (i < toks.size() && toks.get(i).kind() == "string") {
+                    d.setIsPath(1);
+                    d.setPath(toks.get(i).value());
+                } else if (i < toks.size() && toks.get(i).kind() == "identifier") {
+                    d.setName(toks.get(i).value());
+                    while (i + 2 < toks.size() && toks.get(i + 1).kind() == ".") {
+                        i = i + 2;
+                        d.setName(d.name() + "." + toks.get(i).value());
+                    }
+                } else {
+                    continue;   // 非预期（语法错）→ 静默跳过，全量 parse 会报错
+                }
+                imps.add(d);
+            }
+            return imps;
+        }
+
+        // DFS 单个 import（镜像 loadModule 的去重/addFile 顺序）。
+        void scanLoadOne(LoadedSet out, AstImport imp, string sourceDir, string packagePath) {
+            string path = Frontend.resolveImportMirror(imp, sourceDir, packagePath);
+            string key = (imp.isPath() != 0) ? path : imp.name();
+            if (out.has(key) != 0) return;
+            out.add(key);
+            if (Fs.isFile(path) == 0) return;   // 不存在：镜像 loadModule（其发诊断并中断），全量路径报
+            out.addFile(path);
+            string subDir = Fs.dirname(path);
+            ArrayList<AstImport> subs = Frontend.scanImportsOf(path);
+            for (int i = 0; i < subs.size(); i = i + 1) {
+                Frontend.scanLoadOne(out, subs.get(i), subDir, packagePath);
+            }
+        }
+
+        // 闭包扫描：CLI 文件预置 + 顶层 import（主+附加，统一主目录解析）+ DFS。
+        // files() 顺序镜像 compile 全量路径的 addFile 顺序（缓存键一致的前提）。
+        LoadedSet scanClosure(ArrayList<string> files, string packagePath) {
+            LoadedSet out = new LoadedSet();
+            if (files.size() == 0) return out;
+            for (int fi = 0; fi < files.size(); fi = fi + 1) {
+                string np = Frontend.normalizePath(files.get(fi));
+                out.add(np);
+                out.addFile(np);
+            }
+            ArrayList<AstImport> all = new ArrayList<AstImport>();
+            for (int fi = 0; fi < files.size(); fi = fi + 1) {
+                ArrayList<AstImport> imps = Frontend.scanImportsOf(files.get(fi));
+                for (int i = 0; i < imps.size(); i = i + 1) all.add(imps.get(i));
+            }
+            string rootDir = Fs.dirname(files.get(0));
+            for (int i = 0; i < all.size(); i = i + 1) {
+                Frontend.scanLoadOne(out, all.get(i), rootDir, packagePath);
+            }
+            return out;
+        }
+
         // F2：ast 模式（对拍 mypc --frontend-dump ast，含 import 合并）。
         int ast(string file) {
             if (Fs.exists(file) == 0) {
@@ -542,6 +664,50 @@ class LoadedSet {
             // 编译任意调外部库（SDL/GL 等）的纯 ffi 程序时，模块旁放 foo.myp.libs 即可。
             if (Fs.exists(file + ".libs") != 0) {
                 Link.addLibsSidecar(Str.trim(Frontend.readFile(file + ".libs")));
+            }
+            // ---- P2b frontless：parse 前用轻量 import 闭包扫描（lexer 级、不建 AST）
+            // 判缓存——命中跳过多模块 parse/derive/sema/codegen，直接链接。scan 是
+            // loadModule 解析的镜像：漂移只致 probe miss → 退回下方 parse 后真实 key
+            // 判定（原逻辑兜底，零正确性风险）；错误内容 key 必变 → miss → 全量报错。----
+            if (emitLlvmOnly == 0 && Fs.isDir(Link.objCacheDir()) != 0) {
+                LoadedSet scanOut = Frontend.scanClosure(files, packagePath);
+                string skey = Frontend.closureKey(scanOut, autoMain, testMode, libraryMode, freestanding);
+                string scache = Fs.join(Link.objCacheDir(), "c_" + skey + ".ll");
+                if (Fs.isFile(scache) != 0) {
+                    string cacheLl = outPath + ".ll";
+                    File cfin = new File();
+                    cfin.open(scache, "r");
+                    string cir = cfin.readAll();
+                    cfin.close();
+                    File ofout = new File();
+                    ofout.open(cacheLl, "w");
+                    ofout.write(cir);
+                    ofout.close();
+                    // 子模块 .myp.libs 侧车（主文件 .libs 上面已读；命中跳过 loadModule）。
+                    ArrayList<string> fset = scanOut.files();
+                    for (int fli = 0; fli < fset.size(); fli = fli + 1) {
+                        string lf = fset.get(fli);
+                        if (Fs.exists(lf + ".libs") != 0) {
+                            Link.addLibsSidecar(Str.trim(Frontend.readFile(lf + ".libs")));
+                        }
+                    }
+                    if (timing != 0) {
+                        long tp = __myp_now_ms();
+                        tcFront = tp; tcMain = tp; tcMerge = tp;
+                        tcDerive = tp; tcSema = tp; tcCg = tp;
+                    }
+                    int plrc = Link.link(cacheLl, outPath, stdlib, optLevel, libraryMode, freestanding);
+                    if (timing != 0) {
+                        long tcEnd = __myp_now_ms();
+                        Console.writeLine("COMPILE timing[frontless]: frontend=" + (tcFront - tc0)
+                            + "ms  derive=" + (tcDerive - tcFront)
+                            + "ms  macro+sema=" + (tcSema - tcDerive)
+                            + "ms  codegen=" + (tcCg - tcSema)
+                            + "ms  write+link=" + (tcEnd - tcCg)
+                            + "ms  total=" + (tcEnd - tc0) + "ms");
+                    }
+                    return plrc;
+                }
             }
             LoadedSet loaded = new LoadedSet();   // 函数级：闭包缓存需在 parse 块外读 loaded
             Lexer lx = new Lexer(src);
