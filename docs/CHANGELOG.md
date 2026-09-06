@@ -43,6 +43,24 @@
 - 背景：分段计时 write+link（opt+llc+lld）= 6.4s（~80%）、codegen 1.07s、macro+sema
   0.56s、front 0.16s → 缓存落在 opt+llc（最大头且最安全：确定性函数）。
 
+#### 追加：整闭包 .ll 缓存（命中跳 derive/sema/codegen，`main.myp`）
+
+在 .o 缓存之上再加**一级闭包缓存**，把 derive/macro+sema/codegen（~1.6s）也跳过：
+
+- `Frontend.closureKey()`：FNV-1a64 折叠 **编译器身份**（自我二进制 fileSize+mtime，
+  任一重建即失效）+ **全部读入文件**（`loaded.set()` 路径串+内容，含主文件/附加
+  文件/全部 import）+ **codegen 影响标志**（autoMain/testMode/libraryMode/
+  freestanding）→ `c_<key>.ll` 存 `objCacheDir()`。
+- `compile()` 命中分支：写缓存 .ll → 交 `link()` → 其中 .o 缓存再跳 opt+llc；
+  miss 分支：全量 derive/sema/codegen 后写 .ll + 存缓存。`emitLlvmOnly` 不缓存
+  （用户要当前 IR）；**link 从不缓存** → 链接错误每次重现；错误内容 hash 必变 →
+  miss 走全量报错（命中跳 sema 安全的前提）。
+- `loaded` 提升到函数级（闭包键需在 parse 错误检查块外读取）。
+- **验证**：selfhost 自编 10 模块 **8.0s → 0.38s（~21x）**；冷/热产物 md5 一致
+  （`c9268093…`）；自举 MD5 门禁 self2==self3（`4a227c14…`）——self3 走缓存命中
+  路径仍与 self2 全量输出逐字节一致，**端到端证明缓存命中 == 全量编译**；-O2 同证
+  （`98ff726b…`）；全套回归 547 通过。
+
 ### v3.16.0 — 里程碑：版本节奏切 minor（v3.16 周期开始；git tag v3.16.0）
 
 **版本节奏规则（自本版起）**：此前每功能/修复 commit +1 patch（v3.15.244 个 patch 全堆在
