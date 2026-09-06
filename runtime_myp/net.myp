@@ -66,7 +66,7 @@ int myp_net_server(int port) {
     setsockopt(s, 1, 2, optb, 4);   // SOL_SOCKET=1, SO_REUSEADDR=2
     long addr = netAddrIn(port, 0, 0, 0, 0);   // INADDR_ANY
     if (bind(s, addr, 16) < 0) { close(s); return -2; }
-    if (listen(s, 10) < 0) { close(s); return -3; }
+    if (listen(s, 512) < 0) { close(s); return -3; }   // backlog 512：后端并发突发（真负载 listen backlog=10 曾致大量连接被内核拒绝）
     return s;
 }
 
