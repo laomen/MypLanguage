@@ -27,6 +27,33 @@
 
 ## 编译器版本历史
 
+### v3.16.2 — 接口/函数值数组元素覆盖 ARC 泄漏修复 + C1/C4/C6/C8 系统性矩阵
+
+**修复（ARC 配平，selfhost codegen）**：Subscript 赋值 dispatch 对
+`{ptr,ptr}`（接口/函数值）数组元素落入 else 裸 store，从不释放被覆盖的旧
+元素。BUG-038 已对新值 retain data / fresh consume → 数组净持 1 却永不
+配平 release → 接口数组（`INode[] ia; ia[i] = new Node(i)` 循环覆盖）每覆盖
+一次泄漏 1（`Memory.liveObjectCount` +1/轮；对象数组 `Node[]` 走 storeRef
+正常）。修：dispatch 加 `{ptr,ptr}` case——load 旧 fat → extractvalue data →
+`myp_release` 旧 data → store 新值。bootstrap MD5 gate 通过，全套 554 通过
+0 失败。
+
+**测试矩阵（roadmap §三 审计补齐）**：
+- C1 `tests/@test/iface_vtable_forms.myp`：同名方法不同 vtable 槽位 × 局部/
+  属性/数组/工厂链/参数 6 形态（1t/8a）。
+- C4 `tests/@test/enum_conflict.myp`：多 enum 共享 variant 名/无数据+带数据
+  variant 共存/多宽度 payload/定义顺序不变（1t/11a）。语法核对发现带数据
+  variant 参数为 `Type Identifier` 命名形式（非位置类型）→ 同步修正
+  `docs/grammar.md` `EnumVariant` EBNF。
+- C6 `tests/test_c6_generic_stress.sh`：跨 10 函数 90 个泛型实例化
+  （`Box<T>`/`Pair<A,B>`/`identity<T>` 含 `Box<Box<int>>`）迫使编译器容器
+  扩容产物正确 + `build-asan/mypc` 重复编译 ×3 无 use-after-free；接入
+  `run_tests.sh`。
+- C8 `tests/@test/arc_combo_lifecycle.myp`：接口别名复制/对象数组覆盖/接口
+  数组覆盖/闭包捕获/异常展开组合 live 回零（1t/6a；即上述泄漏的回归）。
+- 构建：`myp_pass_plugin` 豁免全局 ASan/UB 仪表（插件被非 ASAN opt dlopen，
+  随 MYP_SANITIZE 仪表使自举 opt 崩溃）。
+
 ### v3.16.1 — P2 增量编译落地：opt+llc 整闭包 .o 缓存（selfhost link.myp，性能）
 
 **非破坏性（性能）**。按 `docs/incremental_parallel_compile.md` P2 实施（P0 sema 哈希
