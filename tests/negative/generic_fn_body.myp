@@ -1,0 +1,13 @@
+// EXPECT ERROR: cannot initialize variable
+// 克隆体逐体分析（v3.15.224）：顶层泛型函数（kind "fn"）模板体按具体类型实例化
+// 时整体类型检查——`string s = x` 对 T=Pt 暴露。此前 markAllStmt 跳过。负例：
+// 顶层泛型函数克隆体类型错。
+import env;
+class Pt { property: int x = 1; }
+T bad<T>(T x) { string s = x; return x; }
+class Use {
+    action:
+        @constructor Use() {}
+        void go() { Pt p = new Pt(); Pt r = bad<Pt>(p); }
+}
+int main() { return 0; }

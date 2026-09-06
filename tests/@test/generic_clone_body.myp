@@ -1,0 +1,55 @@
+// 克隆体逐体分析（v3.15.224，selfhost additive）正向回归：实例化克隆（顶层泛型
+// 函数 "fn" / 实例方法级 "m" / @static "s"）体按具体类型逐体类型检查；合法泛型体
+// 不得误报。聚焦类（class）作 T 的实例化路径（valueClass/成员解析/返回）。
+import test;
+
+class Pt {
+    property:
+        int x = 1;
+    action:
+        @constructor Pt() {}
+        int getX() { return x; }
+        Pt dup() { Pt q = new Pt(); return q; }
+}
+
+// kind "fn"：顶层泛型函数，T=Pt（class）
+T idCls<T>(T v) { T r = v; return r; }
+T firstCls<T>(T[] xs) { return xs[0]; }
+// kind "s"：@static 泛型
+@static class Gear {
+    static:
+        T echo<T>(T v) { return v; }
+        int pickX<T>(T v) { return 1; }
+}
+// kind "m"：实例方法级泛型 + T 局部 + 具体调用类方法
+class Holder {
+    action:
+        @constructor Holder() {}
+        T tag<T>(T v) { T t = v; return t; }
+        T runThen<T>(T v) {
+            T t = v;
+            Pt q = new Pt();
+            int a = q.getX();
+            return t;
+        }
+}
+
+@test void t() {
+    Pt p = new Pt();
+    Pt r1 = idCls<Pt>(p);                 // fn 类 T
+    Test.assert(r1 == p, "fn-class");
+    Pt[] arr = new Pt[2];
+    arr[0] = p;
+    Pt r1b = firstCls<Pt>(arr);           // fn T[] 元素 T
+    Test.assert(r1b == p, "fn-array");
+    Pt r2 = Gear.echo<Pt>(p);             // s 类 T
+    Test.assert(r2 == p, "static-class");
+    int r2b = Gear.pickX<Pt>(p);          // s 返回 int（T 只用形参）
+    Test.assertEq(r2b, 1, "static-intret");
+    Holder h = new Holder();
+    Pt r3 = h.tag<Pt>(p);                 // m 类 T + T 局部
+    Test.assert(r3 == p, "m-class");
+    Pt r4 = h.runThen<Pt>(p);             // m 体内调用具体类方法（成员解析）
+    Test.assert(r4 == p, "m-members");
+    Test.report("t", true);
+}

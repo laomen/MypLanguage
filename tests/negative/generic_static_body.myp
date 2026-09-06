@@ -1,0 +1,16 @@
+// EXPECT ERROR: class 'Pt' has no member 'q'
+// 克隆体逐体分析（v3.15.224）：@static 泛型方法（kind "s"）克隆体按 T=Pt 实例化
+// 时整体类型检查——`x.q()` 暴露 Pt 无 q()。此前 markAllStmt 跳过。负例：@static
+// 泛型克隆体成员错。
+import env;
+class Pt { property: int x = 1; }
+@static class U {
+    static:
+        T bad<T>(T x) { return x.q(); }
+}
+class Use {
+    action:
+        @constructor Use() {}
+        void go() { Pt p = new Pt(); Pt r = U.bad<Pt>(p); }
+}
+int main() { return 0; }

@@ -1,0 +1,14 @@
+// EXPECT ERROR: class 'Pt' has no member 'q'
+// 克隆体逐体分析（v3.15.224）：泛型【实例】方法模板体在具体类型实例化时整体
+// 类型检查——`T bad<T>(T x){ return x.q(); }` 对模板期不可见（T 占位），只有
+// 按 T=Pt 实例化才暴露 Pt 无 q()。此前 markAllStmt 跳过 → 静默通过（错误只在
+// 运行时/缺符号暴露）。负例：实例方法克隆体成员错。
+import env;
+class Pt { property: int x = 1; }
+class Use {
+    action:
+        @constructor Use() {}
+        T bad<T>(T x) { return x.q(); }
+        void go() { Pt p = new Pt(); Pt r = bad<Pt>(p); }
+}
+int main() { return 0; }

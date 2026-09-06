@@ -1,0 +1,13 @@
+// EXPECT ERROR: cannot initialize variable
+// 克隆体逐体分析（v3.15.224）：泛型实例方法模板体局部声明类型错——`string s = x`
+// 对 T=Pt 实例化时暴露（Pt→string）。此前 markAllStmt 跳过。负例：实例方法克隆
+// 体局部类型错。
+import env;
+class Pt { property: int x = 1; }
+class Use {
+    action:
+        @constructor Use() {}
+        T bad<T>(T x) { string s = x; return x; }
+        void go() { Pt p = new Pt(); Pt r = bad<Pt>(p); }
+}
+int main() { return 0; }

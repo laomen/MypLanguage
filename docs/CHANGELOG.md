@@ -27,6 +27,37 @@
 
 ## 编译器版本历史
 
+### v3.15.224 — 克隆体逐体分析（实例化克隆整体类型检查）（selfhost 大项落地）
+
+**非破坏性硬化（v3.15.223 记录的"模板体完整类型检查"大项落地）**。泛型模板体
+（顶层泛型函数 / 实例方法级 `<T>` / @static 泛型）原先在 Pass B 只做未定义符号
+保守扫描（v3.15.222）+ `markAllStmt`，体内 `x.noSuch()`（x 具体类型无该成员）、
+局部声明类型错等**只有按具体类型实例化时才暴露** → 现在对每个实例化克隆再跑一次
+**深克隆 + 类型替换后** 的整体 `visitStmt`（sema `sema.myp`）。
+
+- **深克隆 + 类型替换**（`anType/anTarget/anExpr/anStmt`）：无条件克隆 stmt/expr 的
+  全部子节点与列表（未知 kind 也安全——不共享任何可被 visitExpr 改写的子节点），
+  并对类型承载字段（VarDecl 类型、loopVar 类型、`new` 的 className/typeArgs、
+  `callTypeArgs`、`elemType`、Convert `toKind`、Gpu sharedType、destructure target）
+  做 `substituteType` T→concrete。`cloneExpr` 不拷 resolvedKind → 克隆体分析状态
+  干净，**共享模板体不被污染**（其它同模板克隆的 codegen 走 `resolveType` 照旧）。
+- **激活 concrete 绑定**：`curInstTps_/curInstArgs_`；`typeToKind` 顶层先按绑定把
+  残留 T 占位解析为具体类型（再回落 inGeneric→int）。
+- **延迟工作队列**（`enqueueInstAnalysis` + `runInstBodyAnalysis`）：三个克隆创建点
+  （`instantiateGenericFunction` fn / `resolveGenericInstMethod` m /
+  `resolveGenericStaticCall`→`cloneStaticToFunction` s）排队；Pass B 全部普通体分析
+  完后统一 drain（动态上界——克隆体内再触发的新克隆也处理）；按 mangled 名去重
+  防递归。分析在方法上下文（`this`+具体形参+currentClass_）或顶层函数上下文执行，
+  全量保存/恢复 Sema 状态。
+- **作用域边界**：带 `where T : Trait`（Numeric/Ordered/Float…）约束的模板体**不**逐体
+  分析（保留保守扫描）——数值 trait 模板体故意用宽松算术（`byte` 上 `a+b` 提升 int
+  再窄化返回；非泛型函数同样被拒、模板体靠跳过容忍且 codegen 窄化正确），逐体严格
+  检查会误报。仅**无约束纯 `<T>`** 克隆体走整体类型检查。
+- 负例 `tests/negative/generic_body_member.myp` / `generic_body_local.myp` /
+  `generic_fn_body.myp` / `generic_static_body.myp`（fn/m/s 三形态 body 类型错）；
+  正例 `tests/@test/generic_clone_body.myp`（6 断言，类 T 三形态不误报）。
+  全量 520/520 + bugs 19/19；bootstrap MD5 一致。
+
 ### v3.15.223 — 畸形签名解析层加固（空形参名拒绝）（鲁棒性，selfhost）
 
 **非破坏性硬化（承接 v3.15.222）**。无名参数（`void f(int )` / `T id<T>(T )`）此前被

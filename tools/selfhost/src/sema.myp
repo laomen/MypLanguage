@@ -320,6 +320,13 @@ class Sema {
             asyncFuncNames_ = new ArrayList<string>();
             asyncMethodKeys_ = new ArrayList<string>();
             curGeneric_ = new ArrayList<string>();
+            // 克隆体逐体分析（v3.15.224）：实例化克隆待分析工作队列 + 激活绑定
+            instAnaKind_ = new ArrayList<string>();
+            instAnaCls_ = new ArrayList<string>();
+            instAnaName_ = new ArrayList<string>();
+            instAnaDone_ = new ArrayList<string>();
+            curInstTps_ = new ArrayList<string>();
+            curInstArgs_ = new ArrayList<AstType>();
             interfaceNames_ = new ArrayList<string>();
             interfaceMethods_ = new ArrayList<MethodSig>();
             structNames_ = new ArrayList<string>();
@@ -2346,6 +2353,9 @@ class Sema {
                         declareParam(a.params().get(j), 1);
                     }
                     if (a.typeParams().size() != 0) {
+                        // PILOT 回退(v3.15.223)：模板体整体 visitStmt 不可行——方法级
+                        // T 占位在单次模板分析中产生虚假类型错（需按实例化具体类型逐体
+                        // 分析，属后续大项）。保留未定义符号保守扫描（v3.15.222）。
                         templateBodyUndefinedCheck(a.body(), a.params(), a.typeParams(), currentClass_);
                         markAllStmt(a.body());
                     }
@@ -2453,6 +2463,10 @@ class Sema {
                 }
                 inStruct_ = 0;
             }
+            // 克隆体逐体分析（v3.15.224）：全部普通体（顶层函数 + 类 action/function +
+            // @static + struct 方法）分析完后，对实例化克隆做深克隆+类型替换后的整体
+            // 类型检查（模板体原先只做未定义符号扫描 + markAllStmt）。
+            runInstBodyAnalysis();
             if (timing != 0) {
                 long tEnd = __myp_now_ms();
                 Console.writeLine("SEMA timing: Pass0+collect=" + (tPass0 - t0)
@@ -2958,6 +2972,15 @@ class Sema {
             return "";
         }
         string typeToKind(AstType t) {
+            // 克隆体逐体分析（v3.15.224）：激活的 typeParams→concrete 绑定时，
+            // 类型参数占位符解析为具体类型（而非常规 inGeneric→int 占位）。这使
+            // 残留 T（深克隆替换漏网的字段）也能按具体类型参与比较/成员解析。
+            if (t != null) {
+                string tn = Str.len(t.className()) != 0 ? t.className() : t.basicName();
+                for (int gi = 0; gi < curInstTps_.size() && gi < curInstArgs_.size(); gi = gi + 1) {
+                    if (Str.len(tn) != 0 && curInstTps_.get(gi) == tn) return typeToKind(curInstArgs_.get(gi));
+                }
+            }
             if (t != null && (inGeneric(t.basicName()) != 0 || inGeneric(t.className()) != 0)) return "int";
             // 限定 struct 名（Sensor::Config）优先于关联类型判定：owner 是类但
             // 无 assoc 绑定（Config 是嵌套 struct 非 type Item=...）时
@@ -3416,6 +3439,11 @@ class Sema {
             nf.setGenericInst(1);
             for (int i = 0; i < typeArgs.size(); i = i + 1) nf.instTypeArgs().add(typeArgs.get(i));
             tu_.functions().add(nf);
+            // 克隆体逐体分析（v3.15.224）：排队顶层泛型函数实例化克隆的逐体检查。
+            // 带 where 约束（trait 有界，Numeric/Ordered/Float…）的模板体故意用
+            // 宽松数值语义（`byte` 上 `a+b` 提升 int 再窄化返回，非泛型下会被拒、
+            // 模板体靠跳过容忍且 codegen 窄化正确）→ 不逐体分析，保留保守扫描。
+            if (templ.constraints().size() == 0) enqueueInstAnalysis("fn", "", instName);
             return instName;
         }
         // 生成泛型类实例（C++ typeNodeToTypeInfo 单态化：克隆模板 + 替换类型参数）
@@ -3619,6 +3647,9 @@ class Sema {
             if (inst == null) {
                 inst = cloneStaticToFunction(templ, mangled, tps, concrete);
                 tu_.functions().add(inst);
+                // 克隆体逐体分析（v3.15.224）：排队 @static 泛型实例化克隆的逐体检查。
+                // where 约束（trait 有界）模板体保留保守扫描（数值提升窄化惯用法）。
+                if (templ.constraints().size() == 0) enqueueInstAnalysis("s", clsName, mangled);
             }
             // 5) 设置调用节点：resolved + 返回类型（T → 具体类型）
             e.setResolved(mangled);
@@ -3797,6 +3828,9 @@ class Sema {
                 for (int j = 0; j < templ.params().size(); j = j + 1) na.params().add(cloneParam(templ.params().get(j), tps, concrete));
                 na.setBody(templ.body());
                 acts.add(na);
+                // 克隆体逐体分析（v3.15.224）：排队方法级泛型实例化克隆的逐体检查。
+                // where 约束（trait 有界）模板体保留保守扫描（数值提升窄化惯用法）。
+                if (templ.constraints().size() == 0) enqueueInstAnalysis("m", cls, mAct);
             }
             // 5) 调用点：返回类型 + callee 改名（Member→memberName / Identifier→name）
             AstType sret = substituteType(templ.ret(), tps, concrete);
@@ -4421,6 +4455,342 @@ class Sema {
             }
             tplCollectStmt(body, decl);
             tplCheckStmt(body, decl);
+        }
+
+        // ---- 克隆体逐体分析（v3.15.224）----
+        // 泛型模板体（顶层泛型函数 / 方法级 <T> / @static 泛型）在 Pass B 只做未定义
+        // 符号保守扫描 + markAllStmt，不整体类型检查 → 体内 `x.noSuch()`（x 具体类型
+        // 无该成员）、局部类型错等只有在**按具体类型实例化**时才暴露。正解（v3.15.223
+        // 记录的大项）：对每个实例化克隆（params/ret 已 substitute 具体类型）再跑一次
+        // **深克隆 + 类型替换后** 的 visitStmt——克隆体所有 T 已替换为具体类型，与普通
+        // 方法体一致，无方法级 T 占位的虚假类型错（pilot 否决的根因）。深克隆使共享
+        // 模板体不被污染（markAllStmt 的 resolvedKind/int 标记、类型节点全部保持原样，
+        // 其它共享同一模板体的克隆 codegen 不受影响）。
+        // 激活绑定：curInstTps_/curInstArgs_（typeToKind 顶层先查具体绑定再回落 int）。
+        AstType anType(AstType t) {
+            return substituteType(t, curInstTps_, curInstArgs_);
+        }
+        AstDestructureTarget anTarget(AstDestructureTarget t) {
+            if (t == null) return null;
+            AstDestructureTarget c = new AstDestructureTarget();
+            c.setName(t.name());
+            c.setPos(t.line(), t.col());
+            c.setType(anType(t.type()));
+            c.setHasType(t.hasType());
+            for (int i = 0; i < t.elements().size(); i = i + 1) c.elements().add(anTarget(t.elements().get(i)));
+            return c;
+        }
+        // 表达式深克隆 + 类型参数替换。cloneExpr 已拷标量字段；子节点/列表在此全量
+        // 重建 → 未知 kind 也安全（不会与模板共享可被 visitExpr 改写的子节点）。
+        AstExpr anExpr(AstExpr e) {
+            if (e == null) return null;
+            AstExpr c = e.cloneExpr();
+            c.setLhs(anExpr(e.lhs()));
+            c.setRhs(anExpr(e.rhs()));
+            c.setOperand(anExpr(e.operand()));
+            c.setCallee(anExpr(e.callee()));
+            c.setArray(anExpr(e.array()));
+            c.setIndex(anExpr(e.index()));
+            c.setCondition(anExpr(e.condition()));
+            c.setTrueExpr(anExpr(e.trueExpr()));
+            c.setFalseExpr(anExpr(e.falseExpr()));
+            c.setStart(anExpr(e.start()));
+            c.setEnd(anExpr(e.end()));
+            c.setTryExpr(anExpr(e.tryExpr()));
+            c.setCatchExpr(anExpr(e.catchExpr()));
+            c.setTimeout(anExpr(e.timeout()));
+            c.setNamedValue(anExpr(e.namedValue()));
+            ArrayList<AstExpr> na = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.args().size(); i = i + 1) na.add(anExpr(e.args().get(i)));
+            c.setArgs(na);
+            ArrayList<AstExpr> nd = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.dimensions().size(); i = i + 1) nd.add(anExpr(e.dimensions().get(i)));
+            c.setDimensions(nd);
+            ArrayList<AstExpr> nel = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.elements().size(); i = i + 1) nel.add(anExpr(e.elements().get(i)));
+            c.setElements(nel);
+            ArrayList<AstExpr> nk = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.mapKeys().size(); i = i + 1) nk.add(anExpr(e.mapKeys().get(i)));
+            c.setMapKeys(nk);
+            // 类型承载字段替换：className / typeArgs / callTypeArgs / elemType / toKind
+            string cn = e.className();
+            for (int i = 0; i < curInstTps_.size(); i = i + 1) {
+                if (cn == curInstTps_.get(i) && i < curInstArgs_.size()) {
+                    AstType a0 = curInstArgs_.get(i);
+                    cn = gsTypeArgName(a0);
+                    if (Str.len(a0.className()) == 0 && a0.element() == null && Str.len(a0.basicName()) != 0) cn = a0.basicName();
+                    break;
+                }
+            }
+            c.setClassName(cn);
+            ArrayList<AstType> nta = new ArrayList<AstType>();
+            for (int i = 0; i < e.typeArgs().size(); i = i + 1) nta.add(anType(e.typeArgs().get(i)));
+            c.setTypeArgs(nta);
+            ArrayList<AstType> nca = new ArrayList<AstType>();
+            for (int i = 0; i < e.callTypeArgs().size(); i = i + 1) nca.add(anType(e.callTypeArgs().get(i)));
+            c.setCallTypeArgs(nca);
+            c.setElemType(anType(e.elemType()));
+            string tk = e.toKind();
+            for (int i = 0; i < curInstTps_.size(); i = i + 1) {
+                if (tk == curInstTps_.get(i) && i < curInstArgs_.size()) {
+                    AstType a1 = curInstArgs_.get(i);
+                    tk = Str.len(a1.className()) != 0 ? a1.className() : a1.basicName();
+                    break;
+                }
+            }
+            c.setToKind(tk);
+            return c;
+        }
+        // 语句深克隆 + 类型参数替换（无条件克隆全部字段 → 未知 kind 也安全）。
+        AstStmt anStmt(AstStmt s) {
+            if (s == null) return null;
+            AstStmt c = new AstStmt();
+            c.setKind(s.kind());
+            c.setPos(s.line(), s.col());
+            c.setEndPos(s.endLine(), s.endCol());
+            for (int i = 0; i < s.bodyStmts().size(); i = i + 1) c.bodyStmts().add(anStmt(s.bodyStmts().get(i)));
+            for (int i = 0; i < s.decls().size(); i = i + 1) {
+                AstVar v = s.decls().get(i);
+                AstVar nv = new AstVar();
+                nv.setName(v.name());
+                nv.setNamePos(v.nameLine(), v.nameCol());
+                nv.setType(anType(v.type()));
+                nv.setConst(v.isConst());
+                nv.setThread(v.thread());
+                nv.setThreadpool(v.threadpool());
+                nv.setInferred(v.isInferred());
+                nv.setInit(anExpr(v.init()));
+                c.decls().add(nv);
+            }
+            c.setCondition(anExpr(s.condition()));
+            c.setThen(anStmt(s.then()));
+            c.setElse(anStmt(s.elseBranch()));
+            c.setBody(anStmt(s.body()));
+            c.setInit(anStmt(s.init()));
+            c.setStep(anExpr(s.step()));
+            c.setValue(anExpr(s.value()));
+            c.setExpr(anExpr(s.expr()));
+            c.setTarget(anTarget(s.target()));
+            c.setIsDecl(s.isDecl());
+            c.setVarName(s.varName());
+            c.setVarType(anType(s.varType()));
+            c.setHasType(s.hasType());
+            c.setIterKind(s.iterKind());
+            c.setClassName(s.className());
+            c.setSizeFn(s.sizeFn());
+            c.setGetFn(s.getFn());
+            c.setArrSize(s.arrSize());
+            c.setParallel(s.parallel());
+            c.setGpu(s.gpu());
+            c.setStride(s.stride());
+            c.setBlock(s.block());
+            ArrayList<AstPair> rp = s.resident();
+            for (int i = 0; i < rp.size(); i = i + 1) {
+                AstPair np = new AstPair();
+                np.setK(rp.get(i).k());
+                np.setV(rp.get(i).v());
+                np.setTypeStr(rp.get(i).typeStr());
+                c.resident().add(np);
+            }
+            c.setStream(anExpr(s.stream()));
+            c.setSubject(anExpr(s.subject()));
+            for (int i = 0; i < s.arms().size(); i = i + 1) {
+                AstMatchArm a = s.arms().get(i);
+                AstMatchArm na2 = new AstMatchArm();
+                na2.setPatKind(a.patKind());
+                na2.setEnum(a.enumName());
+                na2.setVariant(a.variant());
+                na2.setIndex(a.index());
+                na2.setLitInt(a.litInt());
+                na2.setLitStr(a.litStr());
+                na2.setLitDbl(a.litDbl());
+                ArrayList<string> b2 = a.bindings();
+                for (int bi = 0; bi < b2.size(); bi = bi + 1) na2.bindings().add(b2.get(bi));
+                na2.setBody(anStmt(a.body()));
+                c.arms().add(na2);
+            }
+            c.setTryBlock(anStmt(s.tryBlock()));
+            for (int i = 0; i < s.catches().size(); i = i + 1) {
+                AstCatch cc = s.catches().get(i);
+                AstCatch ncc = new AstCatch();
+                ncc.setVar(cc.varName());
+                ncc.setType(cc.type());
+                ncc.setBlock(anStmt(cc.block()));
+                c.catches().add(ncc);
+            }
+            c.setFinallyBlock(anStmt(s.finallyBlock()));
+            c.setMapping(s.mappingDecl());
+            ArrayList<string> ns = s.names();
+            for (int i = 0; i < ns.size(); i = i + 1) c.names().add(ns.get(i));
+            c.setAcc(s.acc());
+            c.setX(s.x());
+            c.setArr(s.arr());
+            c.setOut(s.out());
+            c.setExclusive(s.exclusive());
+            c.setInName(s.inName());
+            c.setIdxName(s.idxName());
+            c.setMode(s.mode());
+            c.setABegin(anExpr(s.aBegin()));
+            c.setAEnd(anExpr(s.aEnd()));
+            c.setIdxBegin(anExpr(s.idxBegin()));
+            c.setIdxEnd(anExpr(s.idxEnd()));
+            c.setSharedType(anType(s.sharedType()));
+            c.setName(s.name());
+            c.setHasGrid(s.hasGrid());
+            c.setGridVal(s.gridVal());
+            c.setGridExpr(anExpr(s.gridExpr()));
+            c.setOpBody(anStmt(s.opBody()));
+            c.setOpExpr(anExpr(s.opExpr()));
+            c.setInitExpr(anExpr(s.initExpr()));
+            c.setBeginExpr(anExpr(s.beginExpr()));
+            c.setEndExpr(anExpr(s.endExpr()));
+            c.setTimeout(anExpr(s.timeout()));
+            c.setIterable(anExpr(s.iterable()));
+            c.setThrowType(s.throwType());
+            return c;
+        }
+
+        void enqueueInstAnalysis(string kind, string cls, string instName) {
+            for (int i = 0; i < instAnaDone_.size(); i = i + 1) {
+                if (instAnaDone_.get(i) == kind + "/" + cls + "/" + instName) return;
+            }
+            for (int i = 0; i < instAnaName_.size(); i = i + 1) {
+                if (instAnaKind_.get(i) == kind && instAnaCls_.get(i) == cls && instAnaName_.get(i) == instName) return;
+            }
+            instAnaKind_.add(kind);
+            instAnaCls_.add(cls);
+            instAnaName_.add(instName);
+        }
+
+        // 分析单个实例化克隆体（kind: "m" 类方法级克隆 / "fn" 顶层函数克隆 /
+        // "s" @static→顶层函数克隆）。定位克隆对象（共享模板体 + typeParams/
+        // instTypeArgs/params/ret/flags）→ 深克隆替换 → 在方法/函数上下文 visitStmt。
+        void analyzeInstCloneBody(string kind, string cls, string instName) {
+            if (tu_ == null) return;
+            AstStmt body = null;
+            ArrayList<string> tps = new ArrayList<string>();
+            ArrayList<AstType> args = new ArrayList<AstType>();
+            ArrayList<AstParam> params = new ArrayList<AstParam>();
+            AstType ret = null;
+            int coro = 0;
+            if (kind == "m") {
+                AstClass cobj = null;
+                for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                    AstClass cc = tu_.classes().get(ci);
+                    if (cc.name() == cls) { cobj = cc; break; }
+                }
+                if (cobj == null) return;
+                // 泛型类实例（typeParams>0）的方法级克隆跳过：其类级成员类型/属性
+                // 需额外替换（类 T 也须映射），属后续扩展；普通类方法级模板是 A2 主路径。
+                if (cobj.typeParams().size() != 0) return;
+                AstAction a = null;
+                for (int ai = 0; ai < cobj.actions().size(); ai = ai + 1) {
+                    if (cobj.actions().get(ai).name() == instName) { a = cobj.actions().get(ai); break; }
+                }
+                if (a == null || a.body() == null) return;
+                body = a.body();
+                ArrayList<string> tp2 = a.typeParams();
+                for (int i = 0; i < tp2.size(); i = i + 1) tps.add(tp2.get(i));
+                ArrayList<AstType> ar2 = a.instTypeArgs();
+                for (int i = 0; i < ar2.size(); i = i + 1) args.add(ar2.get(i));
+                ArrayList<AstParam> p2 = a.params();
+                for (int i = 0; i < p2.size(); i = i + 1) params.add(p2.get(i));
+                ret = a.ret();
+                coro = a.coro();
+            } else {
+                AstFunction f = null;
+                for (int fi = 0; fi < tu_.functions().size(); fi = fi + 1) {
+                    if (tu_.functions().get(fi).name() == instName) { f = tu_.functions().get(fi); break; }
+                }
+                if (f == null || f.body() == null) return;
+                body = f.body();
+                ArrayList<string> tp2 = f.typeParams();
+                for (int i = 0; i < tp2.size(); i = i + 1) tps.add(tp2.get(i));
+                ArrayList<AstType> ar2 = f.instTypeArgs();
+                for (int i = 0; i < ar2.size(); i = i + 1) args.add(ar2.get(i));
+                ArrayList<AstParam> p2 = f.params();
+                for (int i = 0; i < p2.size(); i = i + 1) params.add(p2.get(i));
+                ret = f.ret();
+                coro = f.coro();
+            }
+            if (body == null || tps.size() == 0 || tps.size() != args.size()) return;
+            // 上下文状态保存（Pass B 分析在途/结束后调用；全量保存以防泄漏污染）
+            string saveCls2 = currentClass_;
+            int saveInClass = inClass_;
+            int saveInStruct = inStruct_;
+            int saveInMain = inMain_;
+            int saveInStatic = inStatic_;
+            int saveInLambda = inLambda_;
+            int saveInCoro = inCoro_;
+            int saveLoopDepth = loopDepth_;
+            string saveMethod = currentMethodName_;
+            string saveRet = currentRet_;
+            AstType saveRetAst = currentRetAst_;
+            string saveLambdaSelfName = lambdaSelfName_;
+            string saveLambdaSelfClass = lambdaSelfClass_;
+            int saveInDiscard = inDiscardStmt_;
+            int gbase = curGeneric_.size();
+            for (int i = 0; i < tps.size(); i = i + 1) curGeneric_.add(tps.get(i));
+            int igBase = curInstTps_.size();
+            for (int i = 0; i < tps.size() && i < args.size(); i = i + 1) {
+                curInstTps_.add(tps.get(i));
+                curInstArgs_.add(args.get(i));
+            }
+            if (kind == "m") { currentClass_ = cls; inClass_ = 1; inStruct_ = 0; inStatic_ = 0; }
+            else { currentClass_ = ""; inClass_ = 0; inStruct_ = 0; inStatic_ = 0; }
+            inMain_ = 0;
+            inLambda_ = 0;
+            inCoro_ = coro != 0 ? 1 : 0;
+            loopDepth_ = 0;
+            currentMethodName_ = "";
+            currentRet_ = ret != null ? typeToKind(ret) : "void";
+            currentRetAst_ = ret;
+            AstStmt cloneBody = anStmt(body);
+            sym_.enterScope();
+            if (kind == "m") sym_.declare("this", "class");
+            checkDupParamNames(params, 0, 0);
+            for (int j = 0; j < params.size(); j = j + 1) declareParam(params.get(j), 0);
+            visitStmt(cloneBody);
+            sym_.leaveScope();
+            // 恢复上下文
+            currentClass_ = saveCls2;
+            inClass_ = saveInClass;
+            inStruct_ = saveInStruct;
+            inMain_ = saveInMain;
+            inStatic_ = saveInStatic;
+            inLambda_ = saveInLambda;
+            inCoro_ = saveInCoro;
+            loopDepth_ = saveLoopDepth;
+            currentMethodName_ = saveMethod;
+            currentRet_ = saveRet;
+            currentRetAst_ = saveRetAst;
+            lambdaSelfName_ = saveLambdaSelfName;
+            lambdaSelfClass_ = saveLambdaSelfClass;
+            inDiscardStmt_ = saveInDiscard;
+            while (curGeneric_.size() > gbase) curGeneric_.remove(curGeneric_.size() - 1);
+            while (curInstTps_.size() > igBase) {
+                curInstTps_.remove(curInstTps_.size() - 1);
+                curInstArgs_.remove(curInstArgs_.size() - 1);
+            }
+        }
+
+        // Pass B 之后：按队列逐体分析所有实例化克隆（动态上界——分析途中新产生的
+        // 克隆也会被处理）。已有诊断时不跑（避免级联噪音；负例本应无其它错）。
+        void runInstBodyAnalysis() {
+            if (diag_.errorCount() != 0) return;
+            for (int qi = 0; qi < instAnaName_.size(); qi = qi + 1) {
+                string kind = instAnaKind_.get(qi);
+                string cls = instAnaCls_.get(qi);
+                string nm = instAnaName_.get(qi);
+                string key = kind + "/" + cls + "/" + nm;
+                int done = 0;
+                for (int di = 0; di < instAnaDone_.size(); di = di + 1) {
+                    if (instAnaDone_.get(di) == key) { done = 1; break; }
+                }
+                if (done != 0) continue;
+                instAnaDone_.add(key);
+                analyzeInstCloneBody(kind, cls, nm);
+            }
         }
 
         void markAllStmt(AstStmt s) {
@@ -9379,6 +9749,14 @@ class Sema {
         ArrayList<string> asyncFuncNames_;
         ArrayList<string> asyncMethodKeys_;
         ArrayList<string> curGeneric_;
+        // 克隆体逐体分析（v3.15.224）：待分析克隆队列（kind: "fn"顶层函数克隆 /
+        // "m"方法级克隆 / "s"@static克隆）+ 已分析 key + 激活 concrete 绑定。
+        ArrayList<string> instAnaKind_;
+        ArrayList<string> instAnaCls_;
+        ArrayList<string> instAnaName_;
+        ArrayList<string> instAnaDone_;
+        ArrayList<string> curInstTps_;
+        ArrayList<AstType> curInstArgs_;
         ArrayList<string> interfaceNames_;
         ArrayList<MethodSig> interfaceMethods_;
         ArrayList<string> structNames_;
