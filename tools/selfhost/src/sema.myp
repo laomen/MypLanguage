@@ -325,6 +325,7 @@ class Sema {
             instAnaCls_ = new ArrayList<string>();
             instAnaName_ = new ArrayList<string>();
             instAnaDone_ = new ArrayList<string>();
+            instClsReg_ = new ArrayList<string>();
             curInstTps_ = new ArrayList<string>();
             curInstArgs_ = new ArrayList<AstType>();
             interfaceNames_ = new ArrayList<string>();
@@ -4662,6 +4663,44 @@ class Sema {
             instAnaName_.add(instName);
         }
 
+        // v3.15.226：把泛型类实例（Box_int_inst）注册进 sema 成员表一次（具体
+        // props/actions/funcs/methods）。Pass 0 只收源码类；实例类是 Pass A/B 动
+        // 态加的、不在 classNames_/classProps_/methods_——若实例方法克隆体分析时
+        // currentClass_=实例名，currentClassMember*/hasMethod/findMethod* 都查不
+        // 到 → 裸属性/this.prop/兄弟方法全 undefined。注册后与普通类一致。去重按
+        // 实例名（registerInstClass 只在此后置延迟分析期调用，无副作用）。
+        void registerInstClass(AstClass cobj) {
+            if (cobj == null || cobj.typeParams().size() == 0) return;
+            for (int ri = 0; ri < instClsReg_.size(); ri = ri + 1) {
+                if (instClsReg_.get(ri) == cobj.name()) return;
+            }
+            instClsReg_.add(cobj.name());
+            classTypeParams_.add(cobj.typeParams());
+            classNames_.add(cobj.name());
+            if (classIdx_.contains(cobj.name()) == 0) classIdx_.put(cobj.name(), classNames_.size() - 1);
+            classProps_.add(cobj.props());
+            classActions_.add(cobj.actions());
+            classFuncs_.add(cobj.funcs());
+            ArrayList<AstAction> ra = cobj.actions();
+            for (int ai = 0; ai < ra.size(); ai = ai + 1) {
+                AstAction act = ra.get(ai);
+                string rkey = cobj.name() + "." + act.name();
+                if (methodSigIdx_.contains(rkey) == 0) addMethod(cobj.name(), act.name(), act.ret(), act.params().size(), act.params(), act.coro());
+            }
+            ArrayList<AstFunction> rf = cobj.funcs();
+            for (int fi = 0; fi < rf.size(); fi = fi + 1) {
+                AstFunction f = rf.get(fi);
+                string fkey = cobj.name() + "." + f.name();
+                if (methodSigIdx_.contains(fkey) == 0) addMethod(cobj.name(), f.name(), f.ret(), f.params().size(), f.params(), f.coro());
+            }
+            ArrayList<AstAction> rsa = cobj.staticActions();
+            for (int si = 0; si < rsa.size(); si = si + 1) {
+                AstAction act = rsa.get(si);
+                string skey = cobj.name() + "." + act.name();
+                if (methodSigIdx_.contains(skey) == 0) addMethod(cobj.name(), act.name(), act.ret(), act.params().size(), act.params(), act.coro());
+            }
+        }
+
         // 分析单个实例化克隆体（kind: "m" 类方法级克隆 / "fn" 顶层函数克隆 /
         // "s" @static→顶层函数克隆）。定位克隆对象（共享模板体 + typeParams/
         // instTypeArgs/params/ret/flags）→ 深克隆替换 → 在方法/函数上下文 visitStmt。
@@ -4680,19 +4719,33 @@ class Sema {
                     if (cc.name() == cls) { cobj = cc; break; }
                 }
                 if (cobj == null) return;
-                // 泛型类实例（typeParams>0）的方法级克隆跳过：其类级成员类型/属性
-                // 需额外替换（类 T 也须映射），属后续扩展；普通类方法级模板是 A2 主路径。
-                if (cobj.typeParams().size() != 0) return;
                 AstAction a = null;
                 for (int ai = 0; ai < cobj.actions().size(); ai = ai + 1) {
                     if (cobj.actions().get(ai).name() == instName) { a = cobj.actions().get(ai); break; }
                 }
                 if (a == null || a.body() == null) return;
                 body = a.body();
+                // v3.15.226 扩展：泛型类实例（Box_int_inst）的方法级克隆也逐体分析。
+                // 其类级映射（cobj.typeParams→instTypeArgs，如 Box 的 T→int）须与
+                // 方法级映射（a 的 U→concrete）**叠加**（类级在前，同 codegen
+                // setupTypeParams + 方法级叠加序）——body 深克隆替换时类 T 与方法 U
+                // 都落到具体类型；this 属性/裸方法解析经 resolveBase 回模板取表 +
+                // typeToKind 的 concrete 绑定（curInstTps_/curInstArgs_）对齐具体。
+                // （v3.15.224 曾跳过：类级成员类型也须映射，此处补上。）
+                ArrayList<string> mpTps = new ArrayList<string>();
+                ArrayList<AstType> mpArgs = new ArrayList<AstType>();
+                if (cobj.typeParams().size() != 0 && cobj.typeParams().size() == cobj.instTypeArgs().size()) {
+                    ArrayList<string> ctp = cobj.typeParams();
+                    for (int ci2 = 0; ci2 < ctp.size(); ci2 = ci2 + 1) mpTps.add(ctp.get(ci2));
+                    ArrayList<AstType> cia = cobj.instTypeArgs();
+                    for (int ci2 = 0; ci2 < cia.size(); ci2 = ci2 + 1) mpArgs.add(cia.get(ci2));
+                }
                 ArrayList<string> tp2 = a.typeParams();
-                for (int i = 0; i < tp2.size(); i = i + 1) tps.add(tp2.get(i));
+                for (int i = 0; i < tp2.size(); i = i + 1) mpTps.add(tp2.get(i));
                 ArrayList<AstType> ar2 = a.instTypeArgs();
-                for (int i = 0; i < ar2.size(); i = i + 1) args.add(ar2.get(i));
+                for (int i = 0; i < ar2.size(); i = i + 1) mpArgs.add(ar2.get(i));
+                for (int i = 0; i < mpTps.size(); i = i + 1) tps.add(mpTps.get(i));
+                for (int i = 0; i < mpArgs.size(); i = i + 1) args.add(mpArgs.get(i));
                 ArrayList<AstParam> p2 = a.params();
                 for (int i = 0; i < p2.size(); i = i + 1) params.add(p2.get(i));
                 ret = a.ret();
@@ -4735,6 +4788,16 @@ class Sema {
             for (int i = 0; i < tps.size() && i < args.size(); i = i + 1) {
                 curInstTps_.add(tps.get(i));
                 curInstArgs_.add(args.get(i));
+            }
+            if (kind == "m") {
+                // v3.15.226：泛型类实例方法克隆 → 把实例类注册进 sema 成员表
+                // （具体 props/methods），供分析期 currentClass_=实例名的成员解析
+                // （裸属性/this.prop/兄弟方法）。注册在 binding 激活后（addMethod
+                // 的 typeToKind 能解析方法级 U 占位）。
+                for (int ri2 = 0; ri2 < tu_.classes().size(); ri2 = ri2 + 1) {
+                    AstClass rc = tu_.classes().get(ri2);
+                    if (rc.name() == cls) { registerInstClass(rc); break; }
+                }
             }
             if (kind == "m") { currentClass_ = cls; inClass_ = 1; inStruct_ = 0; inStatic_ = 0; }
             else { currentClass_ = ""; inClass_ = 0; inStruct_ = 0; inStatic_ = 0; }
@@ -9755,6 +9818,9 @@ class Sema {
         ArrayList<string> instAnaCls_;
         ArrayList<string> instAnaName_;
         ArrayList<string> instAnaDone_;
+        // v3.15.226：泛型类实例（Box_int_inst）方法克隆分析时已注册进 sema 成员表
+        // 的实例类名（注册一次，含具体 props/actions/funcs/methods）。
+        ArrayList<string> instClsReg_;
         ArrayList<string> curInstTps_;
         ArrayList<AstType> curInstArgs_;
         ArrayList<string> interfaceNames_;

@@ -1,0 +1,18 @@
+// EXPECT ERROR: class 'Pt' has no member 'q'
+// 克隆体逐体分析扩展（v3.15.226）：泛型类【实例】方法克隆体成员错——`return v.q()`
+// 中 v 是类T=Pt 属性（this.v），Box<Pt> 实例化时暴露 Pt 无 q()（此前实例克隆体
+// 从不过 sema，静默 → 运行时缺符号）。v3.15.224 曾跳过，此处补上。
+import test;
+class Pt { property: int x = 1; }
+class Box<T> {
+    property: T v;
+    action:
+        @constructor Box(T val) { v = val; }
+        U bad<U>(U u) { return v.q(); }
+}
+@test void t() {
+    Pt p = new Pt();
+    Box<Pt> b = new Box<Pt>(p);
+    int r = b.bad<int>(5);
+    Test.report("t", true);
+}

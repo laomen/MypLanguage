@@ -1,0 +1,43 @@
+// 泛型类实例方法克隆逐体分析（v3.15.226，selfhost additive）正向回归：
+// 已实例化泛型类（Box<int>/Box<string>）上的方法级 <U> 克隆体按 类T + 方法U 双映射
+// 逐体类型检查——类T属性读（this.v）、方法U 取 class（Pt）都合法不误报。
+// 注：类T 本身取 class（Box<Pt>）并在类T 值上调用方法（v.dup()）是既有 codegen
+// 缺口（与逐体分析无关），此测试用类T=int/string 覆盖；方法级 U 可取 class。
+import test;
+
+class Pt {
+    property: int x = 1;
+    action:
+        @constructor Pt() {}
+        int getX() { return x; }
+}
+
+class Box<T> {
+    property:
+        T v;
+    action:
+        @constructor Box(T val) { v = val; }
+        T get() { return v; }
+        U tag<U>(U x) { U y = x; return y; }
+        T readProp<U>(U u) { T out = v; return out; }   // 读类T属性 this.v
+        U sib<U>(U x) { return x; }
+}
+
+@test void t() {
+    Pt p = new Pt();
+    Box<int> bi = new Box<int>(7);
+    int a = bi.tag<int>(9);
+    Test.assertEq(a, 9, "a0");
+    Pt pr = bi.tag<Pt>(p);              // 类T=int + 方法U=class
+    Test.assert(pr == p, "pr0");
+    int i1 = bi.readProp<string>("z");  // 类T=int 属性读
+    Test.assertEq(i1, 7, "i1");
+    Box<string> bs = new Box<string>("yo");
+    string s1 = bs.tag<string>("x");
+    Test.assertStrEq(s1, "x", "s1");
+    Pt pr2 = bs.tag<Pt>(p);             // 类T=string + 方法U=class
+    Test.assert(pr2 == p, "pr2");
+    string s2 = bs.readProp<int>(3);    // 类T=string 属性读
+    Test.assertStrEq(s2, "yo", "s2");
+    Test.report("t", true);
+}

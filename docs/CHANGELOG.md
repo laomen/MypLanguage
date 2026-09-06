@@ -27,6 +27,32 @@
 
 ## 编译器版本历史
 
+### v3.15.226 — 泛型类实例方法克隆逐体分析扩展（类级 T + 方法级 U 双映射）（selfhost）
+
+**非破坏性硬化（v3.15.224 克隆体逐体分析的后续扩展）**。v3.15.224 对实例化克隆做
+深克隆+类型替换后的整体类型检查，但**跳过了泛型类实例**（`Box_int_inst`，typeParams>0）
+的方法级克隆——其类级成员类型/属性也须替换（类 T 须映射），当时记后续扩展。现补上
+（sema `sema.myp` `analyzeInstCloneBody`）。
+
+- **类级 + 方法级映射叠加**：泛型类实例方法克隆体含**类 T 与 方法 U 两类占位**——
+  `mpTps/mpArgs` 先 prepend 类级映射（`cobj.typeParams→instTypeArgs`，如 Box 的
+  `T→int`），再 append 方法级（`a` 的 `U→concrete`），与 codegen `setupTypeParams`+
+  方法级叠加序一致 → body 深克隆替换/`typeToKind` concrete 绑定双落到具体。
+- **实例类注册进 sema 成员表**（`registerInstClass`，按实例名去重）：实例类由
+  Pass A/B 动态生成、不在 Pass 0 的 `classNames_/classProps_/methods_`——若
+  `currentClass_`=实例名，裸属性/`this.prop`/兄弟方法解析全失败（undefined symbol）。
+  注册（具体 props/actions/funcs + `addMethod` 具体签名）后与普通类一致；在激活
+  binding 下 add（方法级 U 占位可解析）。注册在延迟分析期，无副作用。
+- 效果：`Box<int>.pick<Pt>(...)` 等泛型类实例上的方法级克隆体现在也逐体类型检查——
+  体内 `int n = x`（U=class 时）、`string s = this.v`（类T=class 时）等错误按具体
+  类型实例化时干净报出（此前静默 → 运行时错/缺符号）。
+- 边界不变：`where T : Trait` 有界模板体仍不逐体；类T 本身取 class（`Box<Pt>`）并
+  在类T 值上调用方法（`v.dup()`）是**既有 codegen 缺口**（与逐体分析无关，探测
+  pgc2 opt-21 `retain(ptr )` 复现）。
+- 负例 `tests/negative/generic_clsinst_body_{local,member}.myp`（U=class 局部错 /
+  类T=class 属性成员错）；正例 `tests/@test/generic_clsinst_body.myp`（6 断言，
+  类T=int/string + 方法U=class 不误报）。全量 523/523 + bugs 20/20；bootstrap MD5 一致。
+
 ### v3.15.225 — BUG-150 修复：net send 屏蔽 SIGPIPE（写已关闭连接不崩）（runtime）
 
 **非破坏性运行时修复**。对已关闭 socket `send` 默认触发 SIGPIPE 终止进程（exit 141）；

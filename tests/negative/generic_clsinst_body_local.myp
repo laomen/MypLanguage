@@ -1,0 +1,18 @@
+// EXPECT ERROR: cannot initialize variable
+// 克隆体逐体分析扩展（v3.15.226）：泛型类【实例】（Box<Pt>）上的方法级 <U> 克隆体
+// 也按 类T+方法U 双映射逐体类型检查——`int n = x`（U=Pt 实例化时暴露，Pt→int）。
+// v3.15.224 曾跳过泛型类实例的方法级克隆（类级成员类型也须映射）；此处补上。
+import test;
+class Pt { property: int x = 1; }
+class Box<T> {
+    property: T v;
+    action:
+        @constructor Box(T val) { v = val; }
+        U bad<U>(U x) { int n = x; return x; }
+}
+@test void t() {
+    Pt p = new Pt();
+    Box<Pt> b = new Box<Pt>(p);
+    Pt r = b.bad<Pt>(p);
+    Test.report("t", true);
+}
