@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.16.0 — 里程碑：版本节奏切 minor（v3.16 周期开始；git tag v3.16.0）
+
+**版本节奏规则（自本版起）**：此前每功能/修复 commit +1 patch（v3.15.244 个 patch 全堆在
+3.15 一个 minor 下，版本号失去阶段信号）。现改为：
+- **minor = 功能/里程碑批次**（一批相关 additive/大项收敛后升，打 git annotated tag）；
+- **patch = 同 minor 内的小修复与增量**；
+- **mypview 等分项目独立计数不变**（本 changelog 只记编译器/运行时/stdlib）；
+- seed（mypc-seed v3.15.198）冻结不随动；fmt/自举工具独立版本串不动。
+
+**v3.16 周期起点（承接 v3.15.236~244 已交付）**：泛型 parity 系列（B5/B3/B4/A5 容器形参
+推导/new Box<T>/new Option<V>）、`??` 空合并 + `ref` 干净拒绝、MO-4 import 诊断、
+M-3 宏卫生、M-2 编译期常量表、M-1 表达式/值宏、BUG-153 coro 非阻塞 accept（stdlib）
+——自举/元编程轴缺口清零（M-1/M-2/M-3），全量 547/547 + bugs 20/20 + 自举门稳定。
+下一 minor 断点候选：规模化/模块化路线（docs/review/scaling_roadmap.md）落地。
+
 ### v3.15.244 — M-1 表达式/值宏：声明式宏表达式位展开（additive，selfhost）
 
 **M-1 缺口**（docs/review/metaprogramming_gaps.md §2）：声明式宏只能**语句位**展开，
