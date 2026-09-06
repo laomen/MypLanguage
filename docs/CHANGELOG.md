@@ -77,6 +77,25 @@ hash → **stdlib 内容变更不使缓存失效** → 错误命中旧 IR（实�
   md5 不变为正确行为）；还原后命中原键。自举 MD5 门禁 `6f176ed7` 通过；全套 547
   通过。
 
+#### P2b：frontless hit——命中跳过前端 parse（commit 8aa4510；热 0.30s → 0.13s）
+
+补全 P2 文档形态"命中 → 跳过前端"：`compile()` 在 **parse 之前**用轻量闭包扫描判
+缓存，命中即跳过 9 模块 parse/derive/sema/codegen/opt+llc 直接链接。
+
+- `Frontend.scanClosure`：`scanImportsOf`（token 级按 `kind=="import"` 提取——
+  string→path / identifier 点分拼接→name，顺序同 parser 顶层 import）+
+  `resolveImportMirror`（镜像 loadModule 的 stdlib/pkg/相对路径解析）→ DFS 收集
+  真实读入文件，files() 顺序镜像全量路径 addFile 顺序（缓存键一致前提）。
+- 命中分支：写缓存 .ll → 补子模块 `.libs`（跳过 loadModule 会漏）→ `Link`。
+- **保守安全**：scan 与真实闭包不一致 ⇒ key 不同 ⇒ probe miss → 退回 parse 后
+  真实 key 判定（原逻辑兜底，零正确性风险）；错误内容 key 必变 → miss 全量报错。
+- 辅助：`MYP_COMPILE_TIMING` 细分 front（main/extra/importLoad）+ 修命中路径段负
+  数（`a50e800`）——实测 front 164ms ≈ 附加 9 大模块并行 parse 156ms（数据支撑
+  frontless 决策）。
+- 实测：热路径 **0.30s → 0.13s**（出现 `[frontless]` 标识）；冷 8.26s miss 写
+  缓存；冷/热产物 md5 一致 `87ecbd65…`；改源码 miss 重编、语法错照报；自举 MD5
+  门禁 `d3dabef1` 通过；全套 547 通过。
+
 ### v3.16.0 — 里程碑：版本节奏切 minor（v3.16 周期开始；git tag v3.16.0）
 
 **版本节奏规则（自本版起）**：此前每功能/修复 commit +1 patch（v3.15.244 个 patch 全堆在
