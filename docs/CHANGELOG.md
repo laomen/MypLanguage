@@ -27,6 +27,23 @@
 
 ## 编译器版本历史
 
+### v3.15.223 — 畸形签名解析层加固（空形参名拒绝）（鲁棒性，selfhost）
+
+**非破坏性硬化（承接 v3.15.222）**。无名参数（`void f(int )` / `T id<T>(T )`）此前被
+`parseParam` 静默接受 → codegen 发**空名参数**（`i32 %`）→ `opt-21 "expected ')' at
+end of argument list"`（实测非泛型与泛型模板同样坏 IR；并非受支持的"无名参数"特性）。
+
+- **parser**（`parser.myp` `parseParam`）：类型后须有名——非 identifier（`)`/`,`）→
+  干净拒绝 "expected parameter name (parameters must be named)"。函数类型 `(A,B)->R`
+  与元组类型 `(A,B)` 不经 parseParam（parseType 直取类型，不受影响）。
+- 回归 `tests/negative/param_empty_name.myp`；全量 515/515 + bugs 19/19；
+  bootstrap MD5 一致。
+- **记录（模板体完整类型检查 = 后续大项）**：对类 action（A2 泛型实例方法）做了
+  「模板体整体 visitStmt」试点——不可行：方法级 T 占位在单次模板分析中产生**虚假
+  类型错**（`T y=x` 被解析成 double/string 等），需「按实例化具体类型逐体分析」的
+  单态化期类型检查架构（克隆体尚未做 sema 分析）。故保留 v3.15.222 的未定义符号
+  保守扫描；完整类型检查列后续。
+
 ### v3.15.222 — 泛型模板体未定义符号扫描（鲁棒性硬化，selfhost）
 
 **非破坏性硬化（承接 v3.15.221 崩溃扫描记录的既有缺口）**。泛型函数 / 泛型 static /

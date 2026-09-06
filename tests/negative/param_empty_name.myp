@@ -1,0 +1,7 @@
+// EXPECT ERROR: expected parameter name (parameters must be named)
+// 畸形签名解析层加固（v3.15.223）：无名参数 `void f(int )` 此前被静默接受 →
+// codegen 发空名参数 `i32 %` → opt-21 "expected ')' at end of argument list"
+//（非泛型与泛型模板同样坏 IR）。现解析层干净拒绝。
+import env;
+void f(int ) { }
+void main() { f(1); }

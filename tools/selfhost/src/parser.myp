@@ -329,14 +329,18 @@ class Parser {
             AstParam p = new AstParam();
             if (matchKind("ref") != 0) p.setRef(1);
             p.setType(parseType());
-            if (curKind() == "identifier" || curKind() == "," || curKind() == ")") {
-                if (curKind() == "identifier") {
-                    p.setName(parseIdentifier("expected parameter name"));
-                    if (allowDefault != 0 && matchKind("=") != 0) {
-                        p.setHasDefault(1);
-                        p.setDefaultExpr(parseExpr());
-                    }
+            // 畸形签名加固（v3.15.223）：参数须有名。此前 `(T )`/`(int )` 无名参数被
+            // 静默接受 → codegen 发 `i32 %`（空名参数 alloca）→ opt-21 "expected ')'
+            // at end of argument list"（非泛型与泛型模板同样坏 IR；非语法需求）。
+            // 函数类型 (A,B)->R 与元组类型 (A,B) 不经 parseParam（parseType 直取类型）。
+            if (curKind() == "identifier") {
+                p.setName(parseIdentifier("expected parameter name"));
+                if (allowDefault != 0 && matchKind("=") != 0) {
+                    p.setHasDefault(1);
+                    p.setDefaultExpr(parseExpr());
                 }
+            } else {
+                diag_.error(peekLine(), peekCol(), "expected parameter name (parameters must be named)");
             }
             return p;
         }
