@@ -1,14 +1,13 @@
-// EXPECT ERROR: generic instance methods on a generic class are not supported yet
-// 泛型实例方法负例（A2 v1）：泛型类 + 方法级 <T> 组合不支持 → 干净拒绝
-//（v1 限非泛型类；泛型类方法级泛型为后续路线）。
+// EXPECT ERROR: generic instance methods on a generic class template are not supported
+// 泛型实例方法负例（v3.15.218）：**已实例化**泛型类对象上方法级 <T> 已支持；
+// 泛型类**模板**（非实例，模板方法体内 this.m<T> 可达）仍不支持 → 干净拒绝
+//（请在实例对象上调用，如 Box<int>）。
 import env;
-class G<T> {
-    property: T v;
+class Box<T> {
+    property:
+        T v;
     action:
-        @constructor G() {}
-        U id2<U>(U x) { return x; }
-}
-void main() {
-    G<int> g = new G<int>();
-    int a = g.id2<int>(1);
+        @constructor Box(T val) { v = val; }
+        T pick<U>(U x) { return v; }
+        T callGen() { return this.pick<int>(1); }
 }

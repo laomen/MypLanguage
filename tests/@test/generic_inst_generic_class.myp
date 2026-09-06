@@ -1,0 +1,43 @@
+// 泛型类 + 方法级 <T>（generic A2 扩展，v3.15.218，selfhost additive）回归：
+// 在**已实例化**的泛型类对象上调方法级泛型（类级 T 由类 instTypeArgs 绑定，
+// 方法级 U 由调用点绑定；codegen 把两者叠加映射，body 内类 T/方法 U 局部皆可）。
+// 泛型类**模板**（模板方法体内 this.m<T>）仍干净拒绝（见 negative）。
+import test;
+import env;
+
+class Box<T> {
+    property:
+        T v;
+    action:
+        @constructor Box(T val) { v = val; }
+        T get() { return v; }
+        T pick<U>(U x) { T out = v; U tmp = x; return out; }   // 类T + 方法U body 双局部
+        U id2<U>(U x) { U y = x; return y; }
+        U ofBoth<U>(T a, U b) { return b; }                    // 类T 形参 + 方法U
+}
+
+class R {
+    action:
+        @constructor R() {}
+        void go() {
+            Box<int> b = new Box<int>(7);
+            Test.assertEq(b.get(), 7, "g0");
+            int r = b.pick<int>(9);             // 显式；body 读类T属性 this.v
+            Test.assertEq(r, 7, "p0");
+            int s = b.id2<int>(5);
+            Test.assertEq(s, 5, "i0");
+            int u = b.id2(3);                   // 推断 U=int
+            Test.assertEq(u, 3, "i1");
+            string x = b.id2<string>("hi");     // 方法与类实参类型不同维度
+            Test.assertStrEq(x, "hi", "i2");
+            int c = b.ofBoth<int>(10, 20);      // 类T形参 + 方法U
+            Test.assertEq(c, 20, "o0");
+            Box<string> bs = new Box<string>("yo");
+            Test.assertStrEq(bs.get(), "yo", "g1");
+            string z = bs.id2<string>("zz");
+            Test.assertStrEq(z, "zz", "i3");
+            Test.report("go", true);
+        }
+}
+
+@test void t() { R r = new R(); r.go(); Test.report("t", true); }

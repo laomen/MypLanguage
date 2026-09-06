@@ -27,6 +27,43 @@
 
 ## 编译器版本历史
 
+### v3.15.218 — 泛型类 + 方法级 `<T>` 组合（generic A2 扩展，selfhost additive）
+
+**非破坏性加法（续 v3.15.217）**。在**已实例化的泛型类对象**上调方法级泛型实例
+方法——类级类型参数（经类 `instTypeArgs`）与方法级类型参数（调用点绑定）同时生效，
+body 可同时使用类 `T` 与方法级 `U`：
+
+```myp
+class Box<T> {
+  property:
+    T v;
+  action:
+    @constructor Box(T val) { v = val; }
+    U id2<U>(U x) { U y = x; return y; }        // 类 T + 方法 U
+    T pick<U>(U x) { T out = v; return out; }   // body 同时用类 T 属性与方法 U
+    U ofBoth<U>(T a, U b) { return b; }
+}
+Box<int> b = new Box<int>(7);
+int r = b.pick<int>(9);       // 方法 U=int；返回类T属性 this.v
+int s = b.id2(3);             // 推断
+```
+
+- **sema**（`sema.myp` `resolveGenericInstMethod`）：拒绝条件从「泛型类 + 方法级一律
+  拒」放宽为仅拒**泛型类模板**（`typeParams>0 && isGenericInst==0`——模板体内
+  `this.m<T>` 可达、类 T 尚未具体化，无法发射）。在实例类（`Box_int_inst`）上正常走
+  既有单态化：模板（类实例化时已把类 T→int 替换进 params/ret）再按方法级 typeParams
+  替换 U；mangled `_inst` action 克隆入该实例类 actions。
+- **codegen**（`codegen.myp` `genInstanceActionNamed`）：方法级 typeParams/instTypeArgs
+  由「覆盖」改为**叠加**到类级映射之后（`setupTypeParams(cls)` 先填类级 [类T]→
+  [类实参]，再 append 方法级 [U]→[U实参]）——body 内类 T 与方法级 U 都经 resolveType
+  解析。
+- 干净拒绝：泛型类模板体内调（报 "…on a generic class template are not supported;
+  call it on an instantiated generic class (e.g. Box<int>)"）。
+- 回归 `tests/@test/generic_inst_generic_class.myp`（Box<int>/Box<string> 双实例 +
+  显式/推断 + 类T属性 + 方法U局部 + 类T形参，12 断言）；负例
+  `generic_inst_on_generic_class.myp` 改为模板体内调（原「实例上组合不支持」已过时）。
+- 全量 505/505 + bugs 19/19；bootstrap MD5 一致。
+
 ### v3.15.217 — 泛型【实例】方法（generic A2，additive，selfhost）
 
 **非破坏性加法（selfhost 超前 / seed 冻结不解析）**。普通（非泛型）类的 action 现可带

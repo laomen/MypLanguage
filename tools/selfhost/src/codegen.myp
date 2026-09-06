@@ -3185,11 +3185,16 @@ class CodeGen {
                 return;
             }
             setupTypeParams(cls);
-            // A2（泛型实例方法 v1）：实例化克隆 action 的 instTypeArgs 记录方法级
-            // T→具体 → 覆盖类级映射（非泛型类类级为空），body 内 T 占位由此解析。
-            if (a.instTypeArgs().size() > 0) {
-                curTypeParams_ = a.typeParams();
-                curTypeArgs_ = a.instTypeArgs();
+            // A2（泛型实例方法，含泛型类 + 方法级 v3.15.218）：实例化克隆 action 的
+            // instTypeArgs 记录方法级 T→具体。非泛型类类级映射为空；泛型类实例
+            // （Box_int_inst）时 curTypeParams_/curTypeArgs_ 已由 setupTypeParams 填
+            // 类级 [类T]→[类实参]——这里把方法级 typeParams/instTypeArgs **叠加**在
+            // 类级之后（body 内类 T 与方法级 T 都能经 resolveType 解析）。
+            for (int mi = 0; mi < a.instTypeArgs().size(); mi = mi + 1) {
+                if (mi < a.typeParams().size()) {
+                    curTypeParams_.add(a.typeParams().get(mi));
+                    curTypeArgs_.add(a.instTypeArgs().get(mi));
+                }
             }
             ArrayList<AstParam> ps = new ArrayList<AstParam>();
             AstParam tp = new AstParam();

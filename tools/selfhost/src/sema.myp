@@ -3636,10 +3636,12 @@ class Sema {
                 if (aa.name() == mName && aa.typeParams().size() > 0 && aa.instTypeArgs().size() == 0) { templ = aa; break; }
             }
             if (templ == null) return "";
-            if (cobj.typeParams().size() != 0) {
-                // 泛型类 + 方法级 <T> 组合 v1 不支持 → 干净拒绝（否则回落既有路径
-                // 产生 void/错 IR）。
-                diag_.error(e.line(), e.col(), "generic instance methods on a generic class are not supported yet (generic A2 v1: declare on a concrete class)");
+            // 泛型类 + 方法级 <T>（v3.15.218）：在**已实例化的泛型类**对象上调用支持
+            //（类级 T 由类 instTypeArgs 绑定，方法级 T 由本 helper 绑定）。仅泛型类
+            // **模板**（isGenericInst==0，非实例；模板体内 this.m<T> 可达）不支持 →
+            // 干净拒绝（请在实例对象上调用，如 Box<int>）。
+            if (cobj.typeParams().size() != 0 && cobj.isGenericInst() == 0) {
+                diag_.error(e.line(), e.col(), "generic instance methods on a generic class template are not supported; call it on an instantiated generic class (e.g. Box<int>)");
                 for (int i = 0; i < e.args().size(); i = i + 1) {
                     if (Str.len(e.args().get(i).resolvedKind()) == 0) visitExpr(e.args().get(i));
                 }
