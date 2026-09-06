@@ -1,0 +1,94 @@
+// C2（roadmap testing_benchmark_roadmap.md §C2）：接口方法签名差异矩阵。
+//
+// 目标：两接口使用同名方法、但返回类型或参数数量不同——接口调用必须按声明该
+// 方法的接口构造签名，不得从全局首次匹配的同名方法偷返回类型/参数（否则生成
+// 的 IR 类型错乱，不崩溃但值悄悄错）。每个用例断言具体值，错误候选也能编译。
+
+import test;
+
+// ---- 同名 value()：返回 int vs double ----
+interface IIntVal {
+    int value();
+}
+interface IDblVal {
+    double value();
+}
+
+class AInt {
+    interface class IIntVal;
+    action:
+        int value() { return 3; }
+}
+
+class ADbl {
+    interface class IDblVal;
+    action:
+        double value() { return 2.5; }
+}
+
+@test void t_c2_diff_return_type() {
+    IIntVal a = new AInt();
+    IDblVal b = new ADbl();
+    Test.assertEq(a.value(), 3, "int iface value()");
+    Test.assertFloatEq(b.value(), 2.5, 1e-9, "double iface value()");
+}
+
+// ---- 同名 map()：单参 vs 双参（参数数量不同）----
+interface IMap1 {
+    int map(int x);
+}
+interface IMap2 {
+    int map(int x, int y);
+}
+
+class M1 {
+    interface class IMap1;
+    action:
+        int map(int x) { return x * 10; }
+}
+
+class M2 {
+    interface class IMap2;
+    action:
+        int map(int x, int y) { return x + y; }
+}
+
+@test void t_c2_diff_param_count() {
+    IMap1 m1 = new M1();
+    IMap2 m2 = new M2();
+    Test.assertEq(m1.map(4), 40, "map(int)");
+    Test.assertEq(m2.map(4, 5), 9, "map(int,int)");
+}
+
+// ---- 同名返回 class 引用 vs string ----
+class TagBox {
+    action:
+        int tag() { return 7; }
+}
+
+interface IClsRet {
+    TagBox pick();
+}
+interface IStrRet {
+    string pick();
+}
+
+class CBox {
+    interface class IClsRet;
+    action:
+        TagBox pick() { TagBox b = new TagBox(); return b; }
+}
+
+class CStr {
+    interface class IStrRet;
+    action:
+        string pick() { return "hi"; }
+}
+
+@test void t_c2_class_string_ret() {
+    IClsRet cb = new CBox();
+    TagBox got = cb.pick();
+    Test.assertEq(got.tag(), 7, "iface returns class");
+    IStrRet cs = new CStr();
+    Test.assertStrEq(cs.pick(), "hi", "iface returns string");
+}

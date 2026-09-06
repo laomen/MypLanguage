@@ -1,0 +1,129 @@
+// C3（roadmap testing_benchmark_roadmap.md §C3）：类方法同名冲突矩阵。
+//
+// 目标：错误候选也能编译成功但返回不同值——每个用例断言具体返回值，以区分
+// "正确解析到本类方法" vs "按方法名 fallback 选中第一个类"（曾出 bug：两个类
+// 同名 area()，fallback 选中第一个）。覆盖 action/static/function: 段同名、
+// 类属性持有另一类（this.child.run 与裸 child.run）、new/arr[i]/factory() 调用
+// 形态、泛型实例类 vs 模板同名。
+
+import test;
+
+// ---- 1) 两 class 同名 area()，返回类型不同 ----
+class Sq {
+    action:
+        int area() { return 4; }
+}
+class Ci {
+    action:
+        double area() { return 3.14; }
+}
+
+@test void t_c3_diff_return() {
+    Sq s = new Sq();
+    Ci c = new Ci();
+    Test.assertEq(s.area(), 4, "Sq.area int");
+    Test.assertFloatEq(c.area(), 3.14, 1e-9, "Ci.area double");
+}
+
+// ---- 2) 同名 hit()，参数个数相同但类型不同（int vs string）----
+class HitInt {
+    action:
+        int hit(int n) { return n == 1 ? 1 : 0; }
+}
+class HitStr {
+    action:
+        int hit(string s) { return s == "go" ? 1 : 0; }
+}
+
+@test void t_c3_diff_param_type() {
+    HitInt hi = new HitInt();
+    HitStr hs = new HitStr();
+    Test.assertEq(hi.hit(1), 1, "hit(int) yes");
+    Test.assertEq(hi.hit(9), 0, "hit(int) no");
+    Test.assertEq(hs.hit("go"), 1, "hit(str) yes");
+    Test.assertEq(hs.hit("stop"), 0, "hit(str) no");
+}
+
+// ---- 3) 实例方法 vs static 方法同名（跨类）+ function: 段 ----
+class InstRun {
+    action:
+        int run() { return 1; }
+        int callInner() { return helper(3); }
+    function:
+        int helper(int x) { return x * 2; }
+}
+class StatRun {
+    static:
+        int run() { return 2; }
+}
+
+@test void t_c3_inst_vs_static() {
+    InstRun i = new InstRun();
+    Test.assertEq(i.run(), 1, "instance run()");
+    Test.assertEq(StatRun.run(), 2, "static run()");
+    Test.assertEq(i.callInner(), 6, "function: helper()");
+}
+
+// ---- 4) 类属性持另一类：this.child.run() 与裸 child.run() ----
+class EngineM {
+    action:
+        int run() { return 42; }
+}
+class Car {
+    action:
+        int driveThis() { return this.engine.run(); }
+        int driveBare() { return engine.run(); }
+        void attach(EngineM e) { engine = e; }
+    property:
+        EngineM engine;
+}
+
+@test void t_c3_child_prop() {
+    Car car = new Car();
+    EngineM e = new EngineM();
+    car.attach(e);
+    Test.assertEq(car.driveThis(), 42, "this.engine.run()");
+    Test.assertEq(car.driveBare(), 42, "bare engine.run()");
+}
+
+// ---- 5) 调用形态：new C().run() / arr[i].run() / factory().run() ----
+class RunnerM {
+    action:
+        int run() { return 9; }
+}
+RunnerM mkRunner() {
+    RunnerM r = new RunnerM();
+    return r;
+}
+
+@test void t_c3_call_forms() {
+    int a = (new RunnerM()).run();
+    Test.assertEq(a, 9, "new C().run()");
+    RunnerM[] arr = new RunnerM[3];
+    for (int i = 0; i < 3; i = i + 1) {
+        arr[i] = new RunnerM();
+    }
+    Test.assertEq(arr[1].run(), 9, "arr[i].run()");
+    Test.assertEq(mkRunner().run(), 9, "factory().run()");
+}
+
+// ---- 6) 泛型实例类 vs 模板同名方法：必须走具体实例（int/string 特化）----
+class CellM<T> {
+    action:
+        T get() { return v; }
+        void set(T x) { v = x; }
+        int tag() { return 7; }   // T 无关方法（模板与各实例同实现）
+    property:
+        T v;
+}
+
+@test void t_c3_generic_inst() {
+    CellM<int> ci = new CellM<int>();
+    ci.set(5);
+    Test.assertEq(ci.get(), 5, "Cell<int>.get()");
+    Test.assertEq(ci.tag(), 7, "Cell<int>.tag()");
+    CellM<string> cs = new CellM<string>();
+    cs.set("hi");
+    Test.assertStrEq(cs.get(), "hi", "Cell<string>.get()");
+    Test.assertEq(cs.tag(), 7, "Cell<string>.tag()");
+}
