@@ -1,0 +1,90 @@
+// tests/bugs/b153_reactor_wedge/srv.myp — BUG-153 自包含最小复现服务端（纯 stdlib，无 mypagent 依赖）
+// ---------------------------------------------------------------------------
+// 内联 myp_http.serveCoro 同款反应堆（acceptor @coro waitFd + 每连接 connCoro @async
+//   读写）——只 import stdlib（env/text/net/coro）。handler = 同步短任务（无 fork/文件 IO）。
+// 现象：2 路**同一瞬间**并发连接 → acceptor 楔死（后续请求全超时、进程存活）。
+// 编译：<MYPLanguage>/build/mypc -O2 --stdlib <MYPLanguage>/stdlib -o srv srv.myp
+// 驱动：bash tests/bugs/b153_reactor_wedge/repro.sh [port] [rounds]
+import env;
+import text;
+import net;
+import coro;
+
+class Srv {
+    action:
+        @constructor Srv() {}
+
+        // acceptor 协程：等监听 fd 可读 → accept → spawn 每连接协程（与 myp_http 同款）
+        @coro void acceptLoop(TcpServer srv) {
+            while (true) {
+                long r = Coro.waitFd(srv.getFd(), 1, 0, 0);
+                if (r < 0) continue;
+                TcpClient cl = new TcpClient();
+                if (srv.accept(cl) != 0) continue;
+                this.conn(cl);
+            }
+        }
+
+        // 每连接协程：async 读请求行/头 → 同步短响应（回 "ok"）→ async 响应 → close
+        @coro void conn(TcpClient cl) {
+            string line = await cl.recvLineAsync(15000);
+            if (Str.len(line) == 0) { cl.close(); return; }
+            int contentLen = 0;
+            while (true) {
+                string hdr = await cl.recvLineAsync(15000);
+                if (Str.len(hdr) == 0) break;
+                if (Str.indexOf(lower(hdr), "content-length:") == 0) {
+                    int ci = Str.indexOf(hdr, ":");
+                    string v = Str.trim(Str.substring(hdr, ci + 1, Str.len(hdr)));
+                    int n = Str.toInt(v);
+                    if (n > 0) contentLen = n;
+                }
+            }
+            if (contentLen > 0) {
+                string bd = await cl.recvAsync(contentLen, 15000);
+            }
+            string body = "ok";
+            string head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                + "Content-Length: " + ("" + Str.len(body)) + "\r\nConnection: close\r\n\r\n";
+            await cl.sendAsync(head);
+            await cl.sendAsync(body);
+            cl.close();
+        }
+
+        string lower(string s) {
+            StringBuilder sb = new StringBuilder();
+            int n = Str.len(s);
+            for (int i = 0; i < n; i++) {
+                string ch = Str.substring(s, i, i + 1);
+                int c = Str.ord(ch);
+                if (c >= 65 && c <= 90) {
+                    int idx = c - 65;
+                    sb.append(Str.substring("abcdefghijklmnopqrstuvwxyz", idx, idx + 1));
+                } else sb.append(ch);
+            }
+            return sb.toString();
+        }
+}
+
+// main() 不能直接调方法——反应堆循环放 @constructor，main 仅 new
+class Runner {
+    action:
+        @constructor Runner() {
+            string ps = Console.getEnv("B153_PORT");
+            int port = 8803;
+            if (Str.len(ps) > 0) {
+                int p = Str.toInt(ps);
+                if (p > 0) port = p;
+            }
+            TcpServer srv = new TcpServer(port);
+            Srv s = new Srv();
+            Console.writeLine("b153 reactor on " + ("" + port));
+            s.acceptLoop(srv);          // spawn acceptor 协程
+            while (true) Coro.scheduler();   // reactor：poll 注册 fd + 驱动就绪协程
+        }
+}
+
+int main() {
+    Runner r = new Runner();
+    return 0;
+}
