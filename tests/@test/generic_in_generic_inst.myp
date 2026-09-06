@@ -1,0 +1,63 @@
+// A1 泛型体内调泛型【实例】方法（v3.15.230，selfhost additive）回归：泛型体
+// （方法级泛型方法 echoU<U> / 顶层泛型函数 viaInst<T>）内调用另一方法级泛型
+// **实例**方法（this.id<U> / 裸 id<U> / 变量收者 c.id<T>），内层类型实参引用外层
+// 类型参数（T 依赖）。此前方法级泛型体不经逐体解析（模板体 markAllStmt）→ 内层
+// callTypeArgs 未解析 → codegen 落裸 @Class_id（unbound T 形参 ptr）→ opt 类型错
+// / undefined。
+// 修复（codegen.myp 逐实例映射 + sema.myp 物化修复）：
+// ① 实例（id_int_inst 等）已由克隆体逐体分析（v3.15.224）按每外层实例建入本类；
+// ② codegen 发射共享模板体时按 curTypeArgs_ 逐实例映射 callTypeArgs → 实例名直调
+// （非变异，不设 e.resolved 防跨实例串扰）——覆盖 This 收者 / 裸（当前类）/ 变量收
+// 者三种形态；
+// ③ 顺带修复 227 物化回归：materializeTemplateMethodClones 原用 resolveBase 判定
+// 实例归属模板，v3.15.226 registerInstClass 把动态实例类注册进 classIdx_ → 精确命
+// 中返回自身名 → Box_int_inst 的 this.id<T> 物化缺失 → 改模板名前缀匹配。
+import test;
+
+class C {
+    action:
+        @constructor C() {}
+        T id<T>(T x) { T y = x; return y; }
+        U echoU<U>(U x) { return this.id<U>(x); }    // 方法级泛型体 this.id<U>
+        U echoBare<U>(U x) { return id<U>(x); }      // 方法级泛型体 裸 id<U>
+}
+
+// 顶层泛型函数体调方法级泛型实例方法（变量收者 c.id<T>，T 依赖）
+T viaInst<T>(C c, T x) { return c.id<T>(x); }
+
+class Box<T> {
+    property:
+        T v;
+    action:
+        @constructor Box(T val) { v = val; }
+        U id<U>(U x) { U y = x; return y; }
+        U echoU<U>(U x) { return this.id<U>(x); }    // 泛型类模板方法级泛型体
+        T echoT() { return this.id<T>(v); }          // 普通方法 this.id<T>（227 物化）
+}
+
+@test void t() {
+    C c = new C();
+    int a0 = c.echoU<int>(5);
+    Test.assertEq(a0, 5, "a0");
+    string a1 = c.echoU<string>("hi");
+    Test.assertStrEq(a1, "hi", "a1");
+    int a2 = c.echoBare<int>(7);
+    Test.assertEq(a2, 7, "a2");
+    int a3 = viaInst<int>(c, 9);
+    Test.assertEq(a3, 9, "a3");
+    string a4 = viaInst<string>(c, "st");
+    Test.assertStrEq(a4, "st", "a4");
+    Box<int> b = new Box<int>(42);
+    int a5 = b.echoU<int>(11);
+    Test.assertEq(a5, 11, "a5");
+    string a6 = b.echoU<string>("pp");
+    Test.assertStrEq(a6, "pp", "a6");
+    int a7 = b.echoT();
+    Test.assertEq(a7, 42, "a7");
+    Box<string> bs = new Box<string>("yo");
+    string a8 = bs.echoT();
+    Test.assertStrEq(a8, "yo", "a8");
+    string a9 = bs.echoU<string>("zz");
+    Test.assertStrEq(a9, "zz", "a9");
+    Test.report("t", true);
+}

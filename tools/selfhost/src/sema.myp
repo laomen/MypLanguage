@@ -4747,7 +4747,14 @@ class Sema {
                 for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
                     AstClass C = tu_.classes().get(ci);
                     if (C.isGenericInst() == 0) continue;
-                    if (resolveBase(C.name()) != tpl) continue;
+                    // ⚠️ 不用 resolveBase 判定实例归属模板：v3.15.226 的
+                    // registerInstClass 会把动态实例类名注册进 classIdx_（精确命中
+                    // 优先）→ resolveBase(Box_int_inst) 返回自身而非模板 Box，导致本
+                    // 物化跳过该实例（方法级泛型体 echoU<U> 被调用触发克隆体逐体分析
+                    // → registerInstClass 提前注册 → Box_int_inst 的 this.id<T> 物化
+                    // 缺失 → 发射裸 id_T_inst 无定义）。isGenericInst 已排除模板类本
+                    // 身；直接按模板名前缀匹配。
+                    if (Str.startsWith(C.name(), tpl + "_") == 0) continue;
                     // 实例内找方法模板（instantiateClass cloneAction 已类级替换形参/返）
                     AstAction mtempl = null;
                     for (int ai = 0; ai < C.actions().size(); ai = ai + 1) {

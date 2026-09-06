@@ -27,6 +27,40 @@
 
 ## 编译器版本历史
 
+### v3.15.230 — A1 余量：泛型体内调泛型【实例】方法（this.m<U> 内嵌 + 227 物化回归）（selfhost）
+
+**非破坏性硬化（generic_gaps A1 收尾，selfhost codegen 逐实例映射 + sema 物化修复）**。
+A1 仅剩项落地：泛型体（方法级泛型方法 `echoU<U>` / 顶层泛型函数 `viaInst<T>`）内调用
+另一方法级泛型**实例**方法（`this.id<U>` / 裸 `id<U>` / 变量收者 `c.id<T>`），内层类型
+实参引用外层类型参数。此前方法级泛型体不经逐体解析（模板体 markAllStmt）→ 内层
+callTypeArgs 未解析 → codegen 落裸 `@Class_id`（unbound T 形参 ptr）→ opt 类型错 /
+undefined。现支持（codegen `codegen.myp` + sema `sema.myp`）。
+
+- **codegen 实例方法逐实例映射**（三种收者形态）：实例（`id_int_inst`/`id_string_inst`
+  等）已由克隆体逐体分析（v3.15.224，echoU_int_inst 深克隆体里 id<int> →
+  resolveGenericInstMethod 建）按每外层实例入类；codegen 发射**共享**模板体时按
+  curTypeParams_/curTypeArgs_ 把 callTypeArgs 逐实例映射（resolveType）→ 实例名直调
+  （非变异，不设 e.resolved 防跨实例串扰，同 v3.15.229 fn/static 映射）。三个插入点：
+  ①裸方法调用（isTopLevelFunc==0 && hasMethodInClass 分支，echoU<U> 体里 `id<U>`）②
+  Member obj=This（`this.id<U>`）③Member obj=实例变量（`c.id<T>`，cls2 经 varAstType/
+  resolveType→classInstName）。新 helper：cgHasGenericMethodTemplate（typeParams>0 且
+  instTypeArgs 空）、cgMethodInstName（mname_<args>_inst，存在性查 cls.actions）、
+  cgMethodInstRetLt（实例 ret AstType→llvmType）、cgEmitInstMethodInstCall（统一发射，
+  ptr 返回 addFreshTemp）。sema 已改名（memberName=mAct）的调用不触发（mname 是实例名
+  非模板名 → 模板检查 0），无干扰。
+- **227 物化回归修复（sema）**：`materializeTemplateMethodClones` 原用 `resolveBase`
+  判定实例归属模板；v3.15.226 的 `registerInstClass` 把动态实例类名注册进 classIdx_
+  （精确命中优先）→ resolveBase(Box_int_inst) 返回**自身**而非模板 Box → 物化跳过该
+  实例（本类 this.id<T> 的 id_T_inst 缺失 → 发射裸无定义）。触发条件：泛型类模板的
+  方法级泛型方法（echoU<U>）被调用 → 克隆体逐体分析先于物化把实例类注册 → 顺带
+  Box_int 的 echoT 也缺。修：改**模板名前缀匹配**（`Str.startsWith(C.name(), tpl+"_")`
+  ，isGenericInst 已排除模板类自身），不依赖 classIdx_ 污染源。
+- 边界：泛型体内调泛型**接口**默认方法 / 跨实例类泛型（instance-of-instance 命名）未
+  覆盖；where 约束模板体仍保守扫描。
+- 正例 `tests/@test/generic_in_generic_inst.myp`（11 断言：非泛型类方法级泛型体
+  this./裸、顶层 fn 变量收者 c.id<T>、泛型类模板方法级泛型体 + 227 echoT 双实例）；
+  全量 526/526 + bugs 20/20；bootstrap MD5 一致。
+
 ### v3.15.229 — A1 余量：泛型体内调泛型 T 依赖实参（逐实例 name 映射）（selfhost）
 
 **非破坏性硬化（generic_gaps A1 余量首片，codegen 非变异逐实例映射）**。v3.15.228

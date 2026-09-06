@@ -3770,6 +3770,90 @@ class CodeGen {
             return 0;
         }
 
+        // A1 余量（v3.15.230）：cls 是否有方法级泛型【模板】mname（typeParams>0 且
+        // instTypeArgs 空，即未实例化模板；实例 clone 不匹配）。模板类/实例类皆可
+        //（实例类由 instantiateClass 克隆模板 action 保持 typeParams、inst 空）。
+        int cgHasGenericMethodTemplate(string cls, string mname) {
+            if (tu_ == null) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name() != cls) continue;
+                ArrayList<AstAction> acts = c.actions();
+                for (int ai = 0; ai < acts.size(); ai = ai + 1) {
+                    AstAction a = acts.get(ai);
+                    if (a.name() == mname && a.typeParams().size() > 0 && a.instTypeArgs().size() == 0) return 1;
+                }
+                return 0;
+            }
+            return 0;
+        }
+        // 方法级泛型实例 action 名（对齐 sema resolveGenericInstMethod mAct：
+        // mname_<args>_inst，逐实参 resolveType 映射 curTypeArgs_）——若实例已存在
+        // 于 cls.actions 返回 mAct，否则 ""（调用方回落原路径）。
+        string cgMethodInstName(string cls, string mname, ArrayList<AstType> cta) {
+            if (tu_ == null) return "";
+            string mAct = mname;
+            for (int i = 0; i < cta.size(); i = i + 1) {
+                AstType rt = resolveType(cta.get(i));
+                if (rt == null) return "";
+                mAct = mAct + "_" + cgGsTypeArgName(rt);
+            }
+            mAct = mAct + "_inst";
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name() != cls) continue;
+                ArrayList<AstAction> acts = c.actions();
+                for (int ai = 0; ai < acts.size(); ai = ai + 1) {
+                    if (acts.get(ai).name() == mAct) return mAct;
+                }
+                return "";
+            }
+            return "";
+        }
+        // 方法级泛型实例 action 的返回 LLVM 类型（实例 ret 已 substitute 具体；找不到
+        // 回落空串，调用方用 exprLlvmType 兜底）。
+        string cgMethodInstRetLt(string cls, string mAct) {
+            if (tu_ == null) return "";
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name() != cls) continue;
+                ArrayList<AstAction> acts = c.actions();
+                for (int ai = 0; ai < acts.size(); ai = ai + 1) {
+                    AstAction a = acts.get(ai);
+                    if (a.name() != mAct) continue;
+                    if (a.ret() != null) return llvmType(a.ret());
+                    return "";
+                }
+                return "";
+            }
+            return "";
+        }
+        // A1 余量（v3.15.230）：在共享模板体（curTypeParams_/curTypeArgs_ 生效，外层
+        // 泛型实例发射上下文）内发射实例方法级泛型实例直调 @cls_mAct(ptr recv, args)。
+        // 前置：调用方已确认实例 action 存在（cgMethodInstName 非空）；返回临时值或
+        // ""（void/无值）。实例真实返回 Lt 用实例 action ret（exprLlvmType 是占位）。
+        string cgEmitInstMethodInstCall(AstExpr e, string cls, string mAct, string recv) {
+            string mret = cgMethodInstRetLt(cls, mAct);
+            if (Str.len(mret) == 0) mret = exprLlvmType(e);
+            StringBuilder mr = new StringBuilder();
+            mr.append("ptr " + recv);
+            for (int gi = 0; gi < e.args().size(); gi = gi + 1) {
+                AstExpr ga = e.args().get(gi);
+                string gav = genExpr(ga);
+                string gat = exprLlvmType(ga);
+                mr.append(", " + gat + " " + gav);
+            }
+            string fnn = cls + "_" + mAct;
+            if (mret == "void") {
+                sb_.append("  call void @" + fnn + "(" + mr.toString() + ")\n");
+                return "";
+            }
+            string mt = newTmp();
+            sb_.append("  " + mt + " = call " + mret + " @" + fnn + "(" + mr.toString() + ")\n");
+            if (mret == "ptr") addFreshTemp(mt);
+            return mt;
+        }
+
         // 按名字找 struct（顶层 + 类嵌套）。
         AstStruct findStructByName(string name) {
             if (tu_ == null) return null;
@@ -11804,6 +11888,20 @@ class CodeGen {
                         // 不提升（`0` 变 i32 而非 i64）。
                         fn = Str.substring(fn, 2, Str.len(fn));
                     } else if (isTopLevelFunc(fn) == 0 && hasMethodInClass(curClass_, fn) != 0) {
+                        // A1 余量（v3.15.230）：方法级泛型【体】内**裸**调方法级泛型
+                        //（echoU<U> 体里 id<U>）——方法级泛型体不经逐体解析（模板体
+                        // markAllStmt）→ 内层 callTypeArgs 未解析 → 此处曾落裸
+                        // @curClass__id（unbound T 形参 ptr）→ opt 类型错。实例
+                        //（id_int_inst 等）已由克隆体逐体分析（v3.15.224：echoU_int_
+                        // inst 深克隆体里 id<int> → resolveGenericInstMethod 建）入本类
+                        // → 按 curTypeArgs_ 逐实例映射 callTypeArgs 直接发射（不设
+                        // e.resolved 防跨实例串扰，同 v3.15.229 fn/static 映射）。
+                        if (e.callTypeArgs().size() > 0 && cgHasGenericMethodTemplate(curClass_, fn) != 0) {
+                            string mAct2 = cgMethodInstName(curClass_, fn, e.callTypeArgs());
+                            if (Str.len(mAct2) != 0) {
+                                return cgEmitInstMethodInstCall(e, curClass_, mAct2, loadThis());
+                            }
+                        }
                         // 类内裸方法调用 → this.method()（Class_method(ptr this, ...)）
                         mCls = curClass_;
                         mName = fn;
@@ -11956,6 +12054,20 @@ class CodeGen {
                             }
                         }
                         if (Str.len(cls2) == 0) cls2 = "Object";
+                        // A1 余量（v3.15.230）：泛型【体】内对**实例变量收者**调方法级
+                        // 泛型（c.id<T>，顶层泛型 fn/@static 泛型方法等）——同 this./
+                        // 裸情形（克隆体逐体分析已按每外层实例建实例 action），按
+                        // curTypeArgs_ 逐实例映射直接发射。cls2 已用收者变量类型解析
+                        //（varAstType/resolveType → classInstName，T 占位已替换）。
+                        if (e.callTypeArgs().size() > 0
+                            && cls2 != "Object"
+                            && cgHasGenericMethodTemplate(cls2, mname) != 0) {
+                            string vAct = cgMethodInstName(cls2, mname, e.callTypeArgs());
+                            if (Str.len(vAct) != 0) {
+                                string ov = genExpr(obj);
+                                return cgEmitInstMethodInstCall(e, cls2, vAct, ov);
+                            }
+                        }
                         fn = cls2 + "_" + mname;
                         mCls = cls2;
                         mName = mname;
@@ -11969,6 +12081,19 @@ class CodeGen {
                         string tcls = curClass_;
                         if (Str.len(tcls) == 0) tcls = callee.resolvedClass();
                         if (Str.len(tcls) == 0) tcls = "Object";
+                        // A1 余量（v3.15.230）：方法级泛型【体】内 this.id<U>（同裸
+                        // id<U> 情形，见上方 bare 分支）——按 curTypeArgs_ 逐实例映射
+                        // callTypeArgs 直接发射 this 收者实例方法（实例已由克隆体逐体
+                        // 分析建入本类）。sema 已改名（memberName=mAct）的调用不触发
+                        //（mname 是实例名，非模板名 → cgHasGenericMethodTemplate 0）。
+                        if (e.callTypeArgs().size() > 0
+                            && Str.len(tcls) != 0 && tcls != "Object"
+                            && cgHasGenericMethodTemplate(tcls, mname) != 0) {
+                            string tAct = cgMethodInstName(tcls, mname, e.callTypeArgs());
+                            if (Str.len(tAct) != 0) {
+                                return cgEmitInstMethodInstCall(e, tcls, tAct, loadThis());
+                            }
+                        }
                         fn = tcls + "_" + mname;
                         mCls = tcls;
                         mName = mname;
