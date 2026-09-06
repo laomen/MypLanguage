@@ -3313,14 +3313,17 @@ artifact and de-gcc.
 
 **Two-level runtime (de-gcc)**:
 - **C runtime**: `src/runtime/*.c` (`runtime.c`/`myp_stdlib.c`/`runtime_gpu.c`) →
-  `build/libmyp_rt.a`. Linked by default, shipped with the compiler.
+  `build/libmyp_rt.a`. **Fallback base**: used when the MYP runtime archive is missing
+  (shipped with the compiler).
 - **MYP runtime archive**: `build/libmyp_rt_myp.a` — an MYP reimplementation of the runtime
-  (`runtime_myp/*.myp`, coro/io/net/thread/…, 36 modules) compiled with `--shared`. When the
-  archive exists, linking prefers **MYP archive + libc only** (`(MYP runtime only)`),
-  falling back to the C runtime on failure. `MYP_RT_MYP=<archive>` forces the MYP archive.
+  (`runtime_myp/*.myp`, coro/io/net/thread/…, 36 modules) compiled with `--shared`.
 
-**Linking**: default `gcc` links the C runtime (`$CC` overrides, for cross-compilation);
-variant-A uses `ld.lld` (removes gcc's link role but keeps libc); `--freestanding` links a
+**Linking (MYP-archive-first)**: `mypc` first probes for `libmyp_rt_myp.a` (`MYP_RT_MYP`
+overrides; candidates `<exe_dir>/`, `build/`, `./build/`) — **when the archive exists (the
+default CMake build produces it), the default is de-gcc: link the MYP archive + libc only**,
+printing `(MYP runtime only)` (C runtime/gcc bypassed); only when the archive is missing does
+it fall back to `gcc` linking the C runtime (`$CC` overrides, for cross-compilation).
+Variant-A uses `ld.lld` (removes gcc's link role but keeps libc); `--freestanding` links a
 **libc/CRT/runtime-free** static ELF directly via `ld.lld` (`MYP_LD` → `ld.lld-21/20/19` →
 `ld.lld`/`lld`/`ld`).
 

@@ -3207,14 +3207,15 @@ MYP 提供 `myp_debug`（DAP ↔ gdb 桥），可在 VS Code 内断点/单步/�
 
 **两级运行时（de-gcc）**：
 - **C 运行时**：`src/runtime/*.c`（`runtime.c`/`myp_stdlib.c`/`runtime_gpu.c`）→
-  `build/libmyp_rt.a`。默认链接，随编译器分发。
+  `build/libmyp_rt.a`。**回退基座**：MYP 运行时归档缺失时使用（随编译器分发）。
 - **MYP 运行时归档**：`build/libmyp_rt_myp.a`——`runtime_myp/*.myp`（coro/io/net/
-  thread/…，36 模块）用 `--shared` 编译的 MYP 重实现。归档存在时链接**优先仅 MYP 归档
-  + libc**（`(MYP runtime only)`），失败才回退 C 运行时。`MYP_RT_MYP=<归档>` 强制走
-  MYP 归档。
+  thread/…，36 模块）用 `--shared` 编译的 MYP 重实现。
 
-**链接**：默认 `gcc` 链接 C 运行时（`$CC` 可覆盖，跨机交叉编译）；档A 用 `ld.lld`
-（去 gcc 的链接职责但保留 libc）；`--freestanding` 由 `ld.lld`（`MYP_LD` →
+**链接（MYP 归档优先）**：`mypc` 先探测 `libmyp_rt_myp.a`（`MYP_RT_MYP` 显式覆盖；
+候选 `<exe_dir>/`、`build/`、`./build/`）——**归档存在（默认 CMake 构建即产出）时默认
+即 de-gcc：仅链接 MYP 归档 + libc**，输出 `(MYP runtime only)`（绕开 C runtime/gcc）；
+归档缺失才回退 `gcc` 链接 C 运行时（`$CC` 可覆盖，跨机交叉）。档A 用 `ld.lld`（去
+ gcc 的链接职责但保留 libc）；`--freestanding` 由 `ld.lld`（`MYP_LD` →
 `ld.lld-21/20/19` → `ld.lld`/`lld`/`ld`）直链**无 libc/CRT/runtime** 的静态 ELF。
 
 **运行时机制**：
