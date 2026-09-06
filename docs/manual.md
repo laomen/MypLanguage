@@ -3221,6 +3221,15 @@ MYP 提供 `myp_debug`（DAP ↔ gdb 桥），可在 VS Code 内断点/单步/�
 **运行时机制**：
 - **ARC 内存**：class 实例/`string`/动态数组/`slice` backing 引用计数自动管理
   （对象头 `{rc, type_id}` + `retain`/`release`），离开作用域自动释放，无 GC。
+- **逃逸分析与栈上分配（编译器自动优化）**：函数/action 内的局部类实例
+  `T v = new T();` 若 `v` **不逃逸**（只作 `v.field` 读写 + 方法接收者 `v.m()`），
+  编译器把它**栈上分配**（alloca 缓冲，对象作用域结束自动回收），**免堆分配与 ARC**
+  计数。**保守不栈上化**（回退堆 + ARC）的情形：赋值给他处 / 作实参 `f(v)` / 存入
+  容器 / 返回 / `v` 被重赋值 / lambda 提及 / `@parallel`/`@gpu` 并发 / 异常上下文 /
+  方法可能把 `this` 存进进程全局（`@static` 属性）；含 ARC 引用字段的类、以及观测分配
+  计数的调试函数（`mem_diag` 类）整函数不栈上化。动态数组 `new T[N]`（常量维度 + 元素
+  非 ARC）也可栈上化。诊断/开关（内部）：`MYP_NO_STACK_NEW`（禁用栈上化）、
+  `MYP_STACK_PROMOTION_BUDGET`（栈上化预算）、`MYP_ESCAPE_DEBUG`（打印判定）。
 - **运行时类型 id**：每类编译期编号；`__myp_type_name_table`/`__myp_release_table`
   支撑 `Rtti.typeId/typeOf/sameType`（§11 rtti）与引用字段级联释放。
 - **事件/mapping**：运行期注册表 + `__myp_inst_*` 实例全局；`mapping()` 在 main 建总线，

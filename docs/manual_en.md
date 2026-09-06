@@ -3331,6 +3331,18 @@ Variant-A uses `ld.lld` (removes gcc's link role but keeps libc); `--freestandin
 - **ARC memory**: class instances / `string` / dynamic arrays / `slice` backings are
   reference-counted automatically (object header `{rc, type_id}` + `retain`/`release`),
   released when references go out of scope; no GC.
+- **Escape analysis & stack allocation (automatic compiler optimization)**: a local class
+  instance `T v = new T();` inside a function/action is **stack-allocated** (alloca buffer,
+  reclaimed when the scope ends) when `v` does **not escape** (used only as `v.field`
+  reads/writes + a method receiver `v.m()`), **skipping heap allocation and ARC counting**.
+  Conservatively kept on the heap (+ ARC) when: assigned elsewhere / passed as an argument
+  `f(v)` / stored in a container / returned / `v` reassigned / mentioned in a lambda /
+  `@parallel`/`@gpu` concurrency / exception context / a method may store `this` into a
+  process-global (`@static` property); classes with ARC reference fields, and debug
+  functions that observe allocation counts (`mem_diag` family), are not stack-allocated at
+  all. Dynamic arrays `new T[N]` (constant extent + non-ARC elements) can also be
+  stack-allocated. Diagnostics/switches (internal): `MYP_NO_STACK_NEW` (disable),
+  `MYP_STACK_PROMOTION_BUDGET` (budget), `MYP_ESCAPE_DEBUG` (print decisions).
 - **Runtime type ids**: per-class compile-time numbering; `__myp_type_name_table`/
   `__myp_release_table` back `Rtti.typeId/typeOf/sameType` (§11 rtti) and cascading
   release of reference fields.
