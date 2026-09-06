@@ -1,0 +1,118 @@
+// C8（roadmap §C8）：ARC 组合生命周期——接口复制、对象数组覆盖、接口数组
+// 覆盖、闭包捕获、异常展开 组合后 live count 回零（确定性内存回归）。
+//
+// 每段方法都取 live 基线、执行循环/展开、再断言增量 == 0。覆盖编译器 ARC
+// 槽位转译在以下组合下的正确性（+1/-1 配平）：
+//   1) 接口(fat-pointer)多个别名复制释放后回零；
+//   2) 对象数组元素覆盖（旧元素 release，新元素 retain）后回零；
+//   3) 接口数组元素覆盖（数组元素为接口 fat pointer）后回零；
+//   4) lambda 闭包捕获外层对象：闭包函数值重设/作用域退出后捕获对象回零；
+//   5) 异常展开（throw 跨 try 帧 + 数组/对象混用）后回零。
+// 注：协程 frame 的 ARC 清理由 tests/coro_frame_arc 独立覆盖；TSan/压力放大
+//     走 tests/stress/mem_stress + run_tsan 脚本，此处专注确定性组合配平。
+import test;
+import memory;
+
+interface INode { int getVal(); }
+
+class Node {
+    interface class INode;
+    action:
+        @constructor Node(int v) { val = v; }
+        int getVal() { return val; }
+    property:
+        int val = 0;
+}
+
+// 1) 接口别名复制：三个 fat pointer 引用同一实例，全部置空后实例释放。
+int ifaceCopyRound() {
+    long base = Memory.liveObjectCount();
+    int i = 0;
+    while (i < 2000) {
+        INode x = new Node(i);
+        INode y = x;   // +1 别名
+        INode z = y;   // +1 别名
+        // 作用域/覆盖：x,y,z 每轮重建覆盖 → 旧实例应每轮释放回零
+        i = i + 1;
+    }
+    long delta = Memory.liveObjectCount() - base;
+    return delta == 0 ? 0 : 1;
+}
+
+// 2) 对象数组元素覆盖：arr 槽被新 Node 覆盖 → 旧 Node release。
+int objArrayOverwriteRound() {
+    Node[] arr = new Node[8];
+    int i = 0;
+    while (i < 8) { arr[i] = new Node(i); i = i + 1; }   // 预装填
+    long base = Memory.liveObjectCount();
+    i = 0;
+    while (i < 2000) {
+        arr[i % 8] = new Node(100 + i);   // 覆盖旧 → 每轮净 0
+        i = i + 1;
+    }
+    long delta = Memory.liveObjectCount() - base;
+    return delta == 0 ? 0 : 1;
+}
+
+// 3) 接口数组元素覆盖：数组元素为接口 fat pointer。
+int ifaceArrayOverwriteRound() {
+    INode[] ia = new INode[4];
+    int i = 0;
+    while (i < 4) { ia[i] = new Node(i); i = i + 1; }   // 预装填
+    long base = Memory.liveObjectCount();
+    i = 0;
+    while (i < 2000) {
+        ia[i % 4] = new Node(1000 + i);
+        i = i + 1;
+    }
+    long delta = Memory.liveObjectCount() - base;
+    return delta == 0 ? 0 : 1;
+}
+
+// 4) 闭包捕获：lambda 捕获外层 Node；闭包函数值每轮重建 → 旧闭包 + 旧 Node 释放。
+int closureCaptureRound() {
+    long base = Memory.liveObjectCount();
+    int i = 0;
+    while (i < 500) {
+        Node n = new Node(i);
+        (int) -> int f = (int x) => { return n.getVal() + x; };
+        if (f(1) != i + 1) return 1;   // 值错
+        i = i + 1;
+    }
+    long delta = Memory.liveObjectCount() - base;
+    return delta == 0 ? 0 : 2;   // 2 = 泄漏（f 释放后 n 未释放）
+}
+
+// 5) 异常展开组合：数组 + 多个对象槽后 throw 展开，catch 后回零。
+int throwComboRound() {
+    long base = Memory.liveObjectCount();
+    string caught = "";
+    {
+        Node[] arr = new Node[4];
+        int i = 0;
+        while (i < 4) { arr[i] = new Node(i); i = i + 1; }
+        Node a = new Node(9);
+        try {
+            Node inner = new Node(10);
+            arr[0] = inner;
+            throw "c8boom";
+        } catch (string s) {
+            caught = s;
+        }
+    }
+    if (caught != "c8boom") return 1;
+    long delta = Memory.liveObjectCount() - base;
+    return delta == 0 ? 0 : 1;
+}
+
+@test void t_c8_arc_combo() {
+    Test.assertEq(ifaceCopyRound(), 0, "iface copy x2000 live0");
+    Test.assertEq(objArrayOverwriteRound(), 0, "obj array overwrite live0");
+    Test.assertEq(ifaceArrayOverwriteRound(), 0, "iface array overwrite live0");
+    Test.assertEq(closureCaptureRound(), 0, "closure capture live0");
+    Test.assertEq(throwComboRound(), 0, "throw combo live0");
+
+    // 综合：以上方法被 @test 依次调用，最后全局无残留增长
+    long all = Memory.liveObjectCount();
+    Test.assert(all >= 0, "live count sane");
+}

@@ -10877,6 +10877,20 @@ class CodeGen {
                         storeSliceSlot(gep, rv, isFreshSliceExpr(e.rhs()));
                     } else if (elemLt == "ptr") {
                         storeRef(gep, rv, isFreshTemp(rv));
+                    } else if (elemLt == "{ ptr, ptr }") {
+                        // 接口/函数值数组元素写：释放被覆盖的旧元素 data。上方已按
+                        // 来源处理新值所有权——concrete 上转 consume 新实例 fresh
+                        //（rc=1 转移）、借用 fat 已 retain data（BUG-038）——故此处
+                        // 数组槽对新值净持 1，只须 release 旧 data 配平。此前落入
+                        // else 裸 store 从不释放旧元素 → 每覆盖一次泄漏 1（C8
+                        // iface-array overwrite live0）。myp_release(null) 安全
+                        //（零初始化 / 未赋值元素）。
+                        string oldF = newTmp();
+                        sb_.append("  " + oldF + " = load { ptr, ptr }, ptr " + gep + "\n");
+                        string oldD = newTmp();
+                        sb_.append("  " + oldD + " = extractvalue { ptr, ptr } " + oldF + ", 0\n");
+                        sb_.append("  call i32 @myp_release(ptr " + oldD + ")\n");
+                        sb_.append("  store { ptr, ptr } " + rv + ", ptr " + gep + "\n");
                     } else {
                         sb_.append("  store " + elemLt + " " + rv + ", ptr " + gep + "\n");
                     }
