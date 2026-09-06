@@ -27,6 +27,29 @@
 
 ## 编译器版本历史
 
+### v3.15.235 — A4 构造器类型实参推导（new 泛型类 目标类型推断）（selfhost additive）
+
+**非破坏性硬化（generic_gaps A4）**。`new 泛型类(...)` 现可从**目标类型**推断缺省的
+类型实参：`Box<int> b = new Box(5);`（此前 → "no matching constructor for
+'Box(byte)'"，数值字面量默认 byte 且无泛型 ctor 推断；两编译器皆缺，须显式 `<...>`）。
+sema `sema.myp`。
+
+- **目标类型注入（三处上下文）**：①VarDecl 初值（`Box<int> b = new Box(5)`，v.type()）；
+  ②Return（`return new Box(7)`，currentRetAst_）；③赋值（`c = new Box(11)`，c 是泛型
+  实例变量——符号只存扁平实例名 `className_="Box_int_inst"`+`instArgs_` →
+  `entryTemplateType` 重建「模板+typeArgs」AstType）。注入后 New 走既有显式路径
+  （instance 类 + 构造器匹配）。
+- **具体性守卫 `targetTypeArgConcrete`**：目标 typeArgs 必须**具体**（基本类型 / 已知
+  类·枚举·接口·struct 递归，**活动类型参数不算**）→ 泛型模板体内 `Box<T> b = new
+  Box(...)`（T=外层类类型参数）不注入（留给实例化期，须显式）——不产生幻影 `_inst`。
+  多类型参数 Pair<K,V> 同样推导；显式 `<...>` 不变。
+- **记录既有缺口（非本次，修复前即坏）**：泛型模板方法内 `new Box<T>(t_)`（外层类类型
+  参数作另一泛型类的显式实参，经 new 构造）codegen 发 `@Box_Box_T` 未定义（opt）——
+  baseline/修复后同坏，属 B5/B6 占位 family 的 new 形态，待续（应干净拒/延迟物化）。
+- 正例 `tests/@test/generic_ctor_infer.myp`（9 断言：decl int/string/显式/赋值 incl
+  double、双类型参数 Pair、return、方法内 decl+return）；全量 532/532 + bugs 20/20 +
+  bootstrap MD5 一致。
+
 ### v3.15.234 — BUG-151 同族·JSON 主路径：共享单表 JsonTab/JsonCtx 加锁串行化（runtime_myp/json.myp）
 
 **非破坏性硬化（runtime_myp，@parallel 并发 JSON 正确性）**。审计「设计级改造项」落地：

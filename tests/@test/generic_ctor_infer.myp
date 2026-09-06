@@ -1,0 +1,62 @@
+// A4（v3.15.235，selfhost additive）：构造器类型实参推导——`new 泛型类(...)` 从
+// 目标类型推断缺省的类型实参。
+// 此前：`Box<int> b = new Box(5)` → "no matching constructor for 'Box(byte)'"
+//（数值字面量默认 byte，且无泛型 ctor 推断；两编译器皆缺，须显式 <...>）。
+// 修复（sema.myp，目标类型注入 + 具体性守卫）：
+// ① VarDecl 初值：`Box<int> b = new Box(5)`（v.type() 已知）注入 typeArgs；
+// ② Return：`return new Box(7)`（currentRetAst_ 已知）注入；
+// ③ 赋值：`c = new Box(11)`（c 是泛型实例变量，符号 className_="Box_int_inst"+
+//    instArgs_ → entryTemplateType 重建 模板+typeArgs）注入；
+// ④ 目标 typeArgs 必须**具体**（targetTypeArgConcrete：基本/已知类·枚举·接口·
+//    struct，活动类型参数 T 不算）→ 泛型模板体内 `Box<T> b = new Box(...)` 不注入
+//   （留给实例化期，须显式）——不产生幻影 _inst。
+import test;
+
+class Box<T> {
+    property:
+        T v_;
+    action:
+        @constructor Box(T v) { v_ = v; }
+        T get() { return v_; }
+}
+
+class Pair<K,V> {
+    property:
+        K k_;
+        V v_;
+    action:
+        @constructor Pair(K k, V v) { k_ = k; v_ = v; }
+        K key() { return k_; }
+        V val() { return v_; }
+}
+
+class Maker {
+    action:
+        @constructor Maker() {}
+        Box<int> mk() { return new Box(7); }        // return 推断
+        Box<string> mkS() { Box<string> r = new Box("in"); return r; }  // decl+return
+}
+
+@test void t() {
+    Box<int> a = new Box(5);                         // decl 推断 int
+    Test.assertEq(a.get(), 5, "a0");
+    Box<string> s = new Box("hi");                   // decl 推断 string
+    Test.assertStrEq(s.get(), "hi", "a1");
+    Box<int> b = new Box<int>(6);                    // 显式仍正常
+    Test.assertEq(b.get(), 6, "a2");
+    Box<int> c;                                       // 先声明后赋值 → 赋值推断
+    c = new Box(11);
+    Test.assertEq(c.get(), 11, "a3");
+    Box<double> d;
+    d = new Box(2.5);
+    Test.assertEq(int(d.get() * 10), 25, "a4");
+    Pair<int,string> p = new Pair(1, "one");          // 双类型参数
+    Test.assertEq(p.key(), 1, "a5");
+    Test.assertStrEq(p.val(), "one", "a6");
+    Maker m = new Maker();
+    Box<int> e = m.mk();                              // return 推断
+    Test.assertEq(e.get(), 7, "a7");
+    Box<string> f = m.mkS();                          // 方法内 decl+return
+    Test.assertStrEq(f.get(), "in", "a8");
+    Test.report("t", true);
+}
