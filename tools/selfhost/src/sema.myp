@@ -3917,9 +3917,9 @@ class Sema {
                 string ekk = el.resolvedKind();
                 if (Str.len(ekk) == 0) ekk = visitExpr(el);
                 if (Str.len(ekk) != 0 && ekk != "void" && Str.len(ek) != 0 && typesCompat(ek, ekk) == 0) {
-                    int dl = v.nameLine();
-                    int dc = v.nameCol();
-                    if (dl == 0) { dl = s.line(); dc = s.col(); }
+                    int dl = v != null ? v.nameLine() : (s != null ? s.line() : lit.line());
+                    int dc = v != null ? v.nameCol() : (s != null ? s.col() : lit.col());
+                    if (dl == 0) { dl = lit.line(); dc = lit.col(); }
                     diag_.error(dl, dc, "array literal element " + (i + 1) + ": cannot convert '" + ekk + "' to '" + ek + "'");
                 }
             }
@@ -4524,6 +4524,20 @@ class Sema {
                 }
             } else if (k == "Return") {
                 if (s.value() != null) {
+                    // 数组字面量返回（additive）：函数返回动态数组 T[] 时，返回
+                    // 表达式 [..] 按返回类型元素绑定（同 VarDecl 的 bindArrayLitTo）。
+                    AstExpr rvLit = s.value();
+                    if (rvLit.kind() == "ArrayLit") {
+                        AstType rrT = currentRetAst_;
+                        if (rrT != null && rrT.element() != null) {
+                            if (rrT.arraySize() == 0) {
+                                bindArrayLitTo(rvLit, rrT.element(), null, s);
+                            } else {
+                                diag_.error(s.line(), s.col(), "array literal yields a dynamic array (int[]); cannot return it as a fixed array int[" + rrT.arraySize() + "]");
+                                bindArrayLitTo(rvLit, rrT.element(), null, s);
+                            }
+                        }
+                    }
                     string rt = visitExpr(s.value());
                     // 返回类型检查（C++：cannot return value ...，位置 = return 语句）
                     // BUG-133：interface ← class 返回须实现接口——`return new
@@ -5721,6 +5735,25 @@ class Sema {
                 }
                 string l = visitExpr(e.lhs());
                 allowAccessorWrite_ = 0;
+                // 数组字面量赋值（additive）：lhs 为动态数组标识符且 rhs 是
+                // [..] → 按 lhs 元素类型绑定（同 VarDecl 初值 / return 位置）。
+                // 定长数组目标拒绝（字面量产生动态 T[]，槽是 [N x T]）。
+                AstExpr alRhs = e.rhs();
+                if (alRhs != null && alRhs.kind() == "ArrayLit" && e.lhs() != null
+                    && e.lhs().kind() == "Identifier") {
+                    SymbolEntry alEn = sym_.lookupEntry(e.lhs().name());
+                    if (alEn != null && alEn.type() == "array") {
+                        AstType alAt = entryToAstType(alEn);
+                        if (alAt != null && alAt.element() != null) {
+                            if (alAt.arraySize() == 0) {
+                                bindArrayLitTo(alRhs, alAt.element(), null, null);
+                            } else {
+                                diag_.error(e.lhs().line(), e.lhs().col(), "cannot assign an array literal (dynamic array) to a fixed array int[" + alAt.arraySize() + "]");
+                                bindArrayLitTo(alRhs, alAt.element(), null, null);
+                            }
+                        }
+                    }
+                }
                 string r = e.rhs() != null ? visitExpr(e.rhs()) : "void";                // BUG-082：const 属性赋值须拒绝（镜像 C++ "cannot assign to const
                 // property 'X'"）。此前 `cap = 200`（const int cap = 100）静默改写
                 // → 常量可变，语义错误（应拒绝）。裸名/this.prop/同类实例.prop。

@@ -27,6 +27,41 @@
 
 ## 编译器版本历史
 
+### v3.15.215 — 数组字面量返回/赋值位置绑定（additive，selfhost）
+
+**非破坏性加法（续 v3.15.214）**。`[e1, e2, …]` 除声明初值外，**返回位置**与
+**赋值位置**现也绑定为动态 `T[]`：
+
+```myp
+int[] mk(int a, int b) { return [a, b]; }   // 函数返回 T[] → return [..] 绑定
+int[] b;
+b = [3, 4];                                  // 动态数组局部重赋值 = [..]
+b = [5];                                     // 再次重赋值（缩容/换 backing）
+P[] ps = [new P(1), new P(2)];               // 类元素：fresh 转移 + ARC
+ps = [new P(9)];
+```
+
+- **sema**（`sema.myp`）：
+  - Return 分支（checkStmt）：返回表达式是 `ArrayLit` 且函数返回类型 `T[]`
+    （`currentRetAst_` 有 element、无定长）→ `bindArrayLitTo` 按返回元素类型绑定；
+    返回类型为定长 `int[N]` → 干净拒绝 `cannot return it as a fixed array int[N]`
+    （字面量产物是动态数组）+ 仍绑定防 generic 二次报错；非数组返回类型（如 int）
+    不绑定 → generic 干净拒绝。
+  - Assign 分支（visitExpr）：lhs 为动态数组**标识符**（SymbolEntry `type()=="array"`
+    经 `entryToAstType` 重建元素 AstType）且 rhs 是 `ArrayLit` → 绑定；lhs 为定长
+    `int[N]` 局部 → 拒绝 `cannot assign an array literal (dynamic array) to a fixed
+    array int[N]`。lhs 为字段/下标（非标识符）保持 v1 干净拒绝。
+  - `bindArrayLitTo` 容错 `v == null`（返回/赋值位无目标 var）与 `s == null`
+    （赋值位无宿主语句），诊断位置回落字面量自身行列。
+- **codegen**：零改动（`genArrayLit` 已通用；返回 fresh backing 走既有所有权转移，
+  赋值 fresh 走动态数组槽重赋值路径）。
+- 回归 `tests/@test/array_literal.myp` 扩为返回（含实参元素/提升）+ 赋值（重赋值缩容）
+  + 类元素（fresh 转移/换 backing），18 断言；新负例
+  `tests/negative/array_literal_return_fixed.myp` /
+  `array_literal_assign_fixed.myp` / `array_literal_return_scalar.myp`。
+- bootstrap myp_self2==myp_self3 MD5 一致；全量 491/491 + bugs 19/19。
+- 后续（路线）：实参位置绑定、`var` 推断、定长退化填充、`@eval` 常量表（M-2）。
+
 ### v3.15.214 — 数组字面量 `[1,2,3]`（additive，selfhost）
 
 **非破坏性加法（selfhost 超前 / seed 冻结不解析）**。`[e1, e2, …]` 作**动态数组

@@ -1,0 +1,9 @@
+// EXPECT ERROR: cannot return it as a fixed array int[2]
+// 数组字面量负例（v3.15.215）：函数返回定长 int[2]，`return [1,2]` 产物是动态
+// 数组 → 干净拒绝（定长返回请逐位或分槽填充）。
+import env;
+class R {
+    action:
+        @constructor R() {}
+        int[2] mk() { return [1, 2]; }
+}

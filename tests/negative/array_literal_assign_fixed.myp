@@ -1,0 +1,12 @@
+// EXPECT ERROR: cannot assign an array literal (dynamic array) to a fixed array int[2]
+// 数组字面量负例（v3.15.215）：赋值目标是定长 int[2]，`f = [1,2]` 产物是动态数组
+// → 干净拒绝（定长赋值请逐位）。
+import env;
+class R {
+    action:
+        @constructor R() {}
+        void go() {
+            int[2] f;
+            f = [1, 2];
+        }
+}

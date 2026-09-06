@@ -1,0 +1,9 @@
+// EXPECT ERROR: array literal requires a typed dynamic array target
+// 数组字面量负例（v3.15.215）：函数返回标量 int，`return [1,2]` 既无动态数组返回
+// 类型 → 未绑定 generic 干净拒绝（v1）。
+import env;
+class R {
+    action:
+        @constructor R() {}
+        int mk() { return [1, 2]; }
+}

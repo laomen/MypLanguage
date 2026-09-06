@@ -1,13 +1,25 @@
-// 数组字面量（additive，v3.15.214）回归：`T[] xs = [e1, ...]` → 动态数组（一等值，
-// 堆 backing + ARC）。v1 仅支持"显式动态数组目标的声明初值"；定长/var/赋值/实参位
-// 置干净拒绝（见 negative）。
+// 数组字面量（additive，v3.15.215）回归：`T[] xs = [e1, ...]` → 动态数组（一等值，
+// 堆 backing + ARC）。绑定位置：显式动态数组目标的声明初值（v3.15.214）+ 返回位置
+// （v3.15.215，函数返回 T[] 时 `return [..]`）+ 赋值位置（v3.15.215，动态数组局部
+// 重赋值 `a = [..]`）。元素支持标量/string/类实例（fresh 转移）。定长/var/实参位置
+// 干净拒绝（见 negative）。
 
 import test;
 import env;
 
+class P {
+    property:
+        int x;
+    action:
+        @constructor P(int x0) { x = x0; }
+        int getX() { return x; }
+}
+
 class R {
     action:
         @constructor R() {}
+        int[] mk(int a, int b) { return [a, b]; }
+        double[] mkf() { return [1, 2]; }
         void go() {
             int[] a = [1, 2, 3];
             Test.assertEq(a[0], 1, "a0");
@@ -22,6 +34,25 @@ class R {
             Test.assertEq(0, 0, "empty");
             long[] l = [7L];
             Test.assertEq(l[0], 7L, "long");
+            // 返回位置：mk 返回 [a,b]（含实参元素）；mkf 返回 int→double 提升
+            int[] rm = mk(7, 8);
+            Test.assertEq(rm[0], 7, "ret0");
+            Test.assertEq(rm[1], 8, "ret1");
+            double[] rf = mkf();
+            Test.assert(rf[1] == 2.0, "retf");
+            // 赋值位置：先声明后赋值；再次重赋值缩容
+            int[] b;
+            b = [3, 4];
+            Test.assertEq(b[0], 3, "b0");
+            Test.assertEq(b[1], 4, "b1");
+            b = [5];
+            Test.assertEq(b[0], 5, "b2");
+            // 类元素：fresh new 元素转移 + 重赋值释放旧 backing 元素
+            P[] ps = [new P(1), new P(2)];
+            Test.assertEq(ps[0].getX(), 1, "p0");
+            Test.assertEq(ps[1].getX(), 2, "p1");
+            ps = [new P(9)];
+            Test.assertEq(ps[0].getX(), 9, "p2");
             Test.report("go", true);
         }
 }
