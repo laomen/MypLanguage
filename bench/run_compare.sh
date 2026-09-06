@@ -103,54 +103,64 @@ build_all() {
     [ $ok -eq 1 ]
 }
 
-# 运行一次二进制，返回 "verify ms"
+# 运行一次二进制，返回 "verify ms"；运行失败或输出缺 verify/ms → 返回非零
+# （B2：失败不得静默变成合法 "0 0"——否则两边都失败会显示 0/0 假绿）。
 run_once() {
     local bin=$1 out v ms
     if [ -n "$RUN_PREFIX" ]; then
-        out=$($RUN_PREFIX "$bin" 2>/dev/null) || { echo "0 0"; return; }
+        out=$($RUN_PREFIX "$bin" 2>/dev/null) || { echo "[bench] 运行失败: $bin" >&2; echo "0 0"; return 1; }
     else
-        out=$("$bin" 2>/dev/null) || { echo "0 0"; return; }
+        out=$("$bin" 2>/dev/null) || { echo "[bench] 运行失败: $bin" >&2; echo "0 0"; return 1; }
     fi
     v=$(printf '%s\n' "$out" | awk '/^verify/{print $2; exit}')
     ms=$(printf '%s\n' "$out" | awk '/^ms/{print $2; exit}')
-    [ -z "$v" ] && v=0
-    [ -z "$ms" ] && ms=0
+    if [ -z "$v" ] || [ -z "$ms" ]; then
+        echo "[bench] 输出缺 verify/ms: $bin" >&2
+        echo "0 0"; return 1
+    fi
     echo "$v $ms"
 }
 
 # 交错测量 MYP/C++ 一对：ITERS 轮，每轮交替先后顺序（A/B 轮换抵消热漂移）；
 # 取各自最小 ms。每名字先各预热一次（丢弃）。首轮 verify 为基准，波动告警。
+# 结果写全局 BV_MV/BV_MMS/BV_CV/BV_CMS；任一 run_once 失败 → PAIR_FAIL=1
+# （B2：运行失败不得当合法 0 0——用命令替换捕获返回码，勿用进程替换）。
 best_pair() {
-    local mb=$1 cb=$2 i v ms
+    local mb=$1 cb=$2 i v ms line
     local mv="" cv="" mms=1e30 cms=1e30
-    run_once "$mb" >/dev/null
-    run_once "$cb" >/dev/null
+    PAIR_FAIL=0
+    if ! line=$(run_once "$mb"); then PAIR_FAIL=1; line="0 0"; fi
+    if ! line=$(run_once "$cb"); then PAIR_FAIL=1; fi
     for ((i=0; i<ITERS; i++)); do
         if (( i % 2 == 0 )); then
-            read -r v ms < <(run_once "$mb")
+            if ! line=$(run_once "$mb"); then PAIR_FAIL=1; line="0 0"; fi
+            read -r v ms <<< "$line"
             if [ -z "$mv" ]; then mv=$v
             elif ! verify_same "$v" "$mv" | grep -q 1; then
                 echo "  [WARN] $mb verify 波动: $v != $mv" >&2; fi
             if awk -v m="$ms" -v b="$mms" 'BEGIN{exit !(m<b)}'; then mms=$ms; fi
-            read -r v ms < <(run_once "$cb")
+            if ! line=$(run_once "$cb"); then PAIR_FAIL=1; line="0 0"; fi
+            read -r v ms <<< "$line"
             if [ -z "$cv" ]; then cv=$v
             elif ! verify_same "$v" "$cv" | grep -q 1; then
                 echo "  [WARN] $cb verify 波动: $v != $cv" >&2; fi
             if awk -v m="$ms" -v b="$cms" 'BEGIN{exit !(m<b)}'; then cms=$ms; fi
         else
-            read -r v ms < <(run_once "$cb")
+            if ! line=$(run_once "$cb"); then PAIR_FAIL=1; line="0 0"; fi
+            read -r v ms <<< "$line"
             if [ -z "$cv" ]; then cv=$v
             elif ! verify_same "$v" "$cv" | grep -q 1; then
                 echo "  [WARN] $cb verify 波动: $v != $cv" >&2; fi
             if awk -v m="$ms" -v b="$cms" 'BEGIN{exit !(m<b)}'; then cms=$ms; fi
-            read -r v ms < <(run_once "$mb")
+            if ! line=$(run_once "$mb"); then PAIR_FAIL=1; line="0 0"; fi
+            read -r v ms <<< "$line"
             if [ -z "$mv" ]; then mv=$v
             elif ! verify_same "$v" "$mv" | grep -q 1; then
                 echo "  [WARN] $mb verify 波动: $v != $mv" >&2; fi
             if awk -v m="$ms" -v b="$mms" 'BEGIN{exit !(m<b)}'; then mms=$ms; fi
         fi
     done
-    echo "$mv $mms $cv $cms"
+    BV_MV=$mv; BV_MMS=$mms; BV_CV=$cv; BV_CMS=$cms
 }
 
 echo "=== 编译（MYP: -O2 / C++: $CXXFLAGS）==="
@@ -163,13 +173,21 @@ echo ""
 printf "%-11s %-10s %-10s %-9s %s\n" "bench" "MYP(ms)" "C++(ms)" "C++/MYP" "verify"
 printf "%s\n" "--------------------------------------------------------------"
 
+FAILED=0
 for name in "${names[@]}"; do
-    read -r mv mms cv cms < <(best_pair "out/${name}_myp" "out/${name}_cpp")
+    best_pair "out/${name}_myp" "out/${name}_cpp"
+    mv=$BV_MV; mms=$BV_MMS; cv=$BV_CV; cms=$BV_CMS
     ratio=$(awk -v c="$cms" -v m="$mms" 'BEGIN{ if (m+0>0) printf "%.2f", c/m; else print "inf" }')
     if verify_same "$mv" "$cv" | grep -q 1; then
         vnote="$mv"
     else
         vnote="$mv != $cv"
+        echo "  [FAIL] $name verify 不一致: MYP=$mv C++=$cv" >&2
+        FAILED=1
+    fi
+    if [ "$PAIR_FAIL" = 1 ]; then
+        echo "  [FAIL] $name 运行失败（二进制未输出有效 verify/ms）" >&2
+        FAILED=1
     fi
     printf "%-11s %-10s %-10s %-9s %s\n" "$name" "$mms" "$cms" "$ratio" "$vnote"
 done
@@ -177,3 +195,8 @@ done
 echo ""
 echo "注: 比值 C++/MYP > 1 表示 MYP 更快（C++ 耗时更多）；< 1 表示 C++ 更快。"
 echo "    verify 两语言一致才有对比意义；hashmap 含 MYP 泛型 ARC 成本，非纯 CPU 对比。"
+if [ "$FAILED" = 1 ]; then
+    echo "[FAIL] 存在失败项（运行失败或 verify 不一致），退出码非零。" >&2
+    exit 1
+fi
+exit 0

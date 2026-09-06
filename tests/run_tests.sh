@@ -48,6 +48,15 @@ PROJ_ROOT=$(pwd)
 # 必须在 PROJ_ROOT 确定后、任何使用 myp_timeout/myp_resolve_bin 之前 source。
 source "$PROJ_ROOT/tests/lib/portable.sh"
 
+# T5（2026-09-07）：成功测试后清理产物，避免源码树残留 test.output/.out/.ll/.o。
+# 失败路径不调用 → 保留 test.output 供 diff 诊断；--update 已把输出存入 expected。
+cleanup_artifacts() {
+    local base=$1   # 二进制基名（去扩展名），如 tests/time/test 或 tests/@test/xxx
+    rm -f "$base.output" "$base.out" "$base.out.exe" "$base.out.ll" \
+          "$base.out.opt.ll" "$base.out.o" "$base.myp.o" "$base.myp.ll" \
+          "$base.myp.opt.ll" "$base.o" "$base.ll" 2>/dev/null
+}
+
 echo ""
 echo "=========================================="
 echo "  MYP Language Test Suite"
@@ -114,12 +123,14 @@ for test_dir in tests/*/; do
             rm -f "$tmp_filtered"
             echo -e "${GREEN}PASS${NC}"
             PASS=$((PASS + 1))
+            cleanup_artifacts "${test_dir}test"
         else
             rm -f "$tmp_filtered"
             if $UPDATE_MODE; then
                 cp "$output_file" "$expected_file"
                 echo -e "${YELLOW}UPDATED${NC}"
                 PASS=$((PASS + 1))
+                cleanup_artifacts "${test_dir}test"
             else
                 echo -e "${RED}MISMATCH${NC}"
                 diff "$output_file" "$expected_file" | head -10
@@ -134,6 +145,7 @@ for test_dir in tests/*/; do
             cp "$output_file" "$expected_file"
             echo -e "${YELLOW}UPDATED${NC} (created expected)"
             PASS=$((PASS + 1))
+            cleanup_artifacts "${test_dir}test"
         else
             echo -e "${RED}MISSING BASELINE${NC} (no expected file; run --update to bless)"
             FAIL=$((FAIL + 1))
@@ -233,6 +245,7 @@ if [ -f "$test_file" ]; then
         else
             echo -e "${GREEN}PASS${NC}"
             TFPASS=$((TFPASS + 1))
+            cleanup_artifacts "${test_file%.myp}"
         fi
     fi
 else
@@ -272,6 +285,7 @@ if [ -d "$ATEST_DIR" ]; then
         else
             echo -e "${GREEN}PASS${NC}"
             TFPASS=$((TFPASS + 1))
+            cleanup_artifacts "${tf%.myp}"
         fi
     done
 fi

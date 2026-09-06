@@ -60,14 +60,16 @@ build_all() {
 run_once() {
     local bin=$1 out v ms
     if [ -n "$RUN_PREFIX" ]; then
-        out=$($RUN_PREFIX "$bin" 2>/dev/null) || { echo "0 0"; return; }
+        out=$($RUN_PREFIX "$bin" 2>/dev/null) || { echo "[bench] 运行失败: $bin" >&2; echo "0 0"; return 1; }
     else
-        out=$("$bin" 2>/dev/null) || { echo "0 0"; return; }
+        out=$("$bin" 2>/dev/null) || { echo "[bench] 运行失败: $bin" >&2; echo "0 0"; return 1; }
     fi
     v=$(printf '%s\n' "$out" | awk '/^verify/{print $2; exit}')
     ms=$(printf '%s\n' "$out" | awk '/^ms/{print $2; exit}')
-    [ -z "$v" ] && v=0
-    [ -z "$ms" ] && ms=0
+    if [ -z "$v" ] || [ -z "$ms" ]; then
+        echo "[bench] 输出缺 verify/ms: $bin" >&2
+        echo "0 0"; return 1
+    fi
     echo "$v $ms"
 }
 
@@ -81,28 +83,33 @@ verify_same() {
 }
 
 best_pair() {
-    local mb=$1 gb=$2 i v ms
+    local mb=$1 gb=$2 i v ms line
     local mv="" gv="" mms=99999999 gms=99999999
-    run_once "$mb" >/dev/null
-    run_once "$gb" >/dev/null
+    PAIR_FAIL=0
+    if ! line=$(run_once "$mb"); then PAIR_FAIL=1; line="0 0"; fi
+    if ! line=$(run_once "$gb"); then PAIR_FAIL=1; fi
     for ((i=0; i<ITERS; i++)); do
         if ((i % 2 == 0)); then
-            read -r v ms <<< "$(run_once "$mb")"
+            if ! line=$(run_once "$mb"); then PAIR_FAIL=1; line="0 0"; fi
+            read -r v ms <<< "$line"
             [ -z "$mv" ] && mv=$v
             [ "$ms" -lt "$mms" ] && mms=$ms
-            read -r v ms <<< "$(run_once "$gb")"
+            if ! line=$(run_once "$gb"); then PAIR_FAIL=1; line="0 0"; fi
+            read -r v ms <<< "$line"
             [ -z "$gv" ] && gv=$v
             [ "$ms" -lt "$gms" ] && gms=$ms
         else
-            read -r v ms <<< "$(run_once "$gb")"
+            if ! line=$(run_once "$gb"); then PAIR_FAIL=1; line="0 0"; fi
+            read -r v ms <<< "$line"
             [ -z "$gv" ] && gv=$v
             [ "$ms" -lt "$gms" ] && gms=$ms
-            read -r v ms <<< "$(run_once "$mb")"
+            if ! line=$(run_once "$mb"); then PAIR_FAIL=1; line="0 0"; fi
+            read -r v ms <<< "$line"
             [ -z "$mv" ] && mv=$v
             [ "$ms" -lt "$mms" ] && mms=$ms
         fi
     done
-    echo "$mv $mms $gv $gms"
+    BV_MV=$mv; BV_MMS=$mms; BV_CV=$gv; BV_CMS=$gms
 }
 
 build_all || { echo "[run_compare_go] 编译失败，中止"; exit 1; }
@@ -114,8 +121,10 @@ echo "--------------------------------------------------------------"
 summary=$(mktemp /tmp/myp_go_bench.XXXXXX)
 trap 'rm -f "$summary"' EXIT
 
+FAILED=0
 for name in "${names[@]}"; do
-    read -r mv mms gv gms <<< "$(best_pair "out/${name}_myp" "out/${name}_go")"
+    best_pair "out/${name}_myp" "out/${name}_go"
+    mv=$BV_MV; mms=$BV_MMS; gv=$BV_CV; gms=$BV_CMS
     ratio=$(awk -v a="$mms" -v b="$gms" 'BEGIN{ if (a<=0) print "inf"; else printf "%.2f", b/a }')
     same=$(verify_same "$mv" "$gv")
     if [ "$same" = 1 ]; then
@@ -123,6 +132,12 @@ for name in "${names[@]}"; do
         printf '%s %s %s %s\n' "$name" "$mms" "$gms" "$ratio" >> "$summary"
     else
         vnote="$mv != $gv"
+        echo "  [FAIL] $name verify 不一致: MYP=$mv Go=$gv" >&2
+        FAILED=1
+    fi
+    if [ "$PAIR_FAIL" = 1 ]; then
+        echo "  [FAIL] $name 运行失败（二进制未输出有效 verify/ms）" >&2
+        FAILED=1
     fi
     printf "%-12s %-9s %-9s %-7s %s\n" "$name" "$mms" "$gms" "$ratio" "$vnote"
 done
@@ -144,3 +159,8 @@ awk '
 ' "$summary"
 echo "Go 获胜项（按 MYP 缺口从大到小）:"
 sort -k4,4n "$summary" | awk '$4 < 1 { printf "%-20s MYP=%sms Go=%sms 缺口=%.1f%%\n", $1, $2, $3, (1/$4-1)*100 }'
+if [ "$FAILED" = 1 ]; then
+    echo "[FAIL] 存在失败项（运行失败或 verify 不一致），退出码非零。" >&2
+    exit 1
+fi
+exit 0
