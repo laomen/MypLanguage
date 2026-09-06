@@ -27,6 +27,36 @@
 
 ## 编译器版本历史
 
+### v3.15.229 — A1 余量：泛型体内调泛型 T 依赖实参（逐实例 name 映射）（selfhost）
+
+**非破坏性硬化（generic_gaps A1 余量首片，codegen 非变异逐实例映射）**。v3.15.228
+覆盖内层实参**全具体**；本版覆盖内层实参**引用外层类型参数**的调用：顶层泛型函数
+体内 `id<T>`（T=自身类型参数）、@static 泛型方法体内 `M.pick<T>`（static 泛型链），
+含两层嵌套 `via2<T>` → `mid<T>` → `id<T>`。此前 v3.15.228 walker 因共享模板体节点
+不能统一改名（每实例的实例名不同）跳过 T 依赖 → codegen 发裸 `@id`/`@M_pick` →
+opt-21 use of undefined value（codegen `codegen.myp`）。
+
+- **机制**：v3.15.224 逐体分析对每个外层实例深克隆模板体（T 已 substitute 具体）
+  → 内层 `id<int>`/`id<string>`、`__gs_M_pick_<T>_inst` 已按每外层实例各自建立；
+  只差 codegen 发射**共享**模板体时按 `curTypeParams_/curTypeArgs_` 把 callTypeArgs
+  逐实例映射成实例名。T 依赖**不能**设 `e.resolved`（共享节点唯一改名跨实例冲突：
+  `f2<int>` 设 `id_int_inst` 后 `f2<string>` 发射会读到已设名）→ 走 codegen 非变异
+  逐实例映射。
+- **codegen 顶层函数 Identifier-callee 分支**：`callTypeArgs>0 && cgIsGenericFnTempl
+  (fn)`（fn 是 typeParams>0 且 genericInst==0 的模板）→ `cgGenericFnInstName` 逐实参
+  `resolveType`（当前函数实例的 curTypeArgs_ 映射外层 T）拼 `fn_<args>_inst`，实例已
+  在 tu.functions 才发射（否则回落原路径不恶化）；`cgFuncRetLt` 按实例声明 ret 的
+  AstType 取返回 LLVM 类型（`exprLlvmType` 是 i32 占位不可用，ptr 返回 addFreshTemp）。
+- **codegen 泛型 static Member 分支**：obj Identifier 命名类 + callTypeArgs>0 →
+  `cgGsInstName` 按 sema mangle 规则（`__gs_<cls>_<m>_<args>_inst`，`cgGsTypeArgName`
+  镜像 sema.gsTypeArgName）映射发射。`findFunc` 只匹配 typeParams==0（泛型实例保留
+  typeParams 名查不到）→ 新 helper 直接精确扫描 tu.functions。
+- 边界：泛型体内调泛型**实例**方法（this.m<U> 内嵌 T 依赖，需每实例方法 clone 名
+  映射 + 类前缀）仍留 A1 余量（更后续）。
+- 正例 `tests/@test/generic_in_generic_tdep.myp`（7 断言：顶层 id<T> 双实例 / 两层
+  嵌套 / static M.pick<T> / static 链 M.bump<T>）；全量 525/525 + bugs 20/20；
+  bootstrap MD5 一致。
+
 ### v3.15.228 — A1 泛型体内调泛型（具体实参，generic-in-generic 落地）（selfhost）
 
 **非破坏性硬化（generic_gaps A1 首片落地）**。泛型【体】（带类型参数的顶层函数 /

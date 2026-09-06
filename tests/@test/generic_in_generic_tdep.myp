@@ -1,0 +1,47 @@
+// A1 余量（v3.15.229，selfhost additive）回归：泛型体内调泛型、内层类型实参
+// 引用外层类型参数（T 依赖，如 id<T>/M.pick<T> 的 <T> = 当前泛型自身的 T）。
+// v3.15.228 的 walker 因共享模板体节点不能统一改名（每实例的实例名不同）跳过
+// T 依赖内层调用 → codegen 发裸 @id/@M_pick → opt-21 use of undefined value。
+// 修复：sema 逐体分析（v3.15.224）已按每个外层实例把克隆体 T 替换为具体 → 内层
+// id<int>/id<string>、__gs_M_pick_<T>_inst 各自建立；codegen 发射共享模板体时按
+// curTypeParams_/curTypeArgs_ 逐实例映射 callTypeArgs → 实例名直接发射（非变异，
+// 不设 e.resolved，避免 f2<int> 设名后 f2<string> 发射串扰）。
+import test;
+
+T id<T>(T x) { T y = x; return y; }
+
+// 顶层泛型函数：内层调用实参 = 本函数 T（经克隆 substitute 成具体 int/string）
+T viaT<T>(T x) { return id<T>(x); }
+
+// 两层 T 依赖嵌套：via2<int> → mid<int>（clone 逐体分析建）→ id<int>
+T mid<T>(T x) { return id<T>(x); }
+T via2<T>(T x) { return mid<T>(x); }
+
+@static class M {
+    static:
+        T pick<T>(T x) { return x; }
+        T bump<T>(T x) { return id<T>(x); }   // static 内再调顶层泛型（T 依赖）
+}
+
+// @static 泛型方法：内层调用 = M.pick<T>（泛型 static，T 依赖）
+@static class S {
+    static:
+        T g<T>(T x) { return M.pick<T>(x); }
+        T h<T>(T x) { return M.bump<T>(x); }  // static 链两层
+}
+
+@test void t() {
+    int a = viaT<int>(5);
+    Test.assertEq(a, 5, "a0");
+    string b = viaT<string>("hi");
+    Test.assertStrEq(b, "hi", "b0");
+    int c = via2<int>(7);
+    Test.assertEq(c, 7, "c0");
+    int d = S.g<int>(11);
+    Test.assertEq(d, 11, "d0");
+    string e = S.g<string>("st");
+    Test.assertStrEq(e, "st", "e0");
+    int f = S.h<int>(13);
+    Test.assertEq(f, 13, "f0");
+    Test.report("t", true);
+}

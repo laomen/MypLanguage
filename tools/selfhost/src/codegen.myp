@@ -3690,6 +3690,86 @@ class CodeGen {
             return out;
         }
 
+        // A1 余量（v3.15.229）：fn 是否为泛型顶层函数【模板】（typeParams>0 且未实例化）。
+        int cgIsGenericFnTempl(string fn) {
+            if (tu_ == null) return 0;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.name() == fn && f.typeParams().size() > 0 && f.genericInst() == 0) return 1;
+            }
+            return 0;
+        }
+        // 泛型顶层函数实例名：base + _classInstName(resolveType(arg))... + _inst。
+        // 逐实例映射（resolveType 用 curTypeParams_/curTypeArgs_）；实例不存在（外层体
+        // 未被逐体分析等）返回 ""（调用方回退原路径，维持原 undefined 行为，不恶化）。
+        string cgGenericFnInstName(string fn, ArrayList<AstType> cta) {
+            string inst = fn;
+            for (int i = 0; i < cta.size(); i = i + 1) {
+                AstType rt = resolveType(cta.get(i));
+                if (rt == null) return "";
+                inst = inst + "_" + classInstName(rt);
+            }
+            inst = inst + "_inst";
+            int exists = 0;
+            if (tu_ != null) {
+                for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                    if (tu_.functions().get(i).name() == inst) { exists = 1; break; }
+                }
+            }
+            if (exists == 0) return "";
+            return inst;
+        }
+        // 泛型实例函数返回 LLVM 类型（按实例声明 ret 的 AstType；找不到回落空）。
+        string cgFuncRetLt(string name) {
+            if (tu_ == null) return "";
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.name() != name) continue;
+                if (f.ret() != null) return llvmType(f.ret());
+                return "";
+            }
+            return "";
+        }
+        // __gs_ 后缀（对齐 sema.gsTypeArgName / C++ typeName）：原始名、类名/
+        // 实例名、数组 elem[]。
+        string cgGsTypeArgName(AstType t) {
+            if (t == null) return "int";
+            if (t.element() != null) return cgGsTypeArgName(t.element()) + "[]";
+            if (Str.len(t.className()) != 0) {
+                if (t.typeArgs().size() > 0) return classInstName(t);
+                return t.className();
+            }
+            return t.basicName();
+        }
+        // 泛型静态实例名（对齐 sema resolveGenericStaticCall mangle）：逐实参映射
+        // callTypeArgs（curTypeParams_/curTypeArgs_ 生效）→ __gs_<cls>_<m>_<args>
+        // _inst；实例不存在返回 ""。
+        string cgGsInstName(string cls, string mname, ArrayList<AstType> cta) {
+            string inst = "__gs_" + cls + "_" + mname;
+            for (int i = 0; i < cta.size(); i = i + 1) {
+                AstType rt = resolveType(cta.get(i));
+                if (rt == null) return "";
+                inst = inst + "_" + cgGsTypeArgName(rt);
+            }
+            inst = inst + "_inst";
+            int exists = 0;
+            if (tu_ != null) {
+                for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                    if (tu_.functions().get(i).name() == inst) { exists = 1; break; }
+                }
+            }
+            if (exists == 0) return "";
+            return inst;
+        }
+        // obj Identifier 是否命名了一个类（含 @static 类）。
+        int cgIsClassName(string name) {
+            if (tu_ == null) return 0;
+            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
+                if (tu_.classes().get(i).name() == name) return 1;
+            }
+            return 0;
+        }
+
         // 按名字找 struct（顶层 + 类嵌套）。
         AstStruct findStructByName(string name) {
             if (tu_ == null) return null;
@@ -11677,6 +11757,35 @@ class CodeGen {
                 }
                 if (callee != null && callee.kind() == "Identifier") {
                     fn = callee.name();
+                    // A1 余量（v3.15.229）：泛型体【T 依赖】内层泛型顶层函数调用
+                    //（id<T>，外层类型参数作实参）——共享模板体节点不能统一改名（每
+                    // 实例的实例名不同）→ 此处按 curTypeParams_/curTypeArgs_ 逐实例
+                    // 映射 callTypeArgs → 实例名直接发射（实例已由 sema 逐体分析按每
+                    // 个外层实例建立）。仅真泛型模板 + 实例已存在才走此路径（否则回落
+                    // 原路径——保持既有行为不恶化）。
+                    if (e.callTypeArgs().size() > 0 && cgIsGenericFnTempl(fn) != 0) {
+                        string ginst = cgGenericFnInstName(fn, e.callTypeArgs());
+                        if (Str.len(ginst) != 0) {
+                            string grret = cgFuncRetLt(ginst);
+                            if (Str.len(grret) == 0) grret = exprLlvmType(e);
+                            StringBuilder gras = new StringBuilder();
+                            for (int gi = 0; gi < e.args().size(); gi = gi + 1) {
+                                AstExpr ga = e.args().get(gi);
+                                string gav = genExpr(ga);
+                                string gat = exprLlvmType(ga);
+                                if (gi != 0) gras.append(", ");
+                                gras.append(gat + " " + gav);
+                            }
+                            if (grret == "void") {
+                                sb_.append("  call void @" + ginst + "(" + gras.toString() + ")\n");
+                                return "";
+                            }
+                            string grt = newTmp();
+                            sb_.append("  " + grt + " = call " + grret + " @" + ginst + "(" + gras.toString() + ")\n");
+                            if (grret == "ptr") addFreshTemp(grt);
+                            return grt;
+                        }
+                    }
                     // CUDA device info intrinsic → 厂商中立 runtime 名
                     //（同 C++ intrinsic_map_，myp_gpu_* 前缀）。
                     string cudaFn = mapGpuIntrinsic(fn);
@@ -11780,6 +11889,36 @@ class CodeGen {
                             if (sRt != null && Str.len(sRt.className()) != 0 && isStructName(sRt.className()) != 0) {
                                 return genStructMethodCall(sRt.className(), mname, e, varAlloca(obj.name()));
                             }
+                        }
+                    }
+                    // A1 余量（v3.15.229）：泛型静态方法【T 依赖实参】（M.pick<T>，
+                    // 外层类型参数作方法级实参）——共享模板体节点不可统一改名（每实例
+                    // __gs_ 名不同）→ 此处按 curTypeParams_/curTypeArgs_ 逐实例映射
+                    // callTypeArgs → __gs_ 实例名直接发射（实例已由 sema 逐体分析按
+                    // 每个外层实例建立）。
+                    if (obj != null && obj.kind() == "Identifier"
+                        && cgIsClassName(obj.name()) != 0
+                        && e.callTypeArgs().size() > 0) {
+                        string gsinst = cgGsInstName(obj.name(), mname, e.callTypeArgs());
+                        if (Str.len(gsinst) != 0) {
+                            string gsret = cgFuncRetLt(gsinst);
+                            if (Str.len(gsret) == 0) gsret = exprLlvmType(e);
+                            StringBuilder gsas = new StringBuilder();
+                            for (int gi = 0; gi < e.args().size(); gi = gi + 1) {
+                                AstExpr ga = e.args().get(gi);
+                                string gav = genExpr(ga);
+                                string gat = exprLlvmType(ga);
+                                if (gi != 0) gsas.append(", ");
+                                gsas.append(gat + " " + gav);
+                            }
+                            if (gsret == "void") {
+                                sb_.append("  call void @" + gsinst + "(" + gsas.toString() + ")\n");
+                                return "";
+                            }
+                            string gst = newTmp();
+                            sb_.append("  " + gst + " = call " + gsret + " @" + gsinst + "(" + gsas.toString() + ")\n");
+                            if (gsret == "ptr") addFreshTemp(gst);
+                            return gst;
                         }
                     }
                     if (obj != null && obj.kind() == "Identifier" && isClassName(obj.name()) != 0) {
