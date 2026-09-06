@@ -27,6 +27,37 @@
 
 ## 编译器版本历史
 
+### v3.15.227 — 泛型类模板体内 this.m<T>（方法级泛型调用延迟登记，A2 遗留落地）（selfhost）
+
+**非破坏性硬化（A2 遗留项）**。泛型类**模板**（`Box<T>`）的普通方法体内调用方法级泛型
+（`this.id<string>` / 裸 `id<int>` / **方法实参=类类型参数** `this.id<T>`）此前在
+`resolveGenericInstMethod` 被干净拒绝（"on a generic class template are not
+supported"，isGenericInst==0、class T 未具体）。现支持（sema + codegen）。
+
+- **延迟登记**（sema `sema.myp`）：Pass B 分析模板体时 class T 未具体 → 不建单一
+  concrete clone（T 未绑定会幻影 mangle）→ `recordPendClone` 记 (模板类, 方法模板,
+  concrete[可含类T占位])；末尾 `materializeTemplateMethodClones` 对每个实例类（类 T
+  → 实例 concrete，`substituteType` 后）用 `buildInstMethodClone` 物化 clone 入实例
+  actions + 排队逐体分析（复用 v3.15.226 实例克隆逐体分析）。`runInstBodyAnalysis`
+  改 while：drain → 物化 → 重复到不再新增（guard 64）。
+- **clone 名用原始 concrete、内容用实例 concrete**：共享模板体 call 节点改名用原始
+  concrete（`this.id<T>` → `id_T_inst`，所有实例同名）——物化 clone 名也必须按原始
+  concrete（否则 `id_int_inst`/`id_string_inst` 与 call 名不匹配 → 未定义符号）；每
+  实例 actions 自独立，同名 clone 内容按各自类 concrete（T→int/string）各异。
+- **codegen `this` 收者方法调用按当前发射类定名**（`codegen.myp` Member-call 加
+  `obj.kind()=="This"` 分支：`fn = curClass_ + "_" + mname`）：此前用
+  callee.resolvedClass()（sema 在模板体解析成模板名 Box）→ 实例发射时生成
+  `@Box_id_string_inst`（模板前缀不存在）→ opt undefined。非泛型普通类两值一致无
+  影响；顺带修泛型实例克隆方法内 `this.member()`（sema 不分析实例体 → resolvedClass
+  空 → 曾落 Object）的潜在缺口。
+- 边界：方法级泛型体**内**调方法级泛型（`echoU<U>` 体里 `this.id<U>`，A1 泛型内
+  调泛型）仍不支持（泛型方法体 markAllStmt，不经此路径）；where 约束模板体不逐体
+  不变。
+- 正例 `tests/@test/generic_inst_tpl_body.myp`（8 断言：具体 string/int 实参 + 类T
+  作方法实参 this.id<T>/裸 id<T> + 类T形参/方法U 组合，Box<int>/Box<string> 双实例）；
+  移除旧负例 `tests/negative/generic_inst_on_generic_class.myp`（现受支持）。
+  全量 523/523 + bugs 20/20；bootstrap MD5 一致。
+
 ### v3.15.226 — 泛型类实例方法克隆逐体分析扩展（类级 T + 方法级 U 双映射）（selfhost）
 
 **非破坏性硬化（v3.15.224 克隆体逐体分析的后续扩展）**。v3.15.224 对实例化克隆做

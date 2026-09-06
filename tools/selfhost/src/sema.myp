@@ -326,6 +326,10 @@ class Sema {
             instAnaName_ = new ArrayList<string>();
             instAnaDone_ = new ArrayList<string>();
             instClsReg_ = new ArrayList<string>();
+            // v3.15.227：泛型类【模板】体内方法级泛型调用（this.m<T>）的延迟登记队列
+            pendTpl_ = new ArrayList<string>();
+            pendMeth_ = new ArrayList<string>();
+            pendArgs_ = new ArrayList<ArrayList<AstType>>();
             curInstTps_ = new ArrayList<string>();
             curInstArgs_ = new ArrayList<AstType>();
             interfaceNames_ = new ArrayList<string>();
@@ -3716,17 +3720,12 @@ class Sema {
             }
             if (templ == null) return "";
             // 泛型类 + 方法级 <T>（v3.15.218）：在**已实例化的泛型类**对象上调用支持
-            //（类级 T 由类 instTypeArgs 绑定，方法级 T 由本 helper 绑定）。仅泛型类
-            // **模板**（isGenericInst==0，非实例；模板体内 this.m<T> 可达）不支持 →
-            // 干净拒绝（请在实例对象上调用，如 Box<int>）。
-            if (cobj.typeParams().size() != 0 && cobj.isGenericInst() == 0) {
-                diag_.error(e.line(), e.col(), "generic instance methods on a generic class template are not supported; call it on an instantiated generic class (e.g. Box<int>)");
-                for (int i = 0; i < e.args().size(); i = i + 1) {
-                    if (Str.len(e.args().get(i).resolvedKind()) == 0) visitExpr(e.args().get(i));
-                }
-                e.setArgsVisited(1);
-                return "void";
-            }
+            //（类级 T 由类 instTypeArgs 绑定，方法级 T 由本 helper 绑定）。
+            // v3.15.227：泛型类**模板**体内调用（isGenericInst==0；模板方法体里
+            // this.m<T>/裸 m<T>，Pass B 分析时 class T 未具体）→ **延迟登记**：不建
+            // 单一 concrete clone（T 未绑定），记 pendTpl_ 末尾物化到每个实例（类 T
+            // → 实例 concrete 后再建 clone + 逐体分析）。concrete 实参可引用类 T。
+            int tplCtx = (cobj.typeParams().size() != 0 && cobj.isGenericInst() == 0) ? 1 : 0;
             ArrayList<string> tps = templ.typeParams();
             int ntp = tps.size();
             // 1) 访问实参（guard，供显式 <..> 外还可由解析出的 concrete 校验）
@@ -3811,27 +3810,18 @@ class Sema {
                 if (acts.get(ai).name() == mAct) { hasM = 1; break; }
             }
             if (hasM == 0) {
-                AstAction na = new AstAction();
-                na.setName(mAct);
-                na.setPos(templ.line(), templ.col());
-                na.setRet(substituteType(templ.ret(), tps, concrete));
-                na.setStartup(templ.startup());
-                na.setCtor(templ.ctor());
-                na.setTest(templ.test());
-                na.setCoro(templ.coro());
-                na.setAsync(templ.async());
-                na.setRegion(templ.region());
-                na.setStack(templ.stack());
-                for (int j = 0; j < templ.typeParams().size(); j = j + 1) na.typeParams().add(templ.typeParams().get(j));
-                for (int j = 0; j < concrete.size(); j = j + 1) na.instTypeArgs().add(concrete.get(j));
-                ArrayList<AstPair> ac2 = templ.constraints();
-                for (int j = 0; j < ac2.size(); j = j + 1) na.constraints().add(ac2.get(j));
-                for (int j = 0; j < templ.params().size(); j = j + 1) na.params().add(cloneParam(templ.params().get(j), tps, concrete));
-                na.setBody(templ.body());
-                acts.add(na);
-                // 克隆体逐体分析（v3.15.224）：排队方法级泛型实例化克隆的逐体检查。
-                // where 约束（trait 有界）模板体保留保守扫描（数值提升窄化惯用法）。
-                if (templ.constraints().size() == 0) enqueueInstAnalysis("m", cls, mAct);
+                if (tplCtx == 0) {
+                    AstAction na = buildInstMethodClone(templ, mAct, tps, concrete);
+                    acts.add(na);
+                    // 克隆体逐体分析（v3.15.224）：排队方法级泛型实例化克隆的逐体检查。
+                    // where 约束（trait 有界）模板体保留保守扫描（数值提升窄化惯用法）。
+                    if (templ.constraints().size() == 0) enqueueInstAnalysis("m", cls, mAct);
+                } else {
+                    // v3.15.227：泛型类模板体内调用 → 延迟登记（不建模板 clone；
+                    // codegen 不发射模板类，实例克隆由 materializeTemplateMethodClones
+                    // 末尾按 类T→实例concrete 物化）。
+                    recordPendClone(cls, templ.name(), concrete);
+                }
             }
             // 5) 调用点：返回类型 + callee 改名（Member→memberName / Identifier→name）
             AstType sret = substituteType(templ.ret(), tps, concrete);
@@ -4701,6 +4691,98 @@ class Sema {
             }
         }
 
+        // 建方法级泛型实例克隆 action（mAct 名，params/ret 经方法 tps→concrete 替换，
+        // body 共享模板体；instTypeArgs 记方法级映射）。A2 普通/实例路径与 v3.15.227
+        // 模板体内延迟物化共用。
+        AstAction buildInstMethodClone(AstAction templ, string mAct, ArrayList<string> tps, ArrayList<AstType> concrete) {
+            AstAction na = new AstAction();
+            na.setName(mAct);
+            na.setPos(templ.line(), templ.col());
+            na.setRet(substituteType(templ.ret(), tps, concrete));
+            na.setStartup(templ.startup());
+            na.setCtor(templ.ctor());
+            na.setTest(templ.test());
+            na.setCoro(templ.coro());
+            na.setAsync(templ.async());
+            na.setRegion(templ.region());
+            na.setStack(templ.stack());
+            for (int j = 0; j < templ.typeParams().size(); j = j + 1) na.typeParams().add(templ.typeParams().get(j));
+            for (int j = 0; j < concrete.size(); j = j + 1) na.instTypeArgs().add(concrete.get(j));
+            ArrayList<AstPair> ac2 = templ.constraints();
+            for (int j = 0; j < ac2.size(); j = j + 1) na.constraints().add(ac2.get(j));
+            for (int j = 0; j < templ.params().size(); j = j + 1) na.params().add(cloneParam(templ.params().get(j), tps, concrete));
+            na.setBody(templ.body());
+            return na;
+        }
+
+        // v3.15.227：登记模板体方法级泛型调用（模板名, 方法模板名, concrete[可含类T
+        // 占位]）——末尾 materializeTemplateMethodClones 按实例逐类物化。按名去重。
+        void recordPendClone(string tpl, string mName, ArrayList<AstType> concrete) {
+            string argKey = "";
+            for (int i = 0; i < concrete.size(); i = i + 1) argKey = argKey + "|" + gsTypeArgName(concrete.get(i));
+            for (int pi = 0; pi < pendTpl_.size(); pi = pi + 1) {
+                if (pendTpl_.get(pi) != tpl || pendMeth_.get(pi) != mName) continue;
+                ArrayList<AstType> old = pendArgs_.get(pi);
+                if (old.size() != concrete.size()) continue;
+                string ok2 = "";
+                for (int i = 0; i < old.size(); i = i + 1) ok2 = ok2 + "|" + gsTypeArgName(old.get(i));
+                if (ok2 == argKey) return;
+            }
+            pendTpl_.add(tpl);
+            pendMeth_.add(mName);
+            ArrayList<AstType> na = new ArrayList<AstType>();
+            for (int i = 0; i < concrete.size(); i = i + 1) na.add(concrete.get(i));
+            pendArgs_.add(na);
+        }
+
+        // v3.15.227：把模板体方法级泛型调用物化到该模板的每个实例类——concrete 中
+        // 引用类 T 的占位先经 实例 typeParams→instTypeArgs 替换（this.m<T> 语义），
+        // 再按实例建方法 clone 加入实例 actions + 排队逐体分析。返回是否新增。
+        int materializeTemplateMethodClones() {
+            int added = 0;
+            for (int pi = 0; pi < pendTpl_.size(); pi = pi + 1) {
+                string tpl = pendTpl_.get(pi);
+                string mName = pendMeth_.get(pi);
+                ArrayList<AstType> concrete = pendArgs_.get(pi);
+                for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                    AstClass C = tu_.classes().get(ci);
+                    if (C.isGenericInst() == 0) continue;
+                    if (resolveBase(C.name()) != tpl) continue;
+                    // 实例内找方法模板（instantiateClass cloneAction 已类级替换形参/返）
+                    AstAction mtempl = null;
+                    for (int ai = 0; ai < C.actions().size(); ai = ai + 1) {
+                        AstAction aa = C.actions().get(ai);
+                        if (aa.name() == mName && aa.typeParams().size() > 0 && aa.instTypeArgs().size() == 0) { mtempl = aa; break; }
+                    }
+                    if (mtempl == null) continue;
+                    // 实例 clone 名用**原始** concrete（与模板体共享 call 节点改名一致
+                    // ——this.id<T> 改名 id_T_inst），但 clone 的 params/ret 用经
+                    // 类 T→实例 concrete 替换后的 instConc（每实例内容不同、名可同）。
+                    string mAct = mName;
+                    for (int i = 0; i < concrete.size(); i = i + 1) mAct = mAct + "_" + gsTypeArgName(concrete.get(i));
+                    mAct = mAct + "_inst";
+                    // concrete 中的类 T 占位 → 实例 concrete（this.m<T> 语义）
+                    ArrayList<AstType> instConc = new ArrayList<AstType>();
+                    ArrayList<string> ctps = C.typeParams();
+                    ArrayList<AstType> cargs = C.instTypeArgs();
+                    for (int ai2 = 0; ai2 < concrete.size(); ai2 = ai2 + 1) {
+                        instConc.add(substituteType(concrete.get(ai2), ctps, cargs));
+                    }
+                    int hasM = 0;
+                    for (int ai = 0; ai < C.actions().size(); ai = ai + 1) {
+                        if (C.actions().get(ai).name() == mAct) { hasM = 1; break; }
+                    }
+                    if (hasM != 0) continue;
+                    ArrayList<string> mtps = mtempl.typeParams();
+                    AstAction na = buildInstMethodClone(mtempl, mAct, mtps, instConc);
+                    C.actions().add(na);
+                    added = 1;
+                    if (mtempl.constraints().size() == 0) enqueueInstAnalysis("m", C.name(), mAct);
+                }
+            }
+            return added;
+        }
+
         // 分析单个实例化克隆体（kind: "m" 类方法级克隆 / "fn" 顶层函数克隆 /
         // "s" @static→顶层函数克隆）。定位克隆对象（共享模板体 + typeParams/
         // instTypeArgs/params/ret/flags）→ 深克隆替换 → 在方法/函数上下文 visitStmt。
@@ -4837,22 +4919,33 @@ class Sema {
             }
         }
 
-        // Pass B 之后：按队列逐体分析所有实例化克隆（动态上界——分析途中新产生的
-        // 克隆也会被处理）。已有诊断时不跑（避免级联噪音；负例本应无其它错）。
+        // Pass B 之后：按队列逐体分析所有实例化克隆 + 物化泛型类模板体内延迟登记的
+        // 方法级泛型调用（v3.15.227）。while 循环：drain（动态上界——分析途中新产生
+        // 的克隆也会被处理）→ 物化（可能新增实例克隆排队）→ 重复到不再新增。已有
+        // 诊断时不跑（避免级联噪音；负例本应无其它错）。
         void runInstBodyAnalysis() {
             if (diag_.errorCount() != 0) return;
-            for (int qi = 0; qi < instAnaName_.size(); qi = qi + 1) {
-                string kind = instAnaKind_.get(qi);
-                string cls = instAnaCls_.get(qi);
-                string nm = instAnaName_.get(qi);
-                string key = kind + "/" + cls + "/" + nm;
-                int done = 0;
-                for (int di = 0; di < instAnaDone_.size(); di = di + 1) {
-                    if (instAnaDone_.get(di) == key) { done = 1; break; }
+            int guard = 0;
+            while (true) {
+                guard = guard + 1;
+                int qBefore = instAnaName_.size();
+                for (int qi = 0; qi < instAnaName_.size(); qi = qi + 1) {
+                    string kind = instAnaKind_.get(qi);
+                    string cls = instAnaCls_.get(qi);
+                    string nm = instAnaName_.get(qi);
+                    string key = kind + "/" + cls + "/" + nm;
+                    int done = 0;
+                    for (int di = 0; di < instAnaDone_.size(); di = di + 1) {
+                        if (instAnaDone_.get(di) == key) { done = 1; break; }
+                    }
+                    if (done != 0) continue;
+                    instAnaDone_.add(key);
+                    analyzeInstCloneBody(kind, cls, nm);
                 }
-                if (done != 0) continue;
-                instAnaDone_.add(key);
-                analyzeInstCloneBody(kind, cls, nm);
+                // v3.15.227：泛型类模板体内方法级调用（this.m<T>）延迟登记物化到实例
+                int added = materializeTemplateMethodClones();
+                if (added == 0 && instAnaName_.size() == qBefore) break;
+                if (guard > 64) break;   // 纵深防御
             }
         }
 
@@ -9821,6 +9914,13 @@ class Sema {
         // v3.15.226：泛型类实例（Box_int_inst）方法克隆分析时已注册进 sema 成员表
         // 的实例类名（注册一次，含具体 props/actions/funcs/methods）。
         ArrayList<string> instClsReg_;
+        // v3.15.227：泛型类【模板】体内方法级泛型调用（this.m<T>）延迟登记队列——
+        // 模板体 Pass B 分析时 class T 未具体，不能建单一 concrete clone → 记
+        // (模板类名, 方法模板名, 方法实参[可含类 T 占位])，末尾物化到每个实例
+        // （类 T → 实例 concrete 后再建 clone，见 materializeTemplateMethodClones）。
+        ArrayList<string> pendTpl_;
+        ArrayList<string> pendMeth_;
+        ArrayList<ArrayList<AstType>> pendArgs_;
         ArrayList<string> curInstTps_;
         ArrayList<AstType> curInstArgs_;
         ArrayList<string> interfaceNames_;

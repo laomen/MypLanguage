@@ -11821,6 +11821,19 @@ class CodeGen {
                         mCls = cls2;
                         mName = mname;
                         thisV = genExpr(obj);
+                    } else if (obj != null && obj.kind() == "This") {
+                        // this.<method>(...)：类名用**当前发射类** curClass_（实例克隆
+                        // 发射时 curClass_=实例类 Box_int_inst，比 sema 在泛型模板体上
+                        // 解析的 callee.resolvedClass=模板名 Box 更准——v3.15.227 模板体
+                        // 内 this.m<T> 延迟物化到实例后由实例发射本调用）。非泛型普通类
+                        // 两者一致无影响；curClass_ 空（lambda 等）回落 resolvedClass。
+                        string tcls = curClass_;
+                        if (Str.len(tcls) == 0) tcls = callee.resolvedClass();
+                        if (Str.len(tcls) == 0) tcls = "Object";
+                        fn = tcls + "_" + mname;
+                        mCls = tcls;
+                        mName = mname;
+                        thisV = loadThis();
                     } else {
                         // obj 是 Member/Subscript/Call：接口值（{ptr,ptr}）→ vtable 间接调用
                         // BUG-034: 接口字段（this.ifaceField，Member）的 exprLlvmType 可能

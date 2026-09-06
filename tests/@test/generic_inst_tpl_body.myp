@@ -1,0 +1,44 @@
+// 泛型类【模板】体内 this.m<T>/裸 m<T>（方法级泛型调用，A2 遗留，v3.15.227）
+// ---------------------------------------------------------------------------
+// 自举回归：Box<T> 模板的**普通方法**体内调用方法级泛型（this.id<string> /
+// 裸 id<int> / 方法实参=类类型参数 this.id<T>）。Pass B 分析模板体时 class T 未
+// 具体，不能建单一 concrete clone → **延迟登记**：记 pendTpl_，末尾按每个实例
+// （类 T → 实例 concrete）物化 clone + 逐体分析。codegen this 收者方法调用按
+// 当前发射类 curClass_ 定名（实例发射 → Box_int_inst_<mangled>）。
+import test;
+
+class Box<T> {
+    property:
+        T v;
+    action:
+        @constructor Box(T val) { v = val; }
+        U id<U>(U x) { U y = x; return y; }
+        U peek<U>(T a, U b) { return b; }         // 类T 形参 + 方法U
+        string echoS(string s) { return this.id<string>(s); }  // 方法实参=具体 string
+        int echoI(int n) { return id<int>(n); }                // 类内裸 id<int>
+        T echoT() { return this.id<T>(v); }        // ★ 方法实参 = 类类型参数 T
+        T echoT2() { return id<T>(v); }            // 裸 id<T>
+        string viaPeek(string s) { return this.peek<string>(v, s); }  // 类T形参 + 具体U
+}
+
+@test void t() {
+    Box<int> b = new Box<int>(42);
+    string e0 = b.echoS("hi");
+    Test.assertStrEq(e0, "hi", "e0");
+    int e1 = b.echoI(5);
+    Test.assertEq(e1, 5, "e1");
+    int e2 = b.echoT();                       // id<T=int>(v=42)
+    Test.assertEq(e2, 42, "e2");
+    int e3 = b.echoT2();
+    Test.assertEq(e3, 42, "e3");
+    string e4 = b.viaPeek("pp");              // peek<int? no: classT=int + U=string
+    Test.assertStrEq(e4, "pp", "e4");
+    Box<string> bs = new Box<string>("yo");
+    string e5 = bs.echoT();                   // id<T=string>(v="yo")
+    Test.assertStrEq(e5, "yo", "e5");
+    string e6 = bs.echoT2();
+    Test.assertStrEq(e6, "yo", "e6");
+    string e7 = bs.echoS("ho");
+    Test.assertStrEq(e7, "ho", "e7");
+    Test.report("t", true);
+}
