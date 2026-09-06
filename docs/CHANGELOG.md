@@ -27,6 +27,25 @@
 
 ## 编译器版本历史
 
+### v3.15.239 — A5 容器型形参推导（`ArrayList<T>` 实参 → T）（selfhost additive 超前 oracle）
+
+**非破坏性硬化（generic_gaps A5，selfhost 新功能先落地）**。sema `sema.myp`。
+
+- 顶层泛型函数 `T first<T>(ArrayList<T> l)` 调 `first(li)`（li: ArrayList<int>）现推导
+  T=int（此前两编译器都不推导，须显式 `first<int>(l)`）。
+- **根因修正**：形参 `ArrayList<T>` 的 typeArgs 含 T → 递归 `typeMatchesGenericParam`
+  让容器形参误走「裸 T」形态 → `argToAstType` 把实参**整体** `ArrayList_int_inst`
+  绑给 T（推断错值）→ 调用点报含混 `type 'class'`。
+- 修复（`inferConcreteTypeForGenericParam` 加**容器分支**）：形参 typeArgs 某位==类型
+  参数、实参为**同类泛型实例**（Identifier → `entryTemplateType` 重建「模板+typeArgs」）
+  → 取实参对应 typeArg（T=int）。非容器实参不匹配 → 干净 `cannot infer type parameter
+  'T' ... (pass explicit args)`（与 oracle 诊断一致，不再错值）。
+- 泛型 static / 实例方法的容器推导未做（内联推导循环仍只认裸 T / T[] → 干净 cannot
+  infer，非错值）；函数类型作泛型 typeArg（函数值容器）为独立缺口（见 semantic §6.2，
+  横向大改，另轮）。
+- 正例 tests/@test/generic_a5_container_infer.myp（int/string 容器推导 + size/pick，
+  5 断言）；全量 539/539 + bugs 20/20 + bootstrap MD5 一致。
+
 ### v3.15.238 — `??` 空合并对齐 oracle（值类型判零）+ `ref` 参数干净拒绝（selfhost additive）
 
 **非破坏性硬化（semantic_gaps §1/§2 P1）。** codegen `codegen.myp` + parser `parser.myp`。

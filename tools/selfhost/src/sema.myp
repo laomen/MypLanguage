@@ -3427,6 +3427,23 @@ class Sema {
         }
         AstType inferConcreteTypeForGenericParam(AstType paramType, AstExpr arg, string tpName) {
             if (arg == null) return null;
+            // A5（v3.15.239）：容器型形参 `ArrayList<T>` —— paramType 的 typeArgs 某
+            // 位==tpName，实参为**同类泛型实例** → 取实参对应 typeArg 绑定（此前递归
+            // typeMatchesGenericParam 让容器形参误走"裸 T"形态 → argToAstType 把实参
+            // 整体 ArrayList_int_inst 绑给 T → 推断错值，顶层 fn first(l) 报含混
+            // "type 'class'"；oracle 同场景干净报 cannot infer + 显式引导）。
+            for (int ci = 0; ci < paramType.typeArgs().size(); ci = ci + 1) {
+                if (typeMatchesGenericParam(paramType.typeArgs().get(ci), tpName) == 0) continue;
+                AstType argT = null;
+                if (arg.kind() == "Identifier") {
+                    SymbolEntry en2 = sym_.lookupEntry(arg.name());
+                    if (en2 != null) argT = entryTemplateType(en2);
+                }
+                if (argT == null || Str.len(argT.className()) == 0) return null;
+                if (argT.className() != paramType.className()) return null;
+                if (ci < argT.typeArgs().size()) return argT.typeArgs().get(ci);
+                return null;
+            }
             if (paramType != null && paramType.element() != null && typeMatchesGenericParam(paramType.element(), tpName) != 0) {
                 AstType at = argElemToAstType(arg);
                 if (at != null) return at;

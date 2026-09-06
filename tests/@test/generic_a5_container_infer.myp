@@ -1,0 +1,28 @@
+// generic_a5_container_infer.myp — A5 容器型形参推导（v3.15.239，selfhost additive）
+// `T first<T>(ArrayList<T> l) { ... }` 调 `first(li)`（li: ArrayList<int>）推导 T=int。
+// 修复前：形参 ArrayList<T> 的 typeArgs 含 T → 递归 typeMatchesGenericParam 让它误走
+// "裸 T" 形态 → argToAstType 把实参**整体** ArrayList_int_inst 绑给 T → 顶层泛型 fn
+// first(l) 推断错值 → 调用点报含混 "type 'class'"（oracle 同场景干净报 cannot infer +
+// 显式引导，须显式 first<int>(l)）。修复（sema inferConcreteTypeForGenericParam 加
+// 容器分支）：形参 typeArgs 某位==T、实参为**同类泛型实例**（Identifier → entryTemplateType
+// 重建模板+typeArgs）→ 取实参对应 typeArg（T=int）。非容器不匹配 → 干净 cannot infer。
+
+import test;
+import collections;
+
+T first<T>(ArrayList<T> l) { return l.get(0); }
+int sz<T>(ArrayList<T> l) { return l.size(); }
+T pick<T>(ArrayList<T> l, int i) { return l.get(i); }
+
+@test void t() {
+    ArrayList<int> li = new ArrayList<int>();
+    li.add(42);
+    Test.assertEq(first(li), 42, "a0");      // int 容器推导 T=int
+    Test.assertEq(sz(li), 1, "a1");
+    Test.assertEq(pick(li, 0), 42, "a2");
+    ArrayList<string> ls = new ArrayList<string>();
+    ls.add("hi");
+    Test.assertStrEq(first(ls), "hi", "a3");  // string 容器推导
+    Test.assertStrEq(pick(ls, 0), "hi", "a4");
+    Test.report("t", true);
+}
