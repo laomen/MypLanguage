@@ -1,0 +1,60 @@
+// 泛型【实例】方法（generic A2，v3.15.217，selfhost additive）回归：
+// 普通（非泛型）类的 action 带方法级 <T> —— obj.m<T>(...) / this.m<T>(...) /
+// 类内裸 m<T>(...)，显式类型实参或从形参推导（裸 T / T[] 元素）；T 可用于
+// 形参/返回/body 局部与运算；多个实例化按 mangled 名去重。
+// v1：非泛型类；泛型类 + 方法级 <T> / 推断失败 → 干净拒绝（见 negative）。
+import test;
+import env;
+
+class C {
+    property:
+        int factor = 2;
+    action:
+        @constructor C() {}
+        T id<T>(T x) { T y = x; return y; }             // T 局部
+        T first<T>(T[] xs) { T y = xs[0]; return y; }   // T[] 形参
+        T scaled<T>(T x) { return x; }
+        void go() {
+            // 裸 self-call：显式 / 推断 / string ARC
+            int a = id<int>(5);
+            Test.assertEq(a, 5, "a0");
+            double b = id(2.5);
+            Test.assert(b == 2.5, "b0");
+            string s = id<string>("hello");
+            Test.assertStrEq(s, "hello", "s0");
+            // 重复实例化（同类型）去重
+            int c = id<int>(7);
+            Test.assertEq(c, 7, "c0");
+            // this.m<T>
+            int d = this.id<int>(9);
+            Test.assertEq(d, 9, "d0");
+            // T[] 形参：显式 + 推断
+            int[] is = [3, 4];
+            int e = first<int>(is);
+            Test.assertEq(e, 3, "e0");
+            int f = first(is);
+            Test.assertEq(f, 3, "e1");
+            double[] ds = [1.5, 2.5];
+            double g = first<double>(ds);
+            Test.assert(g == 1.5, "g0");
+            // 实例属性读取（this 状态与泛型共存）
+            int h = scaled<int>(factor);
+            Test.assertEq(h, 2, "h0");
+            Test.report("go", true);
+        }
+}
+
+class D {
+    action:
+        @constructor D() {}
+        int via(C c) { return c.id<int>(21); }   // 跨实例 obj.m<T>
+}
+
+@test void t() {
+    C c = new C();
+    c.go();
+    D dd = new D();
+    int r = dd.via(c);
+    Test.assertEq(r, 21, "x0");
+    Test.report("t", true);
+}

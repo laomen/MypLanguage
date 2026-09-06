@@ -1,0 +1,13 @@
+// EXPECT ERROR: cannot infer type parameter 'T' for generic method 'C.dbl'
+// 泛型实例方法负例（A2 v1）：T 仅出现在返回类型、无显式类型实参 → 无法推断，
+// 干净拒绝（须 c.dbl<int>()）。
+import env;
+class C {
+    action:
+        @constructor C() {}
+        int dbl<T>() { return 0; }
+}
+void main() {
+    C c = new C();
+    int a = c.dbl();
+}

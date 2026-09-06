@@ -1,0 +1,12 @@
+// EXPECT ERROR: generic method 'C.w' expects 1 type argument(s), got 2
+// 泛型实例方法负例（A2 v1）：类型实参数与模板不符 → 干净拒绝。
+import env;
+class C {
+    action:
+        @constructor C() {}
+        T w<T>(T x) { return x; }
+}
+void main() {
+    C c = new C();
+    int a = c.w<int, double>(5);
+}

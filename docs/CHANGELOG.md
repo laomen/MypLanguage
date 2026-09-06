@@ -27,6 +27,53 @@
 
 ## 编译器版本历史
 
+### v3.15.217 — 泛型【实例】方法（generic A2，additive，selfhost）
+
+**非破坏性加法（selfhost 超前 / seed 冻结不解析）**。普通（非泛型）类的 action 现可带
+**方法级类型参数** `<T>` 并在调用点单态化——此前只支持顶层泛型函数与泛型 static 方法
+（方法级 `<T>` 能解析但 T 不绑定 → 形参/返回变 void）：
+
+```myp
+class C {
+  action:
+    T wrap<T>(T x) { return x; }          // 实例方法带方法级 <T>
+    T first<T>(T[] xs) { return xs[0]; }
+    T scaled<T>(T x) { return x; }        // T 可参与 body 运算
+}
+C c = new C();
+int a  = c.wrap<int>(5);                  // 外部 obj.m<T>（显式）
+int b  = this.wrap<int>(7);               // this.m<T>
+int cc = wrap<int>(9);                    // 类内裸 self-call
+double d = c.wrap(2.5);                   // 推导（T 出现于形参/元素）
+int e  = c.first<int>(xs);                // T[] 形参
+```
+
+- 机制：调用点把模板 action **单态化为同类改名 action**（mangled 名
+  `<method>_<types>_inst`，params/ret 经 `substituteType` 具体化，新增 AstAction
+  `instTypeArgs` 记录方法级 T→具体）；调用 callee 的名字（Member→memberName，
+  裸 Identifier→name）改为 mangled —— codegen 沿既有实例方法发射路径
+  `Class_<mangled>(ptr this, ...)` 且 `resolveType` 依 instTypeArgs 把方法级 T 映射
+  具体（body 内 `T` 局部/运算由此解析）。同类型重复调用按 mangled 名去重。
+- **ast**（`ast.myp` `AstAction`）：新增 `instTypeArgs_`（类型实参映射，对齐 AstFunction）。
+- **sema**（`sema.myp`）：`resolveGenericInstMethod(e, callee, cls, m)` —— 三类调用点
+  前置拦截：Member `obj.m<T>`（cn 容器）、`this.m<T>`（kind "This"→cn 空 inClass
+  回退）、类内裸 `m<T>`（Identifier inClass 分支）。解析：显式 `<...>` 或从形参推导
+  （裸 `T`/`T[]` 元素，镜像 `resolveGenericStaticCall`）；替换后逐参类型校验；mangled
+  action 克隆入同类 actions（去重）。干净拒绝：类型实参数不符 / 无法推断 / 实参类型
+  不匹配 / **泛型类 + 方法级 `<T>`**（v1 限非泛型类，防类级+方法级双占位）。
+- **codegen**（`codegen.myp`）：类实例 action 发射循环**跳过泛型模板**
+  （typeParams>0 且 instTypeArgs 空——T 未绑定会产坏 IR），仅发 `_inst` 克隆；
+  `genInstanceActionNamed` 在 instTypeArgs 非空时以方法级 typeParams/instTypeArgs
+  覆盖 `curTypeParams_`/`curTypeArgs_`（body 内 T 占位 → 具体）。e.resolved 保持空
+  （走既有 this 实例路径，不走无-this 的 resolved 分支）。
+- Pass B 对泛型方法模板沿用 markAllStmt（body 不逐个类型检查，与泛型 static 模板一致，
+  实例体由 codegen resolveType 具体化）。AST dump 稳定；bootstrap MD5 一致。
+- 回归 `tests/@test/generic_inst_method.myp`（裸/this/外部 + 显式/推断 + T[] + T 局部/
+  运算 + string ARC + 实例属性，18 断言）+ 4 负例（type-arg 数/实参错/推断失败/泛型类）。
+- 全量 504/504 + bugs 19/19。
+- 后续（路线）：泛型类 + 方法级 `<T>` 组合（双占位）、接口/抽象方法上泛型、A1
+  （泛型体内调泛型）。
+
 ### v3.15.216 — 结构体/对象初始化器 `Pt{x:1, y:2}`（additive，selfhost）
 
 **非破坏性加法（值式 struct 字面量，selfhost 超前 / seed 冻结不解析）**。`Pt{x:1,

@@ -3614,6 +3614,145 @@ class Sema {
             if (mobj != null) mobj.setResolvedKind("int");
             return rk;
         }
+        // A2（泛型实例方法 v1，非泛型类）obj.m<T>(args) / this.m<T> / 类内裸
+        // m<T>(args)：把模板 action 单态化为**同类改名 action**（mangled 名，
+        // params/ret 已 substitute 具体类型，instTypeArgs 记方法级 T→concrete），
+        // 调用 callee 的名字改成 mangled —— codegen 沿既有实例方法发射路径
+        // （Class_<mangled>(ptr this, ...)）＋ codegen resolveType 把方法级 T
+        // 映射具体（body 内 T 占位）。返回 kind；未命中/不支持返回 ""（调用方走
+        // 既有路径）；命中但出错（推断失败/实参不匹配/泛型类）返回 "void"。
+        string resolveGenericInstMethod(AstExpr e, AstExpr callee, string cls, string mName) {
+            if (tu_ == null || Str.len(cls) == 0 || Str.len(mName) == 0) return "";
+            AstClass cobj = null;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass cc = tu_.classes().get(ci);
+                if (cc.name() == cls) { cobj = cc; break; }
+            }
+            if (cobj == null) return "";
+            ArrayList<AstAction> acts = cobj.actions();
+            AstAction templ = null;
+            for (int ai = 0; ai < acts.size(); ai = ai + 1) {
+                AstAction aa = acts.get(ai);
+                if (aa.name() == mName && aa.typeParams().size() > 0 && aa.instTypeArgs().size() == 0) { templ = aa; break; }
+            }
+            if (templ == null) return "";
+            if (cobj.typeParams().size() != 0) {
+                // 泛型类 + 方法级 <T> 组合 v1 不支持 → 干净拒绝（否则回落既有路径
+                // 产生 void/错 IR）。
+                diag_.error(e.line(), e.col(), "generic instance methods on a generic class are not supported yet (generic A2 v1: declare on a concrete class)");
+                for (int i = 0; i < e.args().size(); i = i + 1) {
+                    if (Str.len(e.args().get(i).resolvedKind()) == 0) visitExpr(e.args().get(i));
+                }
+                e.setArgsVisited(1);
+                return "void";
+            }
+            ArrayList<string> tps = templ.typeParams();
+            int ntp = tps.size();
+            // 1) 访问实参（guard，供显式 <..> 外还可由解析出的 concrete 校验）
+            for (int i = 0; i < e.args().size(); i = i + 1) {
+                if (Str.len(e.args().get(i).resolvedKind()) == 0) visitExpr(e.args().get(i));
+            }
+            e.setArgsVisited(1);
+            // 2) 具体类型实参：显式 callTypeArgs，否则从形参推导（裸 T / T[] 元素）
+            ArrayList<AstType> concrete = new ArrayList<AstType>();
+            ArrayList<AstType> cta = e.callTypeArgs();
+            if (cta.size() > 0) {
+                if (cta.size() != ntp) {
+                    diag_.error(e.line(), e.col(), "generic method '" + cls + "." + templ.name() + "' expects " + ntp + " type argument(s), got " + cta.size());
+                    return "void";
+                }
+                for (int i = 0; i < ntp; i = i + 1) concrete.add(cta.get(i));
+            } else {
+                ArrayList<AstParam> tplP2 = templ.params();
+                for (int ti = 0; ti < ntp; ti = ti + 1) {
+                    int found = 0;
+                    for (int pi = 0; pi < tplP2.size() && pi < e.args().size(); pi = pi + 1) {
+                        AstType pt = tplP2.get(pi).type();
+                        if (pt == null) continue;
+                        if (Str.len(pt.className()) != 0 && pt.className() == tps.get(ti)
+                            && pt.typeArgs().size() == 0 && pt.element() == null) {
+                            concrete.add(argToAstType(e.args().get(pi)));
+                            found = 1;
+                            break;
+                        }
+                        if (pt.element() != null && Str.len(pt.element().className()) != 0
+                            && pt.element().className() == tps.get(ti)
+                            && pt.element().typeArgs().size() == 0) {
+                            AstType at2 = argElemToAstType(e.args().get(pi));
+                            if (at2 != null) { concrete.add(at2); found = 1; break; }
+                        }
+                    }
+                    if (found == 0) {
+                        diag_.error(e.line(), e.col(), "cannot infer type parameter '" + tps.get(ti)
+                            + "' for generic method '" + cls + "." + templ.name()
+                            + "' (pass explicit args: " + cls + "." + templ.name() + "<...>(...))");
+                        return "void";
+                    }
+                }
+            }
+            // 3) 实参数 + 逐参类型校验（substitute 后 vs 实参 kind）
+            ArrayList<AstParam> tplP = templ.params();
+            if (e.args().size() != tplP.size()) {
+                diag_.error(e.line(), e.col(), "generic method '" + cls + "." + templ.name()
+                    + "' expects " + tplP.size() + " argument(s), got " + e.args().size());
+                return "void";
+            }
+            for (int gi = 0; gi < tplP.size(); gi = gi + 1) {
+                AstType gpt = substituteType(tplP.get(gi).type(), tps, concrete);
+                string gpk = gpt != null ? typeToKind(gpt) : "void";
+                if (gpk == "void" || gpk == "assoc") continue;
+                AstExpr garg = e.args().get(gi);
+                string gat = garg != null ? garg.resolvedKind() : "void";
+                if (garg != null && garg.kind() == "Lambda" && gpk == "function") gat = "function";
+                if (Str.len(gat) != 0 && typesCompat(gpk, gat) == 0) {
+                    int gl = garg != null ? garg.line() : 0;
+                    int gc = garg != null ? garg.col() : 0;
+                    diag_.error(gl, gc, "argument " + (gi + 1) + ": expected '" + gpk + "', got '" + gat + "'");
+                }
+            }
+            // 4) mangled action 名（同类 actions 内去重）
+            string mAct = templ.name();
+            for (int i = 0; i < concrete.size(); i = i + 1) mAct = mAct + "_" + gsTypeArgName(concrete.get(i));
+            mAct = mAct + "_inst";
+            int hasM = 0;
+            for (int ai = 0; ai < acts.size(); ai = ai + 1) {
+                if (acts.get(ai).name() == mAct) { hasM = 1; break; }
+            }
+            if (hasM == 0) {
+                AstAction na = new AstAction();
+                na.setName(mAct);
+                na.setPos(templ.line(), templ.col());
+                na.setRet(substituteType(templ.ret(), tps, concrete));
+                na.setStartup(templ.startup());
+                na.setCtor(templ.ctor());
+                na.setTest(templ.test());
+                na.setCoro(templ.coro());
+                na.setAsync(templ.async());
+                na.setRegion(templ.region());
+                na.setStack(templ.stack());
+                for (int j = 0; j < templ.typeParams().size(); j = j + 1) na.typeParams().add(templ.typeParams().get(j));
+                for (int j = 0; j < concrete.size(); j = j + 1) na.instTypeArgs().add(concrete.get(j));
+                ArrayList<AstPair> ac2 = templ.constraints();
+                for (int j = 0; j < ac2.size(); j = j + 1) na.constraints().add(ac2.get(j));
+                for (int j = 0; j < templ.params().size(); j = j + 1) na.params().add(cloneParam(templ.params().get(j), tps, concrete));
+                na.setBody(templ.body());
+                acts.add(na);
+            }
+            // 5) 调用点：返回类型 + callee 改名（Member→memberName / Identifier→name）
+            AstType sret = substituteType(templ.ret(), tps, concrete);
+            if (sret != null && sret.typeArgs().size() > 0) tryInstantiate(sret.className(), sret.typeArgs());
+            string rk = sret != null ? typeToKind(sret) : "void";
+            if (rk == "class" || rk == "struct" || rk == "interface") {
+                string vc = gsRetValueClass(sret);
+                if (Str.len(vc) != 0) e.setValueClass(vc);
+            }
+            e.setResolvedKind(rk);
+            callee.setResolvedKind("int");
+            if (callee.kind() == "Member") callee.setMemberName(mAct);
+            else if (callee.kind() == "Identifier") callee.setName(mAct);
+            return rk;
+        }
+
         // AstAction 泛型模板 → AstFunction 实例（C++ FuncDecl inst 形态）
         AstFunction cloneStaticToFunction(AstAction a, string name, ArrayList<string> tps, ArrayList<AstType> concrete) {
             AstFunction nf = new AstFunction();
@@ -6568,6 +6707,13 @@ class Sema {
                                                 e.setCallParamTypes(fveParams);
                                             }
                                         } else if (inClass_ != 0) {
+                                        // A2：类内裸调用泛型实例方法 m<T>(...) 单态化
+                                        //（改名 callee → codegen 自拼 Class_<mangled>+this）。
+                                        string gimS = resolveGenericInstMethod(e, callee, currentClass_, fn);
+                                        if (Str.len(gimS) != 0) {
+                                            e.setResolvedKind(gimS);
+                                            return gimS;
+                                        }
                                         string mr = findMethodRet(currentClass_, fn, e.args().size());
                                         if (Str.len(mr) != 0) {
                                             // BUG-083：类内未限定 @async 方法调用（slowCalc(5)）
@@ -6710,6 +6856,13 @@ class Sema {
                         }
                         if (Str.len(cn) != 0) {
                             string base3 = resolveBase(cn);
+                            // A2（泛型实例方法 v1）：obj.m<T>(...) / this.m<T>(...)
+                            // 单态化。仅非泛型类的 action 模板命中；否则回落既有解析。
+                            string gimR = resolveGenericInstMethod(e, callee, cn, callee.memberName());
+                            if (Str.len(gimR) != 0) {
+                                e.setResolvedKind(gimR);
+                                return gimR;
+                            }
                             // A2（BUG-001 镜像）：function: 段方法仅类内 this.f()
                             // 可调用；外部 obj.f() 拒绝（含同类另一实例/链式对象）。
                             if (isFuncSectionMethod(base3, callee.memberName()) != 0) {
@@ -6871,6 +7024,13 @@ class Sema {
                                 if (normFailed == 0 && mps != null) fillDefaultArgs(e, mps);
                             }
                         } else if (inClass_ != 0) {
+                            // A2：this.m<T>(...) —— this 是 kind "This"（cn 空），
+                            // 走当前类裸名回退；同样单态化实例泛型方法。
+                            string gimT = resolveGenericInstMethod(e, callee, currentClass_, callee.memberName());
+                            if (Str.len(gimT) != 0) {
+                                e.setResolvedKind(gimT);
+                                return gimT;
+                            }
                             string fr = findMethodRet(currentClass_, callee.memberName(), e.args().size());
                             if (Str.len(fr) != 0) {
                                 if (isMethodCoro(currentClass_, callee.memberName()) != 0) ret = "long";

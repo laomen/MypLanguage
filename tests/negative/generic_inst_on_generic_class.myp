@@ -1,0 +1,14 @@
+// EXPECT ERROR: generic instance methods on a generic class are not supported yet
+// 泛型实例方法负例（A2 v1）：泛型类 + 方法级 <T> 组合不支持 → 干净拒绝
+//（v1 限非泛型类；泛型类方法级泛型为后续路线）。
+import env;
+class G<T> {
+    property: T v;
+    action:
+        @constructor G() {}
+        U id2<U>(U x) { return x; }
+}
+void main() {
+    G<int> g = new G<int>();
+    int a = g.id2<int>(1);
+}

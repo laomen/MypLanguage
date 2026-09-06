@@ -1,0 +1,12 @@
+// EXPECT ERROR: argument 1: expected 'int', got 'string'
+// 泛型实例方法负例（A2 v1）：替换后形参类型与实参不匹配 → 干净拒绝。
+import env;
+class C {
+    action:
+        @constructor C() {}
+        T w<T>(T x) { return x; }
+}
+void main() {
+    C c = new C();
+    int a = c.w<int>("s");
+}

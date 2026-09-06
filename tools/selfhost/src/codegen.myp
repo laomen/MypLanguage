@@ -2229,8 +2229,12 @@ class CodeGen {
                     }
                 }
                 // 实例方法（this 指针）+ 构造器
+                // A2：泛型实例方法模板（typeParams>0 且未实例化）不直接发射——T 未
+                // 绑定会产坏 IR；实例由调用点单态化的 _inst 克隆发射（instTypeArgs
+                // 记录 T→具体）。非泛型模板的普通方法照常。
                 for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
                     AstAction a = c.actions().get(ai);
+                    if (a.typeParams().size() != 0 && a.instTypeArgs().size() == 0) continue;
                     if (a.ctor() != 0) genConstructor(c.name(), a);
                     else genInstanceAction(c.name(), a);
                 }
@@ -2241,7 +2245,7 @@ class CodeGen {
                 // @coro 方法入口包装（__myp_coro_entry_Cls_m，spawn 时被引用）
                 for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
                     AstAction a = c.actions().get(ai);
-                    if (a.coro() != 0) genCoroEntry(c.name(), a);
+                    if (a.coro() != 0 && (a.typeParams().size() == 0 || a.instTypeArgs().size() != 0)) genCoroEntry(c.name(), a);
                 }
             }
             // struct 方法体（顶层 + 类嵌套；同 C++ generateStructMethods）。
@@ -3181,6 +3185,12 @@ class CodeGen {
                 return;
             }
             setupTypeParams(cls);
+            // A2（泛型实例方法 v1）：实例化克隆 action 的 instTypeArgs 记录方法级
+            // T→具体 → 覆盖类级映射（非泛型类类级为空），body 内 T 占位由此解析。
+            if (a.instTypeArgs().size() > 0) {
+                curTypeParams_ = a.typeParams();
+                curTypeArgs_ = a.instTypeArgs();
+            }
             ArrayList<AstParam> ps = new ArrayList<AstParam>();
             AstParam tp = new AstParam();
             tp.setName("this");
