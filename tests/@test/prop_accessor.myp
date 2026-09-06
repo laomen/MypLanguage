@@ -1,0 +1,37 @@
+// 自动属性访问器（get/set accessor sugar，v3.15.213，additive）回归。
+// property: int x { get; set; } —— 属性槽即存储，编译器自动补全平凡读写：
+// 外部 obj.x 读写、类内 this.x、只读 { get; }、string(ARC) 字段。
+
+import test;
+import env;
+
+class Point {
+    property:
+        int x { get; set; }
+        string name { get; set; }
+        int ro { get; }
+        string label { get; }
+    action:
+        @constructor Point(int v) { x = v; name = "p"; ro = 7; label = "L"; }
+        int bump() { x = x + 1; return x; }        // 类内 this.x 走同一槽
+        string tag() { return name + label; }      // 类内 this.name/label 读
+}
+
+class User {
+    action:
+        void go() {
+            Point p = new Point(3);
+            Test.assertEq(p.x, 3, "read rw");
+            p.x = 10;
+            Test.assertEq(p.x, 10, "write rw");
+            p.name = "q";
+            Test.assertStrEq(p.name, "q", "string rw");
+            Test.assertEq(p.bump(), 11, "internal rw");
+            Test.assertStrEq(p.tag(), "qL", "internal read string");
+            Test.assertEq(p.ro, 7, "read ro");
+            Test.assertStrEq(p.label, "L", "read ro string");
+            Test.report("go", true);
+        }
+}
+
+@test void t() { User u = new User(); u.go(); Test.report("t", true); }

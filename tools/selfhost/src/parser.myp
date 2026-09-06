@@ -353,9 +353,52 @@ class Parser {
             if (curKind() == "const") { advance(); d.setConst(1); }
             d.setType(parseType());
             d.setName(parseIdentifier("expected property name"));
+            // 自动属性（get/set accessor sugar，additive）：int x { get; set; } /
+            // { get; } / { set; } ——属性槽即存储，编译器自动补全平凡读写（外部
+            // obj.x 读/写路由到槽）。自定义访问器体 get {..} / set(v) {..} 暂不
+            // 支持 → 干净拒绝（不静默当平凡字段）。
+            if (matchKind("{") != 0) {
+                if (d.isConst() != 0) {
+                    diag_.error(peekLine(), peekCol(), "const property cannot declare accessors");
+                }
+                while (isAtEnd() == 0 && curKind() != "}") {
+                    string acc = parseIdentifier("expected 'get' or 'set' in property accessor");
+                    if (acc == "get") d.setGet(1);
+                    else if (acc == "set") d.setSet(1);
+                    else {
+                        diag_.error(peekLine(), peekCol(), "expected 'get' or 'set' in property accessor, got '" + acc + "'");
+                    }
+                    if (curKind() == "{") {
+                        // 自定义体（get { return x_; } / set(v) {..}）→ 本版未支持；
+                        // 有体即不当作自动属性（清标志），避免静默错语义。
+                        diag_.error(peekLine(), peekCol(), "custom accessor bodies are not supported yet; use auto property '{ get; set; }'");
+                        d.setGet(0);
+                        d.setSet(0);
+                        skipBalancedBraces();
+                    }
+                    matchKind(";");
+                }
+                consume("}", "expected '}' after property accessors");
+                matchKind(";");
+                return d;
+            }
             if (matchKind("=") != 0) d.setInit(parseExpr());
             consume(";", "expected ';' after property declaration");
             return d;
+        }
+
+        // 跳过一对花括号块（错误恢复用；不吞外层 '}'）。
+        void skipBalancedBraces() {
+            int dep = 0;
+            while (isAtEnd() == 0) {
+                string k = curKind();
+                if (k == "{") dep = dep + 1;
+                else if (k == "}") {
+                    if (dep == 0) return;
+                    dep = dep - 1;
+                }
+                advance();
+            }
         }
 
         void parseInterfaceClassDecl(AstClass c) {

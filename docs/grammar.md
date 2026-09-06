@@ -381,12 +381,27 @@ ActionAnnot      ::= '@' 'startup' | '@' 'constructor' | '@' 'test' | '@' 'coro'
 FuncAnnot        ::= '@' 'test' | '@' 'region' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )?   // 顶层 @coro 协程函数
 EventDecl        ::= Identifier '(' ParamList? ')' ';'
 PropertyDecl     ::= 'const'? Type Identifier ('=' Expression)? ';'
+                   | Type Identifier '{' PropAccessor* '}' ';'?     // 自动属性（additive）
+PropAccessor     ::= 'get' ';' | 'set' ';'                          // 编译器补全平凡读写
 
 ParamList        ::= Param (',' Param)*
 Param            ::= Type Identifier ('=' Expression)?    // §四-1 默认参数（函数/action/构造器；事件/枚举无）
 ReturnType       ::= Type | 'void'
 Block            ::= '{' Stmt* '}'
 ```
+
+> **自动属性访问器（§5 OOP，additive，selfhost 超前 / seed 冻结不解析）**
+> - `property: int x { get; set; }` ——属性槽即存储，编译器自动补全平凡读写：外部
+>   `obj.x` 读/写直接路由到该槽（等价公开字段，可带存取在槽上无逻辑）。组合：
+>   `{ get; }` = 只读（外部写报 `read-only (no setter)`）；`{ set; }` = 只写（外部读仍
+>   按私有拒）。`{ get; set; }` 兼具。类内 `this.x` 走同一槽。
+> - 属性仍默认私有（未声明 accessor 者外部不可访，诊断
+>   `properties are private; use a getter action`）。
+> - 自定义访问器体（`get {…}`/`set(v) {…}`）暂不支持 → 解析期干净拒绝
+>   （`custom accessor bodies are not supported yet`）。ARC 字段（class/string）按
+>   普通属性赋值/读规则（fresh/借用）。
+> - 实现：selfhost parser/sema（`accessorGet/accessorSet` 标志 + 外部读写放行）；
+>   seed(oracle) 冻结不解析该语法（selfhost 超前属允许 parity 方向）。
 
 > **默认参数 / 命名实参（§四-1，additive）**
 > - `Param ::= Type Identifier ('=' Expression)?`——带默认值的参数可省略（仅函数/action/构造器；

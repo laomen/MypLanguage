@@ -27,6 +27,37 @@
 
 ## 编译器版本历史
 
+### v3.15.213 — 自动属性访问器 `{ get; set; }`（additive，selfhost）
+
+**非破坏性加法（语法糖，selfhost 超前 / seed 冻结不解析）**。属性字段仍默认私有，
+新增自动属性 accessor 声明让**外部 `obj.x` 读/写**直接路由到属性槽（编译器补全平凡
+读写），消掉"手写 getter/setter action"样板：
+
+```myp
+class Point {
+  property:
+    int x { get; set; }          // 外部可读可写（槽即存储）
+    string name { get; set; }    // ARC 字段同规则
+    int ro { get; }              // 只读：外部写 → "property 'ro' ... read-only (no setter)"
+}
+Point p = ...; p.x = 5; int a = p.x;   // 类外（另一类方法内）
+```
+
+- **grammar §4**：`PropertyDecl` 增 `Type Identifier '{' PropAccessor* '}' ';'?`，
+  `PropAccessor ::= 'get' ';' | 'set' ';'`（自动平凡形式）。
+- **parser**（selfhost `parser.myp` `parsePropertyDecl`）：解析 `{ get; set; }` 组合置
+  AstProp `accessorGet/accessorSet` 标志；`get`/`set` 后跟 `{…}`（自定义体）→ 干净
+  拒绝 `custom accessor bodies are not supported yet`（不静默当平凡字段）。
+- **sema**（selfhost `sema.myp`）：Member 读路径——外部 `obj.x` 读在 `{ get }` 放行
+  （未声明 accessor 仍按私有拒，诊断不变）；Assign 写路径——外部 `obj.x = v` 在
+  `{ set }` 放行（write-only `{ set; }` 经 `allowAccessorWrite_` 让读路径放行一次），
+  仅 `{ get; }` 写报 read-only。类内 `this.x` 走同一槽（一致）。
+- **codegen**：无需改动（属性槽即存储，Member 字段地址路径已通用）。
+- AST dump 仅对 accessor 属性输出标志（既有 dump 稳定）；bootstrap MD5 一致。
+- 回归 `tests/@test/prop_accessor.myp`（rw int/string、只读、类内读写，8 断言）+
+  负例 `tests/negative/prop_accessor_readonly.myp` / `prop_accessor_private.myp` /
+  `prop_accessor_custom_body.myp`。
+
 ### v3.15.211 — 接口方法返回自定义 class 不再回落 void（BUG-149，selfhost）
 
 **非破坏性修复（selfhost sema.myp）**。`interface I { R m(); }` 经接口变量调用

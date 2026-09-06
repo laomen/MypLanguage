@@ -1,0 +1,18 @@
+// EXPECT ERROR: properties are private; use a getter action
+// 自动属性负例：未声明 accessor（{ get; }/{ set; }）的属性仍是私有字段——
+// 外部 obj.x 读写被拒（与新增前一致；accessor 才公开）。
+import test;
+import env;
+
+class Point {
+    property:
+        int priv;
+}
+class User {
+    action:
+        void go() {
+            Point p = new Point();
+            p.priv = 5;
+        }
+}
+@test void t() { User u = new User(); u.go(); Test.report("t", true); }

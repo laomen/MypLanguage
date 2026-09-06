@@ -3889,6 +3889,23 @@ class Sema {
             }
             return null;
         }
+        // get/set accessor sugar：类属性是否声明外部可读（{ get }）/可写（{ set }）。
+        int propAccessorGet(int ci, string name) {
+            if (ci < 0 || ci >= classProps_.size()) return 0;
+            ArrayList<AstProp> ps = classProps_.get(ci);
+            for (int i = 0; i < ps.size(); i = i + 1) {
+                if (ps.get(i).name() == name) return ps.get(i).accessorGet() != 0 ? 1 : 0;
+            }
+            return 0;
+        }
+        int propAccessorSet(int ci, string name) {
+            if (ci < 0 || ci >= classProps_.size()) return 0;
+            ArrayList<AstProp> ps = classProps_.get(ci);
+            for (int i = 0; i < ps.size(); i = i + 1) {
+                if (ps.get(i).name() == name) return ps.get(i).accessorSet() != 0 ? 1 : 0;
+            }
+            return 0;
+        }
         // 属性类型的具体类名（供 obj.prop.method() 链式解析）
         string findPropTypeClass(int ci, string name) {
             AstType pt = findPropTypeAst(ci, name);
@@ -5623,9 +5640,37 @@ class Sema {
                         return "void";
                     }
                 }
+                // get/set accessor sugar：外部 obj.x = v 写路由。声明含 { set }
+                // （rw / write-only）→ 置 allowAccessorWrite_ 让 Member 读路径放行
+                // 该目标一次；仅 { get }（只读）→ 干净拒绝。
+                AstExpr ltW = e.lhs();
+                if (ltW != null && ltW.kind() == "Member") {
+                    AstExpr mobW = ltW.array();
+                    if (mobW != null && mobW.kind() == "Identifier" && mobW.name() != "this") {
+                        string mcnW = sym_.lookupClass(mobW.name());
+                        int extW = 1;
+                        if (Str.len(mcnW) != 0 && resolveBase(mcnW) == resolveBase(currentClass_)) extW = 0;
+                        else if (isStaticClass(mobW.name()) != 0) extW = 0;
+                        if (extW != 0 && Str.len(mcnW) != 0) {
+                            int mciW = findClass(resolveBase(mcnW));
+                            if (mciW >= 0) {
+                                int gW = propAccessorGet(mciW, ltW.memberName());
+                                int sW = propAccessorSet(mciW, ltW.memberName());
+                                if (gW != 0 || sW != 0) {
+                                    if (sW == 0) {
+                                        diag_.error(ltW.line(), ltW.col(), "property '" + ltW.memberName() + "' of '" + resolveBase(mcnW) + "' is read-only (no setter)");
+                                        e.setResolvedKind("void");
+                                        return "void";
+                                    }
+                                    allowAccessorWrite_ = 1;
+                                }
+                            }
+                        }
+                    }
+                }
                 string l = visitExpr(e.lhs());
-                string r = e.rhs() != null ? visitExpr(e.rhs()) : "void";
-                // BUG-082：const 属性赋值须拒绝（镜像 C++ "cannot assign to const
+                allowAccessorWrite_ = 0;
+                string r = e.rhs() != null ? visitExpr(e.rhs()) : "void";                // BUG-082：const 属性赋值须拒绝（镜像 C++ "cannot assign to const
                 // property 'X'"）。此前 `cap = 200`（const int cap = 100）静默改写
                 // → 常量可变，语义错误（应拒绝）。裸名/this.prop/同类实例.prop。
                 if (assignTargetConst(e.lhs()) != 0) {
@@ -6964,6 +7009,14 @@ class Sema {
                                     if (arr != null && arr.kind() == "Identifier" && arr.name() == "this") allowProp = 1;
                                     else if (base2 == currentClass_) allowProp = 1;
                                     else if (arr != null && arr.kind() == "Identifier" && isStaticClass(arr.name()) != 0) allowProp = 1;
+                                    if (allowProp == 0) {
+                                        // get/set accessor sugar：外部 obj.x 读须
+                                        // 声明 { get }；写（obj.x = v）在 Assign 前置
+                                        // allowAccessorWrite_ 由 set 声明放行读路径一次
+                                        //（write-only { set } 也成立）。
+                                        if (propAccessorGet(ci, e.memberName()) != 0) allowProp = 1;
+                                        else if (allowAccessorWrite_ != 0 && propAccessorSet(ci, e.memberName()) != 0) allowProp = 1;
+                                    }
                                     if (allowProp == 0) {
                                         diag_.error(e.line(), e.col(), "cannot access property '" + e.memberName() + "' of '" + base2 + "' from outside the class (properties are private; use a getter action or a struct)");
                                     } else {
@@ -8611,6 +8664,7 @@ class Sema {
         int inGpuKernel_;
         int inGpuDivergent_;
         int inMain_;
+        int allowAccessorWrite_;   // accessor 属性外部写：仅当前赋值目标（obj.x = v）放行读路径一次
         int inCatchDepth_;
         int autoMain_;
         string currentRet_;

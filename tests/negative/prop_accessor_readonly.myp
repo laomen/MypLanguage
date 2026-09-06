@@ -1,0 +1,18 @@
+// EXPECT ERROR: property 'ro' of 'Point' is read-only (no setter)
+// 自动属性负例：{ get; } 只读属性被外部写 → 干净拒绝
+// （此前仅靠手动 getter action；无 { set } 即不可写）。
+import test;
+import env;
+
+class Point {
+    property:
+        int ro { get; }
+}
+class User {
+    action:
+        void go() {
+            Point p = new Point();
+            p.ro = 5;
+        }
+}
+@test void t() { User u = new User(); u.go(); Test.report("t", true); }

@@ -1,0 +1,11 @@
+// EXPECT ERROR: custom accessor bodies are not supported yet
+// 自动属性负例：自定义访问器体 get {…} / set(v) {…} 暂未支持 → 解析期干净拒绝
+//（不静默当作平凡字段）。v1 仅支持 auto { get; } / { set; }。
+import test;
+import env;
+
+class Point {
+    property:
+        int x { get { return 1; } set { } }
+}
+@test void t() { Point p = new Point(); Test.report("t", true); }
