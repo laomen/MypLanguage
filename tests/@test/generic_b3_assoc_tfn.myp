@@ -1,0 +1,45 @@
+// generic_b3_assoc_tfn.myp — B3（v3.15.237）关联类型 T::Item 于泛型【顶层函数】内
+// 顶层泛型函数体内 `T::Item v = c.getVal();`（assoc 局部，T=约束类型参数）。
+// 修复前：codegen resolveType 的 assoc 解析只按**具体类名** owner（resolveAssocTypeStr
+// 找名为 "T" 的类 → 空）→ 顶层泛型函数（模板体/实例体）里 T::Item 类型解析不出 →
+// 局部按引用槽处理（alloca ptr + myp_retain(i32)）→ opt `i32 but expected 'ptr'`
+//（泛型类内的 assoc 返回签名靠 sema 克隆替换掩盖；局部形态两处都坏）。修复（codegen
+// resolveType assoc 段）：owner 是当前类型参数时先经 curTypeArgs_ 映射成实例实参
+//（T→IntBox）再解析（IntBox::Item=int），镜像 sema associatedTypeKind 的 tp→instArgs。
+
+import test;
+
+interface Container {
+    type Item;
+    Item getVal();
+}
+class IntBox {
+    interface class Container;
+    type Item = int;
+    action: int getVal() { return val; }
+    property: int val = 42;
+}
+class StrBox {
+    interface class Container;
+    type Item = string;
+    action: string getVal() { return val; }
+    property: string val = "hi";
+}
+
+int wrapTop<T where T : Container>(T c) { T::Item v = c.getVal(); return v; }       // int assoc 局部
+string wrapStr<T where T : Container>(T c) { T::Item v = c.getVal(); return v; }    // string assoc 局部
+
+class P<T where T : Container> {                                                    // 泛型类方法内 assoc 局部（对照）
+    action:
+        T::Item dup(T c) { T::Item v = c.getVal(); return v; }
+}
+
+@test void t() {
+    IntBox ib = new IntBox();
+    Test.assertEq(wrapTop<IntBox>(ib), 42, "b3a");
+    StrBox sb = new StrBox();
+    Test.assertStrEq(wrapStr<StrBox>(sb), "hi", "b3b");
+    P<IntBox> p = new P<IntBox>();
+    Test.assertEq(p.dup(ib), 42, "b3c");
+    Test.report("t", true);
+}

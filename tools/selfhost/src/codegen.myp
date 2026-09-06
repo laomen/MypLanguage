@@ -914,7 +914,27 @@ class CodeGen {
             // 关联类型 X::Item → 绑定类型（C++ resolveAssocType）。
             string atn = Str.len(t.className()) != 0 ? t.className() : t.basicName();
             if (Str.len(atn) != 0 && Str.indexOf(atn, "::") > 0) {
-                string bound = resolveAssocTypeStr(atn);
+                // B3（v3.15.237）：owner 可能是**当前类型参数**（顶层泛型函数/泛型类
+                // 模板体内 `T::Item`，T=约束类型参数）——实例发射期 curTypeArgs_ 生效，
+                // 先把 owner T → 实例实参（IntBox）再解析 assoc（IntBox::Item = int）。
+                // 旧实现只按具体类名找（resolveAssocTypeStr("T::Item") → 无类名 "T" →
+                // 空）→ assoc 局部/返回在顶层泛型函数里类型解析不出 → codegen 按引用
+                // 槽处理（alloca ptr + retain i32）→ opt 类型错。镜像 sema
+                // associatedTypeKind 的 tp→instArgs 映射。
+                int assocSp = Str.indexOf(atn, "::");
+                string ownerP = Str.substring(atn, 0, assocSp);
+                string memberP = Str.substring(atn, assocSp + 2, Str.len(atn));
+                string bound = "";
+                for (int rpi = 0; rpi < curTypeParams_.size() && rpi < curTypeArgs_.size(); rpi = rpi + 1) {
+                    if (curTypeParams_.get(rpi) == ownerP) {
+                        AstType rArg = curTypeArgs_.get(rpi);
+                        if (rArg != null && Str.len(rArg.className()) != 0) {
+                            bound = resolveAssocTypeStr(rArg.className() + "::" + memberP);
+                            break;
+                        }
+                    }
+                }
+                if (Str.len(bound) == 0) bound = resolveAssocTypeStr(atn);  // 具体类名直查
                 if (Str.len(bound) != 0) return typeStrToAst(bound);
             }
             for (int i = 0; i < curTypeParams_.size(); i = i + 1) {
@@ -2462,6 +2482,14 @@ class CodeGen {
                 AstClass c = tu_.classes().get(ci);
                 if (c.isStatic() == 0) continue;
                 if (c.props().size() == 0) continue;
+                // B4（v3.15.237）：含 `static:` 分区的**泛型类模板**（Holder<T>，parser
+                // 对任何带 static 分区的类置 isStatic=1）——模板类类型 %Holder 不被
+                // emitClassTypes 发射（typeParams>0 && isGenericInst==0 跳过）→ 曾生成
+                // `@__myp_static_Holder = global %Holder zeroinitializer` → opt
+                // `invalid type for null constant`。泛型模板无静态容器（静态属性若含 T
+                // 无法 global 实例化；纯 static 方法场景不需要容器）——与 emitClassTypes
+                // 同规则跳过；泛型实例（isGenericInst==1）保留既有行为。
+                if (c.typeParams().size() != 0 && c.isGenericInst() == 0) continue;
                 int dup = 0;
                 for (int di = 0; di < emitted.size(); di = di + 1) {
                     if (emitted.get(di) == c.name()) { dup = 1; break; }
@@ -12090,6 +12118,23 @@ class CodeGen {
                                 && isSliceType(rt2) == 0 && isEnumName(rt2.className()) == 0
                                 && isStructName(rt2.className()) == 0 && isInterfaceName(rt2.className()) == 0) {
                                 cls2 = classInstName(rt2);
+                            }
+                        } else if (Str.len(curClass_) != 0 && tu_ != null) {
+                            // B5（v3.15.237）：泛型类模板体内**属性收者**方法调用
+                            // （`list_.add(v)`，list_ 是类属性、非局部）——varAstType 只查
+                            // 局部；sema 在共享模板体上把 callee.resolvedClass 落成占位
+                            // 实例名 ArrayList_T_inst（类级 T 未绑定）→ 直接拼
+                            // @ArrayList_T_inst_add 未定义（opt）。用属性声明类型
+                            // ArrayList<T> 经 resolveType（curTypeArgs_ 生效，实例发射期
+                            // T→int）→ ArrayList_int_inst，覆盖 cls2 走真实实例方法。
+                            AstType pvt2 = propAstType(curClass_, obj.name());
+                            if (pvt2 != null) {
+                                AstType prt2 = resolveType(pvt2);
+                                if (prt2 != null && Str.len(prt2.className()) != 0 && prt2.funcReturn() == null
+                                    && isSliceType(prt2) == 0 && isEnumName(prt2.className()) == 0
+                                    && isStructName(prt2.className()) == 0 && isInterfaceName(prt2.className()) == 0) {
+                                    cls2 = classInstName(prt2);
+                                }
                             }
                         }
                         if (Str.len(cls2) == 0) cls2 = "Object";

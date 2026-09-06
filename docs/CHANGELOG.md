@@ -27,6 +27,37 @@
 
 ## 编译器版本历史
 
+### v3.15.237 — 泛型 parity 收尾：B5 属性收者委托 / B3 assoc 局部 / B4 泛型类 static 共存（selfhost additive）
+
+**非破坏性硬化（generic_gaps B 系剩余三缺口，全勾销）**。codegen `codegen.myp`。
+
+- **B5 泛型类方法 + 属性"另一泛型套自身 T"**（`Wrap<T>` 属性 `ArrayList<T> list_`，方法
+  委托 `list_.add(v)` 等）：模板体内收者为**类属性**（非局部）时，sema 在共享模板体把
+  callee.resolvedClass 落成占位实例名 `ArrayList_T_inst` → codegen 直拼
+  `@ArrayList_T_inst_add` → opt 未定义（gs27）。修复：obj-Identifier 实例方法分支里，
+  `varAstType` 查不到局部时用 `propAstType(curClass_, 属性名)` 取属性声明类型
+  `ArrayList<T>`，经 `resolveType`（curTypeArgs_ 生效，实例发射期 T→int）→ 实例类
+  `ArrayList_int_inst` 覆盖 cls2 → 真实实例方法（add/get/size/set 委托全通；gs19 返回
+  替换错随 A 系列已闭环）。@test/generic_b5_prop_outer（Wrap<int>/Wrap<string> 双实例）。
+- **B3 关联类型 `T::Item` 于泛型顶层函数**（`T::Item v = c.getVal();` 局部）：codegen
+  `resolveType` 的 assoc 解析只按**具体类名** owner（`"T::Item"` 找不到名为 "T" 的类 →
+  空）→ 局部类型解析不出 → 按引用槽处理（alloca ptr + myp_retain(i32)）→ opt
+  `i32 but expected 'ptr'`。修复：owner 是当前类型参数（curTypeParams_/curTypeArgs_）
+  时先映射成实例实参（T→IntBox）再解析 assoc（IntBox::Item=int），镜像 sema
+  `associatedTypeKind` 的 tp→instArgs 映射；泛型类方法内 assoc 局部同修复。
+  @test/generic_b3_assoc_tfn（int/string Item + 顶层/类内对照）。
+- **B4 泛型类模板 + 泛型 static 共存**（`class Holder<T>{...static: same<R>...}`）：
+  parser 对任何含 `static:` 分区的类置 isStatic=1（含泛型模板）→
+  `emitStaticClassGlobals` 为模板生成 `@__myp_static_Holder = global %Holder
+  zeroinitializer`，而 %Holder 模板类型不被 emitClassTypes 发射 → opt `invalid type
+  for null constant`。修复：emitStaticClassGlobals 与 emitClassTypes 同规则跳过泛型
+  模板（泛型模板无静态容器；纯泛型 static 走 `__gs_` 实例化路径）。
+  @test/generic_b4_static_tpl（same<R>/cat<S> int/string + 实例共存）。
+- 记录边界（两缺，seed 同缺非 parity）：泛型模板上**非泛型** static 方法
+  （`Holder.pick`，不依赖类 T）oracle 亦 `undefined Holder_pick` → 未支持，非本次范围。
+- 正例 tests/@test/generic_b5_prop_outer / generic_b3_assoc_tfn / generic_b4_static_tpl
+  （6+3+5 断言）；全量 536/536 + bugs 20/20 + bootstrap MD5 一致。
+
 ### v3.15.236 — B6 new 形态：泛型模板体内 `new Box<T>` 逐实例化（含局部析构槽）（selfhost additive）
 
 **非破坏性硬化（generic_gaps B5/B6 占位 family 的 new 形态；v3.15.235 记录缺口收尾）**。

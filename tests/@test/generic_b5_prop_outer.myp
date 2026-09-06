@@ -1,0 +1,38 @@
+// generic_b5_prop_outer.myp — B5（v3.15.237）泛型类方法 + 属性类型为"另一泛型套自身 T"
+// 泛型类 Wrap<T> 的属性是 ArrayList<T>（另一泛型以自身类级 T 作实参），方法委托
+// list_.add/get/size/set。
+// 修复前：模板体内 `list_.add(v)`（list_ 是类属性、非局部）sema 把收者解析成占位
+// 实例名 ArrayList_T_inst → codegen 直拼 @ArrayList_T_inst_add → opt-21 未定义
+//（gs27；gs19 的返回替换错已随 A 系列修复）。修复（codegen obj-Identifier 收者
+// 分支）：varAstType 只查局部查不到属性 → 用 propAstType(curClass_, 属性名) 取声明
+// 类型 ArrayList<T> 经 resolveType（curTypeArgs_ 生效，实例发射期 T→int）→ 实例类
+// ArrayList_int_inst 覆盖 cls2 → 走真实实例方法。
+
+import test;
+import collections;
+
+class Wrap<T> {
+    property: ArrayList<T> list_;
+    action:
+        @constructor Wrap() { list_ = new ArrayList<T>(); }
+        T get(int i) { return list_.get(i); }
+        void add(T v) { list_.add(v); }
+        int size() { return list_.size(); }
+        T first() { return list_.get(0); }
+        void putAt(int i, T v) { list_.set(i, v); }
+}
+
+@test void t() {
+    Wrap<int> w = new Wrap<int>();
+    w.add(7); w.add(9);
+    Test.assertEq(w.size(), 2, "a0");
+    Test.assertEq(w.get(1), 9, "a1");
+    Test.assertEq(w.first(), 7, "a2");
+    Wrap<string> ws = new Wrap<string>();
+    ws.add("x"); ws.add("yy");
+    Test.assertEq(ws.size(), 2, "a3");
+    Test.assertStrEq(ws.get(1), "yy", "a4");
+    ws.putAt(0, "zz");
+    Test.assertStrEq(ws.first(), "zz", "a5");
+    Test.report("t", true);
+}

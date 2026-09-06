@@ -1,0 +1,31 @@
+// generic_b4_static_tpl.myp — B4（v3.15.237）泛型类模板 + 泛型 static 方法共存
+// 类 Holder<T>（可实例化，带 property + @constructor）同时含 `static:` 分区
+//（方法级泛型 static same<R>/cat<S>）。
+// 修复前：parser 对任何含 static: 分区的类置 isStatic=1 → codegen emitStaticClassGlobals
+// 为泛型类模板 Holder<T> 生成 `@__myp_static_Holder = global %Holder zeroinitializer`，
+// 而 %Holder 模板类型不被 emitClassTypes 发射（typeParams>0 && isGenericInst==0 跳过）
+// → opt `invalid type for null constant`。修复：emitStaticClassGlobals 与 emitClassTypes
+// 同规则跳过泛型模板（泛型模板无静态容器；纯泛型 static 方法走 __gs_ 实例化路径）。
+
+import test;
+
+class Holder<T> {
+    property: T t_;
+    action:
+        @constructor Holder(T t) { t_ = t; }
+        T get() { return t_; }
+    static:
+        int same<R>(R a, R b) { if (a == b) return 1; return 0; }
+        string cat<S>(S x) { return "v" + x; }
+}
+
+@test void t() {
+    Test.assertEq(Holder.same<int>(1, 1), 1, "b4a");
+    Test.assertEq(Holder.same<string>("a", "a"), 1, "b4b");
+    Test.assertStrEq(Holder.cat<int>(7), "v7", "b4c");
+    Holder<int> h = new Holder<int>(5);
+    Test.assertEq(h.get(), 5, "b4d");
+    Holder<string> hs = new Holder<string>("q");
+    Test.assertStrEq(hs.get(), "q", "b4e");
+    Test.report("t", true);
+}
