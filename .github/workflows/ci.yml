@@ -1,10 +1,15 @@
 # GitHub Actions CI — MYP Language
 #
 # 每次 push / PR 自动运行:
-#   1. 构建 mypc (Release)
-#   2. 完整测试套件 (回归 + 负测试 + 测试框架 + 无崩溃) — 84 个确定性测试
+#   1. 构建 mypc (Release, CPU-only)
+#   2. 完整脚本套件 run_tests.sh：回归/负测试/测试框架/无崩溃/包管理自举/格式化/
+#      可视化/mypc run/LSP —— 500+ 用例（测试程序默认即 -O2）
 #   3. 模糊测试 (fuzz, 固定种子)
 #   4. ASAN/UBSAN 构建 + 套件
+#   5. perf-guard（独立 job，并行）：编译器规模基准 P1–P7 `--check` 防性能回退
+#
+# 注：自举 3 代 MD5 门禁在 tests/test_myp_self.sh（myp_suite 内不含；ctest 独立
+#     注册 myp_self_bootstrap）；TSan / stress / GPU 留 self-hosted runner 或手动。
 #
 # 说明:
 #   - GPU 测试 (cuda.myp / @gpu for) 不在 run_tests.sh 套件内 (独立文件),
@@ -71,3 +76,28 @@ jobs:
             tests/**/test.output
             tests/expected/
           retention-days: 7
+
+  # 性能门禁：编译器自身规模基准（P1–P7）与基线比对，超 CHECK_TOL 判定回退 → exit 1。
+  # 独立 job 与主套件并行；ITERS=1 提速（不影响 baseline 比对结构）。
+  perf-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM 21 + build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ make cmake pkg-config lsb-release wget
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21 all
+          sudo apt-get update
+          sudo apt-get install -y llvm-21-dev libllvm21 clang-21 || true
+          llvm-config-21 --version
+      - name: Build mypc (Release, CPU-only)
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DMYP_ENABLE_GPU=OFF
+          cmake --build build -j"$(nproc)"
+      - name: Compiler scaling perf guard (P1–P7, --check vs baseline)
+        run: |
+          ITERS=1 bash bench/compiler/run.sh --check 2>&1 | tail -30

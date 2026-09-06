@@ -405,8 +405,10 @@ target_include_directories(myp_rt_prebuilt PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_options(myp_rt_prebuilt PRIVATE -g0 -O2 -fPIC -ffunction-sections -fdata-sections)
 set_target_properties(myp_rt_prebuilt PROPERTIES OUTPUT_NAME myp_rt)
 
-# ---- Tests (optional, requires GoogleTest) ----
-option(MYP_BUILD_TESTS "Build unit tests" OFF)
+# ---- Tests（脚本套件，暴露给 ctest；无需 GoogleTest）----
+# 默认 ON：仅注册 ctest 测试（见 tests/CMakeLists.txt），不产生额外编译。
+# VS Code CMake Tools / `ctest --test-dir build` 即可发现并运行 MYP 套件。
+option(MYP_BUILD_TESTS "Register MYP script test suite with ctest" ON)
 if(MYP_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
