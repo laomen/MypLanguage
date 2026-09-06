@@ -894,6 +894,38 @@ class Sema {
                     if (f.body() != null) expandBlockStmts(f.body(), 0);
                 }
             }
+            // M-1（表达式宏，additive）：pass2 表达式位展开——须在**全部**语句位展开
+            // 之后整树再跑一遍（语句宏注入的新语句可能含表达式宏调用）。表达式宏调用
+            // 出现在任意表达式位置（VarDecl init/Return/赋值/实参/二元……）→ 宏体若为
+            // 恰一条 ExprStmt（单表达式宏）则展开为表达式；否则 clean reject（见
+            // expandExprMacros）。只处理普通代码体（@macro 过程宏体/宏模板不遍历）。
+            for (int i = 0; i < tu.functions().size(); i = i + 1) {
+                AstFunction f = tu.functions().get(i);
+                if (f.isMacro() != 0) continue;
+                if (f.body() != null) expandStmtExprs(f.body(), 0);
+            }
+            for (int ci = 0; ci < tu.classes().size(); ci = ci + 1) {
+                AstClass c = tu.classes().get(ci);
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    AstAction a = c.actions().get(ai);
+                    if (a.body() != null) expandStmtExprs(a.body(), 0);
+                }
+                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                    AstAction a = c.staticActions().get(ai);
+                    if (a.body() != null) expandStmtExprs(a.body(), 0);
+                }
+                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                    AstFunction f = c.funcs().get(fi);
+                    if (f.body() != null) expandStmtExprs(f.body(), 0);
+                }
+            }
+            for (int si = 0; si < tu.structs().size(); si = si + 1) {
+                AstStruct st = tu.structs().get(si);
+                for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
+                    AstFunction f = st.funcs().get(fi);
+                    if (f.body() != null) expandStmtExprs(f.body(), 0);
+                }
+            }
         }
 
         // 深克隆表达式并替换 $param（params/args 平行）。
@@ -1081,6 +1113,107 @@ class Sema {
             // 值（恰为同一对象）→ 双重释放 → 内存损坏/崩溃。
             if (changed != 0) {
                 block.setBodyStmts(out);
+            }
+        }
+
+        // ---- M-1（表达式宏，additive）：声明式宏表达式位展开 ----
+        // `macro f($e) { <expr>; }`（体=恰一条 ExprStmt）可作表达式：`int r = f(x);`、
+        // `f(a) * 2`、实参/下标/返回位……展开为深克隆表达式（$param → 实参 AST 片段，
+        // 复用 deepCloneExpr 的 MacroParam 替换 + M-3 卫生：替换区 mhRn_=0）。多语句/
+        // 空体宏不能作表达式（MYP 无 block-expr；语句级控制流仍走既有语句位宏）→
+        // clean reject（此前这些位置一律 undefined symbol）。
+        AstExpr singleExprMacroBody(AstStmt mb) {
+            if (mb == null || mb.kind() != "Block") return null;
+            if (mb.bodyStmts().size() != 1) return null;
+            AstStmt only = mb.bodyStmts().get(0);
+            if (only == null || only.kind() != "ExprStmt") return null;
+            if (only.expr() == null) return null;
+            return only.expr();
+        }
+        // 递归展开表达式内的宏调用（任意位置）。命中宏名调用 → 单表达式体深克隆注入，
+        // 展开结果可能含嵌套宏 → 继续递归；否则克隆并递归全部子表达式字段。
+        AstExpr expandExprMacros(AstExpr e, int depth) {
+            if (e == null) return null;
+            if (depth > 100) return e;
+            if (e.kind() == "Call") {
+                AstExpr cal = e.callee();
+                if (cal != null && cal.kind() == "Identifier") {
+                    int mi = macroIndex(cal.name());
+                    if (mi >= 0) {
+                        AstExpr bodyExpr = singleExprMacroBody(macroBodies_.get(mi));
+                        if (bodyExpr != null) {
+                            AstExpr r = deepCloneExpr(bodyExpr, macroParams_.get(mi), e.args());
+                            if (r != null) return expandExprMacros(r, depth + 1);
+                            return e;
+                        }
+                        diag_.error(cal.line(), cal.col(), "macro '" + cal.name()
+                            + "' used as an expression must have a single-expression body"
+                            + " (e.g. 'macro f($e) { <expr>; }'); multi-statement macros"
+                            + " expand only in statement position");
+                        return e;
+                    }
+                }
+            }
+            AstExpr c = e.cloneExpr();
+            c.setLhs(expandExprMacros(e.lhs(), depth));
+            c.setRhs(expandExprMacros(e.rhs(), depth));
+            c.setOperand(expandExprMacros(e.operand(), depth));
+            c.setCallee(expandExprMacros(e.callee(), depth));
+            c.setArray(expandExprMacros(e.array(), depth));
+            c.setIndex(expandExprMacros(e.index(), depth));
+            c.setCondition(expandExprMacros(e.condition(), depth));
+            c.setTrueExpr(expandExprMacros(e.trueExpr(), depth));
+            c.setFalseExpr(expandExprMacros(e.falseExpr(), depth));
+            c.setStart(expandExprMacros(e.start(), depth));
+            c.setEnd(expandExprMacros(e.end(), depth));
+            c.setTryExpr(expandExprMacros(e.tryExpr(), depth));
+            c.setCatchExpr(expandExprMacros(e.catchExpr(), depth));
+            c.setTimeout(expandExprMacros(e.timeout(), depth));
+            c.setNamedValue(expandExprMacros(e.namedValue(), depth));
+            ArrayList<AstExpr> na = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.args().size(); i = i + 1) na.add(expandExprMacros(e.args().get(i), depth));
+            c.setArgs(na);
+            ArrayList<AstExpr> nd = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.dimensions().size(); i = i + 1) nd.add(expandExprMacros(e.dimensions().get(i), depth));
+            c.setDimensions(nd);
+            ArrayList<AstExpr> nel = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.elements().size(); i = i + 1) nel.add(expandExprMacros(e.elements().get(i), depth));
+            c.setElements(nel);
+            return c;
+        }
+        // 语句内表达式字段的宏展开；递归嵌套块/分支（表达式宏可出现在任意嵌套层）。
+        void expandStmtExprs(AstStmt s, int depth) {
+            if (s == null) return;
+            if (depth > 100) return;
+            string k = s.kind();
+            if (k == "Block") {
+                for (int i = 0; i < s.bodyStmts().size(); i = i + 1) expandStmtExprs(s.bodyStmts().get(i), depth + 1);
+            } else if (k == "ExprStmt") {
+                s.setExpr(expandExprMacros(s.expr(), depth));
+            } else if (k == "VarDecl") {
+                for (int i = 0; i < s.decls().size(); i = i + 1) {
+                    AstVar d = s.decls().get(i);
+                    d.setInit(expandExprMacros(d.init(), depth));
+                }
+            } else if (k == "Return") {
+                s.setValue(expandExprMacros(s.value(), depth));
+            } else if (k == "If") {
+                s.setCondition(expandExprMacros(s.condition(), depth));
+                expandStmtExprs(s.then(), depth + 1);
+                expandStmtExprs(s.elseBranch(), depth + 1);
+            } else if (k == "While") {
+                s.setCondition(expandExprMacros(s.condition(), depth));
+                expandStmtExprs(s.body(), depth + 1);
+            } else if (k == "For") {
+                expandStmtExprs(s.init(), depth + 1);
+                s.setCondition(expandExprMacros(s.condition(), depth));
+                s.setStep(expandExprMacros(s.step(), depth));
+                expandStmtExprs(s.body(), depth + 1);
+            } else if (k == "Throw") {
+                s.setExpr(expandExprMacros(s.expr(), depth));
+            } else if (k == "Await") {
+                s.setExpr(expandExprMacros(s.expr(), depth));
+                s.setTimeout(expandExprMacros(s.timeout(), depth));
             }
         }
 

@@ -27,6 +27,43 @@
 
 ## 编译器版本历史
 
+### v3.15.244 — M-1 表达式/值宏：声明式宏表达式位展开（additive，selfhost）
+
+**M-1 缺口**（docs/review/metaprogramming_gaps.md §2）：声明式宏只能**语句位**展开，
+无法产出内联表达式/值（表达式位调用宏 → `undefined symbol`）；Rust `macro_rules!`
+有 expr 位置。规格根源：docs/metaprogramming.md §5.6 明列「表达式位置的过程宏
+（V2）」未实现。已实现声明式宏表达式位（路径 A）。
+
+**语义（additive，语法零新增，语言规格 1.0 不变）**：宏体为**恰一条 ExprStmt**
+（单表达式宏）时，可出现在任意表达式位置，展开为深克隆表达式（$param → 实参
+AST 片段）：
+
+```myp
+macro twice($e) { ($e) + ($e); }
+int r = twice(21);        // 展开为 (21) + (21) → 42（此前 undefined symbol）
+int a = sel(c > 1, x, y); // 多 $param；实参可为含宏的表达式
+int q = quad(2);          // 宏内嵌宏：dbl(dbl($e))
+```
+
+- 位置：VarDecl 初值 / 赋值 RHS / return / 实参 / 三元分支 / 嵌套（二元/下标/调用
+  实参内部）……泛型函数体（显式类型实参实例化）亦可用。
+- 单表达式宏天然两位置共用（语句位 `twice(x);` 照旧展开为语句）；多语句/空体宏
+  只能语句位，表达式位 clean reject（MYP 无 block-expr；语句级控制流仍走语句位宏）。
+- 与语句位宏同一套 $param 片段捕获；M-3 宏卫生经 MacroParam 替换区 mhRn_=0 保持
+  （调用方标识符不改名）；单 ExprStmt 体无自声明局部 → 无需 gensym。
+
+**实现**（sema.myp，expandMacros pass2，parser/ast 不动）：所有语句位展开完成后整树
+再遍历——expandStmtExprs 按语句 kind 提取表达式字段（Block/ExprStmt/VarDecl init/
+Return/If/While/For/Throw/Await）→ expandExprMacros 递归表达式树，命中
+`Call(Identifier 宏名)`：singleExprMacroBody（体=恰一条 ExprStmt）取表达式深克隆注入
+并继续展开嵌套宏；非单表达式体 → clean 诊断。
+
+**验证**：`tests/@test/macro_expr_value.myp`（11 断言：review 核心/三元+嵌套/多
+$param/实参/return/宏嵌宏/赋值 RHS/泛型显式实例）；负测试
+`tests/negative/macro_expr_multistmt.myp`（多语句体表达式位 reject）。探针确认：
+嵌套 `twice(2)*3`/`1+twice(4)`/实参位/泛型体；双编译器 seed 冻结不 backfill
+（selfhost-only additive，同 M-2/M-3）。全量 547/547 + bugs 20/20 + 自举门通过。
+
 ### v3.15.243 — M-2 编译期常量表：模块级 @eval 只读常量数组（additive，selfhost）
 
 **M-2 缺口**（docs/review/metaprogramming_gaps.md §2）：编译期表/数组常量不存在——

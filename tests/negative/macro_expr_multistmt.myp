@@ -1,0 +1,11 @@
+// EXPECT ERROR: used as an expression must have a single-expression body
+// M-1 表达式宏负例：多语句宏体（含声明）用于表达式位 clean reject——表达式宏只
+// 支持单表达式体（宏体=恰一条 ExprStmt）；多语句/控制流宏只能语句位展开
+//（MYP 无 block-expr）。
+import test;
+macro twice($e) { int q = $e; q + q; }
+@test void t() {
+    int a = twice(5);
+    Test.assertEq(a, 10, "twice");
+    Test.report("t", true);
+}

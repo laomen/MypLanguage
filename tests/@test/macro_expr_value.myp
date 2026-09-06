@@ -1,0 +1,36 @@
+// macro_expr_value.myp — M-1 表达式/值宏（v3.15.244，selfhost additive）
+// 声明式宏表达式位展开：宏体若为**恰一条 ExprStmt**（单表达式宏），可出现在任意
+// 表达式位置（VarDecl init / 赋值 RHS / return / 实参 / 三元 / 嵌套），展开为深克隆
+// 表达式（$param → 实参 AST 片段）。多语句/空体宏只能语句位（negative 用例拒）。
+// 实现（sema.myp expandMacros pass2）：expandStmtExprs 遍历语句表达式字段 →
+// expandExprMacros 递归表达式树，命中 Call(宏名) 单表达式体 deepCloneExpr 注入并
+// 继续展开嵌套宏。语法零新增；与语句位宏共用声明；M-3 卫生经 MacroParam 区 mhRn_=0。
+import test;
+
+macro twice($e) { ($e) + ($e); }
+macro sel($c, $a, $b) { ($c) != 0 ? ($a) : ($b); }
+macro addmul($a, $b) { ($a) + ($a) * ($b); }
+macro dbl($e) { ($e) + ($e); }
+macro quad($e) { dbl(dbl($e)); }
+
+int retTwice(int v) { return twice(v); }
+
+T twiceT<T>(T v) { return twice(v); }   // 泛型函数体（显式类型实参实例化路径）
+
+@test void t() {
+    Test.assertEq(twice(21), 42, "review 核心: int r=twice(21)");
+    int a = sel(twice(1) > 1, 10, 20);   // 三元条件里嵌套宏（$c 是表达式片段）
+    Test.assertEq(a, 10, "sel+twice-cond");
+    int b = addmul(2, 3);                // 多 $param（$a 用两次）
+    Test.assertEq(b, 8, "addmul");
+    Test.assertEq(twice(2), 4, "twice-as-arg");
+    Test.assertEq(retTwice(5), 10, "return-twice");
+    int q = quad(2);                     // 宏嵌宏：quad 体内调表达式宏 dbl
+    Test.assertEq(q, 8, "quad-nested");
+    int w = 3;
+    w = twice(w);                        // 赋值 RHS
+    Test.assertEq(w, 6, "assign-rhs");
+    Test.assertEq(twiceT<int>(5), 10, "generic-explicit-int");
+    Test.assertEq(int(twiceT<long>(100L)), 200, "generic-explicit-long");
+    Test.report("t", true);
+}

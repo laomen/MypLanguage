@@ -779,7 +779,7 @@ class LoadedSet {
             if (arg == "--version") {
                 // 编译器版本号须与 docs/CHANGELOG.md 顶部最新版本同步（曾漏更停
                 // 在 v3.15.228；v3.15.240 起每次发版同步）。
-                Console.writeLine("MYP Self-Hosted Compiler v3.15.243");
+                Console.writeLine("MYP Self-Hosted Compiler v3.15.244");
                 return 0;
             }
             if (arg == "--help" || arg == "-h") {
