@@ -118,6 +118,14 @@ hash → **stdlib 内容变更不使缓存失效** → 错误命中旧 IR（实�
 200 并发 0.2s 处理 5706 连接、服务端单线程 coro reactor 无内部错误（协程切换
 20–40ns 非瓶颈，连接突发才是）。
 
+#### SO_REUSEPORT：多进程同端口负载均衡（多 reactor 分片基座，commit 973a749）
+
+`myp_net_server` 加 `setsockopt(SOL_SOCKET, SO_REUSEPORT=15)`——nginx 式多进程分片：
+单进程行为不变；同 UID 多进程各 bind 同端口 → 内核按四元组分发到各 listener。压测
+（coro HTTP server，200 并发）1 worker 31.9k conn/s → **2 worker 58.9k（1.84x 多
+进程真并行）**；4 worker 受压测客户端突发建连限制。走 stdlib `net.myp TcpServer`
+的服务（含 `mypagent/http` transport 的 `serve`/`serveCoro`）自动受益。
+
 ### v3.16.0 — 里程碑：版本节奏切 minor（v3.16 周期开始；git tag v3.16.0）
 
 **版本节奏规则（自本版起）**：此前每功能/修复 commit +1 patch（v3.15.244 个 patch 全堆在
