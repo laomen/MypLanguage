@@ -162,6 +162,7 @@
 | BUG-149 | � | **接口方法返回自定义 class 被解析成 void（selfhost 落后）**——`interface I { R m(); }` 经接口变量调用 `R r = v.m();` 编译错 `cannot initialize variable 'r' of type 'R' with value of type 'void'`（接口收集 pass 早于类注册 → typeToKind 回落 "void"；oracle 正常）。修复：使用点对接口方法声明返回 AstType 惰性重算 kind + 设 valueClass | 回归 `tests/bugs/iface_return_class.myp`（devirt new + 接口形参非 devirt + 链式；2 @test/4 断言，双编译器） |
 | BUG-150 | � | **net send 未屏蔽 SIGPIPE → 服务端写已关闭连接崩（exit 141，v3.15.225 修复）**——对已关闭 socket send 默认触发 SIGPIPE 终止进程；myp_http 协程服务端向断开客户端写响应即崩（曾误判"高并发饿死"，实为崩溃后新连接全失败）。修复：三处 send 加 MSG_NOSIGNAL（Linux 0x4000）→ 写已关连接返回 EPIPE(-1) 优雅处理 | 回归 `tests/bugs/b150_send_sigpipe.myp`（服务端 send 一包（客户端不读）→ 客户端带未读数据 close 发 RST → 服务端再写不崩；复现时验证：去修复 → exit 141 SIGPIPE，加修复 → 5 断言全绿） |
 | BUG-151 | � | **@parallel 并发 worker 内 try/catch/throw → 异常状态跨线程串扰（段错误/假 uncaught，v3.15.232 修复）**——MYP 异常运行时状态（Exc.depth/handlerBufs/curType/errBuf）原为 @static 进程级全局、非线程安全：@parallel 并发 worker 各自 try/catch push/pop 交叉改写共享 handler 栈 → worker throw longjmp 到**别线程** jmp_buf（段错误 exit 139/总线 135），depth 丢失 → 假 `uncaught exception (object,type N)` exit 134。mypagent `fan_shared_mem_check`（3 真并发子 agent 各 tick 内 try/catch + Json/memory 操作）间歇 5-7% 崩 = type 21(JsonError) 未捕获假象。修复：Exc 改 `@static @thread class`（LLVM thread_local，对齐 C runtime `__thread`；pthread_create 真 TLS） | 复现（修复前）mypagent `tests/fan_shared_mem_check.myp` 2/25 + 纯 MYP `@parallel` try/catch/throw 7/8；回归 `tests/@test/parallel_exc_threadsafe.myp`（8×40000×16 并发 try+throw，修复前 ~全崩） |
+| BUG-152 | 🟩 | **@coro/@async 跨线程 + 接口 fat 四条运行时红线（合并，v3.15.65 起逐步修/纪律规避）**：①resume 持锁跨 ctx_switch → yield 绝不持锁（跨线程 coroLock 死锁；单线程递归 depth 掩盖）；锁 resume post-switch 统一释放、事件处理移出 coro 锁外（防 coro→ev 与 ev→coro 反转）；②跨线程 coroLock 死锁（同①特化）；③接口 fat 跨长 run GC/UAF（接口注入 observer 长生命周期 retain 不牢 → 悬垂/坏胖指针 null vtable 派发崩）——长活引用用具体型字段持有；④@async worker 跨线程投递不能落 string 局部（帧末 ARC release → 悬垂）——io.myp 返 raw addr 建头 + 协程侧 retain(+1) 交棒 | 纪律/回归：mypagent PITFALLS §9 + GuardManager 具体型字段/RemoteMemStore.fork/spawnSubParallel 只读共享；现场 coro_thread/async_file（v3.15.65）；无独立编译负测试（非 mypc 缺陷） |
 
 
 ---
@@ -3951,3 +3952,42 @@ mypagent 高频在 `Json_Json_string` 后由 `__longjmp` 段错误；现场 hand
 - **回归**：`tests/@test/parallel_exc_threadsafe.myp`（8×40000×16 并发 try+throw，
   修复前 ~全崩 → 修复后全绿）+ mypagent fan_shared_mem_check 隔离 30/30（修复前
   2/25）+ 全量 528/528 + bugs 20/20 + bootstrap MD5 一致。
+
+## BUG-152（已修复 🟩，v3.15.65 起逐步修 + 用法纪律规避）：@coro/@async 跨线程 + 接口 fat 四条运行时红线（合并一条）
+
+> 四条同族红线合并记录（现象/根因/规避）。来源：coro_thread/async_file（v3.15.65）、
+> mypagent v0.1.103（接口 fat 跨长 run）、io.myp @async 文件读（execIoReadLineRaw）。
+> 非单一 mypc 缺陷，属 MYP runtime/stdlib 的并发与 ARC 语义 + 使用纪律；运行时侧已修，
+> 其余以纪律规避。mypagent 架构处处在避（GuardManager 具体型字段、worker 每实例隔离等）。
+
+- **① yield 绝不持锁（coro 跨线程递归锁，v3.15.65 coro_thread/async_file）**
+  - 现象：resume 持锁跨 ctx_switch → 协程持锁让出，另一线程/协程在同锁上等待，永远等不到
+    释放 → 死锁。
+  - 掩盖：单线程递归把「每次 yield 泄漏一层 depth」掩盖（depth 仍为正、能继续跑）；跨线程
+    worker 的 coroLock 是真正互斥（非可重入）→ 必死。
+  - 规避：yield 只做 ctx_switch，绝不在持锁路径内 ctx_switch；锁由 resume post-switch 统一
+    释放（不在各分支散落解锁）；事件处理移出 coro 锁外（防 coro→ev 与 ev→coro 锁序反转
+    ABBA）。
+- **② 跨线程 coroLock 死锁（①的特化）**
+  - resume 持锁跨 ctx_switch 时 yield 绝不能再加锁——单线程递归无感、跨线程 worker 必死
+    （等待线程看到锁从未释放）。锁只在 resume 边界获取/释放一次、不跨 switch 持有。
+- **③ 接口 fat 跨长 run GC/UAF**
+  - 接口 = {实例, vtable} 胖指针。接口注入的 observer/回调跨长 run（多 tick/长分配）存活时
+    ARC retain 不牢 → 对象提前释放（悬垂）；或接口转换点漏建 fat（存 {inst, null-vtable}）
+    → 派发 `call *vtable(off)` 崩（rbp=0）。相关编译器侧 vtable 缺失见 BUG-029/033/034/038
+    （均已修）；本条目记「接口注入长活引用」的 ARC 纪律面。
+  - 规避：长活跨组件引用用具体型字段持有，不经接口注入；接口转换点覆盖每种表达式形状
+    （new/局部/字段/数组元素），`--emit-llvm` 验证出现 `store ptr @__myp_vtable_<Iface>_<Cls>`。
+    mypagent GuardManager/事件/observer 全用具体型字段即此纪律（v0.1.103 教训）。
+- **④ worker 跨线程投递不能落 string 局部**
+  - 现象：@async worker 线程做阻塞读后跨线程投递结果，若把结果存成 string 局部 → worker
+    函数退出帧内 ARC release → 目标线程读取时内存已释放/复用（悬垂/UAF）。
+  - 规避（io.myp execIoReadLineRaw 正解）：worker 侧返回 raw addr、直接手工建 {len, rc=0,
+    type_id} 头（不落 string 局部）；协程侧 `__myp_addr_to_str(r)` 做 return retain(+1) →
+    rc=1 干净交棒；或接收方消费前 retain。
+- **共性（四条一句话）**：ARC/锁/协程作用域锚定「函数帧 / 当前线程 / 执行栈」——对象或临界区
+  生命周期要越过帧/线程/上下文切换点，就必须显式交棒（锁在 resume 边界统一收放；对象用具体型
+  字段或 retain 交棒跨组件/跨线程存活）。
+- **回归/纪律落点**：mypagent PITFALLS §9 + 架构纪律（GuardManager 具体型字段、RemoteMemStore
+  .fork 每线程独立镜像、spawnSubParallel 真并发子只读共享 backend/tools、UDS 结果投递）。无独立
+  编译器负测试（非 mypc 缺陷）；现场复现见 coro_thread/async_file（v3.15.65）。
