@@ -1,6 +1,6 @@
 # MYP 编程手册
 
-> 版本 3.15 | 事件驱动组件语言
+> 版本 v3.16 | 事件驱动组件语言
 > 语言规格 v1.0（语法冻结）：正式 EBNF 见 [grammar.md](grammar.md)，版本策略见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
@@ -123,7 +123,6 @@ int main() {
 mypc <file.myp>                  # 编译并链接
 mypc -o myapp <file.myp>         # 指定输出文件名
 mypc -O2 <file.myp>              # 优化级别
-mypc --trace <file.myp>          # 启用运行时事件追踪
 mypc --stdlib <path> <file.myp>  # 指定标准库路径
 mypc --package-path <path> <file.myp>  # 指定本地包搜索路径
 mypc --shared <file.myp>              # 编译为共享库 (.so)
@@ -2955,6 +2954,12 @@ const long BIGL = 100000L * 10L;    // 1000000
 - **诊断（编译期报错、编译器不崩溃）**：非纯构造 →
   `compile-time evaluation: construct not supported in @eval context`；
   递归过深 → `compile-time evaluation: recursion depth exceeded in 'fib'`。
+- **`@eval` 只读常量表（M-2，v3.15.243，additive）**：模块级
+  `@eval <T>[N] <name> = [c1, c2, ...];`（或 `<T>[]`，N 由元素数定）把数组初值在
+  编译期固化为**只读常量数组**（LLVM private constant，.rodata），运行时 `name[i]`
+  （i 可为运行时变量/表达式）读常量数组元素；元素支持字面量/纯常量算术/顶层 const
+  标量引用（`const int BASE=10; @eval int[4] m=[BASE,5,100,200];`）。表只能下标读；
+  裸表名引用/多语句体等 clean 拒绝（与 `@eval` 函数互补：函数算标量，表固化数组）。
 
 ### macro — 声明式宏（v3.5）
 
@@ -2985,6 +2990,12 @@ twice(v = v + 1);        // 嵌套/重复展开 → v = 37
   无需执行。
 - 调试：`--macro-expand` 输出展开后的 AST dump（`[function main]` / `[action ...]`
   / `for` / `assign` …），便于核对。
+- **表达式/值位展开（M-1，v3.15.244，additive）**：宏体为**恰一条 ExprStmt**（单表达
+  式宏，如 `macro twice($e) { ($e)+($e); }`）时，可在任意**表达式位置**调用并展开为
+  表达式：`int r = twice(21);` 得 42；可作实参/三元/赋值 RHS/return/嵌套
+  （`twice(2)*3`）、宏内嵌宏递归展开。多语句宏体仍只能语句位（表达式位 clean 拒绝）。
+- **宏卫生（M-3，v3.15.241）**：宏体**自声明的局部**在展开时自动 gensym
+  （原名 → 原名_m<seq>），不再与调用方同名变量冲突（`int tmp=7; setV(tmp,1);` 正常）。
 
 ### @macro — 过程宏（v3.6）
 
@@ -3051,10 +3062,6 @@ makeCalls(3);            // 生成 Console.write(0); Console.write(1); Console.w
 # 指定输出
 ./build/mypc myapp.myp -o /tmp/myapp
 
-# 事件追踪
-./build/mypc --trace myapp.myp
-./myapp.out 2>trace.log
-
 # 指定包路径
 ./build/mypc --package-path myp_packages myapp.myp
 ```
@@ -3095,7 +3102,7 @@ class Hello {
 | `--emit-llvm` | 输出 LLVM IR 到 `.ll` 文件（跳过链接）|
 | `--test` | 生成并运行测试运行器（`@test`）|
 | `--shared` / `--static` | 构建共享库 / 静态库 |
-| `--trace` | 启用运行时事件追踪 |
+| `--freestanding` | 无 libc/CRT/runtime 的静态 ELF（实验/裸机向：codegen 直发 `_start` + syscall 入口，链接免 gcc） |
 | `--package-path <dir>` | 本地包目录 |
 | `--macro-expand` | 宏展开后输出 AST dump |
 | `--frontend-dump <tokens|ast|sema>` | 确定性前端转储（自举编译器 Oracle 契约）|
@@ -3198,9 +3205,10 @@ MYP 的编译器本体正用 MYP 语言**完全重写**（T5 自举项目，`too
 前端（lexer/parser/sema）+ codegen（含 GPU NVPTX 发射）+ CLI 驱动全部用 MYP 实现，
 交付自举编译器 `myp_self`，并完成经典两级自举验证。
 
-- **构建**：stage0 由 C++ `mypc` 编译 `tools/selfhost/src/*.myp` →
-  `build/myp_self`；`myp_self` 再编译自身 → `build/myp_self2`（当前 build/ 里的
-  完整自举二进制）。
+- **构建（seed 引导 + 自举不动点）**：C++ 编译器现名 `mypc-seed`（v3.15.198 冻结，
+  仅作引导）编译 `tools/selfhost/src/*.myp` → `myp_self`；`myp_self` 自编
+  `myp_self2`、再自编 `myp_self3`，两级字节一致（MD5 门禁）后安装为
+  **`build/mypc`**——`mypc` 即 MYP 自举编译器（不再依赖 C++）。
 - **模块**（`tools/selfhost/src/`）：`token` / `lexer` / `ast` / `parser` /
   `diag` / `sema` / `ir_emit` / `codegen` / `link` / `main`（CLI 驱动）。
 - **用法**（与 mypc 同构）：
@@ -3482,6 +3490,9 @@ MYPLanguage/
 export MYP_PACKAGE_PATH=/path/to/packages:/path/to/more   # 包管理器 myp build 的附加搜索路径（冒号分隔）
 export MYP_FAST_MATH=1                                     # codegen：FP 运算开 fast-math（向量化归约/FMA，默认严格 IEEE）
 export MYP_FMT=./build/myp_fmt2                            # 自举编译器 fmt 子命令的格式化器路径（可选）
+export MYP_GPU=1                                         # 启用 CUDA GPU 后端（默认 CPU 回退）
+export MYP_RT_MYP=./build/libmyp_rt_myp.a                # 强制 MYP 运行时归档链接（de-gcc：无 libmyp_rt.a/gcc）
+export MYP_STDLIB=./stdlib                               # 默认标准库目录（等效 --stdlib）
 ```
 
 ### myp_viz — 可视化工具
@@ -3513,7 +3524,7 @@ dot -Tpng graph.dot -o graph.png
 
 | LSP 能力 | 说明 |
 |----------|------|
-| 实时诊断 | 打开/编辑文件时自动显示编译错误 |
+| 编辑辅助 | 补全/悬停/文档符号/跳转定义（LSP 不运行编译器——编译错误用 `mypc` 命令行查看） |
 | 代码补全 | 关键字、类名、方法名、属性名自动弹出 |
 | 悬停信息 | 鼠标悬停显示类型签名 |
 | 文档符号 | 大纲视图显示类、函数、枚举 |

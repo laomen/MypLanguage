@@ -1,6 +1,6 @@
 # MYP Programming Manual
 
-> Version 3.15 | Event-Driven Component Language
+> Version v3.16 | Event-Driven Component Language
 > Language spec v1.0 (frozen): official EBNF in [grammar.md](grammar.md), versioning policy in [CHANGELOG.md](CHANGELOG.md).
 
 ---
@@ -125,7 +125,6 @@ mypc <file.myp>                  # Compile and link
 mypc -o myapp <file.myp>         # Specify output filename
 mypc -O2 <file.myp>              # Optimization level
 mypc --emit-llvm <file.myp>      # Save LLVM IR to .ll file
-mypc --trace <file.myp>          # Enable runtime event tracing
 mypc --stdlib <path> <file.myp>  # Specify stdlib path
 mypc --package-path <path> <file.myp>  # Specify local package search path
 mypc --shared <file.myp>              # Build shared library (.so)
@@ -3030,6 +3029,14 @@ const long BIGL = 100000L * 10L;    // 1000000
 - **Diagnostics (compile-time error, compiler never crashes)**: non-pure construct →
   `compile-time evaluation: construct not supported in @eval context`; deep recursion →
   `compile-time evaluation: recursion depth exceeded in 'fib'`.
+- **`@eval` read-only constant tables (M-2, v3.15.243, additive)**: a module-level
+  `@eval <T>[N] <name> = [c1, c2, ...];` (or `<T>[]`, N from element count) fixes the
+  array initializer into a **read-only constant array** (LLVM private constant, .rodata);
+  `name[i]` (i may be a runtime variable/expression) reads it at run time. Elements may be
+  literals / constant arithmetic / top-level `const` scalar references
+  (`const int BASE=10; @eval int[4] m=[BASE,5,100,200];`). Tables are read-only via
+  subscript only; bare name / multi-statement bodies are cleanly rejected (complements
+  `@eval` functions: functions compute scalars, tables freeze arrays).
 
 ### `macro` — declarative macros (v3.5)
 
@@ -3062,6 +3069,15 @@ twice(v = v + 1);        // nested/repeated expansion → v = 37
   no execution.
 - Debug: `--macro-expand` dumps the expanded AST (`[function main]` / `[action ...]` /
   `for` / `assign` …).
+- **Expression/value-position expansion (M-1, v3.15.244, additive)**: when the macro body
+  is **exactly one `ExprStmt`** (a single-expression macro, e.g.
+  `macro twice($e) { ($e)+($e); }`), it may be called in any **expression position** and
+  expands to an expression: `int r = twice(21);` → 42; usable as an argument / ternary /
+  assignment RHS / return / nested (`twice(2)*3`) / macro-in-macro (recursively expanded).
+  Multi-statement bodies remain statement-position only (cleanly rejected as expressions).
+- **Macro hygiene (M-3, v3.15.241)**: a macro body's **self-declared locals** are gensym'd
+  on expansion (name → name_m<seq>), no longer colliding with caller-scope variables
+  (`int tmp=7; setV(tmp,1);` works).
 
 ### `@macro` — procedural macros (v3.6)
 
@@ -3135,10 +3151,6 @@ makeCalls(3);            // generates Console.write(0); Console.write(1); Consol
 # Optimization
 ./build/mypc -O2 myapp.myp
 
-# Event tracing (debug)
-./build/mypc --trace myapp.myp
-./myapp.out 2>trace.log
-
 # Save LLVM IR
 ./build/mypc --emit-llvm myapp.myp
 cat myapp.myp.ll
@@ -3186,7 +3198,7 @@ class Hello {
 | `--emit-llvm` | Write LLVM IR to a `.ll` file (skips linking) |
 | `--test` | Generate and run a test runner (`@test`) |
 | `--shared` / `--static` | Build a shared / static library |
-| `--trace` | Enable runtime event tracing |
+| `--freestanding` | Static ELF without libc/CRT/runtime (experimental/bare-metal: codegen emits `_start` + syscall entry; no gcc link) |
 | `--package-path <dir>` | Local package directory |
 | `--macro-expand` | Dump the AST after macro expansion |
 | `--frontend-dump <tokens|ast|sema>` | Deterministic frontend dump (self-hosted compiler Oracle contract) |
@@ -3298,9 +3310,11 @@ MYP's compiler itself is being **fully rewritten in MYP** (T5 self-hosting proje
 CLI driver are all implemented in MYP, delivering the self-hosted compiler `myp_self`,
 with the classic two-stage bootstrap verification.
 
-- **Build**: stage0 C++ `mypc` compiles `tools/selfhost/src/*.myp` → `build/myp_self`;
-  `myp_self` then compiles itself → `build/myp_self2` (the full self-hosted binary in
-  build/ today).
+- **Build (seed-guided + self-hosted fixed point)**: the C++ compiler is now
+  `mypc-seed` (v3.15.198, frozen, bootstrap only), compiling
+  `tools/selfhost/src/*.myp` → `myp_self`; `myp_self` recompiles itself into
+  `myp_self2`, then `myp_self3` — two generations byte-identical (MD5 gate),
+  installed as **`build/mypc`**: `mypc` is the self-hosted compiler (no C++ dependency).
 - **Modules** (`tools/selfhost/src/`): `token` / `lexer` / `ast` / `parser` / `diag` /
   `sema` / `ir_emit` / `codegen` / `link` / `main` (CLI driver).
 - **Usage** (same shape as mypc):
@@ -3523,6 +3537,9 @@ mypackage/              # Package root
 export MYP_PACKAGE_PATH=/path/to/packages:/path/to/more   # package manager myp build extra search paths (colon-separated)
 export MYP_FAST_MATH=1                                     # codegen: FP fast-math (vectorized reductions/FMA; default strict IEEE)
 export MYP_FMT=./build/myp_fmt2                            # self-hosted compiler fmt subcommand formatter path (optional)
+export MYP_GPU=1                                         # enable CUDA GPU backend (default CPU fallback)
+export MYP_RT_MYP=./build/libmyp_rt_myp.a                # force MYP-runtime-archive linking (de-gcc: no libmyp_rt.a/gcc)
+export MYP_STDLIB=./stdlib                               # default stdlib dir (equivalent to --stdlib)
 ```
 
 ### myp_viz — Visualization Tool
@@ -3554,7 +3571,7 @@ dot -Tpng graph.dot -o graph.png
 
 | LSP Feature | Description |
 |-------------|-------------|
-| Diagnostics | Real-time compile errors on open/edit |
+| Editing | Completion / hover / document symbols / go-to-definition (LSP does not run the compiler — use the `mypc` CLI for compile errors) |
 | Completion | Auto-complete keywords, class/method/property names |
 | Hover | Show type signatures on mouse hover |
 | Document Symbols | Outline view of classes, functions, enums |
