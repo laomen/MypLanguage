@@ -3303,6 +3303,51 @@ MYP ships `myp_debug` (a DAP ↔ gdb bridge) for breakpoints/stepping/variables 
 - Supports: breakpoints (source lines), stepping (next/stepIn/stepOut), call stack, locals,
   hover evaluation.
 
+### Runtime
+
+The build product is a **statically linked single executable**: `mypc` compiles `.myp` to
+LLVM IR → `llc` produces an object file → a linker links the **runtime + libc** (no
+interpreter/VM/GC). Runtime mechanics are transparent to users — ARC/events/coroutines/
+thread pools all work automatically; the following is an overview for understanding the
+artifact and de-gcc.
+
+**Two-level runtime (de-gcc)**:
+- **C runtime**: `src/runtime/*.c` (`runtime.c`/`myp_stdlib.c`/`runtime_gpu.c`) →
+  `build/libmyp_rt.a`. Linked by default, shipped with the compiler.
+- **MYP runtime archive**: `build/libmyp_rt_myp.a` — an MYP reimplementation of the runtime
+  (`runtime_myp/*.myp`, coro/io/net/thread/…, 36 modules) compiled with `--shared`. When the
+  archive exists, linking prefers **MYP archive + libc only** (`(MYP runtime only)`),
+  falling back to the C runtime on failure. `MYP_RT_MYP=<archive>` forces the MYP archive.
+
+**Linking**: default `gcc` links the C runtime (`$CC` overrides, for cross-compilation);
+variant-A uses `ld.lld` (removes gcc's link role but keeps libc); `--freestanding` links a
+**libc/CRT/runtime-free** static ELF directly via `ld.lld` (`MYP_LD` → `ld.lld-21/20/19` →
+`ld.lld`/`lld`/`ld`).
+
+**Runtime mechanics**:
+- **ARC memory**: class instances / `string` / dynamic arrays / `slice` backings are
+  reference-counted automatically (object header `{rc, type_id}` + `retain`/`release`),
+  released when references go out of scope; no GC.
+- **Runtime type ids**: per-class compile-time numbering; `__myp_type_name_table`/
+  `__myp_release_table` back `Rtti.typeId/typeOf/sameType` (§11 rtti) and cascading
+  release of reference fields.
+- **Events/mapping**: runtime registry + `__myp_inst_*` instance globals; `mapping()` builds
+  the bus in main; same-thread synchronous / cross-thread async delivery.
+- **@static/@thread globals**: `@static class` properties → a global instance;
+  `@static @thread class` → `thread_local` (per-thread copy, §9 sync).
+- **Coroutines**: user-space fibers (x86-64 asm / ucontext otherwise), thread-local
+  coroutine table + stack-pool dynamic reserve, unified wait table for
+  events/timers/fds/executors (`myp_coro_wait_t`); used via the static class `Coro` (§11 coro).
+- **Thread pool**: global work-stealing pool for `@parallel for` (`Parallel.*` config, §11 pool).
+- **Memory allocation**: arena (`@region`) bump allocation; `Memory.*` diagnostics for live
+  counts/peaks/allocation-failure injection; `@weak` weak references auto-null (§11 memory).
+- **Exceptions**: per-thread handlers based on `setjmp`/`longjmp` (`try/catch/finally/throw`, §4).
+
+> For fine-grained control (deterministic release / leak diagnostics / weak refs / raw
+> pointers) use `Memory`/`Rtti`/`@weak`/`Memory.alloc` (§11); `--freestanding` artifacts have
+> no libc/CRT/runtime — for bare-metal/kernel/self-contained use (experimental, see the §13
+> full option table).
+
 ### Self-Hosted Compiler (myp_self)
 
 MYP's compiler itself is being **fully rewritten in MYP** (T5 self-hosting project,

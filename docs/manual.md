@@ -2990,11 +2990,11 @@ twice(v = v + 1);        // 嵌套/重复展开 → v = 37
   无需执行。
 - 调试：`--macro-expand` 输出展开后的 AST dump（`[function main]` / `[action ...]`
   / `for` / `assign` …），便于核对。
-- **表达式/值位展开（M-1，v3.15.244，additive）**：宏体为**恰一条 ExprStmt**（单表达
+- **表达式/值位展开（v3.15.244，additive）**：宏体为**恰一条 ExprStmt**（单表达
   式宏，如 `macro twice($e) { ($e)+($e); }`）时，可在任意**表达式位置**调用并展开为
   表达式：`int r = twice(21);` 得 42；可作实参/三元/赋值 RHS/return/嵌套
   （`twice(2)*3`）、宏内嵌宏递归展开。多语句宏体仍只能语句位（表达式位 clean 拒绝）。
-- **宏卫生（M-3，v3.15.241）**：宏体**自声明的局部**在展开时自动 gensym
+- **宏卫生（v3.15.241）**：宏体**自声明的局部**在展开时自动 gensym
   （原名 → 原名_m<seq>），不再与调用方同名变量冲突（`int tmp=7; setV(tmp,1);` 正常）。
 
 ### @macro — 过程宏（v3.6）
@@ -3198,6 +3198,44 @@ MYP 提供 `myp_debug`（DAP ↔ gdb 桥），可在 VS Code 内断点/单步/�
 - 设置 `myp.debuggerPath` 可指定 `myp_debug` 路径（默认自动探测）。
 - 支持：断点（源码行号）、单步（next/stepIn/stepOut）、调用栈、局部变量、
   鼠标悬停求值（evaluate）。
+
+### 运行时（Runtime）
+
+编译产物是**静态链接的单可执行**：`mypc` 把 `.myp` 编译为 LLVM IR → `llc` 生成
+目标文件 → 链接器链接**运行时 + libc** 得到可执行（无解释器/VM/GC）。运行时机制对用户
+透明——ARC/事件/协程/线程池都自动工作；下面是为理解产物与 de-gcc 而设的概述。
+
+**两级运行时（de-gcc）**：
+- **C 运行时**：`src/runtime/*.c`（`runtime.c`/`myp_stdlib.c`/`runtime_gpu.c`）→
+  `build/libmyp_rt.a`。默认链接，随编译器分发。
+- **MYP 运行时归档**：`build/libmyp_rt_myp.a`——`runtime_myp/*.myp`（coro/io/net/
+  thread/…，36 模块）用 `--shared` 编译的 MYP 重实现。归档存在时链接**优先仅 MYP 归档
+  + libc**（`(MYP runtime only)`），失败才回退 C 运行时。`MYP_RT_MYP=<归档>` 强制走
+  MYP 归档。
+
+**链接**：默认 `gcc` 链接 C 运行时（`$CC` 可覆盖，跨机交叉编译）；档A 用 `ld.lld`
+（去 gcc 的链接职责但保留 libc）；`--freestanding` 由 `ld.lld`（`MYP_LD` →
+`ld.lld-21/20/19` → `ld.lld`/`lld`/`ld`）直链**无 libc/CRT/runtime** 的静态 ELF。
+
+**运行时机制**：
+- **ARC 内存**：class 实例/`string`/动态数组/`slice` backing 引用计数自动管理
+  （对象头 `{rc, type_id}` + `retain`/`release`），离开作用域自动释放，无 GC。
+- **运行时类型 id**：每类编译期编号；`__myp_type_name_table`/`__myp_release_table`
+  支撑 `Rtti.typeId/typeOf/sameType`（§11 rtti）与引用字段级联释放。
+- **事件/mapping**：运行期注册表 + `__myp_inst_*` 实例全局；`mapping()` 在 main 建总线，
+  同线程同步 / 跨线程异步投递。
+- **@static/@thread 全局**：`@static class` 属性 → 全局实例；`@static @thread class` →
+  `thread_local` 每线程副本（§9 sync）。
+- **协程**：用户态纤程（x86-64 asm / 其余 ucontext），线程本地协程表 + 栈池动态预留，
+  事件/定时器/fd/执行器统一等待表（`myp_coro_wait_t`）；经静态类 `Coro` 使用（§11 coro）。
+- **线程池**：`@parallel for` 全局 work-stealing 池（`Parallel.*` 配置，§11 pool）。
+- **内存分配**：arena（`@region`）bump 分配；`Memory.*` 诊断存活计数/峰值/分配失败注入；
+  `@weak` 弱引用自动置空（§11 memory 节）。
+- **异常**：基于 `setjmp`/`longjmp` 的每线程 handler（`try/catch/finally/throw`，§4）。
+
+> 需要精细控制（确定性释放/泄漏诊断/弱引用/裸指针）时用 `Memory`/`Rtti`/`@weak`/
+> `Memory.alloc`（§11）；`--freestanding` 产物无 libc/CRT/runtime，用于裸机/内核/
+> 自包含（实验，见 §13 完整选项表）。
 
 ### 自举编译器（myp_self）
 
