@@ -1921,6 +1921,21 @@ class Worker {
 }
 ```
 
+**Per-thread state via `@static @thread class`** (v3.15.77): properties are emitted as
+LLVM `thread_local` globals — one copy per thread, naturally lock-free (per-thread
+coroutine tables, thread-local counters, etc.):
+
+```myp
+@static @thread class TL { property: int val = 0; }   // one per thread
+
+class Worker {
+    action:
+        @startup void run() {
+            TL.val = 111;   // touches only this thread's TL.val
+        }
+}
+```
+
 - **Return values**: `tryLock`/`tryWait`/`tryReadLock`/`tryWriteLock` → `1`=acquired,
   `0`=failed, `-1`=bad handle; `Once.enter` → `1`=first caller (run init),
   `0`=already done.
