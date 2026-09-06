@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.15.211 — 接口方法返回自定义 class 不再回落 void（BUG-149，selfhost）
+
+**非破坏性修复（selfhost sema.myp）**。`interface I { R m(); }` 经接口变量调用
+`R r = v.m();` 此前编译错 `cannot initialize ... with value of type 'void'`——
+接口收集 pass 早于类注册，`typeToKind(R)` 回落 "void" 被记进接口方法表（oracle
+正常，属 selfhost 落后）。
+
+- sema：新增 `ifaceRetTypeOf`（接口方法声明返回 AstType，MethodSig 本已保留）；
+  成员调用解析处 `fr=="void"` 且对象为接口时，用 AstType **使用点惰性重算** kind
+  并设 `valueClass`（声明返回类型）；devirt 具体类仍由 resolvedClass 驱动分派。
+- 回归 `tests/bugs/iface_return_class.myp`（devirt new + 接口形参非 devirt + 链式
+  `v.make().n()`，4 断言，双编译器）；bootstrap myp_self2==myp_self3 MD5 一致；
+  全量 470/470。
+
 ### v3.15.210 — 固定数组 .size/.size() 返回编译期长度 N（BUG-148，selfhost）
 
 **非破坏性（selfhost sema+codegen）**。定长数组 `T[N]`（如 `int[4] a`）此前无长度

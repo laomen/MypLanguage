@@ -1,0 +1,49 @@
+// iface_return_class.myp — BUG-149 回归：接口方法返回自定义 class
+//   oracle 通过、selfhost 曾把接口调用返回解析成 void（接口收集 pass 早于类
+//   注册 → typeToKind 回落 "void"）。修复：使用点对接口方法声明返回 AstType
+//   惰性重算 kind + 设 valueClass。覆盖 devirt（new 已知具体类）与非 devirt
+//   （接口作形参，concrete 未知）两形态 + 链式访问。
+import test;
+
+class R {
+    action:
+        @constructor R() {}
+        void setN(int v) { n_ = v; }
+        int n() { return n_; }
+    property: int n_;
+}
+
+interface I { R make(); }
+
+class C {
+    interface class I;
+    action:
+        @constructor C() {}
+        R make() { R r = new R(); r.setN(7); return r; }
+}
+
+class C2 {
+    interface class I;
+    action:
+        @constructor C2() {}
+        R make() { R r = new R(); r.setN(9); return r; }
+}
+
+// 接口作形参 → 调用点 concrete 未知（非 devirt 路径）
+R drive(I v) { return v.make(); }
+
+@test void t_devirt() {
+    I v = new C();
+    R r = v.make();
+    Test.assertEq(r.n(), 7, "devirt n7");
+}
+
+@test void t_param_chain() {
+    I a = new C();
+    I b = new C2();
+    Test.assertEq(drive(a).n(), 7, "param a7");
+    Test.assertEq(drive(b).n(), 9, "param b9");
+    // 链式：接口调用结果直接再取方法返回值
+    I c = new C();
+    Test.assertEq(c.make().n(), 7, "chain n7");
+}

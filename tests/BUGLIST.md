@@ -159,7 +159,7 @@
 | BUG-146 | 🟩 | **struct 内 slice 字段「读后即子访问」codegen 错 IR**（struct 含 `slice<float> vec`，直接 `r.vec[i]`/`r.vec.size`/`arr[i].vec[j]` 读到垃圾（聚合 `{ptr,i64}` 首字节被当 ptr 解引用 → 1077936128）或 -O2 下 opt-21 崩 `'%t..' defined with type '{ ptr, i64 }' but expected 'ptr'` + `getelementptr %Object, ptr %t..`；机制：codegen 把 slice 字段 load 成 `{ptr,i64}` 后又当 ptr 二次 GEP，本应 extractvalue 取 data；与 ARC 无关，独立 slice 正常，先取局部 `slice sv=r.vec; sv[i]` 正常） | 回归 `tests/bugs/b146_struct_slice_field.myp`（判别 A–F：直接字段/数组元素/.size/写/函数返回 struct 直取/slice-of-struct 元素写，双编译器 12 断言） |
 | BUG-147 | 🟩 | **实例属性数组下标 this.buf[i] 元素类型丢失（selfhost+oracle 双缺口）**——显式 `this.<动态数组属性>[i]`：selfhost sema 落成 'array'、codegen 元素 LLVM 类型落成默认（ubyte[] 属性按 i32 GEP/store 步长 4、4 字节写 → str() 读 [41 00 00 00]→"A"，本地 ubyte[] 却 i8 正确；读/写均错）。裸属性名 buf[i]、静态类属性 S.buf[i]、局部、函数返回都正常——只漏 ThisExpr 对象形态 | 回归 `tests/@test/this_prop_array_bytes.myp`（ubyte[] 逐字节写/读、str() 往返、int[] 属性、bytes() 入属性；6 断言，双编译器） |
 | BUG-148 | 🟩 | **定长数组 T[N] 的 .size/.size() 缺失；动态数组 T[] 需保持拒绝**——定长数组调用/属性形式此前编译错（无该成员/void），现支持返回编译期长度 N；动态数组（无运行时长度，文档指引用 slice<T>）的 .size/.length/.data 编译器干净拒绝（曾漏到 codegen 生成坏 IR） | 回归 `tests/@test/fixed_array_size.myp`（局部/this.属性/struct 字段 `.size`+`.size()`，6 断言）+ 负测试 `tests/negative/dynarray_size.myp` |
-| BUG-149 | 🟥 | **接口方法返回自定义 class 被解析成 void**——`interface I { R m(); }` 经接口变量调用 `R r = v.m();` 编译错 `cannot initialize variable 'r' of type 'R' with value of type 'void'`（返回类型 class 在调用点未携带、回落 void；同族 BUG-017 string→i32） | 待建 `tests/bugs/iface_return_class.myp`（修复前编译拒绝，规避：void+out 填充） |
+| BUG-149 | � | **接口方法返回自定义 class 被解析成 void（selfhost 落后）**——`interface I { R m(); }` 经接口变量调用 `R r = v.m();` 编译错 `cannot initialize variable 'r' of type 'R' with value of type 'void'`（接口收集 pass 早于类注册 → typeToKind 回落 "void"；oracle 正常）。修复：使用点对接口方法声明返回 AstType 惰性重算 kind + 设 valueClass | 回归 `tests/bugs/iface_return_class.myp`（devirt new + 接口形参非 devirt + 链式；2 @test/4 断言，双编译器） |
 
 
 ---
@@ -3825,7 +3825,7 @@ mypagent 高频在 `Json_Json_string` 后由 `__longjmp` 段错误；现场 hand
   BUG-057~065 链式访问、BUG-029/033 iface upcast）。注意：@startup+@thread 才会输出
   Console（普通 main 无输出易误判「没跑」）。
 
-## BUG-149（未修复 🟥，v3.15.210 实测）：接口方法返回自定义 class 被解析成 void
+## BUG-149（已修复 🟩，v3.15.211）：接口方法返回自定义 class 被解析成 void
 
 **oracle mypc 实测**（mypagent v0.1.116 抽 myp_http 模块时暴露）：
 `interface HttpHandler { HttpResp handle(HttpReq req); }`（接口纯签名返回自定义 class），
@@ -3859,5 +3859,18 @@ mypagent 高频在 `Json_Json_string` 后由 `__longjmp` 段错误；现场 hand
   Verdict out)）。或经具体类持有返回。
 - **教训**：新增「接口方法返回自定义 class」前先小样验证返回类型是否携带；跨模块
   回调一律 out 填充，别依赖接口方法返回 class。
+
+**修复（v3.15.211，selfhost sema.myp）**：
+- 根因确认：`interfaceMethods_` 在类注册表（classNames_/classIdx_，`findClass`）
+  填充**之前**收集（sema.myp ~1775 vs ~1904）→ `typeToKind(自定义 class)` 回落
+  `"void"`（findClass<0）；int/string 等基本返回不受影响（typeKindOf）。devirt
+  B3 分支只覆盖 `fr=="assoc"`，不覆盖被污染的 "void"。
+- 修复：新增 `ifaceRetTypeOf(ifc,meth)` 返回接口方法声明 AstType（MethodSig
+  retType_ 本已保留）；成员调用解析处若 `fr=="void"` 且 base3 是接口，用 AstType
+  在使用点惰性重算 `typeToKind` + `e.setValueClass(声明返回类型)`。devirt 具体类仍
+  由 B3 设 resolvedClass（分派用），两不相扰。
+- 回归 `tests/bugs/iface_return_class.myp`：devirt（new 已知具体类）+
+  接口作形参（concrete 未知，非 devirt）+ 链式 `v.make().n()`；双编译器 4 断言；
+  自举 myp_self2==myp_self3 MD5 一致；全量 470/0。
 
 

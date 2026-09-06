@@ -3700,6 +3700,15 @@ class Sema {
             }
             return "";
         }
+        // 接口方法声明的返回 AstType（BUG-149：接口收集 pass 早于类注册，注册时
+        // typeToKind(自定义 class) 回落 "void"；AstType 原样保留，供使用点惰性重算）。
+        AstType ifaceRetTypeOf(string ifc, string meth) {
+            for (int i = 0; i < interfaceMethods_.size(); i = i + 1) {
+                MethodSig s = interfaceMethods_.get(i);
+                if (s.cls() == ifc && s.meth() == meth) return s.retType();
+            }
+            return null;
+        }
         // BUG-068：接口方法形参列表（接口变量 obj.method(...) 的实参校验用）。
         // 接口方法注册在 interfaceMethods_（不在 methods_/methodSigIdx_）→
         // findMethodParams 返回 null → callParamTypes 不设 → 实参类型不匹配
@@ -6453,6 +6462,22 @@ class Sema {
                             }
                             string fr = findMethodRet(base3, callee.memberName(), e.args().size());
                             if (Str.len(fr) == 0) fr = findIfaceMethodRet(base3, callee.memberName());
+                            // BUG-149：接口方法返回自定义 class 被记成 void（接口收集
+                            // pass 早于类注册 → typeToKind 回落 "void"，同族 BUG-017
+                            // 占位回落）。使用点对接口方法声明返回类型（AstType 已保留）
+                            // 惰性重算 kind：class/interface/struct 返回据此可赋值/链式；
+                            // devirt 具体类仍由 B3 设 resolvedClass（代码gen分派用），
+                            // 这里只补返回类型身份（valueClass = 声明返回类型）。
+                            if (fr == "void" && inInterface(base3) != 0) {
+                                AstType irt2 = ifaceRetTypeOf(base3, callee.memberName());
+                                if (irt2 != null) {
+                                    string ik2 = typeToKind(irt2);
+                                    if (Str.len(ik2) != 0 && ik2 != "void") {
+                                        fr = ik2;
+                                        if (Str.len(irt2.className()) != 0) e.setValueClass(irt2.className());
+                                    }
+                                }
+                            }
                             // BUG-083：非 @coro 上下文调用 @async 方法须拒绝（await
                             // 形态3 只能 @coro 内）。base3 是 resolveBase 后的类名。
                             if (Str.len(fr) != 0) checkAsyncCall(e, isAsyncMethod(base3, callee.memberName()));
