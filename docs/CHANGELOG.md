@@ -27,6 +27,30 @@
 
 ## 编译器版本历史
 
+### v3.15.222 — 泛型模板体未定义符号扫描（鲁棒性硬化，selfhost）
+
+**非破坏性硬化（承接 v3.15.221 崩溃扫描记录的既有缺口）**。泛型函数 / 泛型 static /
+泛型实例方法（A2）/泛型 struct 方法的 body 此前由 `markAllStmt` **跳过完整类型检查**
+→ 体内未定义标识符（如 `return y;` 的笔误）一路到 codegen → 坏 IR（`opt` 报
+`use of undefined value '%y'`，非干净诊断）。
+
+- **sema**（`sema.myp`）：新增保守两阶段**模板体符号扫描**
+  `templateBodyUndefinedCheck`（接入 5 处泛型模板处理点：顶层泛型函数 / 类 action /
+  类 function / @static action / struct 方法，均在 markAllStmt 前）：
+  - ① 收集体内声明的局部名（VarDecl / For / ForIn / Lambda 形参）＋方法形参＋方法级
+    与类级类型参数＋`this`＋当前类成员（props/actions/funcs/events/staticActions）或
+    struct 字段名；
+  - ② 走查 Identifier 引用（含 ArrayLit/StructLit/MapLit 元素），凡既非上述集合、也非
+    已知全局（顶层函数/类/enum/struct/interface/const/intrinsic/`__myp_*`）→ 干净拒绝
+    "undefined symbol 'X' (inside generic template body)"。
+  - **零误报优先**：凡扫描器无法完整建模的语句形态（Destructure / Gpu* / Try / Match /
+    Quote / TryExpr / GpuReduceExpr 等）→ 整段跳过不报（markAllStmt 照常）。
+- 修掉 v3.15.221 记录的一类坏 IR 缺口（模板体内未定义符号）；变异模糊（1600×3 种子）
+  该类归零。
+- 回归 `tests/negative/generic_inst_undef_var.myp` /
+  `generic_fn_undef_var.myp`；全量 514/514 + bugs 19/19；bootstrap MD5 一致。
+- 注：此扫描只报"未定义符号"；模板体完整类型检查（占位 T 语义）仍属后续大项。
+
 ### v3.15.221 — 崩溃扫描修复：泛型方法非法显式类型实参干净拒绝（鲁棒性，selfhost）
 
 **非破坏性硬化**。对新增特性做定向崩溃/坏 IR 扫描（词法畸形 78 + 通用 fuzz 3000 +

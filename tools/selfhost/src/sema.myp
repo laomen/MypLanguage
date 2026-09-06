@@ -2139,7 +2139,12 @@ class Sema {
                 for (int j = 0; j < f.params().size(); j = j + 1) {
                     declareParam(f.params().get(j), topFCheck);
                 }
-                if (f.typeParams().size() != 0 || f.isMacro() != 0) markAllStmt(f.body());
+                if (f.typeParams().size() != 0 || f.isMacro() != 0) {
+                    // 泛型模板体未定义符号保守扫描（v3.15.222）：仅真泛型函数扫（宏
+                    // 体是 quote AST 非普通代码）；模板体仍不整体类型检查（markAllStmt）。
+                    if (f.typeParams().size() != 0) templateBodyUndefinedCheck(f.body(), f.params(), f.typeParams(), "");
+                    markAllStmt(f.body());
+                }
                 else {
                     visitStmt(f.body());
                     // BUG-088：顶层 non-void 函数缺 return → 拒（镜像 C++
@@ -2340,7 +2345,10 @@ class Sema {
                     for (int j = 0; j < a.params().size(); j = j + 1) {
                         declareParam(a.params().get(j), 1);
                     }
-                    if (a.typeParams().size() != 0) markAllStmt(a.body());
+                    if (a.typeParams().size() != 0) {
+                        templateBodyUndefinedCheck(a.body(), a.params(), a.typeParams(), currentClass_);
+                        markAllStmt(a.body());
+                    }
                     else {
                         visitStmt(a.body());
                         // BUG-088：类 action non-void 缺 return → 拒
@@ -2368,7 +2376,10 @@ class Sema {
                     for (int j = 0; j < f.params().size(); j = j + 1) {
                         declareParam(f.params().get(j), 1);
                     }
-                    if (f.typeParams().size() != 0) markAllStmt(f.body());
+                    if (f.typeParams().size() != 0) {
+                        templateBodyUndefinedCheck(f.body(), f.params(), f.typeParams(), currentClass_);
+                        markAllStmt(f.body());
+                    }
                     else {
                         visitStmt(f.body());
                         // BUG-088：类内函数 non-void 缺 return → 拒
@@ -2394,7 +2405,10 @@ class Sema {
                     for (int j = 0; j < a.params().size(); j = j + 1) {
                         declareParam(a.params().get(j), 1);
                     }
-                    if (a.typeParams().size() != 0) markAllStmt(a.body());
+                    if (a.typeParams().size() != 0) {
+                        templateBodyUndefinedCheck(a.body(), a.params(), a.typeParams(), currentClass_);
+                        markAllStmt(a.body());
+                    }
                     else {
                         visitStmt(a.body());
                         // BUG-088：@static action non-void 缺 return → 拒
@@ -2426,7 +2440,10 @@ class Sema {
                     for (int j = 0; j < f.params().size(); j = j + 1) {
                         declareParam(f.params().get(j), 0);
                     }
-                    if (f.typeParams().size() != 0) markAllStmt(f.body());
+                    if (f.typeParams().size() != 0) {
+                        templateBodyUndefinedCheck(f.body(), f.params(), f.typeParams(), currentClass_);
+                        markAllStmt(f.body());
+                    }
                     else {
                         visitStmt(f.body());
                         // BUG-088：struct 方法 non-void 缺 return → 拒
@@ -4149,6 +4166,263 @@ class Sema {
         }
 
         // ---- 泛型方法：C++ 跳过其 body（resolved_kind 保持默认 Int）→ 全部标 int ----
+        // ==== 泛型模板体未定义符号保守扫描（v3.15.222 鲁棒性）====
+        // 泛型函数/泛型 static/泛型实例方法/泛型 struct 方法的 body 由 markAllStmt 跳过
+        // 完整类型检查 → 体内未定义标识符一路到 codegen → 坏 IR（opt 报错）。这里做
+        // 一次只报"未定义符号"的保守扫描：两阶段（先收集体内声明的局部名 + 形参 +
+        // 类型参数 + 当前类成员，再走查 Identifier 引用）。凡扫描器无法完整建模的语句
+        // 形态（Destructure/Gpu*/Try/Match/Quote 等）→ 整段跳过不报（零误报优先；
+        // markAllStmt 仍照常执行）。
+        int tplSupportedStmt(AstStmt s) {
+            if (s == null) return 1;
+            string k = s.kind();
+            if (k == "Block") {
+                ArrayList<AstStmt> bs = s.bodyStmts();
+                for (int i = 0; i < bs.size(); i = i + 1) {
+                    if (tplSupportedStmt(bs.get(i)) == 0) return 0;
+                }
+                return 1;
+            }
+            if (k == "ExprStmt") {
+                AstExpr xe = s.expr();
+                if (xe != null && (xe.kind() == "Quote" || xe.kind() == "TryExpr" || xe.kind() == "GpuReduceExpr")) return 0;
+                return 1;
+            }
+            if (k == "VarDecl") {
+                ArrayList<AstVar> ds = s.decls();
+                for (int i = 0; i < ds.size(); i = i + 1) {
+                    AstExpr di = ds.get(i).init();
+                    if (di != null && (di.kind() == "Quote" || di.kind() == "TryExpr" || di.kind() == "GpuReduceExpr")) return 0;
+                }
+                return 1;
+            }
+            if (k == "If") return tplSupportedStmt(s.then()) & tplSupportedStmt(s.elseBranch());
+            if (k == "While") return tplSupportedStmt(s.body());
+            if (k == "For") return tplSupportedStmt(s.init()) & tplSupportedStmt(s.body());
+            if (k == "ForIn") return tplSupportedStmt(s.body());
+            if (k == "Break" || k == "Continue" || k == "Return" || k == "Throw") return 1;
+            return 0;
+        }
+        void tplCollectStmt(AstStmt s, ArrayList<string> out) {
+            if (s == null) return;
+            string k = s.kind();
+            if (k == "Block") {
+                ArrayList<AstStmt> bs = s.bodyStmts();
+                for (int i = 0; i < bs.size(); i = i + 1) tplCollectStmt(bs.get(i), out);
+            } else if (k == "VarDecl") {
+                ArrayList<AstVar> ds = s.decls();
+                for (int i = 0; i < ds.size(); i = i + 1) {
+                    AstVar v = ds.get(i);
+                    if (Str.len(v.name()) != 0) out.add(v.name());
+                    if (v.init() != null) tplCollectExpr(v.init(), out);
+                }
+            } else if (k == "ExprStmt") {
+                if (s.expr() != null) tplCollectExpr(s.expr(), out);
+            } else if (k == "If") {
+                if (s.condition() != null) tplCollectExpr(s.condition(), out);
+                tplCollectStmt(s.then(), out);
+                tplCollectStmt(s.elseBranch(), out);
+            } else if (k == "While") {
+                if (s.condition() != null) tplCollectExpr(s.condition(), out);
+                tplCollectStmt(s.body(), out);
+            } else if (k == "For") {
+                tplCollectStmt(s.init(), out);
+                if (s.condition() != null) tplCollectExpr(s.condition(), out);
+                if (s.step() != null) tplCollectExpr(s.step(), out);
+                tplCollectStmt(s.body(), out);
+            } else if (k == "ForIn") {
+                if (s.iterable() != null) tplCollectExpr(s.iterable(), out);
+                if (Str.len(s.varName()) != 0) out.add(s.varName());
+                tplCollectStmt(s.body(), out);
+            } else if (k == "Return") {
+                if (s.value() != null) tplCollectExpr(s.value(), out);
+            } else if (k == "Throw") {
+                if (s.expr() != null) tplCollectExpr(s.expr(), out);
+            }
+        }
+        void tplCollectExpr(AstExpr e, ArrayList<string> out) {
+            if (e == null) return;
+            string k = e.kind();
+            if (k == "Lambda") {
+                ArrayList<AstParam> ps = e.params();
+                for (int i = 0; i < ps.size(); i = i + 1) {
+                    if (Str.len(ps.get(i).name()) != 0) out.add(ps.get(i).name());
+                }
+                if (e.bodyStmt() != null) tplCollectStmt(e.bodyStmt(), out);
+            } else if (k == "Binary" || k == "Assign" || k == "Pipe") {
+                if (e.lhs() != null) tplCollectExpr(e.lhs(), out);
+                if (e.rhs() != null) tplCollectExpr(e.rhs(), out);
+            } else if (k == "Unary" || k == "Convert" || k == "Await") {
+                if (e.operand() != null) tplCollectExpr(e.operand(), out);
+            } else if (k == "Call") {
+                if (e.callee() != null) tplCollectExpr(e.callee(), out);
+                for (int i = 0; i < e.args().size(); i = i + 1) tplCollectExpr(e.args().get(i), out);
+            } else if (k == "Member" || k == "Subscript") {
+                if (e.array() != null) tplCollectExpr(e.array(), out);
+                if (e.index() != null) tplCollectExpr(e.index(), out);
+            } else if (k == "New") {
+                for (int i = 0; i < e.args().size(); i = i + 1) tplCollectExpr(e.args().get(i), out);
+            } else if (k == "NewArray") {
+                for (int i = 0; i < e.dimensions().size(); i = i + 1) tplCollectExpr(e.dimensions().get(i), out);
+            } else if (k == "Ternary") {
+                if (e.condition() != null) tplCollectExpr(e.condition(), out);
+                if (e.trueExpr() != null) tplCollectExpr(e.trueExpr(), out);
+                if (e.falseExpr() != null) tplCollectExpr(e.falseExpr(), out);
+            } else if (k == "Range") {
+                if (e.start() != null) tplCollectExpr(e.start(), out);
+                if (e.end() != null) tplCollectExpr(e.end(), out);
+            } else if (k == "Tuple") {
+                for (int i = 0; i < e.elements().size(); i = i + 1) tplCollectExpr(e.elements().get(i), out);
+            } else if (k == "NamedArg") {
+                if (e.namedValue() != null) tplCollectExpr(e.namedValue(), out);
+            } else if (k == "EnumVariant") {
+                for (int i = 0; i < e.args().size(); i = i + 1) tplCollectExpr(e.args().get(i), out);
+            } else if (k == "ArrayLit") {
+                for (int i = 0; i < e.elements().size(); i = i + 1) tplCollectExpr(e.elements().get(i), out);
+            } else if (k == "StructLit") {
+                for (int i = 0; i < e.elements().size(); i = i + 1) tplCollectExpr(e.elements().get(i), out);
+            } else if (k == "MapLit") {
+                for (int i = 0; i < e.mapKeys().size(); i = i + 1) tplCollectExpr(e.mapKeys().get(i), out);
+                for (int i = 0; i < e.elements().size(); i = i + 1) tplCollectExpr(e.elements().get(i), out);
+            }
+        }
+        int tplKnownGlobal(string nm) {
+            if (Str.len(nm) == 0) return 1;
+            if (nm == "this") return 1;
+            if (Str.startsWith(nm, "__myp_") != 0) return 1;
+            if (funcIdx_.contains(nm) != 0) return 1;
+            if (findClass(nm) >= 0) return 1;
+            if (findEnum(nm) >= 0) return 1;
+            if (findStruct(nm) >= 0) return 1;
+            if (inInterface(nm) != 0) return 1;
+            if (findConstDeclFunc(nm) != null) return 1;
+            for (int i = 0; i < intrNames_.size(); i = i + 1) {
+                if (intrNames_.get(i) == nm) return 1;
+            }
+            return 0;
+        }
+        void tplCheckExpr(AstExpr e, ArrayList<string> decl) {
+            if (e == null) return;
+            string k = e.kind();
+            if (k == "Identifier") {
+                string nm = e.name();
+                if (Str.len(nm) != 0 && listHas(decl, nm) == 0 && tplKnownGlobal(nm) == 0) {
+                    int ln = e.line(); int cn = e.col();
+                    if (ln == 0) { ln = 0; }
+                    diag_.error(ln, cn, "undefined symbol '" + nm + "' (inside generic template body)");
+                }
+                return;
+            }
+            if (k == "Lambda") {
+                ArrayList<AstParam> ps = e.params();
+                for (int i = 0; i < ps.size(); i = i + 1) {
+                    if (Str.len(ps.get(i).name()) != 0) decl.add(ps.get(i).name());
+                }
+                if (e.bodyStmt() != null) tplCheckStmt(e.bodyStmt(), decl);
+            } else if (k == "Binary" || k == "Assign" || k == "Pipe") {
+                if (e.lhs() != null) tplCheckExpr(e.lhs(), decl);
+                if (e.rhs() != null) tplCheckExpr(e.rhs(), decl);
+            } else if (k == "Unary" || k == "Convert" || k == "Await") {
+                if (e.operand() != null) tplCheckExpr(e.operand(), decl);
+            } else if (k == "Call") {
+                if (e.callee() != null) tplCheckExpr(e.callee(), decl);
+                for (int i = 0; i < e.args().size(); i = i + 1) tplCheckExpr(e.args().get(i), decl);
+            } else if (k == "Member" || k == "Subscript") {
+                if (e.array() != null) tplCheckExpr(e.array(), decl);
+                if (e.index() != null) tplCheckExpr(e.index(), decl);
+            } else if (k == "New") {
+                for (int i = 0; i < e.args().size(); i = i + 1) tplCheckExpr(e.args().get(i), decl);
+            } else if (k == "NewArray") {
+                for (int i = 0; i < e.dimensions().size(); i = i + 1) tplCheckExpr(e.dimensions().get(i), decl);
+            } else if (k == "Ternary") {
+                if (e.condition() != null) tplCheckExpr(e.condition(), decl);
+                if (e.trueExpr() != null) tplCheckExpr(e.trueExpr(), decl);
+                if (e.falseExpr() != null) tplCheckExpr(e.falseExpr(), decl);
+            } else if (k == "Range") {
+                if (e.start() != null) tplCheckExpr(e.start(), decl);
+                if (e.end() != null) tplCheckExpr(e.end(), decl);
+            } else if (k == "Tuple") {
+                for (int i = 0; i < e.elements().size(); i = i + 1) tplCheckExpr(e.elements().get(i), decl);
+            } else if (k == "NamedArg") {
+                if (e.namedValue() != null) tplCheckExpr(e.namedValue(), decl);
+            } else if (k == "EnumVariant") {
+                for (int i = 0; i < e.args().size(); i = i + 1) tplCheckExpr(e.args().get(i), decl);
+            } else if (k == "ArrayLit") {
+                for (int i = 0; i < e.elements().size(); i = i + 1) tplCheckExpr(e.elements().get(i), decl);
+            } else if (k == "StructLit") {
+                for (int i = 0; i < e.elements().size(); i = i + 1) tplCheckExpr(e.elements().get(i), decl);
+            } else if (k == "MapLit") {
+                for (int i = 0; i < e.mapKeys().size(); i = i + 1) tplCheckExpr(e.mapKeys().get(i), decl);
+                for (int i = 0; i < e.elements().size(); i = i + 1) tplCheckExpr(e.elements().get(i), decl);
+            }
+        }
+        void tplCheckStmt(AstStmt s, ArrayList<string> decl) {
+            if (s == null) return;
+            string k = s.kind();
+            if (k == "Block") {
+                ArrayList<AstStmt> bs = s.bodyStmts();
+                for (int i = 0; i < bs.size(); i = i + 1) tplCheckStmt(bs.get(i), decl);
+            } else if (k == "VarDecl") {
+                ArrayList<AstVar> ds = s.decls();
+                for (int i = 0; i < ds.size(); i = i + 1) {
+                    AstVar v = ds.get(i);
+                    if (Str.len(v.name()) != 0 && listHas(decl, v.name()) == 0) decl.add(v.name());
+                    if (v.init() != null) tplCheckExpr(v.init(), decl);
+                }
+            } else if (k == "ExprStmt") {
+                if (s.expr() != null) tplCheckExpr(s.expr(), decl);
+            } else if (k == "If") {
+                if (s.condition() != null) tplCheckExpr(s.condition(), decl);
+                tplCheckStmt(s.then(), decl);
+                tplCheckStmt(s.elseBranch(), decl);
+            } else if (k == "While") {
+                if (s.condition() != null) tplCheckExpr(s.condition(), decl);
+                tplCheckStmt(s.body(), decl);
+            } else if (k == "For") {
+                tplCheckStmt(s.init(), decl);
+                if (s.condition() != null) tplCheckExpr(s.condition(), decl);
+                if (s.step() != null) tplCheckExpr(s.step(), decl);
+                tplCheckStmt(s.body(), decl);
+            } else if (k == "ForIn") {
+                if (s.iterable() != null) tplCheckExpr(s.iterable(), decl);
+                if (Str.len(s.varName()) != 0 && listHas(decl, s.varName()) == 0) decl.add(s.varName());
+                tplCheckStmt(s.body(), decl);
+            } else if (k == "Return") {
+                if (s.value() != null) tplCheckExpr(s.value(), decl);
+            } else if (k == "Throw") {
+                if (s.expr() != null) tplCheckExpr(s.expr(), decl);
+            }
+        }
+        void templateBodyUndefinedCheck(AstStmt body, ArrayList<AstParam> params, ArrayList<string> typeParams, string cls) {
+            if (body == null) return;
+            if (tplSupportedStmt(body) == 0) return;
+            ArrayList<string> decl = new ArrayList<string>();
+            for (int pi = 0; pi < params.size(); pi = pi + 1) {
+                if (Str.len(params.get(pi).name()) != 0) decl.add(params.get(pi).name());
+            }
+            for (int ti = 0; ti < typeParams.size(); ti = ti + 1) decl.add(typeParams.get(ti));
+            decl.add("this");
+            if (Str.len(cls) != 0 && tu_ != null) {
+                for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                    AstClass cc = tu_.classes().get(ci);
+                    if (cc.name() != cls) continue;
+                    for (int pi = 0; pi < cc.props().size(); pi = pi + 1) if (Str.len(cc.props().get(pi).name()) != 0) decl.add(cc.props().get(pi).name());
+                    for (int pi = 0; pi < cc.actions().size(); pi = pi + 1) decl.add(cc.actions().get(pi).name());
+                    for (int pi = 0; pi < cc.funcs().size(); pi = pi + 1) decl.add(cc.funcs().get(pi).name());
+                    for (int pi = 0; pi < cc.events().size(); pi = pi + 1) decl.add(cc.events().get(pi).name());
+                    for (int pi = 0; pi < cc.staticActions().size(); pi = pi + 1) decl.add(cc.staticActions().get(pi).name());
+                    break;
+                }
+                int sti = findStruct(cls);
+                if (sti >= 0 && sti < structProps_.size()) {
+                    ArrayList<AstProp> sp = structProps_.get(sti);
+                    for (int pi = 0; pi < sp.size(); pi = pi + 1) if (Str.len(sp.get(pi).name()) != 0) decl.add(sp.get(pi).name());
+                }
+            }
+            tplCollectStmt(body, decl);
+            tplCheckStmt(body, decl);
+        }
+
         void markAllStmt(AstStmt s) {
             if (s == null) return;
             string k = s.kind();

@@ -1,0 +1,8 @@
+// EXPECT ERROR: undefined symbol 'y' (inside generic template body)
+// 泛型模板体符号检查负例（v3.15.222）：顶层泛型函数体内引用未声明标识符 → 干净拒绝
+//（此前坏 IR → opt 崩；与泛型实例方法模板同族）。
+import env;
+T id<T>(T x) { T y2 = x; return y; }
+void main() {
+    int a = id<int>(5);
+}

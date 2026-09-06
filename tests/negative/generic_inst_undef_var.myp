@@ -1,0 +1,13 @@
+// EXPECT ERROR: undefined symbol 'y' (inside generic template body)
+// 泛型模板体符号检查负例（v3.15.222）：泛型实例方法体内引用未声明标识符 → 干净拒绝
+//（此前 markAllStmt 跳过模板体 → 坏 IR → opt 崩）。
+import env;
+class C {
+    action:
+        @constructor C() {}
+        T id<T>(T x) { T y2 = x; return y; }
+}
+void main() {
+    C c = new C();
+    int a = c.id<int>(5);
+}
