@@ -228,7 +228,9 @@ Target           ::= Identifier ('.' Identifier)?          // 实例动作 / 类
 FunctionDecl     ::= FuncAnnot? ReturnType Identifier GenericParamList? '(' ParamList? ')' '{' Stmt* '}'
 FFIDecl          ::= 'ffi' ReturnType Identifier '(' ParamList? ')' ';'
 EnumDecl         ::= 'enum' Identifier '{' EnumVariant (',' EnumVariant)* '}'
-EnumVariant      ::= Identifier ('(' Type (',' Type)* ')')?
+// 带数据 variant 的参数为「Type Identifier」命名形式（按位置构造/绑定，
+// 字段名仅供文档与可读性；构造 `E.V(...)` 与 match 解构均按声明顺序）
+EnumVariant      ::= Identifier ('(' Type Identifier (',' Type Identifier)* ')')?
 ```
 
 > **其余 additive 顶层形态**（v1.0 语法冻结之外的增量，非破坏）：声明式宏 `macro 名($p…) {…}`

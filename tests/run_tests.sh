@@ -334,6 +334,22 @@ if [ -f "$PROJ_ROOT/tests/test_stack_promotion_budget.sh" ]; then
     fi
 fi
 
+# C6 系统性矩阵 — 编译器泛型实例化容器扩容：跨函数体大量泛型实例化（组合/
+# 嵌套类型 + 泛型函数）迫使 tu.classes 扩容产物正确；ASan 构建重复编译无
+# use-after-free（realloc 后残留访问回归）。
+if [ -f "$PROJ_ROOT/tests/test_c6_generic_stress.sh" ]; then
+    c6_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_c6_generic_stress.sh" 2>&1)
+    if echo "$c6_out" | grep -qE "c6generic: [0-9]+ passed, 0 failed"; then
+        echo -e "${GREEN}PASS${NC} (C6 泛型实例化容器扩容 + ASan 重复编译)"
+        TFPASS=$((TFPASS + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$c6_out" | grep -E "FAIL:|c6generic:" | tail -10
+        TFFAIL=$((TFFAIL + 1))
+        FAILED_TESTS="$FAILED_TESTS c6generic(instance-stress)"
+    fi
+fi
+
 # 叶类无需空析构桩；含 ARC/weak 字段的类仍须保留级联析构。
 if [ -f "$PROJ_ROOT/tests/test_leaf_destroy_dispatch.sh" ]; then
     leaf_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_leaf_destroy_dispatch.sh" 2>&1)
@@ -344,7 +360,7 @@ if [ -f "$PROJ_ROOT/tests/test_leaf_destroy_dispatch.sh" ]; then
         echo -e "${RED}FAIL${NC}"
         echo "$leaf_out" | tail -10
         TFFAIL=$((TFFAIL + 1))
-        FAILED_TESTS="$FAILED_TESTS leaf_destroy_dispatch(codegen)"
+        FAILED_TESTS="$FAILED_TESTS leaf_destroy_dispatch(arc)"
     fi
 fi
 

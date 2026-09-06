@@ -1,0 +1,68 @@
+// C4（roadmap §C4）：枚举名称 / variant 冲突矩阵。
+// 多 enum 共享 variant 名（None/Some）、无数据与带数据 variant 共存、多宽度
+// payload 字段偏移、定义顺序无关、跨"作用域"同 variant 名（同文件两 enum 限定
+// 引用模拟）。正例断言具体解构值（区分错误 variant 索引/字段偏移）。
+import test;
+
+enum Status { None; Some(int value); Done; }        // 无数据 + 带数据 variant 共存
+enum Maybe { None; Some(string value); }             // 与 Status 共享 None/Some 名、不同 payload
+enum Wide { Small(int value); Big(int a, long b, string c); }   // 多宽度 payload
+enum Rev1 { Alpha; Beta; Gamma; }
+enum Rev2 { Gamma; Beta; Alpha; }              // 反序定义（索引不依赖顺序）
+
+int statusVal(Status s) {
+    match (s) {
+        Status.None => { return -1; }
+        Status.Some(v) => { return v; }
+        Status.Done => { return 0; }
+    }
+    return -99;
+}
+string maybeVal(Maybe m) {
+    match (m) {
+        Maybe.None => { return ""; }
+        Maybe.Some(v) => { return v; }
+    }
+    return "?";
+}
+string wideInfo(Wide w) {
+    match (w) {
+        Wide.Small(v) => { return "s" + ("" + v); }
+        Wide.Big(a, b, c) => { return "b" + ("" + a) + "|" + ("" + b) + "|" + c; }
+    }
+    return "?";
+}
+int revVal1(Rev1 r) {
+    match (r) {
+        Rev1.Alpha => { return 0; }
+        Rev1.Beta => { return 1; }
+        Rev1.Gamma => { return 2; }
+    }
+    return -1;
+}
+int revVal2(Rev2 r) {
+    match (r) {
+        Rev2.Gamma => { return 2; }
+        Rev2.Beta => { return 1; }
+        Rev2.Alpha => { return 0; }
+    }
+    return -1;
+}
+
+@test void t_c4_enum_conflicts() {
+    // 共享 None/Some 名：各 enum 限定引用不串
+    Test.assertEq(statusVal(Status.Some(5)), 5, "Status.Some(5)=5");
+    Test.assertEq(statusVal(Status.None), -1, "Status.None");
+    Test.assertEq(statusVal(Status.Done), 0, "Status.Done");
+    Test.assertStrEq(maybeVal(Maybe.Some("hi")), "hi", "Maybe.Some(str)");
+    Test.assertStrEq(maybeVal(Maybe.None), "", "Maybe.None");
+    // 多宽度 payload：字段偏移/拼接正确（int + long + string）
+    Test.assertStrEq(wideInfo(Wide.Big(1, 2000000000, "z")), "b1|2000000000|z", "Wide.Big payload");
+    Test.assertStrEq(wideInfo(Wide.Small(7)), "s7", "Wide.Small payload");
+    // 定义顺序无关：反序 enum 同名 variant 仍取各自值
+    Test.assertEq(revVal1(Rev1.Beta), 1, "Rev1.Beta");
+    Test.assertEq(revVal2(Rev2.Beta), 1, "Rev2.Beta (reversed def)");
+    Test.assertEq(revVal1(Rev1.Gamma), 2, "Rev1.Gamma");
+    Test.assertEq(revVal2(Rev2.Gamma), 2, "Rev2.Gamma (reversed def)");
+    Test.report("t_c4_enum_conflicts", true);
+}

@@ -1,0 +1,58 @@
+// C1（roadmap §C1）：接口 vtable 槽位——同名方法不同槽位 × 所有对象形态。
+//
+// 前提：另一**先声明**接口 IFirst 的同名 shared() 在槽 0；ISecond 的 shared() 在
+// 槽 1。若 fat-pointer 分派按方法名扫全接口取首个槽位 → 静默调错方法（错值而非
+// 崩溃）——所以每形态断言具体值（shared=22 / first=11）区分正确槽位。
+import test;
+
+interface IFirst { int shared(); int other(); }   // shared 槽 0
+interface ISecond { int first(); int shared(); }  // shared 槽 1（不同槽）
+
+class Sec {
+    interface class ISecond;
+    action:
+        int first() { return 11; }
+        int shared() { return 22; }
+}
+
+// 形态 2：接口类型类属性（this. 与裸引用）
+class Holder {
+    action:
+        void set(ISecond s) { isec = s; }
+        int viaThis() { return this.isec.shared(); }
+        int viaBare() { return isec.shared(); }
+    property:
+        ISecond isec;
+}
+
+// 形态 4：函数返回接口值后链式调用
+ISecond mkIf() { Sec s = new Sec(); return s; }
+
+// 形态 6：接口作为参数传入后调用
+int callShared(ISecond x) { return x.shared(); }
+
+@test void t_c1_vtable_forms() {
+    // 1) 局部变量
+    ISecond s = new Sec();
+    Test.assertEq(s.shared(), 22, "local iface shared()=22");
+    Test.assertEq(s.first(), 11, "local iface first()=11");
+    // 2) 类属性（this. 与裸引用——属性存的是 ISecond fat pointer）
+    Holder h = new Holder();
+    h.set(s);
+    Test.assertEq(h.viaThis(), 22, "this.iface.shared()=22");
+    Test.assertEq(h.viaBare(), 22, "bare iface-prop shared()=22");
+    // 3) 动态接口数组下标
+    ISecond[] arr = new ISecond[3];
+    for (int i = 0; i < 3; i = i + 1) {
+        arr[i] = new Sec();
+    }
+    Test.assertEq(arr[1].shared(), 22, "arr[i].shared()=22");
+    // 4) 函数返回接口后链式调用
+    Test.assertEq(mkIf().shared(), 22, "mk().shared()=22");
+    // 5) fat pointer 整体复制
+    ISecond b = s;
+    Test.assertEq(b.shared(), 22, "copied iface shared()=22");
+    // 6) 接口作为参数传入
+    Test.assertEq(callShared(s), 22, "iface-arg shared()=22");
+    Test.report("t_c1_vtable_forms", true);
+}
