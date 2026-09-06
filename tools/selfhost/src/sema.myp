@@ -4080,6 +4080,30 @@ class Sema {
                 || k == "double" || k == "byte" || k == "char" || k == "bool" || k == "bit") return 1;
             return 0;
         }
+        // 字典字面量（additive）：把 {k: v, ...} 绑定到 StrHashMap<valT> 目标——
+        // 设 lit.elemType=valT（codegen 建 StrHashMap_valT_inst + put 用），访问键/值
+        // 表达式并校验：键须 string、值须可转 valT。声明位报错行回退用 v/s。
+        void bindMapLitTo(AstExpr lit, AstType valT, AstVar v, AstStmt s) {
+            lit.setElemType(valT);
+            string vk = typeToKind(valT);
+            for (int i = 0; i < lit.mapKeys().size(); i = i + 1) {
+                AstExpr keyE = lit.mapKeys().get(i);
+                AstExpr valE = i < lit.elements().size() ? lit.elements().get(i) : null;
+                if (keyE != null && Str.len(keyE.resolvedKind()) == 0) visitExpr(keyE);
+                if (valE != null && Str.len(valE.resolvedKind()) == 0) visitExpr(valE);
+                string kk = keyE != null ? keyE.resolvedKind() : "";
+                string vkk = valE != null ? valE.resolvedKind() : "";
+                int dl = v != null ? v.nameLine() : (s != null ? s.line() : lit.line());
+                int dc = v != null ? v.nameCol() : (s != null ? s.col() : lit.col());
+                if (dl == 0) { dl = lit.line(); dc = lit.col(); }
+                if (Str.len(kk) != 0 && kk != "void" && kk != "string") {
+                    diag_.error(dl, dc, "map key " + (i + 1) + " must be a string (StrHashMap keys), got '" + kk + "'");
+                }
+                if (Str.len(vkk) != 0 && vkk != "void" && Str.len(vk) != 0 && typesCompat(vk, vkk) == 0) {
+                    diag_.error(dl, dc, "map value " + (i + 1) + ": cannot convert '" + vkk + "' to '" + vk + "'");
+                }
+            }
+        }
         // 属性类型的具体类名（供 obj.prop.method() 链式解析）
         string findPropTypeClass(int ci, string name) {
             AstType pt = findPropTypeAst(ci, name);
@@ -4340,6 +4364,17 @@ class Sema {
                                     diag_.error(dl, dc, "array literal yields a dynamic array (int[]); cannot initialize fixed array int[" + vtArr2.arraySize() + "] — declare as int[] or fill elementwise");
                                     bindArrayLitTo(alInit2, vtArr2.element(), v, s);
                                 }
+                            }
+                        }
+                        // 字典字面量（additive）：显式 `StrHashMap<V> xs = {..}` 目标
+                        // ——先 bind（设 elemType=V、访问键/值并校验：键 string、值可转
+                        // V），随后的 generic visitExpr(init) 走已绑定路径返回 class。
+                        // var / 非 StrHashMap 目标 → generic MapLit 干净拒绝（v1）。
+                        AstExpr mlInit = v.init();
+                        if (mlInit.kind() == "MapLit" && v.isInferred() == 0) {
+                            AstType mt2 = v.type();
+                            if (mt2 != null && mt2.className() == "StrHashMap" && mt2.typeArgs().size() >= 1) {
+                                bindMapLitTo(mlInit, mt2.typeArgs().get(0), v, s);
                             }
                         }
                         it = visitExpr(initLocal);
@@ -5636,6 +5671,22 @@ class Sema {
                 e.setResolvedClass(sn);
                 e.setResolvedKind("struct");
                 return "struct";
+            }
+            if (k == "MapLit") {
+                // 字典字面量 {k: v, ..}（additive → StrHashMap<elemType> 实例）。声明处
+                //（VarDecl）会先 bindMapLitTo 设 elemType；此处：
+                //  - elemType 已设（合法 decl）→ 返回 "class"（键/值已检查过）；
+                //  - 未设（var / 非 StrHashMap 目标 / 赋值·实参·return 等位置）→ 干净
+                //    拒绝（v1 范围）。
+                if (e.elemType() == null) {
+                    for (int mi2 = 0; mi2 < e.mapKeys().size(); mi2 = mi2 + 1) {
+                        if (Str.len(e.mapKeys().get(mi2).resolvedKind()) == 0) visitExpr(e.mapKeys().get(mi2));
+                        if (mi2 < e.elements().size() && Str.len(e.elements().get(mi2).resolvedKind()) == 0) visitExpr(e.elements().get(mi2));
+                    }
+                    diag_.error(e.line(), e.col(), "map literal requires a typed 'StrHashMap<V>' target (declare as e.g. 'StrHashMap<int> xs = {\"a\": 1}')");
+                }
+                e.setResolvedKind("class");
+                return "class";
             }
             if (k == "Binary") {
                 string l = visitExpr(e.lhs());

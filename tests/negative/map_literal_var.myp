@@ -1,0 +1,7 @@
+// EXPECT ERROR: map literal requires a typed 'StrHashMap<V>' target
+// 字典字面量负例：var 推断（无显式 StrHashMap<V> 目标）v1 干净拒绝。
+import collections;
+import env;
+void main() {
+    var m = { "a": 1 };
+}

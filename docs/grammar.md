@@ -533,6 +533,7 @@ Primary          ::= IntegerLiteral | FloatLiteral | BoolLiteral
                    | '(' Expression ')'
                    | TupleLiteral                  // (a, b, …)：顶层逗号
                    | ArrayLiteral                  // [e1, e2, …] → 动态数组 T[]
+                   | MapLiteral                     // {"k": v, …} → StrHashMap<V>
                    | StructLiteral                 // Pt{x: 1, y: 2} → struct 值
                    | 'new' ClassType TypeArgList? '(' ArgumentList? ')'
                    | 'new' Type '[' Expression ']' ( '[' Expression ']' )*
@@ -540,6 +541,8 @@ Primary          ::= IntegerLiteral | FloatLiteral | BoolLiteral
 
 TupleLiteral     ::= '(' Expression (',' Expression)+ ')'   // ≥2 元素（含尾逗号）
 ArrayLiteral     ::= '[' Expression (',' Expression)* ']'   // 动态数组字面量（additive，v1 需显式 T[] 目标）
+MapLiteral       ::= '{' MapEntry (',' MapEntry)* '}'       // 字典字面量（additive v1：键 string、值可转 V，显式 StrHashMap<V> 目标）
+MapEntry         ::= Expression ':' Expression
 StructLiteral    ::= Identifier '{' StructFieldInit (',' StructFieldInit)* '}'   // 结构体/对象初始化器（additive v1：文件级 struct + 纯标量字段；值式，字段可缺省 → 零初始化，乱序按名）
 StructFieldInit  ::= Identifier ':' Expression
 LambdaExpression ::= '(' ParamList? ')' '=>' '{' Stmt* '}'   // FatArrow '=>'

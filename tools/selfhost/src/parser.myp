@@ -2420,6 +2420,26 @@ class Parser {
                 consume("]", "expected ']' after array literal");
                 return al;
             }
+            if (k == "{") {
+                // 字典字面量（additive）：{ k: v, ... } → StrHashMap<...> 实例
+                //（sema 绑显式 StrHashMap<V> 目标；键须 string，值须可转 V）。
+                advance();
+                AstExpr ml = new AstExpr();
+                ml.setKind("MapLit");
+                if (curKind() != "}") {
+                    while (true) {
+                        AstExpr keyE = parseExpr();
+                        consume(":", "expected ':' after map key");
+                        ml.mapKeys().add(keyE);
+                        ml.elements().add(parseExpr());
+                        if (matchKind(",") != 0) {
+                            if (curKind() == "}") break;
+                        } else break;
+                    }
+                }
+                consume("}", "expected '}' after map literal");
+                return ml;
+            }
             if (k == "(") {
                 // lambda / 元组 / 括号：`(...)` 匹配后跟 `=>` 即 lambda
                 if (scanLambda() != 0) {

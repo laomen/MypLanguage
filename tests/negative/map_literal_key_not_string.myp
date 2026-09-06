@@ -1,0 +1,7 @@
+// EXPECT ERROR: map key 1 must be a string (StrHashMap keys), got 'byte'
+// 字典字面量负例：非字符串键 → 干净拒绝（StrHashMap 键须 string）。
+import collections;
+import env;
+void main() {
+    StrHashMap<int> m = { 1: 2 };
+}

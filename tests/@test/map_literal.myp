@@ -1,0 +1,32 @@
+// 字典字面量（additive，v3.15.220）回归：`StrHashMap<V> m = { "k": v, ... }` →
+// StrHashMap<V> 实例（惰性扩容哈希表；键 string、值可转 V 的数值/string）。
+// v1：仅显式 StrHashMap<V> 目标的声明初值；键非 string / 值类型不匹配 / var /
+// 非 StrHashMap 目标 → 干净拒绝（见 negative）。
+import test;
+import collections;
+import env;
+
+@test void t() {
+    StrHashMap<int> m = { "a": 1, "b": 2 };
+    Test.assertEq(m.get("a", 0), 1, "a0");
+    Test.assertEq(m.get("b", 0), 2, "b0");
+    Test.assertEq(m.size(), 2, "s0");
+    // 值类型：string 值 / int→double 提升 / bool
+    StrHashMap<string> sm = { "x": "hi", "y": "" };
+    Test.assertStrEq(sm.get("x", ""), "hi", "x0");
+    Test.assertStrEq(sm.get("y", "dflt"), "", "x1");
+    StrHashMap<double> dm = { "p": 1, "q": 2.5 };
+    Test.assert(dm.get("p", 0.0) == 1.0, "q0");
+    Test.assert(dm.get("q", 0.0) == 2.5, "q1");
+    StrHashMap<bool> bm = { "on": true };
+    Test.assert(bm.get("on", false), "b0");
+    // 空字面量（有类型目标）
+    StrHashMap<int> e = {};
+    Test.assertEq(e.size(), 0, "e0");
+    Test.assert(e.isEmpty(), "e1");
+    // 覆盖 put（重复键更新值）
+    StrHashMap<int> u = { "k": 1 };
+    u.put("k", 9);
+    Test.assertEq(u.get("k", 0), 9, "u0");
+    Test.report("t", true);
+}

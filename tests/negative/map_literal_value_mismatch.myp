@@ -1,0 +1,7 @@
+// EXPECT ERROR: map value 1: cannot convert 'string' to 'int'
+// 字典字面量负例：值与 StrHashMap<V> 目标类型不匹配 → 干净拒绝。
+import collections;
+import env;
+void main() {
+    StrHashMap<int> m = { "a": "x" };
+}

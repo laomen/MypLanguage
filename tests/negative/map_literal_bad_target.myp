@@ -1,0 +1,8 @@
+// EXPECT ERROR: map literal requires a typed 'StrHashMap<V>' target
+// 字典字面量负例：非 StrHashMap 目标（数值键 HashMap<K,V>）v1 干净拒绝
+//（v1 仅字符串键 StrHashMap<V>；数值键字典后续路线）。
+import collections;
+import env;
+void main() {
+    HashMap<int, int> m = { 1: 2 };
+}

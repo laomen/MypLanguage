@@ -27,6 +27,42 @@
 
 ## 编译器版本历史
 
+### v3.15.220 — 字典字面量 `{"k": v}`（additive，selfhost）
+
+**非破坏性加法（selfhost 超前 / seed 冻结不解析）**。`{"k": v, ...}` 作 **StrHashMap<V>
+实例**字面量（消掉 `new StrHashMap<V>()` + 逐条 put 样板；键 string、值同型可转 V）：
+
+```myp
+import collections;
+StrHashMap<int> m = { "a": 1, "b": 2 };      // 声明初值（显式 V 目标）
+StrHashMap<double> d = { "p": 1, "q": 2.5 }; // int → double 提升
+StrHashMap<string> s = { "x": "hi" };
+StrHashMap<int> e = {};                      // 空
+m.put("a", 9);                               // 覆盖/后续 put 照常
+```
+
+- **grammar §Expression**：`Primary` 增 `MapLiteral ::= '{' MapEntry (',' MapEntry)* '}'`，
+  `MapEntry ::= Expression ':' Expression`。
+- **ast**（`ast.myp` `AstExpr`）：新 kind `MapLit`（键表达式列表 `mapKeys_` 与值
+  `elements_` 平行；目标值类型存 `elemType_`；cloneExpr/dump 同步）。
+- **parser**（`parser.myp` `parsePrimaryInner`）：新增 `{` primary（表达式内此前 `{`
+  无合法形态）→ 解析 `{ k: v, … }` 建 MapLit。
+- **sema**（`sema.myp`）：VarDecl 显式 `StrHashMap<V>` 目标（className "StrHashMap" +
+  typeArgs）先 bindMapLitTo（设 elemType=V + 访问键/值并校验：**键须 string**、值
+  `typesCompat` 可转 V）；`visitExpr(MapLit)` 已绑定 → 返回 `class`，未绑定（var/非
+  StrHashMap 目标/赋值·实参·return 等位）→ 干净拒绝 "requires a typed 'StrHashMap<V>'
+  target"。
+- **codegen**（`codegen.myp`）：新增 `genMapLit` —— `myp_alloc_object` 分配
+  `StrHashMap_<V>_inst`（无 ctor 类，清零）→ 逐条内联 `put` 调用（StrHashMap 惰性
+  init 于首次 put 分配；键/值经 convertValue 到参数类型；fresh 语义同普通调用）；
+  返回 fresh 实例 ptr（变量存储走既有 class 槽 storeRef）。`exprLlvmType(MapLit)`
+  = `ptr`。
+- AST dump 稳定（MapLit 专用分支）；bootstrap MD5 一致。
+- 回归 `tests/@test/map_literal.myp`（int/string/double 提升/bool/空/覆盖 put，
+  15 断言）+ 4 负例（key not string / value mismatch / var / 非 StrHashMap 目标）。
+- 后续（路线）：赋值/实参/返回位置绑定、数值键 HashMap<K,V> 字面量、`var` 推断、
+  表达式键（现限 string-kind 表达式均可，非字面量亦可）。
+
 ### v3.15.219 — 接口泛型方法声明干净拒绝 + vtable 约束界定（generic A2 边界，selfhost）
 
 **非破坏性硬化（续 v3.15.217/218）**。界定泛型实例方法的合法边界：接口（含抽象

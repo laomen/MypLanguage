@@ -1442,6 +1442,7 @@ class AstExpr {
             timeout_ = null;
             elements_ = new ArrayList<AstExpr>();
             initFields_ = new ArrayList<string>();
+            mapKeys_ = new ArrayList<AstExpr>();
             namedName_ = "";
             namedValue_ = null;
             stmt_ = null;
@@ -1472,6 +1473,8 @@ class AstExpr {
         ArrayList<AstExpr> elements() { return elements_; }
         ArrayList<string> initFields() { return initFields_; }
         void setInitFields(ArrayList<string> v) { initFields_ = v; }
+        ArrayList<AstExpr> mapKeys() { return mapKeys_; }
+        void setMapKeys(ArrayList<AstExpr> v) { mapKeys_ = v; }
         void setArgs(ArrayList<AstExpr> v) { args_ = v; }
         void setCallTypeArgs(ArrayList<AstType> v) { callTypeArgs_ = v; }
         void setTypeArgs(ArrayList<AstType> v) { typeArgs_ = v; }
@@ -1600,6 +1603,7 @@ class AstExpr {
             c.setTimeout(timeout_);
             c.setElements(elements_);
             c.setInitFields(initFields_);
+            c.setMapKeys(mapKeys_);
             c.setNamedName(namedName_);
             c.setNamedValue(namedValue_);
             c.setStmt(stmt_);
@@ -1714,6 +1718,15 @@ class AstExpr {
                 for (int si = 0; si < initFields_.size(); si = si + 1) {
                     Dump.line(sb, ind + 2, "(Field name=\"" + Dump.esc(initFields_.get(si)) + "\")");
                     if (si < elements_.size() && elements_.get(si) != null) elements_.get(si).dump(sb, ind + 4);
+                }
+            } else if (kind_ == "MapLit") {
+                // 字典字面量 {k: v, ...}（additive）：键表达式 mapKeys_ 与值 elements_
+                // 平行；target 值类型存 elemType_，产物 StrHashMap<elemType> 实例。
+                Dump.line(sb, ind, "(MapLit)" + tsfx());
+                for (int mi = 0; mi < mapKeys_.size(); mi = mi + 1) {
+                    Dump.line(sb, ind + 2, "(Entry)");
+                    if (mi < mapKeys_.size() && mapKeys_.get(mi) != null) mapKeys_.get(mi).dump(sb, ind + 4);
+                    if (mi < elements_.size() && elements_.get(mi) != null) elements_.get(mi).dump(sb, ind + 4);
                 }
             } else {
                 Dump.line(sb, ind, "(Expr)" + tsfx());
@@ -1835,6 +1848,7 @@ class AstExpr {
         AstExpr timeout_;
         ArrayList<AstExpr> elements_;
         ArrayList<string> initFields_;
+        ArrayList<AstExpr> mapKeys_;
         string namedName_;
         AstExpr namedValue_;
         AstStmt stmt_;

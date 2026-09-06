@@ -1793,6 +1793,50 @@ class CodeGen {
             return heap;
         }
 
+        // 字典字面量（additive）`{k: v, ...}` → StrHashMap<V> 实例（sema 已设
+        // elemType=V 并校验键 string/值可转 V；类实例 StrHashMap_<V>_inst 由目标类型
+        // 声明触发实例化）。物化：myp_alloc_object（无 ctor 类，仅清零）→ 逐条内联
+        // put 调用（StrHashMap 惰性 init 在首次 put 时分配），返回 fresh 实例 ptr。
+        // 值的 ARC/提升语义与普通 m.put(k,v) 调用一致（genExpr 已按实参处理 fresh）。
+        string genMapLit(AstExpr e) {
+            AstType vt = e.elemType();
+            if (vt == null) {
+                // 防御（不应到达）：sema 已拒绝无目标 MapLit。
+                string guard = newTmp();
+                sb_.append("  " + guard + " = call ptr @myp_alloc_object(i64 8, i32 0)\n");
+                addFreshTemp(guard);
+                return guard;
+            }
+            AstType rvt = resolveType(vt);
+            string vn = "";
+            if (rvt != null) {
+                if (Str.len(rvt.className()) != 0) vn = classInstName(rvt);
+                else vn = rvt.basicName();
+            }
+            if (Str.len(vn) == 0) vn = "int";
+            string cls = "StrHashMap_" + vn + "_inst";
+            int sz = classSize(cls);
+            int tid = classTypeId(cls);
+            string obj = newTmp();
+            sb_.append("  " + obj + " = call ptr @myp_alloc_object(i64 " + sz + ", i32 " + tid + ")\n");
+            addFreshTemp(obj);
+            string putFn = cls + "_put";
+            string vLt = llvmType(rvt);
+            for (int i = 0; i < e.mapKeys().size(); i = i + 1) {
+                AstExpr keyE = i < e.mapKeys().size() ? e.mapKeys().get(i) : null;
+                AstExpr valE = i < e.elements().size() ? e.elements().get(i) : null;
+                if (keyE == null || valE == null) continue;
+                string kv = genExpr(keyE);
+                string kLt = exprLlvmType(keyE);
+                string kc = convertValue(kv, kLt, "ptr");
+                string vv = genExpr(valE);
+                string vaLt = exprLlvmType(valE);
+                string vc = convertValue(vv, vaLt, vLt);
+                sb_.append("  call void @" + putFn + "(ptr " + obj + ", ptr " + kc + ", " + vLt + " " + vc + ")\n");
+            }
+            return obj;
+        }
+
         // 结构体初始化器（additive）`Point{x:1, y:2}` → struct 值。sema 已限定
         // 文件级 struct + 纯标量字段并设 resolvedClass=struct 名。物化：零初始化
         // 临时槽 → 逐字段 GEP 填（convertValue 到字段类型）→ 整体 load 出
@@ -10732,6 +10776,9 @@ class CodeGen {
             if (k == "StructLit") {
                 return genStructLit(e);
             }
+            if (k == "MapLit") {
+                return genMapLit(e);
+            }
             if (k == "New") {
                 if (e.className() == "slice") {
                     return genSliceNew(e);
@@ -11988,6 +12035,7 @@ class CodeGen {
         string exprLlvmType(AstExpr e) {
             if (e == null) return "i32";
             string k = e.kind();
+            if (k == "MapLit") return "ptr";      // StrHashMap<V> 实例 → ptr
             if (k == "StructLit") {
                 string sln = e.resolvedClass();
                 if (Str.len(sln) == 0) sln = e.className();
