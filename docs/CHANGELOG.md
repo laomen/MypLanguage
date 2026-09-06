@@ -27,6 +27,29 @@
 
 ## 编译器版本历史
 
+### v3.15.228 — A1 泛型体内调泛型（具体实参，generic-in-generic 落地）（selfhost）
+
+**非破坏性硬化（generic_gaps A1 首片落地）**。泛型【体】（带类型参数的顶层函数 /
+@static 方法 / 实例方法）内调用另一泛型（顶层函数 `id<int>` / @static 方法
+`M.min2<int>`），内层类型实参**全具体**（不引用外层类型参数）——此前模板体
+markAllStmt（体不经 visitExpr）→ 内层调用从不实例化 → codegen 发裸 `@id`/
+`@Class_meth` → opt undefined。现支持（sema `sema.myp`）。
+
+- **共享模板体具体内层调用解析**：`tplResolveFnStmt/tplResolveFnExpr` 遍历共享模板
+  体（复用于 v3.15.224 起的逐体分析 `analyzeInstCloneBody`，在形参作用域内跑），
+  Call 节点：①Identifier callee 是泛型顶层函数模板且 callTypeArgs 全具体
+  （`tplArgRefsOuter` 不引用外层类型参数）→ `instantiateGenericFunction` 建实例 +
+  `e.setResolved(实例名)` + 具体返回 kind/valueClass（codegen 既有 resolved 直调路径
+  发射 `@实例名`）；②Member callee 泛型 static（`M.min2<int>`，findGenericStatic ≥0、
+  callTypeArgs 具体）→ `resolveGenericStaticCall` 建 __gs_ 实例 + e.resolved。
+- **仅外层独立的具体实参才安全**：共享节点唯一改名跨实例一致；外层 T 依赖的内层
+  实参（`id<T>` / `M.pick<T>`）跳过（A1 余量：需逐实例 name 映射，记后续）。泛型
+  体内调泛型**实例**方法也留 A1 余量。
+- 逐体分析基础设施复用：三类克隆（fn/s/m）体都受益——顶层泛型函数 / @static 泛型
+  方法 / 实例泛型方法 内调泛型顶层函数 + 泛型 static 具体实参均可。
+- 正例 `tests/@test/generic_in_generic.myp`（4 断言：fn/static/实例方法体 ×
+  id<int>/M.min2<int>）；全量 524/524 + bugs 20/20；bootstrap MD5 一致。
+
 ### v3.15.227 — 泛型类模板体内 this.m<T>（方法级泛型调用延迟登记，A2 遗留落地）（selfhost）
 
 **非破坏性硬化（A2 遗留项）**。泛型类**模板**（`Box<T>`）的普通方法体内调用方法级泛型

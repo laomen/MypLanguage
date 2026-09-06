@@ -4783,6 +4783,150 @@ class Sema {
             return added;
         }
 
+        // v3.15.228（A1）：泛型【体】内调泛型【顶层函数】——模板体共享 Call 节点上
+        // 解析 callTypeArgs 全具体（不引用外层类型参数）的泛型函数调用：建实例 + 设
+        // e.resolved(实例名)/resolvedKind(具体返回)，codegen 走既有 resolved 直调路
+        // 径发射 @实例名（此前共享体未解析 → codegen 发裸 @fn → opt undefined）。
+        // 仅实例无关（外层独立）的具体实参才安全：共享节点唯一改名跨实例一致。
+        int tplArgRefsOuter(AstType t, ArrayList<string> outer) {
+            if (t == null) return 0;
+            if (t.element() != null) return tplArgRefsOuter(t.element(), outer);
+            string tn = Str.len(t.className()) != 0 ? t.className() : t.basicName();
+            for (int i = 0; i < outer.size(); i = i + 1) {
+                if (Str.len(tn) != 0 && outer.get(i) == tn) return 1;
+            }
+            ArrayList<AstType> tas = t.typeArgs();
+            for (int i = 0; i < tas.size(); i = i + 1) {
+                if (tplArgRefsOuter(tas.get(i), outer) != 0) return 1;
+            }
+            return 0;
+        }
+        void tplResolveFnExpr(AstExpr e, ArrayList<string> outer) {
+            if (e == null) return;
+            if (e.kind() == "Call" && Str.len(e.resolved()) == 0
+                && e.callTypeArgs().size() > 0) {
+                AstExpr callee = e.callee();
+                if (callee != null && callee.kind() == "Identifier") {
+                    string cfn = callee.name();
+                    for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                        AstFunction gf = tu_.functions().get(i);
+                        if (gf.name() != cfn || gf.typeParams().size() == 0 || gf.genericInst() != 0) continue;
+                        if (e.callTypeArgs().size() != gf.typeParams().size()) break;
+                        int dep = 0;
+                        ArrayList<AstType> cta = e.callTypeArgs();
+                        for (int j = 0; j < cta.size(); j = j + 1) {
+                            if (tplArgRefsOuter(cta.get(j), outer) != 0) { dep = 1; break; }
+                        }
+                        if (dep != 0) break;   // 外层 T 依赖 → 留给后续（A1 余量）
+                        string instName = instantiateGenericFunction(cfn, cta);
+                        if (Str.len(instName) == 0) break;
+                        e.setResolved(instName);
+                        e.setResolvedKind("int");
+                        callee.setResolvedKind("int");
+                        for (int k = 0; k < tu_.functions().size(); k = k + 1) {
+                            AstFunction inst = tu_.functions().get(k);
+                            if (inst.name() != instName) continue;
+                            AstType irt = inst.ret();
+                            string irk = irt != null ? typeToKind(irt) : "void";
+                            if (irk == "class" || irk == "struct" || irk == "interface") {
+                                AstType irt2 = irt;
+                                if (irt2 != null) {
+                                    string ivc = gsRetValueClass(irt2);
+                                    if (Str.len(ivc) != 0) e.setValueClass(ivc);
+                                }
+                            }
+                            e.setResolvedKind(irk);
+                            break;
+                        }
+                        break;
+                    }
+                } else if (callee != null && callee.kind() == "Member" && Str.len(e.resolved()) == 0) {
+                    // A1：泛型 static 调用（M.min2<int>）在泛型体内——具体实参 →
+                    // resolveGenericStaticCall 建 __gs_ 实例并设 e.resolved(实例名)。
+                    int gsi2 = findGenericStatic(callee);
+                    if (gsi2 >= 0 && e.callTypeArgs().size() > 0) {
+                        AstAction gact = gsActions_.get(gsi2);
+                        if (gact != null && e.callTypeArgs().size() == gact.typeParams().size()) {
+                            int dep2 = 0;
+                            ArrayList<AstType> cta2 = e.callTypeArgs();
+                            for (int j2 = 0; j2 < cta2.size(); j2 = j2 + 1) {
+                                if (tplArgRefsOuter(cta2.get(j2), outer) != 0) { dep2 = 1; break; }
+                            }
+                            if (dep2 == 0) resolveGenericStaticCall(e, callee, gsi2);
+                        }
+                    }
+                }
+            }
+            // 无条件递归全部子表达式（任意 kind 安全）
+            tplResolveFnExpr(e.lhs(), outer);
+            tplResolveFnExpr(e.rhs(), outer);
+            tplResolveFnExpr(e.operand(), outer);
+            tplResolveFnExpr(e.callee(), outer);
+            tplResolveFnExpr(e.array(), outer);
+            tplResolveFnExpr(e.index(), outer);
+            tplResolveFnExpr(e.condition(), outer);
+            tplResolveFnExpr(e.trueExpr(), outer);
+            tplResolveFnExpr(e.falseExpr(), outer);
+            tplResolveFnExpr(e.start(), outer);
+            tplResolveFnExpr(e.end(), outer);
+            tplResolveFnExpr(e.tryExpr(), outer);
+            tplResolveFnExpr(e.catchExpr(), outer);
+            tplResolveFnExpr(e.timeout(), outer);
+            tplResolveFnExpr(e.namedValue(), outer);
+            ArrayList<AstExpr> eArgs = e.args();
+            for (int i = 0; i < eArgs.size(); i = i + 1) tplResolveFnExpr(eArgs.get(i), outer);
+            ArrayList<AstExpr> eDim = e.dimensions();
+            for (int i = 0; i < eDim.size(); i = i + 1) tplResolveFnExpr(eDim.get(i), outer);
+            ArrayList<AstExpr> eEl = e.elements();
+            for (int i = 0; i < eEl.size(); i = i + 1) tplResolveFnExpr(eEl.get(i), outer);
+            ArrayList<AstExpr> eMk = e.mapKeys();
+            for (int i = 0; i < eMk.size(); i = i + 1) tplResolveFnExpr(eMk.get(i), outer);
+        }
+        void tplResolveFnStmt(AstStmt s, ArrayList<string> outer) {
+            if (s == null) return;
+            ArrayList<AstStmt> bs = s.bodyStmts();
+            for (int i = 0; i < bs.size(); i = i + 1) tplResolveFnStmt(bs.get(i), outer);
+            tplResolveFnExpr(s.condition(), outer);
+            tplResolveFnExpr(s.step(), outer);
+            tplResolveFnExpr(s.value(), outer);
+            tplResolveFnExpr(s.expr(), outer);
+            tplResolveFnExpr(s.iterable(), outer);
+            tplResolveFnExpr(s.stream(), outer);
+            tplResolveFnExpr(s.subject(), outer);
+            tplResolveFnExpr(s.timeout(), outer);
+            tplResolveFnExpr(s.gridExpr(), outer);
+            tplResolveFnExpr(s.aBegin(), outer);
+            tplResolveFnExpr(s.aEnd(), outer);
+            tplResolveFnExpr(s.idxBegin(), outer);
+            tplResolveFnExpr(s.idxEnd(), outer);
+            tplResolveFnExpr(s.opExpr(), outer);
+            tplResolveFnExpr(s.initExpr(), outer);
+            tplResolveFnExpr(s.beginExpr(), outer);
+            tplResolveFnExpr(s.endExpr(), outer);
+            tplResolveFnStmt(s.then(), outer);
+            tplResolveFnStmt(s.elseBranch(), outer);
+            tplResolveFnStmt(s.body(), outer);
+            tplResolveFnStmt(s.init(), outer);
+            tplResolveFnStmt(s.tryBlock(), outer);
+            tplResolveFnStmt(s.finallyBlock(), outer);
+            tplResolveFnStmt(s.opBody(), outer);
+            ArrayList<AstVar> dv = s.decls();
+            for (int i = 0; i < dv.size(); i = i + 1) {
+                AstVar v = dv.get(i);
+                tplResolveFnExpr(v.init(), outer);
+            }
+            ArrayList<AstMatchArm> ma = s.arms();
+            for (int i = 0; i < ma.size(); i = i + 1) {
+                AstMatchArm a = ma.get(i);
+                tplResolveFnStmt(a.body(), outer);
+            }
+            ArrayList<AstCatch> ca = s.catches();
+            for (int i = 0; i < ca.size(); i = i + 1) {
+                AstCatch c = ca.get(i);
+                tplResolveFnStmt(c.block(), outer);
+            }
+        }
+
         // 分析单个实例化克隆体（kind: "m" 类方法级克隆 / "fn" 顶层函数克隆 /
         // "s" @static→顶层函数克隆）。定位克隆对象（共享模板体 + typeParams/
         // instTypeArgs/params/ret/flags）→ 深克隆替换 → 在方法/函数上下文 visitStmt。
@@ -4890,11 +5034,17 @@ class Sema {
             currentMethodName_ = "";
             currentRet_ = ret != null ? typeToKind(ret) : "void";
             currentRetAst_ = ret;
-            AstStmt cloneBody = anStmt(body);
             sym_.enterScope();
             if (kind == "m") sym_.declare("this", "class");
             checkDupParamNames(params, 0, 0);
             for (int j = 0; j < params.size(); j = j + 1) declareParam(params.get(j), 0);
+            // A1（v3.15.228）：泛型体内调泛型——共享模板体上解析 callTypeArgs 全具体
+            //（不引用外层类型参数）的泛型顶层函数调用(id<int>) 与泛型 static 调用
+            // (M.min2<int>)：建实例 + e.resolved(实例名)，codegen 走 resolved 直调
+            // 路径发射实例符号（此前共享体未解析 → 裸 @fn/@Class_meth → opt undefined）。
+            // 在形参作用域内跑（static 路径 resolveGenericStaticCall 访问实参须可解析）。
+            tplResolveFnStmt(body, tps);
+            AstStmt cloneBody = anStmt(body);
             visitStmt(cloneBody);
             sym_.leaveScope();
             // 恢复上下文

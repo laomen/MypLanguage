@@ -1,0 +1,48 @@
+// A1 泛型体内调泛型（generic-in-generic，v3.15.228，selfhost additive）回归：
+// 泛型【体】（带类型参数的顶层函数 / @static 方法 / 实例方法）内调用另一泛型
+// （顶层函数 id<int> / @static 方法 M.min2<int>），内层类型实参全具体（不引用外层
+// 类型参数）。模板体共享 Call 节点按具体实参解析（e.resolved=实例名）→ codegen 走
+// resolved 直调发射实例符号。外层 T 依赖的内层实参（id<T>）与泛型体内调泛型实例
+// 方法仍属 A1 余量。
+import test;
+
+T id<T>(T x) { T y = x; return y; }
+
+@static class M {
+    static:
+        int min2<T>(int a, int b) { return a < b ? a : b; }
+        T pick<T>(T x) { return x; }
+}
+
+// 顶层泛型函数体内调泛型顶层函数（具体 int/class Pt）
+T viaId<T>(T x) { int v = id<int>(7); return x; }
+
+// @static 泛型方法体内调泛型顶层函数 + 泛型 static
+@static class S {
+    static:
+        T g<T>(T x) { int v = id<int>(7); int m = M.min2<int>(3, 9); return x; }
+        T h<T>(T x) { T y = M.pick<T>(x); return y; }   // static 外层T依赖(余量)
+}
+
+// 实例泛型方法体内调泛型顶层函数
+class W {
+    action:
+        @constructor W() {}
+        T wrap<T>(T x) { int v = id<int>(8); return x; }
+        int wrap2(int x) { return M.min2<int>(x, 100); }
+}
+
+class Pt { property: int x = 1; action: @constructor Pt() {} }
+
+@test void t() {
+    int a = viaId<int>(3);
+    Test.assertEq(a, 3, "a0");
+    int b = S.g<int>(1);
+    Test.assertEq(b, 1, "b0");
+    W w = new W();
+    int c = w.wrap<int>(5);
+    Test.assertEq(c, 5, "c0");
+    int d = w.wrap2(4);
+    Test.assertEq(d, 4, "d0");
+    Test.report("t", true);
+}
