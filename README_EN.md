@@ -204,11 +204,12 @@ See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/desig
 
 ```bash
 bash tests/run_tests.sh          # full regression (compile+run compare + negative + test-framework + self-hosted + LSP)
-# Regression tests: 110 passed, 0 failed
-# Negative tests:   85 passed, 0 failed
-# Test framework:  117 passed, 0 failed
+# Regression tests: 114 passed, 0 failed
+# Negative tests:   234 passed, 0 failed
+# Test framework:  191 passed, 0 failed
 # self-pm 2 / self-fmt 1 / self-viz 1 / mypc run 1 / LSP 1 / coro-stack-warn 1 / no-crash 1
-# Total:            322 passed, 0 failed
+# Total:            547 passed, 0 failed
+# Note: counts grow with each version; the tests/run_tests.sh live output is authoritative.
 bash tests/run_tests_asan.sh     # ASAN (AddressSanitizer) regression
 bash tests/run_tests_tsan.sh     # TSan (ThreadSanitizer) regression
 bash tests/run_tests_O2.sh       # -O2 optimized regression

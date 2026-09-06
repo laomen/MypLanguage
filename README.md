@@ -25,6 +25,7 @@ MYP 是一门**事件驱动组件**编程语言，以 `class` + `action:` / `eve
 | **错误处理** | `Result<T,E>` / `Option<T>`/`T?` 容器 + `catch (Error)` 异常分层 |
 | **自动内存管理** | class 实例 ARC（自动引用计数，additive 无新语法） |
 | **派生序列化** | `@derive(Json)` 类注解自动生成 toJson/fromJson（serde 式，零运行时反射） |
+| **编译期元编程** | 声明式宏 `macro`（语句位 + 表达式/值位，宏卫生）+ 过程宏 `@macro`/`quote` + `@eval` 编译期常量/只读常量表 + `@derive` |
 | **算子系统** | `operator:`/`@op("+")` 运算符重载 + `|>` 算子管道 |
 | **GPU 支持** | CUDA 后端，`MYP_GPU=1` 激活 |
 | **零依赖标准库** | 42 个模块，纯 MYP 实现 |
@@ -200,11 +201,12 @@ int main() { Main m = new Main() @thread; return 0; }
 
 ```bash
 bash tests/run_tests.sh          # 全量回归（编译+运行比对 + 负测试 + 测试框架 + 自举 + LSP）
-# 回归测试: 110 通过, 0 失败
-# 负测试:   85 通过, 0 失败
-# 测试框架: 117 通过, 0 失败
+# 回归测试: 114 通过, 0 失败
+# 负测试:   234 通过, 0 失败
+# 测试框架: 191 通过, 0 失败
 # 自举包管理 2 / 自举格式化 1 / 自举可视化 1 / mypc run 1 / LSP 1 / 协程栈警告 1 / 无崩溃 1
-# 总计:     322 通过, 0 失败
+# 总计:     547 通过, 0 失败
+# 注：计数随版本增长，以 tests/run_tests.sh 实际输出为准。
 bash tests/run_tests_asan.sh     # ASAN（AddressSanitizer）回归
 bash tests/run_tests_tsan.sh     # TSan（ThreadSanitizer）回归
 bash tests/run_tests_O2.sh       # -O2 优化回归

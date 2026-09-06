@@ -205,7 +205,9 @@
 - [x] **G2-2** 控制流：if/while/for/for-in/range/break/continue/return。
 - [x] **G2-3** 数组/切片/字符串：`new T[n]`、下标、字符串拼接 ✅；`slice<T>` fat pointer 已对拍（`27ed30c`：new/下标/size/data/for-in，验收 47/10 均与 mypc 一致）。
 - [x] **G2-4** 函数调用：顶层函数 ✅；默认/命名参数（sema normalizeCallArgs 归一化，codegen 零额外逻辑）、多值返回、元组（字面量/解构/字段访问 t.0）均已对拍（`565ef47`/`e00cef3`）。
-- [ ] **G2-5** lambda/闭包：fat pointer + 捕获（按值）已对拍；`nonlocal` cell（按引用捕获）待补。
+- [x] **G2-5** lambda/闭包：fat pointer + 捕获（按值）已对拍；`nonlocal` cell（按引用
+  捕获）✅ 已实现（manual §5；tests/@test/nonlocal.myp、man_or_boy.myp；sema
+  nonlocalSlots_ + codegen cell 别名）。
 - [x] **G2-6** 内建/FFI：`__myp_*` → `myp_*`（去两个下划线）。
 - [x] **G2-7** 复合赋值 desugar 的 IR 对齐（parser 已 desugar 为 Assign）。
 
