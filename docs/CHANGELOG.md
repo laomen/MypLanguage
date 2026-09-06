@@ -27,6 +27,28 @@
 
 ## 编译器版本历史
 
+### v3.15.221 — 崩溃扫描修复：泛型方法非法显式类型实参干净拒绝（鲁棒性，selfhost）
+
+**非破坏性硬化**。对新增特性做定向崩溃/坏 IR 扫描（词法畸形 78 + 通用 fuzz 3000 +
+变异模糊 1600×2），无信号级 CRASH；发现并修复一类**坏 IR**（畸形输入 → 编译器发坏
+IR → opt 报错而非干净诊断）：
+
+- **泛型方法非法显式类型实参**（v3.15.217/218 A2 路径）：`Box<int>.id<ixt>(9)` /
+  `c.id<ixt>(5)` 的 `<ixt>`（未知名）——非泛型类已能拒（void 级联），**泛型类实例**
+  路径漏校验 → 把幻影类名 `ixt` mangle 进 `_inst`（`Box_int_inst_id_ixt_inst`）→
+  codegen 实参按 ptr 传 int 字面量 → `opt-21 integer constant must have integer
+  type`（坏 IR）。
+- **sema**（`sema.myp`）：新增 `isResolvableTypeArg`（已知基本类型/类/enum/struct/
+  interface/slice/当前泛型占位），`resolveGenericInstMethod` 显式类型实参逐个校验 →
+  未知名干净拒绝 "unknown type argument 'X' for generic method 'C.m'"（泛型类实例与非
+  泛型类统一）。
+- 回归 `tests/negative/generic_inst_unknown_type_arg.myp`；全量 512/512 + bugs 19/19；
+  bootstrap MD5 一致。
+- **已记录既有缺口（非本次引入，未修）**：泛型模板体（顶层泛型函数 / 泛型 static /
+  A2 泛型实例方法）经 markAllStmt 跳过符号检查——体内未定义符号（`return y;`）或畸形
+  签名（空形参名）会一路到 codegen → 坏 IR（opt 报错，非进程崩溃）。此缺口 A2 之前
+  即存在（顶层泛型函数同坏），修法=实例化克隆体做符号检查/类型检查（较大，后续路线）。
+
 ### v3.15.220 — 字典字面量 `{"k": v}`（additive，selfhost）
 
 **非破坏性加法（selfhost 超前 / seed 冻结不解析）**。`{"k": v, ...}` 作 **StrHashMap<V>

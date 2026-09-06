@@ -1,0 +1,14 @@
+// EXPECT ERROR: unknown type argument 'ixt' for generic method
+// 泛型实例方法鲁棒性负例（v3.15.221）：显式类型实参是未知名（非基本类型/类/
+// enum/struct/interface/slice/占位）→ 干净拒绝（此前泛型类实例上会 mangle 幻影类
+// 名 → codegen 坏 IR → opt 崩）。
+import env;
+class C {
+    action:
+        @constructor C() {}
+        T id<T>(T x) { return x; }
+}
+void main() {
+    C c = new C();
+    int a = c.id<ixt>(5);
+}
