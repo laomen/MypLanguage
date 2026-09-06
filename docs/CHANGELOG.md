@@ -27,6 +27,27 @@
 
 ## 编译器版本历史
 
+### v3.15.234 — BUG-151 同族·JSON 主路径：共享单表 JsonTab/JsonCtx 加锁串行化（runtime_myp/json.myp）
+
+**非破坏性硬化（runtime_myp，@parallel 并发 JSON 正确性）**。审计「设计级改造项」落地：
+stdlib `Json` 是**薄句柄壳**（`handle_ = myp_json_parse(...)` 返回共享表 slot），全进程
+所有 `new Json`/parse 落**同一张全局 JsonTab/JsonCtx**（runtime_myp/json.myp；json_bridge.c
+已 MYP 化被跳过 → 这是 JSON 主路径，非 C 旧路径）。@parallel 并发 `myp_json_parse` 互踩
+`JsonCtx`（src/len/pos）+ 表追加/liveParses → **探针（8 worker 并发 parse）修复前段错
+误 6/6**（stdlib Json 经同一层 → fan/mypagent 类并发场景同样可达）。
+
+- **修复（runtime_myp/json.myp）**：加全局自旋锁 `JsonLockT.lockS`（mmap 锁字，不依赖
+  arena）把 14 个 `myp_json_*` 入口串行化（解析/查询/释放互斥即安全——表本就进程单例）。
+  实现：14 个函数体改名 `json*Impl` + 追加同名加锁 wrapper（`jsonLock(); r=json*Impl(...);
+  jsonUnlock(); return r;`；内部无互调 public → 无死锁）。
+- **边界/后续**：探针另暴露「首个 jsonEnsure 大数组分配发生在 pool worker 线程 + 后续
+  ARC 复用」会段错误（myp_release ← jsonParseObject）——主线程预热建表/锁即消失（真实用
+  法 main 先 parse，如 fan/mypagent），疑为对象堆跨线程大数组复用潜在缺陷，独立记录跟进
+  （非本锁范畴）。另 runtime JsonTab 节点 child 定容 64/节点（>64 子节点解析截断，设计限
+  制，非本次）。
+- 正例 `tests/@test/parallel_json_threadsafe.myp`（主线程预热 + 8 worker 并发 parse +
+  逐值抽查；5 轮全绿）；全量 531/531 + bugs 20/20 + bootstrap MD5 一致。
+
 ### v3.15.233 — BUG-151 同族审计：复用型 per-thread scratch 逐线程化（float/date 运行时）
 
 **非破坏性硬化（runtime_myp，@parallel 并发正确性）**。v3.15.232 修异常状态后，系统

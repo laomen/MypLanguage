@@ -1,0 +1,51 @@
+// BUG-151 同族·JSON 主路径（v3.15.234，runtime_myp/json.myp）回归：@parallel 并发
+// worker 共享单表 JsonTab/JsonCtx 的互斥。
+// 背景：stdlib `Json` 只是薄句柄壳（handle_=myp_json_parse 返回的共享表 slot），全
+// 进程所有 parse 落同一 JsonTab/JsonCtx（runtime_myp/json.myp，json_bridge.c 已 MYP
+// 化跳过 → 这是 JSON 主路径）。@parallel 并发 myp_json_parse 互踩 JsonCtx(src/len/pos)
+// + 表追加/liveParses → 修复前探针（8 worker 并发 parse，无锁）段错误 6/6。
+// 修复：加全局自旋锁（JsonLockT.lockS，mmap 锁字）把 14 个 myp_json_* 入口串行化
+// （解析/查询/释放互斥即安全；表本就进程单例）。14 函数体改名 json*Impl + 加锁
+// wrapper。
+// 回归：主线程预热建表/锁（真实用法主线程先 parse，如 fan/mypagent），8 worker 各
+// 并发 parse 同一 doc + 逐值抽查 —— 修复前段错误/错值，修复后全绿。
+import test;
+import env;
+import error;
+import pool;
+
+ffi long myp_json_parse(string s);
+ffi double myp_json_get_number(long h, string path);
+ffi void myp_json_free(long h);
+
+@test void t() {
+    string doc = "{\"a\":[";
+    for (int i = 0; i < 60; i = i + 1) {
+        if (i != 0) doc = doc + ",";
+        doc = doc + "" + i;
+    }
+    doc = doc + "]}";
+    // 主线程预热：首建表/锁（首个大数组分配在主线程 CLocal；真实用法同此）
+    for (int w0 = 0; w0 < 30; w0 = w0 + 1) {
+        long hh = myp_json_parse(doc);
+        if (hh > 0) myp_json_free(hh);
+    }
+    int N = 8;
+    Parallel.setThreads(N);
+    int[] bad = new int[N];
+    @parallel for (int w = 0; w < N; w = w + 1) {
+        int fails = 0;
+        for (int k = 0; k < 1500; k = k + 1) {
+            long h = myp_json_parse(doc);
+            if (h <= 0) { fails = fails + 1; continue; }
+            double v = myp_json_get_number(h, "a.40");
+            double v2 = myp_json_get_number(h, "a.7");
+            if (v != 40.0 || v2 != 7.0) fails = fails + 1;
+            myp_json_free(h);
+        }
+        bad[w] = fails;
+    }
+    int total = 0;
+    for (int i = 0; i < N; i = i + 1) total = total + bad[i];
+    Test.report("t", total == 0);
+}

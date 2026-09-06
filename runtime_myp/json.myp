@@ -17,6 +17,34 @@ ffi long myp_arena_alloc(long size);
 ffi int myp_strlen(string s);
 ffi double strtod(string nptr, long endptr);   // libc（de-gcc ≠ 去 glibc）
 
+
+// BUG-151 同族（v3.15.234）：JSON 主路径并发护栏。共享单表 JsonTab/JsonCtx 被
+// @parallel/@thread worker 并发 myp_json_parse 互踩 → 段错误/错值（探针 8 worker
+// ×3000 parse 6/6 崩）。表本就进程单例 → 加全局自旋锁把 14 个 myp_json_* 入口
+// 串行化（解析/查询/释放互斥即安全；锁字 mmap 直分配，不依赖 arena）。
+@static class JsonLockT {
+    property:
+        long lockS = 0;   // 自旋锁字地址（mmap 4B，0=未初始化）
+}
+void jsonLockInit() {
+    if (JsonLockT.lockS == 0) {
+        long p = __myp_syscall(9, 0, 4, 3, 0x22, -1, 0);
+        if (p != -1 && p != 0) {
+            __myp_mem_store_i32(p, 0);
+            JsonLockT.lockS = p;
+        }
+    }
+}
+void jsonLock() {
+    jsonLockInit();
+    if (JsonLockT.lockS == 0) return;
+    while (__myp_atomic_add_i32_addr(JsonLockT.lockS, 1) != 0) { }
+}
+void jsonUnlock() {
+    if (JsonLockT.lockS == 0) return;
+    __myp_atomic_store_i32_addr(JsonLockT.lockS, 0);
+}
+
 @static class JsonTab {
     property:
         int[] type;
@@ -467,7 +495,7 @@ string jsonSerializeNode(int n, int indent) {
 }
 
 // ---- 公共 API（对齐 C json_bridge.c 14 个）----
-long myp_json_parse(string s) {
+long jsonParseImpl(string s) {
     JsonCtx.src = s;
     JsonCtx.len = myp_strlen(s);
     JsonCtx.pos = 0;
@@ -477,14 +505,14 @@ long myp_json_parse(string s) {
     return long(slot + 1);
 }
 
-int myp_json_get_type(long handle, string path) {
+int jsonGet_typeImpl(long handle, string path) {
     if (handle <= 0) return -1;
     int cur = jsonResolvePath(int(handle) - 1, path);
     if (cur < 0) return -1;
     return JsonTab.type[cur];
 }
 
-string myp_json_get_string(long handle, string path) {
+string jsonGet_stringImpl(long handle, string path) {
     if (handle <= 0) return jsonStrDup("");
     int cur = jsonResolvePath(int(handle) - 1, path);
     if (cur < 0) return jsonStrDup("");
@@ -493,28 +521,28 @@ string myp_json_get_string(long handle, string path) {
     return jsonStrDup(JsonTab.str_val[cur]);
 }
 
-double myp_json_get_number(long handle, string path) {
+double jsonGet_numberImpl(long handle, string path) {
     if (handle <= 0) return 0.0;
     int cur = jsonResolvePath(int(handle) - 1, path);
     if (cur < 0) return 0.0;
     return JsonTab.num_val[cur];
 }
 
-int myp_json_get_bool(long handle, string path) {
+int jsonGet_boolImpl(long handle, string path) {
     if (handle <= 0) return 0;
     int cur = jsonResolvePath(int(handle) - 1, path);
     if (cur < 0 || JsonTab.type[cur] != 1) return 0;
     return JsonTab.bool_val[cur];
 }
 
-int myp_json_array_length(long handle, string path) {
+int jsonArray_lengthImpl(long handle, string path) {
     if (handle <= 0) return 0;
     int cur = jsonResolvePath(int(handle) - 1, path);
     if (cur < 0 || JsonTab.type[cur] != 5) return 0;
     return JsonTab.child_count[cur];
 }
 
-void myp_json_free(long handle) {
+void jsonFreeImpl(long handle) {
     // 计数器式释放：最后一个存活 parse 释放时复位节点表（槽位复用 + 槽内旧串由
     // ARC 在下次解析覆盖时回收→arena LIFO/空闲链表复用）。多 parse 并存（计数器>0）
     // 不清表，避免破坏其他存活 parse（对应 tests/json/test.myp doc/doc2/doc3 模式）。
@@ -523,7 +551,7 @@ void myp_json_free(long handle) {
     if (JsonTab.liveParses == 0) JsonTab.count = 0;
 }
 
-int myp_json_child_count(long handle, string path) {
+int jsonChild_countImpl(long handle, string path) {
     if (handle <= 0) return 0;
     int cur = jsonResolvePath(int(handle) - 1, path);
     if (cur < 0) return 0;
@@ -532,7 +560,7 @@ int myp_json_child_count(long handle, string path) {
     return JsonTab.child_count[cur];
 }
 
-string myp_json_child_key(long handle, string path, int index) {
+string jsonChild_keyImpl(long handle, string path, int index) {
     if (handle <= 0) return jsonStrDup("");
     int cur = jsonResolvePath(int(handle) - 1, path);
     if (cur < 0) return jsonStrDup("");
@@ -543,7 +571,7 @@ string myp_json_child_key(long handle, string path, int index) {
     return jsonStrDup(JsonTab.key[ch]);
 }
 
-string myp_json_scalar(long handle, string path) {
+string jsonScalarImpl(long handle, string path) {
     if (handle <= 0) return jsonStrDup("");
     int cur = jsonResolvePath(int(handle) - 1, path);
     if (cur < 0) return jsonStrDup("");
@@ -555,7 +583,7 @@ string myp_json_scalar(long handle, string path) {
     return jsonStrDup("");   // 容器
 }
 
-int myp_json_set_value(long handle, string path, string raw) {
+int jsonSet_valueImpl(long handle, string path, string raw) {
     if (handle <= 0) return 0;
     int root = int(handle) - 1;
     int plen = myp_strlen(path);
@@ -586,7 +614,7 @@ int myp_json_set_value(long handle, string path, string raw) {
     return 1;
 }
 
-int myp_json_add_child(long handle, string path, string key, string raw) {
+int jsonAdd_childImpl(long handle, string path, string key, string raw) {
     if (handle <= 0) return 0;
     int root = int(handle) - 1;
     int parent = jsonResolvePath(root, path);
@@ -616,7 +644,7 @@ int myp_json_add_child(long handle, string path, string key, string raw) {
     return 1;
 }
 
-int myp_json_remove(long handle, string path) {
+int jsonRemoveImpl(long handle, string path) {
     if (handle <= 0) return 0;
     int root = int(handle) - 1;
     int plen = myp_strlen(path);
@@ -662,7 +690,22 @@ int myp_json_remove(long handle, string path) {
     return 1;
 }
 
-string myp_json_serialize(long handle) {
+string jsonSerializeImpl(long handle) {
     if (handle <= 0) return jsonStrDup("null");
     return jsonStrDup(jsonSerializeNode(int(handle) - 1, 0));
 }
+
+long myp_json_parse(string s) { jsonLock(); long r = jsonParseImpl(s); jsonUnlock(); return r; }
+int myp_json_get_type(long handle, string path) { jsonLock(); int r = jsonGet_typeImpl(handle, path); jsonUnlock(); return r; }
+string myp_json_get_string(long handle, string path) { jsonLock(); string r = jsonGet_stringImpl(handle, path); jsonUnlock(); return r; }
+double myp_json_get_number(long handle, string path) { jsonLock(); double r = jsonGet_numberImpl(handle, path); jsonUnlock(); return r; }
+int myp_json_get_bool(long handle, string path) { jsonLock(); int r = jsonGet_boolImpl(handle, path); jsonUnlock(); return r; }
+int myp_json_array_length(long handle, string path) { jsonLock(); int r = jsonArray_lengthImpl(handle, path); jsonUnlock(); return r; }
+void myp_json_free(long handle) { jsonLock(); jsonFreeImpl(handle); jsonUnlock(); }
+int myp_json_child_count(long handle, string path) { jsonLock(); int r = jsonChild_countImpl(handle, path); jsonUnlock(); return r; }
+string myp_json_child_key(long handle, string path, int index) { jsonLock(); string r = jsonChild_keyImpl(handle, path, index); jsonUnlock(); return r; }
+string myp_json_scalar(long handle, string path) { jsonLock(); string r = jsonScalarImpl(handle, path); jsonUnlock(); return r; }
+int myp_json_set_value(long handle, string path, string raw) { jsonLock(); int r = jsonSet_valueImpl(handle, path, raw); jsonUnlock(); return r; }
+int myp_json_add_child(long handle, string path, string key, string raw) { jsonLock(); int r = jsonAdd_childImpl(handle, path, key, raw); jsonUnlock(); return r; }
+int myp_json_remove(long handle, string path) { jsonLock(); int r = jsonRemoveImpl(handle, path); jsonUnlock(); return r; }
+string myp_json_serialize(long handle) { jsonLock(); string r = jsonSerializeImpl(handle); jsonUnlock(); return r; }
