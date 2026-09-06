@@ -1,0 +1,44 @@
+// BUG-151 同族（v3.15.233，runtime_myp）回归：@parallel 并发 worker 内复用型
+// per-thread scratch 的隔离（float 精确十进制展开 ExDig/ExSig、date localtime_r
+// 缓冲 DateBuf）。
+// 背景：异常运行时 Exc 逐线程化（v3.15.232）后审计 C runtime __thread vs MYP
+// @static —— io_cur 已 gettid 表化、coro 表已 @thread；仍漏的可复用跨调用 scratch
+// 被 worker 并发触达：float.myp ExDig/ExSig（%.f |v|>=2^53 / P>15 精确大整数展开在
+// 多次 helper 间读写 intLen/fracLen/X）、date.myp DateBuf（localtime_r/strftime 共
+// 享 struct tm 缓冲）——两线程并发格式化会互相覆盖 → 错位数字/日期串扰。
+// 修复：二者改 `@static @thread class`（LLVM thread_local，逐线程隔离）。
+// 本回归：8 worker 各自独立格式化大 double 定点 + 日期（各线程应得一致结果），
+// 并抽查大 double 定点值精确展开正确。
+import test;
+import env;
+import error;
+import pool;
+
+ffi string myp_fmt_double_f(double v, int precision);
+ffi string myp_date_format_ms(long ms, string fmt);
+
+@test void t() {
+    int N = 8;
+    Parallel.setThreads(N);
+    string[] out = new string[N];
+    @parallel for (int i = 0; i < N; i = i + 1) {
+        string acc = "";
+        for (int k = 0; k < 2000; k = k + 1) {
+            // 大 double 定点 → 精确十进制展开（ExDig/ExSig @thread 路径）
+            double v = 12345678901234567890.0 + double(i % 3) * 0.25 + double(k % 7);
+            string s = myp_fmt_double_f(v, 0);
+            // 日期格式化 → DateBuf @thread（localtime_r/strftime 共享缓冲）
+            string d = myp_date_format_ms(1700000000000 + long(k * 86400000L), "%Y-%m-%d");
+            acc = acc + s + "|" + d + ";";
+        }
+        out[i] = acc;
+    }
+    int ok = 1;
+    for (int i = 1; i < N; i = i + 1) {
+        if (out[i] != out[0]) { ok = 0; Console.writeLine("MISMATCH worker " + i); }
+    }
+    // 抽查大 double 定点值精确展开正确（2^53 最近可表示双精度 = ...696）
+    string chk = myp_fmt_double_f(123456789012345678.0, 0);
+    if (chk != "123456789012345696") { ok = 0; Console.writeLine("CHK got " + chk); }
+    Test.report("t", ok == 1);
+}

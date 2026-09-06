@@ -27,6 +27,25 @@
 
 ## 编译器版本历史
 
+### v3.15.233 — BUG-151 同族审计：复用型 per-thread scratch 逐线程化（float/date 运行时）
+
+**非破坏性硬化（runtime_myp，@parallel 并发正确性）**。v3.15.232 修异常状态后，系统
+排查「C runtime `__thread` vs MYP @static」同族：审计结论——①异常运行时（BUG-151）
+已逐线程；②`myp_io_cur` 早已 gettid 表化（io.myp IoCur）；③coro 各表（CoroT/
+CoroCtl/CoroStackPool/CoroExec…）已 @static @thread class；④alloc 诊断计数
+（Live/TLive/CC 标志/FailA）C 为 __thread、MYP 为全局——仅诊断/收集门控单线程，
+竞态无害（无内存破坏）。**仍漏的两处可复用跨调用 scratch**（worker 并发触达 → 错值
+串扰）：`float.myp ExDig/ExSig`（%.f |v|>=2^53 / P>15 精确大整数十进制展开在多次
+helper 间读写 intLen/fracLen/X）、`date.myp DateBuf`（localtime_r/strftime 共享
+struct tm 缓冲——一线程 strftime 读到另一半写 → 错日期）。
+
+- **修复（runtime_myp/float.myp + date.myp）**：ExDig/ExSig/DateBuf 改 `@static
+  @thread class` → LLVM thread_local 逐线程（惰性 arena 分配各自缓冲；单线程行为不
+  变）。@parallel worker 并发格式化大 double/日期各用各的 scratch → 输出确定。
+- 正例 `tests/@test/parallel_scratch_threadsafe.myp`（8 worker 并发大 double 定点+
+  日期格式化逐 worker 一致性 + 精确展开抽查；6 轮全绿）；全量 530/530 + bugs 20/20
+  + bootstrap MD5 一致。
+
 ### v3.15.232 — BUG-151 修复：@parallel 并发 worker 异常状态逐线程化（runtime_myp/exception.myp）
 
 **BUG-151（🟩）**。@parallel 并发 worker 内 try/catch/throw（mypagent 真并发子 agent

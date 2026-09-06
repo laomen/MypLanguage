@@ -19,7 +19,10 @@ ffi string myp_alloc(long size);
 ffi long myp_arena_alloc(long size);
 
 // struct tm 缓冲（36B 实布局，给 64B；epoch 槽 8B）。@static 惰性分配。
-@static class DateBuf {
+// BUG-151 同族（v3.15.233）：@thread——localtime_r/strftime 复用本缓冲，若两个
+// 线程并发格式化日期会互相覆盖 tm（一个线程 strftime 读到另一半写 → 错值/串扰）。
+// 各线程首用惰性分配自己的 tb/tm。
+@static @thread class DateBuf {
     property:
         long tb = 0;    // time_t* 槽（8B）
         long tm = 0;    // struct tm 缓冲（64B）

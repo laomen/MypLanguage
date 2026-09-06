@@ -30,12 +30,15 @@ ffi string myp_alloc(long size);
 ffi int myp_strlen(string s);
 
 // ---- 精确十进制展开的状态（大整数区段）----
-@static class ExDig {
+// BUG-151 同族（v3.15.233）：@thread——格式化 op 在多次 helper 调用间读写
+// ExDig/ExSig；两线程并发格式化大 double（%.f |v|>=2^53 / P>15）会互相覆盖 → 错位
+// 数字/错误指数。各线程 @thread 隔离。
+@static @thread class ExDig {
     property:
         int intLen = 0;    // 整数部分位数（a<1 时为 0）
         int fracLen = 0;   // 小数部分位数（精确展开总位数）
 }
-@static class ExSig {
+@static @thread class ExSig {
     property:
         int X = 0;         // 十进制指数（exactSigDigits 输出）
 }
