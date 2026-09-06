@@ -364,6 +364,10 @@ class Sema {
             macroNames_ = new ArrayList<string>();
             macroParams_ = new ArrayList<ArrayList<string>>();
             macroBodies_ = new ArrayList<AstStmt>();
+            mhRn_ = 0;
+            mhRenameFrom_ = new ArrayList<string>();
+            mhRenameTo_ = new ArrayList<string>();
+            macroSeq_ = 0L;
             pmFuncNames_ = new ArrayList<string>();
             pmFuncs_ = new ArrayList<AstFunction>();
             pmLocalNames_ = new ArrayList<string>();
@@ -802,6 +806,39 @@ class Sema {
         }
 
         // ---- M3 声明式宏展开（在符号收集之前运行）----
+        // M-3 宏卫生 helper：name 是否已登记为宏体自声明（返回在 from 的下标，-1 无）。
+        int mhIndex(string nm) {
+            for (int i = 0; i < mhRenameFrom_.size(); i = i + 1) {
+                if (mhRenameFrom_.get(i) == nm) return i;
+            }
+            return -1;
+        }
+        // M-3：name 若在映射 → 返回改名后名；否则原样（调用方已保证 mhRn_ 上下文）。
+        string mhRenameName(string nm) {
+            int ri = mhIndex(nm);
+            if (ri >= 0) return mhRenameTo_.get(ri);
+            return nm;
+        }
+        // M-3：递归收集宏体语句中**声明的局部**名，为每个登记 from→原名_m<seq>。
+        void mhCollectDecls(AstStmt s) {
+            if (s == null) return;
+            if (s.kind() == "VarDecl") {
+                for (int i = 0; i < s.decls().size(); i = i + 1) {
+                    string nm = s.decls().get(i).name();
+                    if (Str.len(nm) != 0 && mhIndex(nm) < 0) {
+                        mhRenameFrom_.add(nm);
+                        mhRenameTo_.add(nm + "_m" + macroSeq_);
+                    }
+                }
+            }
+            if (s.body() != null) mhCollectDecls(s.body());
+            if (s.then() != null) mhCollectDecls(s.then());
+            if (s.elseBranch() != null) mhCollectDecls(s.elseBranch());
+            if (s.init() != null) mhCollectDecls(s.init());
+            if (s.kind() == "Block") {
+                for (int i = 0; i < s.bodyStmts().size(); i = i + 1) mhCollectDecls(s.bodyStmts().get(i));
+            }
+        }
         int macroIndex(string name) {
             for (int i = 0; i < macroNames_.size(); i = i + 1) {
                 if (macroNames_.get(i) == name) return i;
@@ -865,10 +902,25 @@ class Sema {
             if (e.kind() == "MacroParam") {
                 for (int i = 0; i < params.size(); i = i + 1) {
                     if (i >= args.size()) break;
-                    if (params.get(i) == e.name()) return deepCloneExpr(args.get(i), params, args);
+                    if (params.get(i) == e.name()) {
+                        // M-3：实参替换区是**调用方**代码 → 临时关宏体改名（mhRn_=0），
+                        // 深克隆实参整棵子树后再恢复，避免调用方标识符被误改名。
+                        int save = mhRn_;
+                        mhRn_ = 0;
+                        AstExpr r = deepCloneExpr(args.get(i), params, args);
+                        mhRn_ = save;
+                        return r;
+                    }
                 }
             }
             AstExpr c = e.cloneExpr();
+            // M-3：宏体自声明局部名（Identifier 变量引用）→ gensym 改名（原名 → 原名_m<seq>）。
+            // 仅宏体克隆区（mhRn_=1）生效；映射为空时零开销不变（普通深克隆/宏无自声明）。
+            if (mhRn_ != 0 && e.kind() == "Identifier" && Str.len(e.name()) != 0) {
+                for (int ri = 0; ri < mhRenameFrom_.size(); ri = ri + 1) {
+                    if (mhRenameFrom_.get(ri) == e.name()) { c.setName(mhRenameTo_.get(ri)); break; }
+                }
+            }
             c.setLhs(deepCloneExpr(e.lhs(), params, args));
             c.setRhs(deepCloneExpr(e.rhs(), params, args));
             c.setOperand(deepCloneExpr(e.operand(), params, args));
@@ -928,7 +980,9 @@ class Sema {
                 for (int i = 0; i < s.decls().size(); i = i + 1) {
                     AstVar v = s.decls().get(i);
                     AstVar nv = new AstVar();
-                    nv.setName(v.name());
+                    // M-3：宏体克隆区自声明局部 → gensym（宏内声明与引用一致改名，
+                    // 不撞调用方同名变量）。
+                    nv.setName(mhRn_ != 0 ? mhRenameName(v.name()) : v.name());
                     nv.setType(v.type());
                     nv.setConst(v.isConst());
                     nv.setThread(v.thread());
@@ -981,7 +1035,17 @@ class Sema {
                         if (ca != null && ca.kind() == "Identifier") {
                             int mi = macroIndex(ca.name());
                             if (mi >= 0) {
+                                // M-3：克隆前收集宏体自声明 → gensym 映射（原名 →
+                                // 原名_m<seq>），mhRn_=1 让宏体克隆区改名生效；克隆后清。
+                                macroSeq_ = macroSeq_ + 1L;
+                                mhRenameFrom_ = new ArrayList<string>();
+                                mhRenameTo_ = new ArrayList<string>();
+                                mhCollectDecls(macroBodies_.get(mi));
+                                mhRn_ = 1;
                                 AstStmt body = deepCloneStmt(macroBodies_.get(mi), macroParams_.get(mi), ex.args());
+                                mhRn_ = 0;
+                                mhRenameFrom_ = new ArrayList<string>();
+                                mhRenameTo_ = new ArrayList<string>();
                                 if (body != null && body.kind() == "Block") {
                                     for (int j = 0; j < body.bodyStmts().size(); j = j + 1) {
                                         out.add(body.bodyStmts().get(j));
@@ -10258,6 +10322,14 @@ class Sema {
         ArrayList<string> macroNames_;
         ArrayList<ArrayList<string>> macroParams_;
         ArrayList<AstStmt> macroBodies_;
+        // M-3（宏卫生，v3.15.24x）：宏展开克隆时对宏体**自声明局部**做 gensym 改名，
+        // 避免与调用方作用域同名冲突（M-3）。mhRn_=1 表示正在克隆宏体（改名生效）；
+        // MacroParam 实参替换区临时置 0（调用方标识符不改名）。映射只在宏展开克隆期间
+        // 填/清。
+        int mhRn_;
+        ArrayList<string> mhRenameFrom_;
+        ArrayList<string> mhRenameTo_;
+        long macroSeq_;
         ArrayList<string> pmFuncNames_;
         ArrayList<AstFunction> pmFuncs_;
         ArrayList<string> pmLocalNames_;

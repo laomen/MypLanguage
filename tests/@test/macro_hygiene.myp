@@ -1,0 +1,21 @@
+// macro_hygiene.myp — M-3 声明式宏卫生（v3.15.241）
+// 宏体内**自声明的局部**在展开时 gensym（原名 → 原名_m<seq>），不再与调用方作用域
+// 同名变量冲突（此前 duplicate variable 'tmp'）。
+// 修复（sema.myp M3 区）：宏展开克隆前 mhCollectDecls 收集宏体自声明名填
+// mhRenameFrom/To；克隆期间 mhRn_=1 使宏体内声明+引用一致改名（deepCloneStmt VarDecl /
+// deepCloneExpr Identifier）；MacroParam 实参替换区临时 mhRn_=0（调用方标识符不改名）；
+// macroSeq_ 全局递增保证同块多次展开不冲突。宏无自声明 → 映射空 → 行为不变。
+
+import test;
+
+macro setV($v, $n) { int tmp = $n; $v = tmp; }
+macro clampV($v, $lo, $hi) { int t = $v; int r = t; if (t < $lo) { r = $lo; } else if (t > $hi) { r = $hi; } $v = r; }
+
+@test void t() {
+    int a = 1; setV(a, 9); Test.assertEq(a, 9, "a");
+    int b = 2; setV(b, 3); Test.assertEq(b, 3, "b");            // 二次调用（不同 seq）
+    int x = 100; clampV(x, 0, 50); Test.assertEq(x, 50, "c");   // 多局部 + if 嵌套
+    int lo = 0; int hi = 50; int y = -5; clampV(y, lo, hi); Test.assertEq(y, 0, "d");  // 调用方 lo/hi
+    int tmp = 7; setV(tmp, 1); Test.assertEq(tmp, 1, "e");      // 调用方同名 tmp 不再冲突
+    Test.report("t", true);
+}

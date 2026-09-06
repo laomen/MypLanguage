@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.15.241 — M-3 声明式宏卫生：宏体自声明局部 gensym（不撞调用方作用域）（selfhost additive）
+
+**非破坏性硬化（metaprogramming_gaps M-3，声明式宏展开器）**。sema `sema.myp`。
+
+- `macro setV($v,$n){ int tmp = $n; $v = tmp; }` + 调用方 `int tmp = 7; setV(tmp,1);`
+  此前宏体克隆把自声明 `tmp` 原样插入调用点块 → `duplicate variable 'tmp'`（M-3 无
+  卫生性；文档建议宏内用独特前缀 `_i/_k` 规避）。
+- 修复：宏展开克隆时对宏体**自声明局部**做 gensym——展开前 `mhCollectDecls` 递归收集
+  宏体 VarDecl 名，登记 `原名 → 原名_m<seq>`（`macroSeq_` 全局递增，同块多次展开不冲突）；
+  克隆期间 `mhRn_=1` 使宏体内**声明 + 引用一致改名**（deepCloneStmt VarDecl 声明名 /
+  deepCloneExpr Identifier 变量引用同查映射）；`MacroParam` 实参替换区临时 `mhRn_=0`
+  （调用方标识符保持原名，不被误改名）。宏无自声明 → 映射空 → 展开行为不变（现有宏
+  用例零回归）。
+- 正例 tests/@test/macro_hygiene.myp（5 断言：二次调用/多局部+if 嵌套/调用方 lo-hi 实参/
+  调用方同名 tmp）；全量 540/540 + bugs 20/20 + bootstrap MD5 一致。
+
 ### v3.15.240 — MO-4 路径 import 找不到文件 → 明确诊断（漏 `.myp` 不再级联误导）（selfhost additive）
 
 **非破坏性硬化（module_gaps MO-4，诊断改进）**。`main.myp Frontend.loadModule`。
