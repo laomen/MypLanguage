@@ -61,6 +61,22 @@
   路径仍与 self2 全量输出逐字节一致，**端到端证明缓存命中 == 全量编译**；-O2 同证
   （`98ff726b…`）；全套回归 547 通过。
 
+#### 修复：整闭包缓存失效缺口——stdlib 名字 import 内容不参与 key（commit d0bb687）
+
+`closureKey()` 原遍历 `LoadedSet.set()`，其中**名字 import**（`import env` 等）的 key
+是**模块名**（非文件路径）→ `isFile` 检查跳过 → 解析出的 stdlib 文件内容不参与
+hash → **stdlib 内容变更不使缓存失效** → 错误命中旧 IR（实测证实：改 `env.myp`
+后产物 md5 不变、缓存目录无新键）。
+
+- `LoadedSet` 增 `files_`（真实读入文件路径集合）+ `addFile()`/`files()`。
+- `loadModule` 每次成功读文件后 `loaded.addFile(path)`（path 已 normalize）；CLI
+  输入文件在 compile 预置时同样 `addFile`。
+- `closureKey()` 改遍历 `loaded.files()`——主/附加文件、相对 import、名字 import
+  解析出的 stdlib 文件**全部**进 key。
+- 实测修复：改 `env.myp` → 出现新缓存键 `c_01e942…`（miss 全量重编，注释改动产物
+  md5 不变为正确行为）；还原后命中原键。自举 MD5 门禁 `6f176ed7` 通过；全套 547
+  通过。
+
 ### v3.16.0 — 里程碑：版本节奏切 minor（v3.16 周期开始；git tag v3.16.0）
 
 **版本节奏规则（自本版起）**：此前每功能/修复 commit +1 patch（v3.15.244 个 patch 全堆在
