@@ -160,6 +160,14 @@ target_include_directories(myp_pass_plugin PRIVATE
     ${LLVM_INCLUDE_DIRS}
 )
 target_link_libraries(myp_pass_plugin PRIVATE LLVM)
+# Sanitizer 豁免：myp_pass_plugin 是 new-PM 插件，被**非 ASAN** 的系统 `opt` dlopen。
+# 若随全局 MYP_SANITIZE 仪表（-fsanitize=address），opt 子进程 dlopen 时报
+# "ASan runtime does not come first in initial library list" → opt 崩 → 自举
+# stage 失败。插件跑在 opt 进程内，对编译器自身 ASAN 检查无意义 → 编译/链接都豁免。
+if(MYP_SANITIZE)
+    target_compile_options(myp_pass_plugin PRIVATE -fno-sanitize=address -fno-sanitize=undefined)
+    target_link_options(myp_pass_plugin PRIVATE -fno-sanitize=address -fno-sanitize=undefined)
+endif()
 
 # ---- DAP debug adapter (bridges VS Code DAP <-> gdb MI) ----
 # Windows：暂不构建 —— DAP 服务器用 fork/pipe/dup2/execlp/poll/read/write 编排
