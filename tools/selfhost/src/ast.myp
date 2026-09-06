@@ -638,6 +638,7 @@ class AstFunction {
             stack_ = 0;
             op_ = "";
             eval_ = 0;
+            evalTable_ = 0;
             macro_ = 0;
             ctor_ = 0;
             constDecl_ = 0;
@@ -663,12 +664,13 @@ class AstFunction {
         void setStack(int v) { stack_ = v; }
         void setOp(string v) { op_ = v; }
         void setEval(int v) { eval_ = v; }
+        void setEvalTable(int v) { evalTable_ = v; }
         void setMacro(int v) { macro_ = v; }
         void setCtor(int v) { ctor_ = v; }
         void setConstDecl(int v) { constDecl_ = v; }
         void setBody(AstStmt v) { body_ = v; }
         void dump(StringBuilder sb, int ind) {
-            Dump.line(sb, ind, "(Function name=\"" + Dump.esc(name_) + "\" ret=" + (ret_ != null ? ret_.str() : "?") + " genericInst=" + genericInst_ + " test=" + test_ + " autoMain=" + autoMain_ + " region=" + region_ + " coro=" + coro_ + " async=" + async_ + " stack=" + stack_ + " op=\"" + Dump.esc(op_) + "\" eval=" + eval_ + " macro=" + macro_ + " ctor=" + ctor_ + " constDecl=" + constDecl_ + ")");
+            Dump.line(sb, ind, "(Function name=\"" + Dump.esc(name_) + "\" ret=" + (ret_ != null ? ret_.str() : "?") + " genericInst=" + genericInst_ + " test=" + test_ + " autoMain=" + autoMain_ + " region=" + region_ + " coro=" + coro_ + " async=" + async_ + " stack=" + stack_ + " op=\"" + Dump.esc(op_) + "\" eval=" + eval_ + " evalTable=" + evalTable_ + " macro=" + macro_ + " ctor=" + ctor_ + " constDecl=" + constDecl_ + ")");
             AstNode.dumpTypeParams(sb, ind + 2, typeParams_);
             AstNode.dumpConstraints(sb, ind + 2, constraints_);
             for (int i = 0; i < instTypeArgs_.size(); i = i + 1)
@@ -689,6 +691,7 @@ class AstFunction {
         int stack() { return stack_; }
         string op() { return op_; }
         int eval() { return eval_; }
+        int evalTable() { return evalTable_; }
         int isMacro() { return macro_; }
         int ctor() { return ctor_; }
         int constDecl() { return constDecl_; }
@@ -707,6 +710,7 @@ class AstFunction {
         int stack_;
         string op_;
         int eval_;
+        int evalTable_;
         int macro_;
         int ctor_;
         int constDecl_;

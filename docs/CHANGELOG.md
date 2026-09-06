@@ -27,6 +27,46 @@
 
 ## 编译器版本历史
 
+### v3.15.243 — M-2 编译期常量表：模块级 @eval 只读常量数组（additive，selfhost）
+
+**M-2 缺口**（docs/review/metaprogramming_gaps.md §2）：编译期表/数组常量不存在——
+`docs/metaprogramming.md §3.1` 宣称的模块级 `@eval <类型> <name> = {...}` 表语法此前
+不可编译（解析为 @eval 函数 → `expected '(' after function name`）。已实现。
+
+**新语法（additive，语言规格 1.0 不变）**：模块级只读常量数组，编译期固化为 LLVM
+`private constant [N x T]`；运行时 `name[i]`（i 可运行时变量/表达式）编译为对常量数组
+的 GEP+load（无运行时分配/ARC，.rodata 只读）：
+
+```myp
+@eval int[8] pow2 = [1, 2, 4, 8, 16, 32, 64, 128];   // 定长 N
+@eval int[]  pow3 = [1, 3, 9, 27];                    // N 由元素数定
+const int BASE = 10;
+@eval int[4] mix = [BASE, 5, 100, 200];               // 顶层 const 标量引用元素
+int v = pow2[i];                                      // 运行时变量下标
+```
+
+元素支持：数字/布尔字面量、纯常量算术（`2*3+1`）、顶层 const 标量引用（`[BASE, 5]`，
+算术内 const 引用暂不支持）。元素类型限标量（byte..double/bool；string/嵌套拒）。
+表只能下标读（`name[i]`）；裸表名引用 clean reject。
+
+**实现**（自举编译器，mirror 设计定稿 m2-const-table-design）：
+- parser：`@eval` 后类型+名后遇 `=`（非 `(`）→ 表声明（AstFunction.evalTable_；
+  body=Return(数组字面量)），原 MYP 数组字面量 `[..]`（文档 `{..}` 为笔误）。
+- sema：findEvalTable（表不注册 funcIdx_/不跑普通函数体分析——数据壳）；
+  validateEvalTables（数组类型/标量元素/定长 count 匹配/常量元素）；Identifier 裸表名
+  clean reject；Subscript 特判（元素 kind/resolvedClass，数值下标检查）。
+- codegen：emitEvalTables 发 `@__myp_table_<name> = private constant [N x T] [...]`
+  （staticPropConst 折叠，const 引用递归展开 init）；genExpr Subscript 特判
+  GEP+load；subscriptElemLt 表元素类型（bool→i1，对齐 exprLlvmType/toI1）。
+- 表不发射运行时函数；顶层函数循环/constDecl 并列 skip evalTable。
+
+**验证**：`tests/@test/m2_eval_table.myp`（10 断言：int 求和/运行时+表达式下标/动态
+形态/const 引用/常量算术/bool/double/long）；负测试 `tests/negative/m2_eval_table_*
+.myp`×3（裸表名/非标量元素/定长 mismatch）；`--emit-llvm` 检查 `@__myp_table_*`
+private constant + GEP 发射。全量 545/545 + bugs 20/20 + 自举门（2 级 MD5 一致）通过。
+已知限制（记录 additive）：@eval 函数调用直接作表元素暂不支持（常量初值无运行时
+执行；需 const 中转，const init 为 @eval 调用的展开折叠仍未接——后续轮）。
+
 ### v3.15.242 — BUG-153 修复：coro 反应堆非阻塞 accept（stdlib net acceptNb）（stdlib/运行时）
 
 **BUGLIST BUG-153（运行时，非编译器）**。stdlib `net.myp` `TcpServer.acceptNb`。

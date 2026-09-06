@@ -1,0 +1,8 @@
+// EXPECT ERROR: constant table 't' can only be read via 't[i]' subscript
+// M-2 常量表负例：裸表名引用（非 name[i] 下标）clean reject（v1 仅下标读）。
+import test;
+@eval int[4] t = [1, 2, 3, 4];
+@test void a() {
+    int x = t;
+    Test.report("a", x > 0);
+}

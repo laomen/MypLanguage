@@ -1165,6 +1165,23 @@ class CodeGen {
             }
             return null;
         }
+        // M-2：模块级 @eval 常量表声明（evalTable_；只读常量数组，非可调用函数）。
+        AstFunction findEvalTableCodegen(string name) {
+            if (tu_ == null) return null;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.evalTable() != 0 && f.name() == name) return f;
+            }
+            return null;
+        }
+        // 表长度：body=Return(数组字面量) 元素数（定长声明由 sema 保证一致）。
+        int evalTableSize(AstFunction f) {
+            if (f == null || f.body() == null || f.body().bodyStmts().size() == 0) return 0;
+            AstStmt ret = f.body().bodyStmts().get(0);
+            if (ret == null || ret.kind() != "Return" || ret.value() == null) return 0;
+            if (ret.value().kind() != "ArrayLit") return 0;
+            return ret.value().elements().size();
+        }
 
         AstExpr constDeclInit(AstFunction f) {
             if (f == null || f.body() == null || f.body().bodyStmts().size() == 0) return null;
@@ -2229,6 +2246,8 @@ class CodeGen {
             emitInterfaceVTables();
             // mapping 实例全局（__myp_inst_<src>，handler 取目标实例用）
             emitInstanceGlobals();
+            // M-2：@eval 常量表（只读常量数组）——函数体之前发射（subscript GEP 引用）
+            emitEvalTables();
             // 顶层函数（按名去重：泛型实例函数可能被 sema 重复追加）
             ArrayList<string> doneFns = new ArrayList<string>();
             for (int i = 0; i < tu.functions().size(); i = i + 1) {
@@ -2239,6 +2258,8 @@ class CodeGen {
                 if (f.isMacro() != 0) continue;
                 // 顶层 const 是值；引用点直接展开其初始化表达式，不发射同名函数。
                 if (f.constDecl() != 0) continue;
+                // M-2：@eval 常量表是只读数据（emitEvalTables 已发射），非可调用函数。
+                if (f.evalTable() != 0) continue;
                 // test 模式：跳过用户 main（测试运行器生成新的 main，同 C++）
                 if (testMode_ != 0 && f.name() == "main") continue;
                 int dup = 0;
@@ -2440,6 +2461,51 @@ class CodeGen {
             // 在 library_mode 下跳过）。全局仍 internal/private 不影响导出。
             if (libraryMode_ != 0) ir = Str.replaceAll(ir, "define internal", "define");
             return ir;
+        }
+
+        // ── M-2：@eval 常量表 → 只读常量数组 ──
+        // `@eval <T> <name> = [c1, c2, ...];`（T=标量：int/long/double/float/bool/byte..）
+        // 发射 `@__myp_table_<name> = private constant [N x T] [...]`；运行时 name[i]
+        // 编译为对常量数组的 GEP+load（i 可运行时）。表不是函数（不 genFunction）、
+        // 不是顶层 const（const 引用点展开 init=每次 new；表是单一只读数据）。
+        void emitEvalTables() {
+            if (tu_ == null) return;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.evalTable() != 0) emitEvalTable(f);
+            }
+        }
+        void emitEvalTable(AstFunction f) {
+            if (f == null || f.body() == null || f.body().bodyStmts().size() == 0) return;
+            AstStmt ret = f.body().bodyStmts().get(0);
+            if (ret == null || ret.kind() != "Return" || ret.value() == null) return;
+            AstExpr lit = ret.value();
+            if (lit.kind() != "ArrayLit") return;
+            AstType el = f.ret() != null ? f.ret().element() : null;
+            string lt = el != null ? llvmType(el) : "i32";
+            // staticPropConst/foldIntConst 的 ft 用类型名（仅判 double/float）
+            string ft = el != null ? typeName(el) : "int";
+            int n = lit.elements().size();
+            StringBuilder tb = new StringBuilder();
+            tb.append("@__myp_table_" + f.name() + " = private constant [" + n + " x " + lt + "] [");
+            for (int i = 0; i < n; i = i + 1) {
+                if (i != 0) tb.append(", ");
+                tb.append(lt + " " + evalTableElemValue(lit.elements().get(i), ft));
+            }
+            tb.append("]\n");
+            stringGlobals_.append(tb.toString());
+        }
+        // 表元素 → LLVM 常量值（无类型前缀；const 标量引用递归展开其 init 再折叠）。
+        string evalTableElemValue(AstExpr e, string ft) {
+            if (e == null) return "0";
+            if (e.kind() == "Identifier") {
+                AstFunction cdf = findConstDeclFuncCodegen(e.name());
+                if (cdf != null) {
+                    AstExpr ci = constDeclInit(cdf);
+                    if (ci != null) return evalTableElemValue(ci, ft);
+                }
+            }
+            return staticPropConst(e, ft);
         }
 
         // 类结构体类型：%ClassName = type { <prop types> }（空类用 i8 占位）。
@@ -2978,6 +3044,14 @@ class CodeGen {
         string subscriptElemLt(AstExpr arr) {
             if (arr == null) return "i32";
             if (arr.kind() == "Identifier") {
+                // M-2：常量表下标 pow[i] → 元素 LLVM 类型（须与表 load/发射一致——
+                // bool→i1；否则 exprLlvmType 回默认 i32，toI1/赋值类型不匹配）。
+                AstFunction tbe = findEvalTableCodegen(arr.name());
+                if (tbe != null) {
+                    AstType tel = tbe.ret() != null ? tbe.ret().element() : null;
+                    if (tel != null) return llvmType(tel);
+                    return "i32";
+                }
                 if (hasVar(arr.name()) != 0) return varElemType(arr.name());
                 if (hasMember(arr.name()) != 0) {
                     string et = propElemLt(curClass_, arr.name());
@@ -10185,6 +10259,12 @@ class CodeGen {
             }
             if (k == "Identifier") {
                 string nm = e.name();
+                // M-2 防御：常量表名出现在非下标位置（sema 已 clean reject，此处兜底
+                // 不崩——emit 注释 + 返回 0）。正常合法读只在 Subscript 特判内。
+                if (findEvalTableCodegen(nm) != null) {
+                    sb_.append("; error: constant table '" + nm + "' must be read as '" + nm + "[i]'\n");
+                    return "0";
+                }
                 // M-FN-2 named lambda 自名作为值使用（thunk 实参/赋值）→
                 // 当前闭包 fat pointer {this, @<cls>_tramp}（同 C++
                 // generateIdentifier 的 __lambda 分支；调用形式已由 sema 标
@@ -10948,6 +11028,24 @@ class CodeGen {
             if (k == "Subscript") {
                 AstExpr arr = e.array();
                 AstExpr idx = e.index();
+                // M-2：常量表读 pow[i] → 只读常量数组 GEP + load（i 可运行时变量）。
+                // 表名不是局部/属性/const——特判，避免通用 array 路径误当指针 load。
+                if (arr != null && arr.kind() == "Identifier") {
+                    AstFunction tblG = findEvalTableCodegen(arr.name());
+                    if (tblG != null) {
+                        AstType telG = tblG.ret() != null ? tblG.ret().element() : null;
+                        string tetG = telG != null ? llvmType(telG) : "i32";
+                        int tnG = evalTableSize(tblG);
+                        string idxVG = genExpr(idx);
+                        string idxTG = exprLlvmType(idx);
+                        string i64G = zextIndex(idxVG, idxTG);
+                        string tgG = newTmp();
+                        sb_.append("  " + tgG + " = getelementptr [" + tnG + " x " + tetG + "], ptr @__myp_table_" + tblG.name() + ", i64 0, i64 " + i64G + "\n");
+                        string tlG = newTmp();
+                        sb_.append("  " + tlG + " = load " + tetG + ", ptr " + tgG + "\n");
+                        return tlG;
+                    }
+                }
                 // string 下标 s[i] : char —— myp_str_substring(s,i,i+1)+myp_ord
                 // 安全路径（越界/负数钳制），返回 char（i8）。同 C++ generateSubscript。
                 if (arr != null && arr.resolvedKind() == "string") {
@@ -12499,6 +12597,9 @@ class CodeGen {
             }
             if (k == "Identifier") {
                 string nm = e.name();
+                // M-2 防御：常量表（LLVM 类型 = 只读 [N x T] 常量）→ 按定长数组 decay
+                // 处理返回 ptr（下标特判已拦截常规读；此处仅供 exprLlvmType 其它探测）。
+                if (findEvalTableCodegen(nm) != null) return "ptr";
                 if (hasVar(nm) != 0) return varType(nm);
                 if (hasMember(nm) != 0) {
                     string ft = propType(curClass_, nm);

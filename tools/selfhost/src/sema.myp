@@ -1195,11 +1195,84 @@ class Sema {
             return result;
         }
 
+        // M-2：@eval 常量表声明校验（在常量求值前跑）。
+        // 要求：数组类型 / 标量元素 / 初值=数组字面量 / 定长元素数匹配 / 元素可折叠。
+        void validateEvalTables(AstTU tu) {
+            if (tu == null) return;
+            for (int ti = 0; ti < tu.functions().size(); ti = ti + 1) {
+                AstFunction f = tu.functions().get(ti);
+                if (f.evalTable() == 0) continue;
+                AstType el = evalTableElemAstType(f);
+                if (el == null) {
+                    diag_.error(f.line(), f.col(), "@eval table must be declared with an array type (e.g. '@eval int[4] name = [..]')");
+                    continue;
+                }
+                string ek = typeToKind(el);
+                if (evalTableElemOk(ek) == 0) {
+                    diag_.error(f.line(), f.col(), "@eval table element type must be scalar constant type (byte..double/bool), got '" + el.str() + "'");
+                    continue;
+                }
+                if (f.body() == null || f.body().bodyStmts().size() == 0) continue;
+                AstStmt ret = f.body().bodyStmts().get(0);
+                if (ret == null || ret.kind() != "Return" || ret.value() == null) continue;
+                AstExpr lit = ret.value();
+                if (lit.kind() != "ArrayLit") {
+                    diag_.error(f.line(), f.col(), "@eval table must be initialized with an array literal [c1, c2, ...]");
+                    continue;
+                }
+                int n = lit.elements().size();
+                if (f.ret() != null && f.ret().arraySize() > 0 && f.ret().arraySize() != n) {
+                    diag_.error(f.line(), f.col(), "@eval table '" + f.name() + "' declares " + f.ret().arraySize() + " elements but initializer has " + n);
+                    continue;
+                }
+                for (int ei = 0; ei < lit.elements().size(); ei = ei + 1) {
+                    AstExpr ev = lit.elements().get(ei);
+                    if (constTableElemOk(ev) == 0) {
+                        diag_.error(ev.line(), ev.col(), "@eval table element must be a compile-time constant (literal / const reference / constant arithmetic)");
+                    }
+                }
+            }
+        }
+        // 表元素是否可编译期折叠进常量数组初值。支持两类：
+        // ① 纯常量算术（字面量/一元负/Convert/常量二元——codegen constIntEval/
+        //    staticPropConst 覆盖域，无 const 引用参与）；② 顶层值型 const 引用
+        //   [BASE, 5]（codegen 递归展开其 init）。@eval 调用不能直接作元素（常量
+        //   初值无运行时执行）——记录为 additive 限制。
+        int constTableElemOk(AstExpr e) {
+            if (e == null) return 0;
+            string k = e.kind();
+            if (k == "Integer" || k == "Float" || k == "Bool") return 1;
+            if (k == "Unary" && e.op() == "-") return constTableElemOkPure(e.operand());
+            if (k == "Convert") return constTableElemOkPure(e.operand());
+            if (k == "Binary") {
+                if (constTableElemOkPure(e.lhs()) == 0) return 0;
+                return constTableElemOkPure(e.rhs());
+            }
+            if (k == "Identifier") {
+                if (findConstDeclFunc(e.name()) != null) return 1;
+                return 0;
+            }
+            return 0;
+        }
+        // 纯字面量算术（无 const/Identifier 引用；codegen constIntEval 覆盖域）。
+        int constTableElemOkPure(AstExpr e) {
+            if (e == null) return 0;
+            string k = e.kind();
+            if (k == "Integer" || k == "Float" || k == "Bool") return 1;
+            if (k == "Unary" && e.op() == "-") return constTableElemOkPure(e.operand());
+            if (k == "Convert") return constTableElemOkPure(e.operand());
+            if (k == "Binary") {
+                if (constTableElemOkPure(e.lhs()) == 0) return 0;
+                return constTableElemOkPure(e.rhs());
+            }
+            return 0;
+        }
         // 编译期常量求值（C++ evaluateCompileTimeConstants 的 run()）：
         // 遍历 const 声明，求值初始表达式；成功则记录（供后续 @eval/const 用），
         // 失败（如 @eval 深度超限）已由 evalCallI 写入诊断。
         void runConstEval(AstTU tu) {
             if (tu == null) return;
+            validateEvalTables(tu);
             for (int i = 0; i < tu.functions().size(); i = i + 1) {
                 AstFunction fn = tu.functions().get(i);
                 if (fn.constDecl() == 0) continue;
@@ -2121,9 +2194,10 @@ class Sema {
                     if (methodSigIdx_.contains(ekey) == 0) methodSigIdx_.put(ekey, methods_.size() - 1);
                 }
             }
-            // 收集顶层函数
+            // 收集顶层函数（@eval 常量表是只读常量数据、非可调用函数，跳过函数符号注册）
             for (int i = 0; i < tu.functions().size(); i = i + 1) {
                 AstFunction f = tu.functions().get(i);
+                if (f.evalTable() != 0) continue;
                 for (int fj = 0; fj < i; fj = fj + 1) {
                     if (tu.functions().get(fj).name() == f.name()) {
                         diag_.error(f.line(), f.col(), "duplicate function name '" + f.name() + "'");
@@ -2197,6 +2271,10 @@ class Sema {
                 if (f.genericInst() != 0) continue;  // F4-G1：泛型实例函数不重新分析（C++ 同）
                 if (f.body() == null) continue;
                 if (Str.len(f.name()) == 0) continue;
+                // M-2：@eval 常量表是数据壳（body=Return(数组字面量)，非可执行函数体）。
+                // 不走返回类型/语句分析（数组字面量 vs 定长 ret 会误报 "cannot return
+                // fixed array"）；表声明合法性由 validateEvalTables 独立校验。
+                if (f.evalTable() != 0) continue;
                 currentClass_ = "";
                 inClass_ = 0;
                 inMain_ = (f.name() == "main" && f.autoMain() == 0) ? 1 : 0;
@@ -2755,6 +2833,29 @@ class Sema {
                 }
             }
             return null;
+        }
+        // M-2：模块级 @eval 常量表声明（evalTable_；body=Return(数组字面量)）。
+        // 表是编译期只读常量数组——不是函数（不注册 funcIdx_）、不是顶层 const
+        //（const 引用点展开 init=每次 new，表需独立只读数据机制）。
+        AstFunction findEvalTable(string name) {
+            if (tu_ == null) return null;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.evalTable() != 0 && f.name() == name) return f;
+            }
+            return null;
+        }
+        // 表元素 AstType（ret 是数组类型，element()=元素类型；null=无）。
+        AstType evalTableElemAstType(AstFunction f) {
+            if (f == null || f.ret() == null) return null;
+            return f.ret().element();
+        }
+        // 表元素是否为合法标量常量元素类型（byte..double/bool；string/嵌套拒）。
+        int evalTableElemOk(string k) {
+            if (k == "byte" || k == "short" || k == "int" || k == "long"
+                || k == "ubyte" || k == "ushort" || k == "uint" || k == "ulong"
+                || k == "float" || k == "double" || k == "bool") return 1;
+            return 0;
         }
         // const-decl 函数返回类型的 valueClass（class/interface 返回时）
         string constRetValueClass(AstFunction f) {
@@ -6723,6 +6824,14 @@ class Sema {
                 return "class";
             }
             if (k == "Identifier") {
+                // M-2：常量表裸引用（非 name[i] 下标）→ clean reject。合法读是
+                // Subscript 特判（不 resolve array 标识符本身），故此处命中的都是
+                // 非下标滥用（赋值/实参/算术），不让它漏到 codegen 崩。
+                if (findEvalTable(e.name()) != null) {
+                    diag_.error(e.line(), e.col(), "constant table '" + e.name() + "' can only be read via '" + e.name() + "[i]' subscript");
+                    e.setResolvedKind("void");
+                    return "void";
+                }
                 if (inGpuFor_ != 0 && e.name() == "kernel") {
                     e.setResolvedKind("int");
                     return "int";
@@ -8702,6 +8811,33 @@ class Sema {
                 return t;
             }
             if (k == "Subscript") {
+                // M-2：常量表下标 pow[i]（i 可为运行时变量）——特判，不走通用
+                // array 路径（表名不是局部/符号表变量，通用路径会误报 undefined）。
+                AstExpr tsa = e.array();
+                if (tsa != null && tsa.kind() == "Identifier") {
+                    AstFunction tblf = findEvalTable(tsa.name());
+                    if (tblf != null) {
+                        if (e.index() != null) visitExpr(e.index());
+                        if (e.index() != null) {
+                            string tik = e.index().resolvedKind();
+                            if (Str.len(tik) != 0 && isNumKind(tik) == 0) {
+                                diag_.error(e.index().line(), e.index().col(), "expected numeric index for constant table '" + tsa.name() + "'");
+                                e.setResolvedKind("void");
+                                return "void";
+                            }
+                        }
+                        AstType tel = evalTableElemAstType(tblf);
+                        string tkind = tel != null ? typeToKind(tel) : "int";
+                        if (evalTableElemOk(tkind) == 0) {
+                            diag_.error(tblf.line(), tblf.col(), "@eval table element type must be a scalar constant type (byte..double/bool)");
+                            e.setResolvedKind("void");
+                            return "void";
+                        }
+                        e.setResolvedKind(tkind);
+                        if (tel != null && Str.len(tel.className()) != 0) e.setResolvedClass(tel.className());
+                        return tkind;
+                    }
+                }
                 string o = e.array() != null ? visitExpr(e.array()) : "void";
                 if (e.index() != null) visitExpr(e.index());
                 AstExpr sa = e.array();

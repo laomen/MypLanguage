@@ -1,0 +1,5 @@
+// EXPECT ERROR: declares 5 elements but initializer has 3
+// M-2 常量表负例：定长数组声明 N 与数组字面量元素数不匹配 clean reject。
+import test;
+@eval int[5] t = [1, 2, 3];
+@test void a() { Test.report("a", true); }

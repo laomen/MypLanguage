@@ -1,0 +1,50 @@
+// m2_eval_table.myp — M-2 编译期常量表（模块级 @eval 只读常量数组，v3.15.243）
+// 语法：@eval <T>[N] <name> = [c1, c2, ...];（或 <T>[] 由元素数定 N）
+// 语义：编译期固化为只读常量数组（LLVM private constant [N x T]），运行时
+// name[i]（i 可为运行时变量/表达式）编译为对常量数组的 GEP+load。
+// 实现（selfhost additive，镜像设计定稿 m2-const-table-design）：parser 表声明
+// （evalTable_）/ sema 表符号+validate（标量元素/定长 count/常量元素）+ subscript
+// 特判；codegen emitEvalTables（@__myp_table_<name>）+ subscript GEP 读 +
+// subscriptElemLt 元素类型（bool→i1 等）。元素支持：字面量 / 纯常量算术 /
+// 顶层 const 标量引用（[BASE, 5]；算术内 const 暂不支持，validate 拒）。
+import test;
+
+@eval int[8] pow2 = [1, 2, 4, 8, 16, 32, 64, 128];
+@eval int[] pow3 = [1, 3, 9, 27];
+@eval double[3] dv = [1.5, 2.5, 10.0];
+const int BASE = 10;
+@eval int[4] mix = [BASE, 5, 100, 200];
+@eval long[2] big = [1000000, 2000000];
+@eval int[4] arith = [2 * 3 + 1, 10 - 4, 6 * 7, 100 / 4];
+@eval bool[2] flags = [true, false];
+
+@test void t() {
+    // 定长 int 表 + 运行时变量下标循环求和
+    int sum = 0;
+    int i = 0;
+    while (i < 8) { sum = sum + pow2[i]; i = i + 1; }
+    Test.assertEq(sum, 255, "pow2 求和=255");
+    // 运行时变量 / 表达式下标
+    int j = 2;
+    Test.assertEq(pow2[j + 1], 8, "pow2[j+1]=8");
+    // 动态数组形态（元素数定 N）+ 常量下标
+    Test.assertEq(pow3[2], 9, "pow3[2]=9");
+    // 顶层 const 标量引用元素（BASE=10 编译期展开进常量数组）
+    Test.assertEq(mix[0], BASE, "mix[0]=BASE");
+    Test.assertEq(mix[3], 200, "mix[3]=200");
+    // 纯常量算术元素
+    Test.assertEq(arith[0], 7, "arith[0]=2*3+1");
+    Test.assertEq(arith[3], 25, "arith[3]=100/4");
+    // bool 表元素（i1）
+    int fv = 0;
+    if (flags[1]) { fv = 1; }
+    Test.assertEq(fv, 0, "flags[1]=false");
+    // double 表
+    double s = 0.0;
+    int k = 0;
+    while (k < 3) { s = s + dv[k]; k = k + 1; }
+    Test.assertEq(int(s), 14, "dv 求和=14");
+    // long 表
+    Test.assertEq(int(big[1]), 2000000, "big[1]=2000000");
+    Test.report("t", true);
+}

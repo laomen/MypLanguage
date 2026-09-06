@@ -1,0 +1,5 @@
+// EXPECT ERROR: @eval table element type must be scalar constant type
+// M-2 常量表负例：元素类型非标量（string）clean reject（v1 仅标量表）。
+import test;
+@eval string[2] s = ["a", "b"];
+@test void a() { Test.report("a", true); }

@@ -602,6 +602,24 @@ class Parser {
             } else {
                 f.setRet(parseType());
                 f.setName(parseIdentifier("expected function name"));
+                // M-2 additive：@eval 常量表声明 `@eval <T> <name> = [c1, c2, ...];`
+                //（编译期固化为只读常量数组，运行时按 name[i] 读）。镜像语法：
+                // @eval 函数是 `@eval T name(params){...}`，表形态 = 类型+名后是 '='
+                // 而非 '('。初值为 MYP 数组字面量（元素=编译期常量表达式）。
+                if (f.eval() != 0 && curKind() == "=") {
+                    f.setEvalTable(1);
+                    advance(); // =
+                    AstExpr lit = parseExpr();
+                    consume(";", "expected ';' after @eval table elements");
+                    AstStmt ret = new AstStmt();
+                    ret.setKind("Return");
+                    ret.setValue(lit);
+                    AstStmt blk = new AstStmt();
+                    blk.setKind("Block");
+                    blk.bodyStmts().add(ret);
+                    f.setBody(blk);
+                    return f;
+                }
                 if (matchKind("<") != 0) {
                     if (curKind() == "identifier") {
                         f.typeParams().add(parseIdentifier("expected type parameter name"));
