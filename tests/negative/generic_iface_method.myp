@@ -1,0 +1,8 @@
+// EXPECT ERROR: generic methods on interfaces are not supported
+// 接口泛型方法负例（v3.15.219）：接口 action 声明方法级 <T> 不支持——接口值经
+// vtable 动态分派（槽只存一个 fn ptr），擦除泛型无法按类型参数单态化；实现类同名
+// 泛型方法被塞进 vtable 会引用未发射的模板（opt undefined）。请用具体类泛型方法。
+import env;
+interface I {
+    U wrap<U>(U x);
+}

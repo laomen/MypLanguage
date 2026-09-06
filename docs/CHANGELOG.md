@@ -27,6 +27,39 @@
 
 ## 编译器版本历史
 
+### v3.15.219 — 接口泛型方法声明干净拒绝 + vtable 约束界定（generic A2 边界，selfhost）
+
+**非破坏性硬化（续 v3.15.217/218）**。界定泛型实例方法的合法边界：接口（含抽象
+方法）上**禁止方法级泛型**——接口值经 **vtable 动态分派**（槽只存一个 fn ptr），
+擦除泛型无法按类型参数单态化；此前接口声明 `U wrap<U>(U x);` 能解析、实现类同名
+泛型方法能编译，但实现类的 `@__myp_vtable_I_Cls` 会把**未发射的模板** `@Cls_wrap`
+塞进槽 → `opt-21 use of undefined value '@Cls_wrap'`（具体类变量调用同形态也崩）。
+
+```myp
+interface I { U wrap<U>(U x); }   // ✗ v3.15.219 起声明处干净拒绝
+class Sq {
+  interface class I;
+  action:
+    U wrap<U>(U x) { return x; }   // 泛型方法限具体类（非接口声明）→ 照常
+}
+Sq s = new Sq(); int r = s.wrap<int>(5);   // ✓（A2 单态化）
+```
+
+- **sema**（`sema.myp` 接口方法收集 pass）：接口 action `typeParams>0` → 声明处干净
+  拒绝 "generic methods on interfaces are not supported (…vtable…cannot monomorphize
+  the type parameter); … put generic methods on concrete classes…"（替代接口值调用处
+  void 级联与 vtable 模板引用）。
+- 具体类泛型方法（不依赖接口声明）路径不变（v3.15.217/218）；接口值上调用泛型方法
+  因声明已拒而不可达。
+- 模板体内 `this.m<T>`（泛型类模板方法、类 T 未具体化）维持干净拒绝——实例化时序
+  （`instantiateClass` 克隆早于 Pass B 模板体登记）使其需延迟登记架构，属后续路线
+  （见 generic_gaps A2）。
+- 回归 `tests/negative/generic_iface_method.myp`；全量 506/506 + bugs 19/19；
+  bootstrap MD5 一致。
+- 设计说明：真「运行时接口值 + 泛型方法」分派需 witness/dictionary 或整对象图
+  单态化，超出擦除泛型 vtable 模型——故接口泛型属设计取舍（干净拒绝），
+  generic_gaps A2 已标注。
+
 ### v3.15.218 — 泛型类 + 方法级 `<T>` 组合（generic A2 扩展，selfhost additive）
 
 **非破坏性加法（续 v3.15.217）**。在**已实例化的泛型类对象**上调方法级泛型实例

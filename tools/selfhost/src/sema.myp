@@ -1772,6 +1772,14 @@ class Sema {
                 ArrayList<AstAction> iacts = ifc.actions();
                 for (int j2 = 0; j2 < iacts.size(); j2 = j2 + 1) {
                     AstAction a2 = iacts.get(j2);
+                    // A2（接口上泛型 v3.15.219）：接口 action 声明方法级 <T> 不支持——
+                    // 接口值经 vtable 动态分派（槽只存一个 fn ptr），擦除泛型无法按
+                    // 类型参数单态化；实现类的同名泛型方法也会被 vtable 引用模板
+                    // （未发射的 @Cls_m）→ opt 未定义。声明处干净拒绝：泛型方法仅限
+                    // 具体类（obj.m<T> / 具体类实现），接口用非泛型方法或具体类泛型。
+                    if (a2.typeParams().size() > 0) {
+                        diag_.error(a2.line(), a2.col(), "generic methods on interfaces are not supported (interface values dispatch via a vtable, which cannot monomorphize the type parameter); declare non-generic interface methods and put generic methods on concrete classes (e.g. 'Sq s = ...; s.m<int>(...)') ");
+                    }
                     interfaceMethods_.add(new MethodSig(ifc.name(), a2.name(), a2.ret() != null ? typeToKind(a2.ret()) : "void", a2.params().size(), a2.params(), 0, a2.ret()));
                     // C++ 不类型检查接口默认体（保持默认 Int）→ 整树标 int
                     if (a2.body() != null) markAllStmt(a2.body());
@@ -3621,8 +3629,7 @@ class Sema {
         // （Class_<mangled>(ptr this, ...)）＋ codegen resolveType 把方法级 T
         // 映射具体（body 内 T 占位）。返回 kind；未命中/不支持返回 ""（调用方走
         // 既有路径）；命中但出错（推断失败/实参不匹配/泛型类）返回 "void"。
-        string resolveGenericInstMethod(AstExpr e, AstExpr callee, string cls, string mName) {
-            if (tu_ == null || Str.len(cls) == 0 || Str.len(mName) == 0) return "";
+        string resolveGenericInstMethod(AstExpr e, AstExpr callee, string cls, string mName) {            if (tu_ == null || Str.len(cls) == 0 || Str.len(mName) == 0) return "";
             AstClass cobj = null;
             for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
                 AstClass cc = tu_.classes().get(ci);
