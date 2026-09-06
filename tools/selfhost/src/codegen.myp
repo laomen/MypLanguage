@@ -3986,14 +3986,13 @@ class CodeGen {
         AstStruct findStructByName(string name) {
             if (tu_ == null) return null;
             for (int i = 0; i < tu_.structs().size(); i = i + 1) {
-                if (tu_.structs().get(i).name() == name) return tu_.structs().get(i);
+                if (cgStructMatch(tu_.structs().get(i), name, 0, "") != 0) return tu_.structs().get(i);
             }
             for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
                 AstClass c = tu_.classes().get(ci);
                 for (int si = 0; si < c.structs().size(); si = si + 1) {
                     AstStruct st = c.structs().get(si);
-                    if (st.name() == name) return st;
-                    if ((c.name() + "::" + st.name()) == name) return st;
+                    if (cgStructMatch(st, name, 1, c.name()) != 0) return st;
                 }
             }
             return null;
@@ -13102,6 +13101,28 @@ class CodeGen {
             return Str.substring(n, idx + 2, Str.len(n));
         }
 
+        // C5：struct 名匹配。限定请求（name 含 "::"）只按全 key（文件级
+        // parent::name / 类内 class::name）精确匹配——顶层与类内/文件级限定
+        // struct 同裸名并存时，限定引用不得回退顶层裸名（否则字段索引/类型取错
+        // struct → 错偏移/错类型）。裸请求保持既有语义不变。
+        // inClassLoop=1：st 来自 c.structs()（ownerClass 提供类名）；0=文件级。
+        int cgStructMatch(AstStruct st, string name, int inClassLoop, string ownerClass) {
+            int isQ = (Str.indexOf(name, "::") >= 0) ? 1 : 0;
+            if (isQ != 0) {
+                string fk = st.name();
+                if (inClassLoop != 0) {
+                    if (Str.len(ownerClass) != 0) fk = ownerClass + "::" + st.name();
+                } else if (Str.len(st.parent()) != 0) {
+                    fk = st.parent() + "::" + st.name();
+                }
+                return (fk == name) ? 1 : 0;
+            }
+            string bare = structBareName(name);
+            if (st.name() == name) return 1;
+            if (Str.len(bare) != 0 && st.name() == bare) return 1;
+            return 0;
+        }
+
         // LLVM 标识符安全名：:: → $（LLVM 非引号标识符不允许 "::"，但允许 $）。
         // 用于 struct 类型名 / struct 方法函数名。
         string llvmSafeName(string n) {
@@ -13196,7 +13217,7 @@ class CodeGen {
             string bare = structBareName(name);
             for (int i = 0; i < tu_.structs().size(); i = i + 1) {
                 AstStruct st = tu_.structs().get(i);
-                if (st.name() != name && st.name() != bare) continue;
+                if (cgStructMatch(st, name, 0, "") == 0) continue;
                 for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
                     if (st.props().get(pi).name() == field) return pi;
                 }
@@ -13205,7 +13226,7 @@ class CodeGen {
             for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
                 for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
                     AstStruct st = tu_.classes().get(ci).structs().get(si);
-                    if (st.name() != name && st.name() != bare) continue;
+                    if (cgStructMatch(st, name, 1, tu_.classes().get(ci).name()) == 0) continue;
                     for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
                         if (st.props().get(pi).name() == field) return pi;
                     }
@@ -13220,7 +13241,7 @@ class CodeGen {
             string bare = structBareName(name);
             for (int i = 0; i < tu_.structs().size(); i = i + 1) {
                 AstStruct st = tu_.structs().get(i);
-                if (st.name() != name && st.name() != bare) continue;
+                if (cgStructMatch(st, name, 0, "") == 0) continue;
                 for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
                     if (st.props().get(pi).name() == field) return llvmType(st.props().get(pi).type());
                 }
@@ -13229,7 +13250,7 @@ class CodeGen {
             for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
                 for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
                     AstStruct st = tu_.classes().get(ci).structs().get(si);
-                    if (st.name() != name && st.name() != bare) continue;
+                    if (cgStructMatch(st, name, 1, tu_.classes().get(ci).name()) == 0) continue;
                     for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
                         if (st.props().get(pi).name() == field) return llvmType(st.props().get(pi).type());
                     }
@@ -13241,13 +13262,23 @@ class CodeGen {
         // struct 字段 AstType（ARC 判断用）。
         AstType structFieldAstType(string name, string field) {
             if (tu_ == null) return null;
+            string bare = structBareName(name);
             for (int i = 0; i < tu_.structs().size(); i = i + 1) {
                 AstStruct st = tu_.structs().get(i);
-                if (st.name() != name) continue;
+                if (cgStructMatch(st, name, 0, "") == 0) continue;
                 for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
                     if (st.props().get(pi).name() == field) return st.props().get(pi).type();
                 }
                 return null;
+            }
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
+                    AstStruct st = tu_.classes().get(ci).structs().get(si);
+                    if (cgStructMatch(st, name, 1, tu_.classes().get(ci).name()) == 0) continue;
+                    for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
+                        if (st.props().get(pi).name() == field) return st.props().get(pi).type();
+                    }
+                }
             }
             return null;
         }
@@ -13570,7 +13601,7 @@ class CodeGen {
             string bare = structBareName(cls);
             for (int i = 0; i < tu_.structs().size(); i = i + 1) {
                 AstStruct st = tu_.structs().get(i);
-                if (st.name() != cls && st.name() != bare) continue;
+                if (cgStructMatch(st, cls, 0, "") == 0) continue;
                 for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
                     if (st.funcs().get(fi).name() == name) return 1;
                 }
@@ -13579,7 +13610,7 @@ class CodeGen {
             for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
                 for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
                     AstStruct st = tu_.classes().get(ci).structs().get(si);
-                    if (st.name() != cls && st.name() != bare) continue;
+                    if (cgStructMatch(st, cls, 1, tu_.classes().get(ci).name()) == 0) continue;
                     for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
                         if (st.funcs().get(fi).name() == name) return 1;
                     }

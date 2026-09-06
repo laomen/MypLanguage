@@ -27,6 +27,31 @@
 
 ## 编译器版本历史
 
+### v3.16.6 — C5 struct 成员索引边界矩阵 + 嵌套限定 struct 解析修复（selfhost）
+
+**修复（selfhost 编译器 bug，oracle 为参考）**。类内/文件级限定 struct（
+`Wrap::Mode`、`Device::Mode`）与顶层同裸名 struct 并存时，selfhost sema/codegen
+按**裸名文件级优先**回退——`Wrap::Mode m; m.extra=6` 会解析到顶层 `Mode`（无
+`extra`）→ 伪报 "struct has no member 'extra'"；或字段索引/类型取错 struct →
+静默错偏移。oracle 正确按类型 key 解析。
+
+- sema `tools/selfhost/src/sema.myp`：3 处 struct 注册点（文件级循环 / B4 类内
+  预扫 / Pass A 每类循环）均恒注册**限定全 key 别名**（`parent::name` /
+  `class::name`，与裸名各自 structIdx_ 槽）。
+- codegen `tools/selfhost/src/codegen.myp`：新增 `cgStructMatch`——限定请求
+  （名含 `::`）只按全 key 精确匹配、**不回退顶层裸名**；裸请求语义不变。
+  `structFieldIndex`/`structFieldType`/`structFieldAstType`/`hasStructMethod`/
+  `findStructByName` 5 函数接入。bootstrap MD5 gate 通过，全套 557 通过 0 失败。
+- 测试：`tests/@test/manual_struct_index_c5.myp`（C5 矩阵，4 tests / 21 断言，
+  oracle 与 selfhost 双通过）——共享字段/方法名不同字段序各按自身布局；顶层 vs
+  嵌套 `Class::Struct` 同短名限定引用；struct 方法返回另一 struct 链式访问；
+  顶层固定 struct 数组（含 string ARC 字段）链式访问 + 整元素拷贝/整元素赋值。
+- **记录的限制**（非本批索引 bug，两编译器均不支持，未纳入断言）：① 字段与
+  方法同名——oracle 字段赢（`c.n()` 不可调用）、selfhost 方法赢（裸 `c.n` 得
+  函数值），均不支持"裸=字段且调=方法"；② 类属性 struct 数组含 string 字段时
+  （`class Grid { Node[4] cells; }` + 方法内 `cells[i].tag=…`）——oracle
+  codegen 失败、selfhost 写入不持久。
+
 ### v3.16.5 — @derive(Json) P1 第一步：嵌套 @derive(Json) 类属性
 
 **功能（additive，编译器派生宏）**。`@derive(Json)` 类属性类型扩展——**嵌套

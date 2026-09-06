@@ -1981,6 +1981,16 @@ class Sema {
                 structNames_.add(st.name());
                 structProps_.add(st.props());
                 if (structIdx_.contains(st.name()) == 0) structIdx_.put(st.name(), structNames_.size() - 1);
+                // C5：限定全 key 别名（Parent::Name）——文件级限定 struct
+                // （struct Device::Mode）与同裸名顶层 struct 并存时，限定引用
+                // 须精确命中自身，不得被顶层裸名抢占。
+                string fk = st.name();
+                if (Str.len(st.parent()) != 0) fk = st.parent() + "::" + st.name();
+                if (structIdx_.contains(fk) == 0) {
+                    structNames_.add(fk);
+                    structProps_.add(st.props());
+                    structIdx_.put(fk, structNames_.size() - 1);
+                }
                 for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
                     AstProp prop = st.props().get(pi);
                     AstType embedded = prop.type();
@@ -2033,6 +2043,16 @@ class Sema {
                         structNames_.add(nst.name());
                         structProps_.add(nst.props());
                         if (structIdx_.contains(nst.name()) == 0) structIdx_.put(nst.name(), structNames_.size() - 1);
+                    }
+                    // C5：类内嵌套 struct 限定别名（Class::Name）恒注册——与顶层
+                    // 同裸名 struct 并存时，限定引用须命中自身，不被顶层裸名抢占。
+                    string nfk = nst.name();
+                    if (Str.len(nst.parent()) != 0) nfk = nst.parent() + "::" + nst.name();
+                    else nfk = ncl.name() + "::" + nst.name();
+                    if (structIdx_.contains(nfk) == 0) {
+                        structNames_.add(nfk);
+                        structProps_.add(nst.props());
+                        structIdx_.put(nfk, structNames_.size() - 1);
                     }
                 }
             }
@@ -2467,6 +2487,15 @@ class Sema {
                         structNames_.add(st.name());
                         structProps_.add(st.props());
                         if (structIdx_.contains(st.name()) == 0) structIdx_.put(st.name(), structNames_.size() - 1);
+                    }
+                    // C5：类内嵌套 struct 限定别名（Class::Name）恒注册。
+                    string cfk = st.name();
+                    if (Str.len(st.parent()) != 0) cfk = st.parent() + "::" + st.name();
+                    else cfk = c.name() + "::" + st.name();
+                    if (structIdx_.contains(cfk) == 0) {
+                        structNames_.add(cfk);
+                        structProps_.add(st.props());
+                        structIdx_.put(cfk, structNames_.size() - 1);
                     }
                 }
                 currentClass_ = c.name();
