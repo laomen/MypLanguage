@@ -1,0 +1,63 @@
+// R3b（roadmap §六 R3 补全）：协程上下文切换吞吐——规模扩展曲线。
+// 多档 (K 协程 × M 挂起次数)：总切换 = K·M 从 50k → 800k，各测 ms + 每次切换
+// 成本（ns/switch）+ verify Coro.count()==0（全回收）。驱动逐个 Coro.resume。
+// （单档 200×10000 已在 bench/myp/coro_switch.myp 与 Go 对比；此处补扩展曲线。）
+import env;
+import coro;
+import time;
+
+class Worker {
+    action:
+        @coro(stack=64) void run(long m) {
+            long j = 0;
+            while (j < m) {
+                await;
+                j = j + 1;
+            }
+        }
+}
+
+// 总切换 K*M 次挂起/恢复；返回切换总数或 -1（verify count 未归零）。
+long switchTotal(int K, int M) {
+    long[] h = new long[K];
+    int i = 0;
+    while (i < K) {
+        Worker w = new Worker();
+        h[i] = w.run(long(M));
+        i = i + 1;
+    }
+    int step = 0;
+    while (step < M) {
+        i = 0;
+        while (i < K) {
+            Coro.resume(h[i], 0L);
+            i = i + 1;
+        }
+        step = step + 1;
+    }
+    long left = Coro.count();
+    if (left != 0L) return -1L;
+    return long(K) * long(M);
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int[] ks = new int[4];
+            ks[0] = 50; ks[1] = 200; ks[2] = 400; ks[3] = 800;
+            int m = 1000;
+            for (int k = 0; k < 4; k = k + 1) {
+                int K = ks[k];
+                long t0 = Time.nowMs();
+                long v = switchTotal(K, m);
+                long t1 = Time.nowMs();
+                long total = long(K) * long(m);
+                long nsPer = (t1 - t0) > 0 ? ((t1 - t0) * 1000000) / total : 0;
+                Console.writeString("R3b switch_k=" + ("" + K) + " m=" + ("" + m)
+                    + " total=" + ("" + total) + " ms=" + ("" + (t1 - t0))
+                    + " ns_per_switch=" + ("" + nsPer)
+                    + " verify=" + ("" + v) + "\n");
+            }
+        }
+}
+int main() { Bench b = new Bench(); return 0; }

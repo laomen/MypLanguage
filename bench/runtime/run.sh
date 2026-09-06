@@ -19,13 +19,13 @@ echo "== bench/runtime（R1 ARC / R2 region / R3 coro spawn / R4 文件 IO 并�
 if [ ! -f /tmp/myp_r4_bench.bin ]; then
     head -c 1048576 /dev/urandom > /tmp/myp_r4_bench.bin
 fi
-for f in r1_arc r2_region r3_coro r4_file_io r5_channel; do
+for f in r1_arc r2_region r3_coro r3b_switch r4_file_io r5_channel; do
     "$MYPCC" -O2 --stdlib "$STDLIB" -o "/tmp/${f}_bench" "$f.myp" || { echo "编译失败: $f"; exit 1; }
 done
 
-for f in r1_arc r2_region r3_coro r4_file_io r5_channel; do
+for f in r1_arc r2_region r3_coro r3b_switch r4_file_io r5_channel; do
     echo "--- $f ---"
-    if [ "$f" = "r5_channel" ]; then
+    if [ "$f" = "r5_channel" ] || [ "$f" = "r3b_switch" ]; then
         # 多配置输出（每行独立指标）：直接展示一轮全部行 + 峰值 RSS
         out=$(/usr/bin/time -v "/tmp/${f}_bench" 2>&1)
         echo "$out" | grep -E "^R[0-9] "
