@@ -18,8 +18,8 @@ import text;
 ffi void myp_sleep_ms(long ms);
 
 @test void t_b150_send_sigpipe() {
-    int port = 26319;
-    TcpServer srv = new TcpServer(port);
+    TcpServer srv = new TcpServer(0);   // T6: 端口 0 内核分配，规避固定端口冲突
+    int port = srv.localPort();
     Test.assert(srv.getFd() >= 0, "server bind");
     TcpClient c = new TcpClient();
     int rc = c.connect("127.0.0.1", port);

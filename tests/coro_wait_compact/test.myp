@@ -47,8 +47,8 @@ class Bench {
     action:
         @constructor Bench() {
             long n = 50000;
-            int port = 24783;
-            TcpServer srv = new TcpServer(port);
+            TcpServer srv = new TcpServer(0);   // T6: 端口 0 内核分配，规避固定端口冲突
+            int port = srv.localPort();
             TcpClient cli = new TcpClient();
             int rc = cli.connect("127.0.0.1", port);
             if (rc != 0) { Console.writeString("FAIL connect\n"); return; }

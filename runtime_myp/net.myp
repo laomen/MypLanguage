@@ -20,6 +20,7 @@ ffi int socket(int domain, int type, int protocol);
 ffi int setsockopt(int fd, int level, int optname, long optval, int optlen);
 ffi int bind(int fd, long addr, int addrlen);
 ffi int listen(int fd, int backlog);
+ffi int getsockname(int fd, long addr, long addrlen);
 ffi int accept(int fd, long addr, long addrlen);
 ffi int connect(int fd, long addr, int addrlen);
 ffi int send(int fd, long buf, int len, int flags);
@@ -67,6 +68,19 @@ int myp_net_server(int port) {
     if (bind(s, addr, 16) < 0) { close(s); return -2; }
     if (listen(s, 10) < 0) { close(s); return -3; }
     return s;
+}
+
+// C: int32_t myp_net_local_port(int32_t fd) —— getsockname 查实际绑定端口
+// （T6，2026-09-07）：TcpServer(0) 由内核分配空闲端口后，客户端须以实际端口
+// 连接；也彻底规避固定端口被 TIME_WAIT/并发进程占用的偶发冲突。
+int myp_net_local_port(int fd) {
+    long addr = myp_arena_alloc(16);
+    long lenp = myp_arena_alloc(4);
+    __myp_mem_store_i32(lenp, 16);
+    if (getsockname(fd, addr, lenp) < 0) return -1;
+    int hi = __myp_mem_load_i8(addr + 2);   // sin_port 网络序（BE，高字节在前）
+    int lo = __myp_mem_load_i8(addr + 3);
+    return (hi << 8) | lo;
 }
 
 // C: int32_t myp_net_accept(int32_t server_fd) —— 阻塞接受，不需对端信息

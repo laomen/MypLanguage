@@ -23,6 +23,7 @@ import coro;    // §五-5 P2: Coro.waitFd（异步 socket 就绪等待）
 
 // FFI 声明
 ffi int myp_net_server(int port);
+ffi int myp_net_local_port(int fd);   // T6: 端口 0 分配后查实际端口
 ffi int myp_net_accept(int server_fd);
 ffi int myp_net_connect(string host, int port);
 ffi int myp_net_send(int fd, string data);
@@ -61,6 +62,10 @@ class TcpServer {
             client.setFd(client_fd);
             return client_fd >= 0 ? 0 : -1;
         }
+
+        // 实际绑定端口：TcpServer(0) 由内核分配空闲端口（规避固定端口 TIME_WAIT/
+        // 并发冲突），客户端须用此端口连接。返回 -1 表示查询失败。
+        int localPort() { return myp_net_local_port(fd_); }
 
         int getFd() { return fd_; }
 
