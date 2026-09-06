@@ -58,12 +58,15 @@ long netAddrIn(int port, int ip0, int ip1, int ip2, int ip3) {
 }
 
 // C: int32_t myp_net_server(int32_t port) —— bind+listen；-1 socket/-2 bind/-3 listen
+// SO_REUSEPORT(15)：多进程同端口负载均衡（nginx 式多 reactor 分片，后端多核扩展）。
+// 单进程行为不变；同 UID 多进程各 bind 同端口 → 内核按四元组分发到各 listener。
 int myp_net_server(int port) {
     int s = socket(2, 1, 0);   // AF_INET=2, SOCK_STREAM=1
     if (s < 0) return -1;
     long optb = myp_arena_alloc(4);
     __myp_mem_store_i32(optb, 1);
-    setsockopt(s, 1, 2, optb, 4);   // SOL_SOCKET=1, SO_REUSEADDR=2
+    setsockopt(s, 1, 2, optb, 4);    // SOL_SOCKET=1, SO_REUSEADDR=2
+    setsockopt(s, 1, 15, optb, 4);   // SO_REUSEPORT=15（Linux）
     long addr = netAddrIn(port, 0, 0, 0, 0);   // INADDR_ANY
     if (bind(s, addr, 16) < 0) { close(s); return -2; }
     if (listen(s, 512) < 0) { close(s); return -3; }   // backlog 512：后端并发突发（真负载 listen backlog=10 曾致大量连接被内核拒绝）
