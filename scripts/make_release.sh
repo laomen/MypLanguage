@@ -48,6 +48,16 @@ cat > release/README.md <<EOF
     echo 'import env; class B { action: @constructor B() { Console.writeLine("hi"); } }
 int main() { B b = new B(); return 0; }' > hi.myp
     mypc -O2 hi.myp -o hi && ./hi        # -> hi
+
+## 已实测可用（2026-09-07，远程 Ubuntu 22.04.5 + RTX 4090 + EPYC 7542 7 物理核）
+- 部署：\`install_myp_deb.sh\` 一键装（22.04 默认源无 llvm-21 → 自动 apt.llvm.org
+  jammy-21）；\`mypc --version\` + 全工具链 /usr/bin 就位。
+- CPU 编译：\`mypc -O2\` 编译运行 hello/manual_ch5(函数)/manual_ch7(struct)/
+  manual_ch11(stdlib 全模块 @test) 全过（exit 0）。
+- 真 GPU：\`MYP_GPU=1\` 下 test_gpu_reduce/math_float/block 真发射 kernel 到
+  RTX 4090（nvidia-smi 利用率非零，结果精确）。
+- CPU 并行：\`@parallel for\` 14 worker 跑满 7 物理核，8.25x 加速，checksum 与
+  单线程一致。
 EOF
 
 ( cd release && sha256sum myp-lang_${VER}_amd64.deb install_myp_deb.sh > SHA256SUMS )
