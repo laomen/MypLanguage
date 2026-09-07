@@ -1,0 +1,55 @@
+// bench/myp/mixed.myp — 对象/容器/string/数组 混合负载（与 go/mixed.go 对拍）
+// 对应运行时分解 seg_mixed：短命对象 churn + ArrayList 容器 ARC + string 拼接 +
+// 可变长动态数组。verify = 确定性 long 校验和（两语言一致）；输出 verify/ms 供
+// run_compare_go.sh 解析。本项补 run_compare_go 缺失的"ARC 密集混合"对照基线。
+import env;
+import text;
+import collections;
+
+class Node {
+    property: int v; string tag;
+    action:
+        void set(int x, string t) { v = x; tag = t; }
+        int getV() { return v; }
+}
+
+long run(long n) {
+    long chk = 0;
+    for (long i = 0; i < n; i = i + 1) {
+        // ① 短命对象 churn（栈上化候选）
+        Node o = new Node();
+        o.set(1, "t");
+        chk = chk + o.getV();
+        // ② 容器 ARC：8 元素推入 + 清空（元素 alloc·retain·release）
+        ArrayList<Node> l = new ArrayList<Node>();
+        for (int j = 0; j < 8; j = j + 1) {
+            Node e = new Node();
+            e.set(int(i + j), "tag");
+            l.add(e);
+        }
+        chk = chk + l.size();
+        l.clear();
+        // ③ string 拼接（itoa + concat）
+        string t = "i=" + ("" + i) + ".x" + ("" + (i % 10));
+        chk = chk + Str.len(t);
+        // ④ 可变长动态数组（不可栈上化）
+        int[] a = new int[int(i % 8 + 1)];
+        a[0] = int(i);
+        chk = chk + a[0];
+    }
+    return chk;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long n = 200000;
+            long t0 = __myp_now_ms();
+            long v = run(n);
+            long t1 = __myp_now_ms();
+            Console.writeString("verify " + ("" + v) + "\n");
+            Console.writeString("ms " + ("" + (t1 - t0)) + "\n");
+        }
+}
+
+int main() { Bench b = new Bench(); return 0; }

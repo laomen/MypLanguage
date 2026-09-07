@@ -27,6 +27,23 @@
 
 ## 编译器版本历史
 
+### v3.16.9 — MYP vs Go mixed 对照基线（bench/myp/mixed.myp + go/mixed.go）
+
+**基准补缺**。`run_compare_go.sh` 原覆盖 21 计算 + channel/io_socket/coro——缺
+**ARC 密集混合负载**（对象 churn + 容器元素 churn + string 拼接 + 可变长数组）的
+Go 对照（运行时优化 B3/B4 的靶点无参考基线）。新增 `mixed` 对照对：
+
+- MYP 侧 `bench/myp/mixed.myp`（每轮：短命 `Node` churn + `ArrayList<Node>` 8 元素
+  推入/清空 + `"i="+i+".x"+(i%10)` 拼接 + 可变长 `int[]`）；Go 侧 `bench/go/
+  mixed.go`（slice of *Node + strconv）同形同规模，**verify 精确一致**
+  （20003788890）。
+- 实测（v3.16.8，Ryzen 7 9700X，best-of-5 交错，boost 未锁）：
+  **MYP 43ms vs Go 26ms，Go/MYP = 0.60**（MYP 缺口 ~67%）。
+- 该比率即运行时分解（contI 16–17ms / str 15ms / cont 33ms / mixed 43ms 均为 MYP
+  绝对耗时）的对照锚点：mixed 缺口全部来自容器元素 ARC + string 拼接段，纯对象
+  churn（1ms）与数组（2ms）已与 Go 同级。`run_compare_go.sh` 接入，`BENCHES=mixed`
+  可单独跑。
+
 ### v3.16.8 — M4 逐分配逃逸提升：划掉（被 M8 计数头取代，探针实测无收益）
 
 **决策（非代码改动）**。`next_improvements.md` §五-A M4「逐分配逃逸提升」从 open

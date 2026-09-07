@@ -9,6 +9,8 @@
 # 覆盖：
 #   21 个主套件基准（sieve..bigint）— 与 bench/cpp/*.cpp 同算法同规模，
 #   Go 版逐文件移植，verify 与 MYP 完全对拍（整数精确、浮点 1e-3 容差）。
+#   mixed           — ARC 密集混合：短命对象 churn + slice/容器元素 churn +
+#                     string 拼接 + 可变长数组（MYP 容器 ARC 分解的 Go 对照）
 #   channel_pingpong — 通道 ping-pong：MYP Channel vs Go channel（capacity=1）
 #   io_socket        — @coro I/O 密集：MYP await fd（loopback TCP + waitFd）
 #                      vs Go goroutine + 阻塞 socket
@@ -37,6 +39,7 @@ names=(
     kmp crc32 radixsort sobel floyd heapsort convolution base64 spmv kmeans
     huffman bigint
     fannkuch spectral_norm binary_trees
+    mixed
     channel_pingpong io_socket
     coro_switch coro_spawn
 )
