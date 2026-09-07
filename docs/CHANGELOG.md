@@ -27,6 +27,24 @@
 
 ## 编译器版本历史
 
+### v3.16.12 — .deb 打包（CPack DEB + /usr wrapper）：myp-lang_3.16.11
+
+**打包（非代码）**。用户侧工具链可出 Debian 包 `cpack -G DEB` →
+`build/myp-lang_<ver>_amd64.deb`（~10.9MB）：
+
+- **内容**：`/usr/bin/{mypc(wrapper),myp_lsp,myp_fmt,myp_viz,myp_debug,myp,
+  myp_fmt2,myp_viz2}` + `/usr/lib/mypc/{mypc(真编译器),libmyp_rt_myp.a,
+  libmyp_pass_plugin.so,libmyp_rt.a}` + `/usr/share/mypc/stdlib/**`（排除 *.o/
+  *.ll/*.a 产物）。
+- **布局要点**：mypc（自举 MYP 程序）编译用户程序时 shell out 到外部 opt/llc/
+  lld（deb `Depends: llvm-21, lld-21`），runtime 归档/插件放**真二进制同目录**
+  （/usr/lib/mypc，探测首候选 = exe 目录）；stdlib 放 /usr/share/mypc/stdlib，
+  **/usr/bin wrapper** export `MYP_STDLIB/MYP_RT_MYP/MYP_PASS_PLUGIN` 后 exec
+  （mypc 自带 stdlib 探测是 cwd 相对，非 exe 相对 → wrapper 兜底）。
+- **验证**：`dpkg-deb -x` 解包到 /tmp，从无仓库 cwd 用包内 stdlib/归档/插件 +
+  系统 opt-21/llc-21/lld 编译 `-O2 hello.myp` 并运行 → "hello from packaged
+  mypc"（payload 完全自足）。`packaging/mypc` wrapper + CMake install/CPack 段。
+
 ### v3.16.11 — B3: 扁平 string+int 拼接链单次分配（mixed 33→26ms，追平 Go）
 
 **性能优化（selfhost codegen + MYP runtime，B3 靶点，仅 selfhost——v3.15.185 约束

@@ -1,0 +1,10 @@
+#!/bin/sh
+# mypc — MYP self-hosted compiler launcher (installed to /usr/bin by the
+# myp-lang .deb). The real fixed-point compiler lives at /usr/lib/mypc/mypc.
+# Its built-in stdlib discovery is cwd-relative, so we point it at the packaged
+# tree via env; the runtime archive + pass plugin are also found next to the
+# binary (/usr/lib/mypc), set here defensively too.
+export MYP_STDLIB=/usr/share/mypc/stdlib
+export MYP_RT_MYP=/usr/lib/mypc/libmyp_rt_myp.a
+export MYP_PASS_PLUGIN=/usr/lib/mypc/libmyp_pass_plugin.so
+exec /usr/lib/mypc/mypc "$@"

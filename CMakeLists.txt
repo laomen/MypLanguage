@@ -421,3 +421,53 @@ if(MYP_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# =============================================================
+# ---- Packaging: install() + CPack (.deb) ----
+# 用户侧工具链。自举不动点 mypc 是 MYP 程序——编译**用户程序**时：
+#   · 外部 shell out 到 opt/llc/lld → deb Depends: llvm-21, lld-21
+#   · 链接 MYP runtime 归档 / pass 插件 → 放 <exe> 同目录（mypRtLib/插件
+#     探测首候选 = exe 目录，/usr/lib/mypc）
+#   · 需要 stdlib 树 → 放 /usr/share/mypc/stdlib，/usr/bin 的 wrapper 经
+#     MYP_STDLIB 指向（mypc 自带 stdlib 探测是 cwd 相对，非 exe 相对）
+# 先 `cmake --build build`，再 `cpack -G DEB`（或 `cmake --install`）。
+# ------------------------------------------------------------
+install(TARGETS myp_lsp myp_fmt myp_viz RUNTIME DESTINATION bin)
+if(NOT WIN32)
+    install(TARGETS myp_debug RUNTIME DESTINATION bin)
+endif()
+# 自举工具二进制（custom-target 产物，在 build 目录；先构建后安装）。
+install(PROGRAMS
+    ${CMAKE_BINARY_DIR}/mypc        # 真编译器 → lib/mypc/mypc
+    DESTINATION lib/mypc)
+install(PROGRAMS
+    ${MYP_PM_OUT}                   # 包管理器 → bin/myp
+    ${MYP_FMT_OUT}                  # 自举格式化器 → bin/myp_fmt2
+    ${MYP_VIZ_OUT}                  # 自举可视化器 → bin/myp_viz2
+    DESTINATION bin)
+# /usr/bin/mypc wrapper → export MYP_STDLIB 等 + exec lib/mypc/mypc。
+install(PROGRAMS ${CMAKE_SOURCE_DIR}/packaging/mypc DESTINATION bin)
+# 数据 + 运行时支持文件。
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/stdlib/ DESTINATION share/mypc/stdlib
+    PATTERN "*.o" EXCLUDE
+    PATTERN "*.ll" EXCLUDE
+    PATTERN "*.a" EXCLUDE
+    PATTERN "__pycache__" EXCLUDE)
+install(FILES ${MYP_RT_MYP_OUT} DESTINATION lib/mypc)          # MYP runtime 归档
+install(TARGETS myp_pass_plugin LIBRARY DESTINATION lib/mypc)  # pass 插件 .so
+install(TARGETS myp_rt_prebuilt ARCHIVE DESTINATION lib/mypc)  # C runtime 回退 .a
+
+# ---- CPack .deb ----
+set(CPACK_GENERATOR "DEB")
+set(CPACK_PACKAGE_NAME "myp-lang")
+set(CPACK_PACKAGE_VENDOR "MYP Language")
+set(CPACK_PACKAGE_VERSION "3.16.11")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "MYP language self-hosted compiler toolchain (mypc + lsp/fmt/viz/pm)")
+set(CPACK_PACKAGE_CONTACT "MYP Language maintainers")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "MYP Language maintainers")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "llvm-21, lld-21, gcc, libc6")
+set(CPACK_DEBIAN_PACKAGE_SECTION "devel")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+set(CPACK_DEBIAN_FILE_NAME "DEB-DEFAULT")
+include(CPack)
