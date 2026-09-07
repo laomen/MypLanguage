@@ -36,10 +36,19 @@ MYP 是一门**事件驱动组件**编程语言，以 `class` + `action:` / `eve
 ### 编译安装
 
 ```bash
-# 依赖: LLVM 21（含 llc/opt/ld.lld 后端工具）、CMake 3.20+、GCC/lld
+# 1) 依赖（Ubuntu 24.04+/Debian）：LLVM 21（开发头 + 后端工具）+ CMake + GCC
+sudo apt install llvm-21 llvm-21-dev lld-21 cmake g++ make
+#    - llvm-21-dev：必需——提供 LLVMConfig.cmake 与头文件（find_package(LLVM) 用它）
+#    - llvm-21：提供 opt-21/llc-21（自举链 myp_self2/3 编译链接需 shell out 到它们）
+#    - lld-21：提供 ld.lld-21
+#    - GPU 可选：找不到 CUDA 时自动禁用（@gpu 走 CPU 回退）；也可加 -DMYP_ENABLE_GPU=OFF
+# 注：Ubuntu 22.04 默认源无 llvm-21，需先加 apt.llvm.org（见 scripts/install_myp_deb.sh）。
+
+# 2) 配置 + 构建（在仓库根执行）
 mkdir build && cd build
 cmake .. -DCMAKE_PREFIX_PATH=/usr/lib/llvm-21/lib/cmake/llvm   # 可选 -DMYP_ENABLE_GPU=OFF 跳过 GPU 支持
 make -j$(nproc)                                                # 或 cmake --build . -j$(nproc)
+cd ..   # 回到仓库根（验证/运行命令在根目录执行）
 ```
 
 构建自动完成两条链并产出 `build/mypc`（用户级编译器）：
@@ -60,6 +69,10 @@ make -j$(nproc)                                                # 或 cmake --bui
 ```bash
 MYPCC=./build/mypc bash tests/run_tests.sh    # 全量回归（回归/负测试/测试框架/自举/GPU）
 ```
+
+> **想跳过源码编译？** 装预编译 `.deb`：`scripts/make_release.sh` 组装 `release/`（内含
+> `install_myp_deb.sh`），在 Debian/Ubuntu 目标机 `sudo bash install_myp_deb.sh myp-lang_*.deb`
+> 一键装好（自动补 llvm/lld 依赖）。
 
 ### Hello World
 

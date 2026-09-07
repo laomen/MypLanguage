@@ -35,10 +35,22 @@ MYP is an **event-driven component** programming language built around `class` +
 ### Build & Install
 
 ```bash
-# Dependencies: LLVM 21 (incl. llc/opt/ld.lld backend tools), CMake 3.20+, GCC/lld
+# 1) Dependencies (Ubuntu 24.04+/Debian): LLVM 21 (headers + backend tools) + CMake + GCC
+sudo apt install llvm-21 llvm-21-dev lld-21 cmake g++ make
+#    - llvm-21-dev: required — provides LLVMConfig.cmake + headers (used by find_package(LLVM))
+#    - llvm-21: provides opt-21/llc-21 (the self-hosted chain shells out to them when
+#      building myp_self2/3)
+#    - lld-21: provides ld.lld-21
+#    - GPU is optional: if no CUDA toolkit is found it auto-disables (@gpu → CPU fallback);
+#      or pass -DMYP_ENABLE_GPU=OFF
+# Note: Ubuntu 22.04 has no llvm-21 in its default repos — add apt.llvm.org first
+#       (scripts/install_myp_deb.sh does this automatically).
+
+# 2) Configure + build (from the repository root)
 mkdir build && cd build
 cmake .. -DCMAKE_PREFIX_PATH=/usr/lib/llvm-21/lib/cmake/llvm   # optional -DMYP_ENABLE_GPU=OFF to skip GPU
 make -j$(nproc)                                                # or cmake --build . -j$(nproc)
+cd ..   # back to the repository root (verify/run commands are run from the root)
 ```
 
 The build runs two chains and produces `build/mypc` (the user-level compiler):
@@ -63,6 +75,11 @@ Verify:
 ```bash
 MYPCC=./build/mypc bash tests/run_tests.sh    # full regression (regression/negative/test-framework/self-host/GPU)
 ```
+
+> **Want to skip building from source?** Install the prebuilt `.deb`: run
+> `scripts/make_release.sh` to assemble `release/` (includes `install_myp_deb.sh`),
+> then on the target Debian/Ubuntu machine
+> `sudo bash install_myp_deb.sh myp-lang_*.deb` (auto-installs the llvm/lld deps).
 
 ### Hello World
 
