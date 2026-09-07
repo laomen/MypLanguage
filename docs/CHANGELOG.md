@@ -44,6 +44,12 @@
 - **验证**：`dpkg-deb -x` 解包到 /tmp，从无仓库 cwd 用包内 stdlib/归档/插件 +
   系统 opt-21/llc-21/lld 编译 `-O2 hello.myp` 并运行 → "hello from packaged
   mypc"（payload 完全自足）。`packaging/mypc` wrapper + CMake install/CPack 段。
+- **部署脚本 + 实测**：`scripts/install_myp_deb.sh`——Debian/Ubuntu 服务器一键装
+  （root；探测 OS → 缺 LLVM 时默认源无 llvm-21 则加 apt.llvm.org `<codename>-21`
+  装 llvm-21/lld-21 → `apt-get install .deb` → `mypc -O2` 编译+运行端到端验证；
+  `--no-llvm` 跳过；幂等）。实测装到 Ubuntu 22.04 远程机（apt.llvm.org jammy-21，
+  22.04 默认源无 llvm-21 → 脚本自动加源），`mypc -O2 hello` 编译运行成功，全
+  工具链 `/usr/bin` 就位。
 
 ### v3.16.11 — B3: 扁平 string+int 拼接链单次分配（mixed 33→26ms，追平 Go）
 
