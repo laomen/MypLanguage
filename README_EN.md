@@ -76,14 +76,13 @@ Verify:
 MYPCC=./build/mypc bash tests/run_tests.sh    # full regression (regression/negative/test-framework/self-host/GPU)
 ```
 
-> **Install the prebuilt `.deb` (offline / server deployment)**: run `bash scripts/make_release.sh`
-> to assemble `myp-lang_<ver>_amd64.deb` (≈9MB, no source build needed on the target) +
-> `install_myp_deb.sh` + `SHA256SUMS` under `release/`. Copy the whole `release/` to the target
-> Debian/Ubuntu machine (scp / LAN / USB), then `sudo bash install_myp_deb.sh myp-lang_*.deb`
-> (auto-installs the llvm/lld deps).
-> Note: `release/` is packed locally next to the sources (not committed); there is no public
-> Release download page yet — a public link will be added here once the package is published
-> to Gitee/GitHub Releases.
+> **Install the prebuilt `.deb` (no source build)**: official downloads are on
+> [GitHub Releases v3.16.12](https://github.com/laomen/MypLanguage/releases/tag/v3.16.12) —
+> `myp-lang_3.16.11_amd64.deb` (≈9MB) + `install_myp_deb.sh` + `SHA256SUMS`. On a Debian/Ubuntu
+> target, download and run `sudo bash install_myp_deb.sh myp-lang_3.16.11_amd64.deb` (auto-installs
+> the llvm/lld deps; Ubuntu 22.04 auto-adds apt.llvm.org; verify with `sha256sum -c SHA256SUMS`).
+> For offline / LAN use, `bash scripts/make_release.sh` builds the same package locally
+> (`release/` is not committed).
 
 ### Hello World
 
