@@ -318,6 +318,9 @@ import "./ast.myp";
             // v3.15.185: string + int 组合（单分配 itoa+concat，strcat 热点优化）
             sb.append("declare ptr @myp_itoa_concat(ptr, i64, i32)\n");
             sb.append("\n");
+            // v3.16.11 (B3): 扁平拼接链单次分配（段描述符数组）
+            sb.append("declare ptr @myp_str_cat_parts(i64, i64)\n");
+            sb.append("\n");
             sb.append("declare ptr @myp_str_append(ptr, ptr)\n");
             sb.append("\n");
             sb.append("declare ptr @myp_alloc_slice_backing(i64, i32, i32)\n");

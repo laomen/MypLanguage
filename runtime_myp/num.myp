@@ -212,6 +212,72 @@ string myp_itoa_concat(string prefix, long val, int signed) {
 
 long myp_two_32() { return long(1) << 32; }
 
+// B3 (v3.16.11): 扁平字符串拼接链单次分配。desc = n×16B 段描述符数组
+// （codegen 生成，栈上，i64 对齐）：每段 {i64 kind; i64 val}：
+//   kind 0 = string 段（val = data 地址；长度 O(1) 读 data-12 计数头）
+//   kind 1 = 有符号 i64 段（val = 值，负号处理）
+//   kind 2 = 无符号 i64 段（val = 位模式按无符号十进制）
+// 返回新计数串（内容 = 各段顺序拼接；与 myp_itoa_concat/myp_strcat 语义一致）。
+// 不消费/不 retain 各 string 段——调用方 fresh 临时照常语句末释放、字面量全局
+// 不释放（同 strcat 借用）。替代 N 段链的 N 次分配+全量拷贝（strcat 热点）。
+string myp_str_cat_parts(long n, long desc) {
+    // pass 1：总长
+    long total = 0;
+    for (long i = 0; i < n; i = i + 1) {
+        long k = __myp_mem_load_i64(desc + i * 16);
+        long v = __myp_mem_load_i64(desc + i * 16 + 8);
+        if (k == 0) {
+            if (v != 0) total = total + long(__myp_mem_load_i32(v - 12));
+        } else {
+            long u = v;
+            int neg = 0;
+            if (k == 1 && u < 0) { neg = 1; u = -u; }
+            ulong t = ulong(u);
+            long nd = 1;
+            while (t >= 10) { t = t / 10; nd = nd + 1; }
+            total = total + nd + neg;
+        }
+    }
+    string r = myp_alloc(total + 1);
+    long rp = __myp_str_ptr(r);
+    long pos = 0;
+    for (long i = 0; i < n; i = i + 1) {
+        long k = __myp_mem_load_i64(desc + i * 16);
+        long v = __myp_mem_load_i64(desc + i * 16 + 8);
+        if (k == 0) {
+            if (v != 0) {
+                long sl = long(__myp_mem_load_i32(v - 12));
+                __myp_memcpy(rp + pos, v, sl);
+                pos = pos + sl;
+            }
+        } else {
+            long u = v;
+            int neg = 0;
+            if (k == 1 && u < 0) { neg = 1; u = -u; }
+            ulong t = ulong(u);
+            long nd = 1;
+            while (t >= 10) { t = t / 10; nd = nd + 1; }
+            long seg = nd + neg;
+            ulong uu = ulong(u);
+            long p = pos + seg;          // 段右端（排他）
+            while (true) {
+                ulong d = uu % 100;
+                uu = uu / 100;
+                p = p - 1;
+                __myp_mem_store_i8(rp + p, 48 + int(d % 10));
+                if (uu == 0 && d < 10) break;
+                p = p - 1;
+                __myp_mem_store_i8(rp + p, 48 + int(d / 10));
+                if (uu == 0) break;
+            }
+            if (neg != 0) { p = p - 1; __myp_mem_store_i8(rp + p, 45); }
+            pos = pos + seg;
+        }
+    }
+    __myp_mem_store_i8(rp + total, 0);
+    return r;
+}
+
 // C: char* myp_to_string_u32(uint32_t val) —— 位模式按无符号十进制
 string myp_to_string_u32(int val) {
     long a = long(val);

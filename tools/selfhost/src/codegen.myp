@@ -10196,6 +10196,83 @@ class CodeGen {
         }
 
         // 表达式 → IR，返回 SSA 值名（常量返回其字面量字符串）。
+        // B3 (v3.16.11): 纯 string/int 的 `+` 拼接链（≥3 段）扁平为单次
+        // myp_str_cat_parts 分配（替代逐段 itoa_concat/strcat 的 N 次分配+拷贝）。
+        // 成功返回结果临时名；否则返回 ""（回退既有路径，零副作用——只在确定
+        // 扁平且 ≥3 段时才 genExpr 叶子，求值顺序 = 左→右与原语义一致）。
+        string tryConcatParts(AstExpr e) {
+            if (e == null || e.opCall() != 0) return "";
+            if (exprLlvmType(e) != "ptr") return "";
+            ArrayList<AstExpr> parts = new ArrayList<AstExpr>();
+            ArrayList<int> kinds = new ArrayList<int>();
+            ArrayList<AstExpr> st = new ArrayList<AstExpr>();
+            int ok = 1;
+            st.add(e);
+            while (st.size() > 0) {
+                AstExpr nd = st.get(st.size() - 1);
+                st.remove(st.size() - 1);
+                if (nd.kind() == "Binary" && nd.op() == "+" && nd.opCall() == 0) {
+                    string nlt = exprLlvmType(nd.lhs());
+                    string nrt = exprLlvmType(nd.rhs());
+                    if (nlt == "ptr" || nrt == "ptr") {
+                        st.add(nd.rhs());
+                        st.add(nd.lhs());
+                        continue;
+                    }
+                }
+                string ty = exprLlvmType(nd);
+                if (nd.resolvedKind() == "string") {
+                    parts.add(nd);
+                    kinds.add(0);
+                } else if (IrEmit.isIntType(ty) != 0 && exprIsItoaInt(nd, ty) != 0) {
+                    parts.add(nd);
+                    kinds.add(exprIsUnsigned(nd) != 0 ? 2 : 1);
+                } else {
+                    ok = 0;
+                    break;
+                }
+                if (parts.size() > 16) { ok = 0; break; }
+            }
+            if (ok == 0 || parts.size() < 3) return "";
+            int np = parts.size();
+            string descTy = "[" + ("" + np) + " x { i64, i64 }]";
+            string descA = entryAlloca(descTy);   // entry 块 alloca：循环内不栈增长
+            for (int i = 0; i < np; i = i + 1) {
+                AstExpr p = parts.get(i);
+                int pk = kinds.get(i);
+                string pv = genExpr(p);
+                string pty = exprLlvmType(p);
+                string w = "";
+                if (pk == 0) {
+                    string it = newTmp();
+                    sb_.append("  " + it + " = ptrtoint ptr " + pv + " to i64\n");
+                    w = it;
+                } else if (pty == "i64") {
+                    w = pv;
+                } else if (pk == 2) {
+                    string zz = newTmp();
+                    sb_.append("  " + zz + " = zext " + pty + " " + pv + " to i64\n");
+                    w = zz;
+                } else {
+                    string ss = newTmp();
+                    sb_.append("  " + ss + " = sext " + pty + " " + pv + " to i64\n");
+                    w = ss;
+                }
+                string g0 = newTmp();
+                sb_.append("  " + g0 + " = getelementptr " + descTy + ", ptr " + descA + ", i64 0, i64 " + ("" + i) + ", i32 0\n");
+                sb_.append("  store i64 " + ("" + pk) + ", ptr " + g0 + "\n");
+                string g1 = newTmp();
+                sb_.append("  " + g1 + " = getelementptr " + descTy + ", ptr " + descA + ", i64 0, i64 " + ("" + i) + ", i32 1\n");
+                sb_.append("  store i64 " + w + ", ptr " + g1 + "\n");
+            }
+            string dc = newTmp();
+            sb_.append("  " + dc + " = ptrtoint ptr " + descA + " to i64\n");
+            string t = newTmp();
+            sb_.append("  " + t + " = call ptr @myp_str_cat_parts(i64 " + ("" + np) + ", i64 " + dc + ")\n");
+            addFreshTemp(t);
+            return t;
+        }
+
         string genExpr(AstExpr e) {
             if (e == null) return "0";
             string k = e.kind();
@@ -10405,6 +10482,12 @@ class CodeGen {
                     string t = newTmp();
                     sb_.append("  " + t + " = load i1, ptr " + resAlloca + "\n");
                     return t;
+                }
+                // B3 (v3.16.11)：纯 string/int `+` 链扁平单分配（在 genExpr 子节点
+                // 之前拦截；非扁平返回 "" 零副作用 → 走既有 itoa_concat/strcat）。
+                if (op == "+" && e.opCall() == 0) {
+                    string pr = tryConcatParts(e);
+                    if (Str.len(pr) != 0) return pr;
                 }
                 string lv = genExpr(e.lhs());
                 string rv = genExpr(e.rhs());

@@ -27,6 +27,33 @@
 
 ## 编译器版本历史
 
+### v3.16.11 — B3: 扁平 string+int 拼接链单次分配（mixed 33→26ms，追平 Go）
+
+**性能优化（selfhost codegen + MYP runtime，B3 靶点，仅 selfhost——v3.15.185 约束
+oracle 不镜像）**。`"i=" + (""+i) + ".x" + (""+(i%10))` 这类消息构建链，旧 codegen
+逐段发射 `myp_itoa_concat`/`myp_strcat`（N 段 = N 次分配+全量拷贝）；`(""+i)` 包成
+string 还绕过了 itoa_concat 前缀合并。现把**纯 string/int 的 `+` 链**压平为段列表，
+`myp_str_cat_parts(n, desc)` **一次分配**填完。
+
+- runtime `runtime_myp/num.myp` 新 `myp_str_cat_parts(long n, long desc)`：desc =
+  n×16B 段描述符 `{i64 kind; i64 val}`（kind 0=string(val=data 地址,长度 O(1) 读
+  data-12 头)、1=有符号 i64、2=无符号 i64）；镜像 `myp_itoa_concat` 尾填十进制
+  （负号/INT64_MIN 位模式安全），不消费/不 retain 各 string 段（与 strcat 借用一致）。
+- selfhost `codegen.myp` 新 `tryConcatParts`：Binary `+` 子求值**之前**拦截，显式栈
+  遍历收集纯 string/int 叶子（string 判 `resolvedKind=="string"`、int 判
+  `isIntType && exprIsItoaInt`，char/bool/其他回退），≥3 段且 ≤16 → 发射 entry 块
+  desc alloca + 左→右 genExpr 叶子（副作用顺序保持）+ 单次
+  `myp_str_cat_parts`；否则返回空串**零副作用**回退既有路径。`ir_emit.myp`
+  preamble 加 declare。
+- 实测（Ryzen 7 9700X，-O2）：`bench/myp/mixed.myp` **33→26ms = Go 26ms（缺口
+  归零）**；累计 43→33(B4 retain 快路径)→26(B3)。边界探针验证：负数/`>2^32`/
+  u64 max(`18446744073709551615`)/空串前缀/中间 string 变量/方法返回段副作用顺序
+  全对。
+- 自举 MD5 gate 通过（self2==self3 `b11264de`）；全套 **558 通过 0 失败**；
+  test_myp_self 对拍 94 PASS（唯一 FAIL = 既有语料缺失 `bench/conv3d_gen_main.myp`，
+  deeplearning 迁出总仓 81ef5d2 后 test_myp_self.sh 语料表残留，与本次无关）。
+  归档重建（num.myp 新符号）。
+
 ### v3.16.10 — B4: MYP runtime `myp_retain` 单线程快路径（mixed 43→33ms，缺口 67%→27%）
 
 **性能修复（runtime_myp 分配/ARC 层，B4 靶点）**。容器元素 churn 里带 string 字段
@@ -59,7 +86,8 @@ Go 对照（运行时优化 B3/B4 的靶点无参考基线）。新增 `mixed` �
   （20003788890）。
 - 实测（v3.16.8，Ryzen 7 9700X，best-of-5 交错，boost 未锁）：
   **MYP 43ms vs Go 26ms，Go/MYP = 0.60**（MYP 缺口 ~67%）。（v3.16.10 B4 retain
-  单线程快路径后 MYP **43→33ms**，缺口降至 ~27%——见 v3.16.10 条目。）
+  单线程快路径后 MYP **43→33ms**，缺口降至 ~27%；v3.16.11 B3 扁平拼接单分配后
+  MYP **33→26ms = Go 26ms，缺口归零**——分别见对应条目。）
 - 该比率即运行时分解（contI 16–17ms / str 15ms / cont 33ms / mixed 43ms 均为 MYP
   绝对耗时）的对照锚点：mixed 缺口全部来自容器元素 ARC + string 拼接段，纯对象
   churn（1ms）与数组（2ms）已与 Go 同级。`run_compare_go.sh` 接入，`BENCHES=mixed`
