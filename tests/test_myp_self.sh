@@ -186,7 +186,9 @@ SEMA_SAMPLES=(
     "tests/narrow_sema.myp"
 )
 for f in "${SEMA_SAMPLES[@]}"; do
-    if [ ! -f "$f" ]; then bad "[sema对拍] 语料缺失: $f"; continue; fi
+    # 语料缺失（如 deeplearning 迁出总仓后 conv3d_gen_main 残留）→ skip 不计
+    # FAIL：对拍样本不在本仓不表示双编译器不一致，避免恒假红干扰稳定性判读。
+    if [ ! -f "$f" ]; then say "  SKIP: [sema对拍] 语料缺失: $f"; continue; fi
     c_rc=0; m_rc=0
     $MYPCC --frontend-dump sema "$f" >"$TMP/cpp_sema.txt" 2>/dev/null || c_rc=$?
     "$TMP/myp_self" --frontend-dump sema "$f" >"$TMP/myp_sema.txt" 2>/dev/null || m_rc=$?
