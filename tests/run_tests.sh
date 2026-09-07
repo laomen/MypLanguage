@@ -44,6 +44,13 @@ fi
 cd "$(dirname "$0")/.."
 PROJ_ROOT=$(pwd)
 
+# 框架自测钩子（人为造失败验框架，防假绿）：
+#   TESTS_DIR   — 回归/负测试源树（默认 tests，可指向临时假树；框架自测用）
+#   SELFCHECK=1 — 只跑回归+负测试两段，出简要汇总即退出（第 3 段起依赖真实
+#                 源码树工具链，自测时不执行）。
+TESTS_DIR="${TESTS_DIR:-tests}"
+SELFCHECK="${SELFCHECK:-0}"
+
 # 跨平台移植层（Linux 原样 / Windows Git Bash 提供 timeout、ulimit 等价物）
 # 必须在 PROJ_ROOT 确定后、任何使用 myp_timeout/myp_resolve_bin 之前 source。
 source "$PROJ_ROOT/tests/lib/portable.sh"
@@ -70,14 +77,14 @@ echo ""
 echo "--- [1/10] 回归测试 (Regression Tests) ---"
 echo ""
 
-for test_dir in tests/*/; do
+for test_dir in "$TESTS_DIR"/*/; do
     name=$(basename "$test_dir")
     # 跳过 expected/ 和 negative/ 目录
     [ "$name" = "expected" ] && continue
     [ "$name" = "negative" ] && continue
 
     test_file="${test_dir}test.myp"
-    expected_file="tests/expected/${name}.expected"
+    expected_file="$TESTS_DIR/expected/${name}.expected"
     output_file="${test_dir}test.output"
     binary_file="${test_dir}test.out"
     # Windows 下若产出 .exe 变体则用后者（mypc 现按 -o 精确命名，仅作前向兼容）
@@ -164,7 +171,7 @@ echo ""
 NEG_PASS=0
 NEG_FAIL=0
 
-for test_file in tests/negative/*.myp; do
+for test_file in "$TESTS_DIR"/negative/*.myp; do
     [ ! -f "$test_file" ] && continue
     name=$(basename "$test_file" .myp)
 
@@ -180,8 +187,11 @@ for test_file in tests/negative/*.myp; do
     rc=$?
     if [ $rc -ne 0 ]; then
         # 崩溃（段错误/abort/ASan）不是"干净拒绝"，必须判失败（T2：意外
-        # SIGSEGV/SIGABRT/ASan 报告归类为 CRASH 而非负测试通过）。
-        if echo "$compile_output" | grep -qE "AddressSanitizer|Segmentation fault|SIGSEGV|SIGABRT|core dumped"; then
+        # SIGSEGV/SIGABRT/ASan 报告归类为 CRASH 而非负测试通过）。rc>=128 =
+        # 被信号杀死（timeout 对信号死亡返回 128+signal，如 139=SIGSEGV/
+        # 134=SIGABRT）——编译器真实崩溃即使 stderr 为空也须判 CRASH，不能
+        # 因无文本落入"干净拒绝"假 PASS。
+        if [ $rc -ge 128 ] || echo "$compile_output" | grep -qE "AddressSanitizer|Segmentation fault|SIGSEGV|SIGABRT|core dumped"; then
             echo -e "${RED}CRASH${NC} (compiler crashed, not a clean reject)"
             NEG_FAIL=$((NEG_FAIL + 1))
             FAILED_TESTS="$FAILED_TESTS $name(negative-crash)"
@@ -202,6 +212,29 @@ done
 
 if [ $NEG_PASS -eq 0 ] && [ $NEG_FAIL -eq 0 ]; then
     echo "  (no negative tests found)"
+fi
+
+# =============================================
+# 框架自测模式：人为造失败的临时假树驱动同一回归/负测试循环，
+# 验证框架确实报告失败/非零退出（防假绿）。此处只出两段汇总即退出。
+# =============================================
+if [ "$SELFCHECK" = "1" ]; then
+    echo ""
+    echo "=========================================="
+    echo "  框架自测汇总 (TESTS_DIR=$TESTS_DIR)"
+    echo "=========================================="
+    echo "  回归测试: ${PASS} 通过, ${FAIL} 失败"
+    echo "  负测试:   ${NEG_PASS} 通过, ${NEG_FAIL} 失败"
+    TOTAL_FAIL=$((FAIL + NEG_FAIL))
+    if [ $TOTAL_FAIL -gt 0 ]; then
+        echo ""
+        echo -e "${RED}  失败的测试:${NC}"
+        for t in $FAILED_TESTS; do echo "    - $t"; done
+        exit 1
+    else
+        echo -e "${GREEN}  自测树全部通过${NC}"
+        exit 0
+    fi
 fi
 
 # =============================================
@@ -302,6 +335,22 @@ if [ -f "$PROJ_ROOT/tests/test_myp_test.sh" ]; then
         echo "$tf_out" | tail -15
         TFFAIL=$((TFFAIL + 1))
         FAILED_TESTS="$FAILED_TESTS myp_test(@test-framework)"
+    fi
+fi
+
+# 框架自测（人为造失败验框架，防假绿）：临时假树 + SELFCHECK 驱动回归/负测试
+# 两段，验证缺 expected/输出错配/运行崩溃/负测试诊断缺失/编译器崩溃(ASan+真实
+# 段错误)确实报告 FAIL 且整体退出非零。
+if [ -f "$PROJ_ROOT/tests/test_framework_selftest.sh" ]; then
+    fs_out=$(bash "$PROJ_ROOT/tests/test_framework_selftest.sh" 2>&1)
+    if echo "$fs_out" | grep -qE "framework-selfcheck: PASS=[0-9]+ FAIL=0"; then
+        echo -e "${GREEN}PASS${NC} (框架自测：缺 expected/错配/崩溃/负测试诊断 均判败)"
+        TFPASS=$((TFPASS + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$fs_out" | tail -20
+        TFFAIL=$((TFFAIL + 1))
+        FAILED_TESTS="$FAILED_TESTS framework-selfcheck"
     fi
 fi
 

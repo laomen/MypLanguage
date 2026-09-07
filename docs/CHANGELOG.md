@@ -27,6 +27,30 @@
 
 ## 编译器版本历史
 
+### v3.16.7 — 测试框架自测（人为造失败验框架，防假绿）+ 负测试真实崩溃漏判修复
+
+**框架自测（roadmap 顶层"framework 自测（人为造失败验框架）"收口）**。新增
+`tests/test_framework_selftest.sh`（19 checks），以**临时假树 + 假 mypc stub**
+驱动真实 `run_tests.sh` 的回归/负测试两段（不复制循环逻辑、不依赖真实编译器、
+不污染真实源码树），逐场景断言框架确实报告失败且整体退出非零：
+
+- S1 缺 expected → MISSING BASELINE + 非零 + **不自动创建** expected 文件（T1）。
+- S2 `--update` 建 expected 并返回零（只写临时假树，安全）。
+- S3 输出错配 MISMATCH / 运行崩溃 RUNTIME FAIL / 正常 PASS 一并检出。
+- S4 负测试干净拒绝且含 `EXPECT ERROR` 子串 → 通过（T2）。
+- S5 拒绝但诊断缺子串 → 失败；S8 应拒绝却被接受 → 失败。
+- S6 ASan/abort（rc=134+文本）→ CRASH；S7 编译器真实段错误、**stderr 为空**
+  （rc=139）→ CRASH 而非干净拒绝。
+
+**修复（T2 框架洞）**：`run_tests.sh` 负测试 CRASH 判定原只 grep ASan/segfault
+文本——编译器真实崩溃若 stderr 为空会被当成"干净拒绝"**假 PASS**。补
+`rc -ge 128`（timeout 对信号死亡返回 128+signal，139=SIGSEGV/134=SIGABRT）判定。
+
+**可测钩子**：`run_tests.sh` section 1/2 路径参数化 `TESTS_DIR`（默认 `tests`，
+可指向临时假树）+ `SELFCHECK=1`（只跑回归+负测试两段出汇总即退出，不递归第 3
+段起真实工具链）。正常模式零行为变化。接入主套件第 3 段，全套 **558 通过 0
+失败**（557+1）。
+
 ### v3.16.6 — C5 struct 成员索引边界矩阵 + 嵌套限定 struct 解析修复（selfhost）
 
 **修复（selfhost 编译器 bug，oracle 为参考）**。类内/文件级限定 struct（
