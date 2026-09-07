@@ -76,10 +76,14 @@ Verify:
 MYPCC=./build/mypc bash tests/run_tests.sh    # full regression (regression/negative/test-framework/self-host/GPU)
 ```
 
-> **Want to skip building from source?** Install the prebuilt `.deb`: run
-> `scripts/make_release.sh` to assemble `release/` (includes `install_myp_deb.sh`),
-> then on the target Debian/Ubuntu machine
-> `sudo bash install_myp_deb.sh myp-lang_*.deb` (auto-installs the llvm/lld deps).
+> **Install the prebuilt `.deb` (offline / server deployment)**: run `bash scripts/make_release.sh`
+> to assemble `myp-lang_<ver>_amd64.deb` (≈9MB, no source build needed on the target) +
+> `install_myp_deb.sh` + `SHA256SUMS` under `release/`. Copy the whole `release/` to the target
+> Debian/Ubuntu machine (scp / LAN / USB), then `sudo bash install_myp_deb.sh myp-lang_*.deb`
+> (auto-installs the llvm/lld deps).
+> Note: `release/` is packed locally next to the sources (not committed); there is no public
+> Release download page yet — a public link will be added here once the package is published
+> to Gitee/GitHub Releases.
 
 ### Hello World
 

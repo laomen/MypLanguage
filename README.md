@@ -70,9 +70,12 @@ cd ..   # 回到仓库根（验证/运行命令在根目录执行）
 MYPCC=./build/mypc bash tests/run_tests.sh    # 全量回归（回归/负测试/测试框架/自举/GPU）
 ```
 
-> **想跳过源码编译？** 装预编译 `.deb`：`scripts/make_release.sh` 组装 `release/`（内含
-> `install_myp_deb.sh`），在 Debian/Ubuntu 目标机 `sudo bash install_myp_deb.sh myp-lang_*.deb`
-> 一键装好（自动补 llvm/lld 依赖）。
+> **装预编译 `.deb`（离线/服务器部署）**：`bash scripts/make_release.sh` 在本机 `release/` 组装
+> `myp-lang_<ver>_amd64.deb`（≈9MB，免目标机源码构建）+ `install_myp_deb.sh` + `SHA256SUMS`。
+> 把整个 `release/` 拷到目标 Debian/Ubuntu 机器（scp/内网/U 盘），然后
+> `sudo bash install_myp_deb.sh myp-lang_*.deb` 一键装好（自动补 llvm/lld 依赖）。
+> 注：`release/` 随源码本地打包（不入 git），目前无公开 Release 下载页——公开下载待后续
+> 发布到 Gitee/GitHub Releases 后在此附链接。
 
 ### Hello World
 
