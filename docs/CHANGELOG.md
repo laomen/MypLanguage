@@ -27,6 +27,26 @@
 
 ## 编译器版本历史
 
+### v3.16.10 — B4: MYP runtime `myp_retain` 单线程快路径（mixed 43→33ms，缺口 67%→27%）
+
+**性能修复（runtime_myp 分配/ARC 层，B4 靶点）**。容器元素 churn 里带 string 字段
+的类（`Node{v,tag}` 每元素赋常量 `"tag"`）是纯 int 类 2 倍成本——隔离探针定位：
+析构桩/对象大小只 +2ms，**主增量在每元素 string 字段的 retain+release**。v3.15.191
+给 `myp_release`（MYP）与 `myp_retain`（**C runtime**）加了 never-threaded 普通
+load/store 快路径，但 **MYP runtime 的 `myp_retain`（runtime_myp/arc.myp）漏了**——
+即使从未启动 worker，每个 retain 仍是 `__myp_atomic_add_i32_addr`（原子 RMW）。
+
+- `myp_retain` 移入 `runtime_myp/alloc.myp`（与 `myp_release` 同模块、直读
+  `CC.everThreaded`），加与 release 对称的单线程快路径：everThreaded==0 →
+  普通 load/store 递增；启动过 worker（`myp_cc_thread_enter` 置位）后永久原子路径。
+  arc.myp 仅留 `myp_obj_type_id`（retain 删，避免归档内重复定义）。
+- 实测（Ryzen 7 9700X，-O2，best-of-5/3）：字面量字段元素 churn（NodeConst）
+  **26→21ms**；`bench/myp/mixed.myp` **43→33ms**（Go 26ms，缺口 67%→~27%）——
+  retain 原子指令确为容器 ARC 主要剩余开销之一。
+- 正确性：门控与 release 完全同构（v3.15.191 已验证方案）；全量 **558 通过 0 失败**
+  + stress `cross_thread_arc`/`xthread_storm`/`coro_flood`/`parallel_stress` 全 PASS。
+  归档重建（37 模块，build/libmyp_rt_myp.a）。
+
 ### v3.16.9 — MYP vs Go mixed 对照基线（bench/myp/mixed.myp + go/mixed.go）
 
 **基准补缺**。`run_compare_go.sh` 原覆盖 21 计算 + channel/io_socket/coro——缺
@@ -38,7 +58,8 @@ Go 对照（运行时优化 B3/B4 的靶点无参考基线）。新增 `mixed` �
   mixed.go`（slice of *Node + strconv）同形同规模，**verify 精确一致**
   （20003788890）。
 - 实测（v3.16.8，Ryzen 7 9700X，best-of-5 交错，boost 未锁）：
-  **MYP 43ms vs Go 26ms，Go/MYP = 0.60**（MYP 缺口 ~67%）。
+  **MYP 43ms vs Go 26ms，Go/MYP = 0.60**（MYP 缺口 ~67%）。（v3.16.10 B4 retain
+  单线程快路径后 MYP **43→33ms**，缺口降至 ~27%——见 v3.16.10 条目。）
 - 该比率即运行时分解（contI 16–17ms / str 15ms / cont 33ms / mixed 43ms 均为 MYP
   绝对耗时）的对照锚点：mixed 缺口全部来自容器元素 ARC + string 拼接段，纯对象
   churn（1ms）与数组（2ms）已与 Go 同级。`run_compare_go.sh` 接入，`BENCHES=mixed`

@@ -466,6 +466,23 @@ long ccThrCountAddr() {
     return CC.thrCount;
 }
 void myp_arc_mark_threaded() { CC.everThreaded = 1; }
+
+// C: void myp_retain(void* obj) —— 与 myp_release 对称的单线程快路径。
+// v3.15.191 只给 myp_release（本模块）与 C runtime 的 myp_retain 加了
+// never-threaded 普通 load/store；**MYP runtime 的 retain 漏了**——容器 ARC 里
+// 每个 retain 仍是原子 RMW，即使从未启动 worker。启动过 worker 后（everThreaded
+// 单调位）永久原子路径（与 release 同门）。
+void myp_retain(string obj) {
+    long addr = __myp_str_ptr(obj);
+    if (addr == 0) return;
+    if (CC.everThreaded == 0) {
+        int rc = __myp_mem_load_i32(addr - 8);
+        __myp_mem_store_i32(addr - 8, rc + 1);
+    } else {
+        __myp_atomic_add_i32_addr(addr - 8, 1);
+    }
+}
+
 void myp_cc_thread_enter() {
     myp_arc_mark_threaded();           // 父线程在创建 worker 前切换为原子 ARC
     __myp_atomic_add_i32_addr(ccThrCountAddr(), 1);
